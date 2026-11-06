@@ -1,0 +1,26 @@
+[
+  {
+    "filename": "72-Regular.woff2",
+    "url": "https://raw.githubusercontent.com/SAP/theming-base-content/b8dc6f16557e5b4b3dc4d07e763c8b46178ab9fe/content/Base/baseLib/baseTheme/fonts/72-Regular.woff2",
+    "sha256": "c33e1916f644b2f0408ef6d01ee8dbb37a889b0f8d824bc961b43269b3abbf69",
+    "bytes": 23756
+  },
+  {
+    "filename": "72-Semibold.woff2",
+    "url": "https://raw.githubusercontent.com/SAP/theming-base-content/b8dc6f16557e5b4b3dc4d07e763c8b46178ab9fe/content/Base/baseLib/baseTheme/fonts/72-Semibold.woff2",
+    "sha256": "56f0dfef94587821c23a6856f5385b6175692c3fb32a62be5f38d1e956f0f872",
+    "bytes": 24532
+  },
+  {
+    "filename": "72-Bold.woff2",
+    "url": "https://raw.githubusercontent.com/SAP/theming-base-content/b8dc6f16557e5b4b3dc4d07e763c8b46178ab9fe/content/Base/baseLib/baseTheme/fonts/72-Bold.woff2",
+    "sha256": "270387a820fef53fe57f8f7514bc8a69e986ded2a01fd8722c024e2081aa6c1c",
+    "bytes": 23684
+  },
+  {
+    "filename": "LICENSE-72.txt",
+    "url": "https://raw.githubusercontent.com/SAP/theming-base-content/b8dc6f16557e5b4b3dc4d07e763c8b46178ab9fe/LICENSE.txt",
+    "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac",
+    "bytes": 11359
+  }
+]

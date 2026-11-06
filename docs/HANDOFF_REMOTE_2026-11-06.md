@@ -30,6 +30,13 @@ The local thread was working on requirements alignment. It produced the requirem
 
 The local project was incrementally synced into the remote project. The sync intentionally did not delete remote-only files and did not copy `.runtime/`, `.venv/`, `node_modules/`, build outputs, private keys, or test artifacts.
 
+- 27 files had content changes; 17 overwritten files were backed up under `.runtime/sync-backups/20261106-remote-handoff/`.
+- Key-file SHA-256 values were checked against the local source and matched.
+- Production services stayed active and `GET /api/v1/health/ready` returned `{"status":"ready","model_configured":true}`.
+- Remote baseline regression passed: server `322 passed`; client `53 passed`; production client build succeeded.
+- `client/node_modules` was owned by `root` and its `.bin` entries were not executable by `ubuntu`; ownership and execute bits were repaired with the available passwordless `sudo`. Re-run `npm test` and `npm run build` if the environment is rebuilt.
+- The client build briefly replaced the live Nginx root `client/dist`. The exact 0.4.2 build was restored from `dist/releases/0.4.2/zhixing-client-0.4.2.zip`, all four hashes were checked against `.runtime/product-0.4.2/remote-final.json`, and the new build was backed up under `.runtime/sync-backups/20261106-remote-handoff/new-client-dist/`.
+
 Key documentation now present on the remote:
 
 - `docs/REQUIREMENTS_ALIGNMENT.md` — the new requirements baseline.
@@ -101,10 +108,13 @@ cd /data/dengkw/workspace/open-claude-code/server
 
 cd /data/dengkw/workspace/open-claude-code/client
 npm test
-npm run build
+npx tsc -b
+npx vite build --outDir /home/ubuntu/client-dist-build-$(date +%Y%m%d-%H%M%S) --emptyOutDir
 ```
 
 If the existing `.venv` is missing a test dependency, install only the missing test extras into the existing environment; do not recreate the environment over production data. Record exact commands, test counts, failures, and environment versions in the audit note.
+
+Do **not** run `npm run build` directly in `client/`: the production Nginx configuration serves `client/dist` live. Build to a separate `/home/ubuntu/client-dist-build-*` directory until a deployment is explicitly approved. If a temporary in-place build is unavoidable, back up `client/dist` first and restore it immediately after collecting the result.
 
 ### 4.5 Close the TODO
 
@@ -131,6 +141,7 @@ Wait for explicit user approval before restarting production.
 - Never overwrite or delete `.runtime/data/`, `.runtime/backups/`, `.runtime/model-catalog.json`, `.runtime/service.env`, `.runtime/admin-password`, or `.venv/`.
 - Never commit or display model API keys, MCP credentials, admin passwords, or private provider URLs.
 - Do not run `rm -rf` on the project root. Use timestamped backups.
+- Do not rebuild into `client/dist`; it is the live Nginx root. Use a separate build directory or restore the previous build after verification.
 - Do not modify the root-owned `l2-spec.md`; read it only if permitted.
 - Keep production services running while editing source; source changes take effect only after an explicit restart.
 - Any real-model test that spends money or calls the customer’s MCP requires explicit user confirmation first.

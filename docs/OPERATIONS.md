@@ -20,7 +20,7 @@ curl --fail --silent --show-error http://127.0.0.1:8000/api/v1/health/ready
 docker compose logs --tail 100 server client
 ```
 
-`live` 返回 `status: ok`；`ready` 查询数据库并返回 `status: ready` 和 `model_configured`。后者只检查是否配置模型凭据，不验证凭据有效性、模型余额、MCP 连通性或推理成功。开发预览 API 端口为 18080，容器默认通过客户端入口 `http://127.0.0.1:8080/api/v1/health/ready` 检查。
+`live` 返回 `status: ok`；`ready` 查询数据库并返回 `status: ready` 和 `model_configured`。后者只检查是否配置模型凭据，不验证凭据有效性、模型余额、MCP 连通性或推理成功。开发预览 API 端口为 18080；容器部署时请从客户端入口 `http://127.0.0.1:8080/api/v1/health/ready` 手工检查 ready。`compose.yaml` 当前没有配置容器健康检查（healthcheck），不会自动判定容器是否就绪。
 
 原生进程日志在 stdout/stderr，由进程管理器收集与轮转；服务不会自动向数据目录的 `logs/` 写运行日志。开发预览日志为 `.runtime/server.log`、`.runtime/client.log`、`.runtime/mcp.log`，Nginx 日志在 `.runtime/nginx/`。定位问题先保留运行 ID、时间、状态和界面的轨迹下载。日志及轨迹可能包含业务内容，只在授权范围保存，不公开粘贴完整环境、请求认证头或会话文件。
 

@@ -11,6 +11,7 @@
 - 这是已有生产环境的项目，systemd 服务 `zhixing-5400d3fe73-server/client/mcp` 正在运行；server 在 `127.0.0.1:18080`，数据在 `.runtime/data/`。
 - 使用项目已有的 `.venv`；Python 3.10.12，Node 22.14.0，npm 10.9.2。
 - 之前的本地会话已经完成 `docs/REQUIREMENTS_ALIGNMENT.md`，但还没完成逐项审计和回归。
+- 本次同步后的远程基线已经跑过：server `322 passed`，client `53 passed`，client production build 成功。你接手后仍要重新跑并在审计记录里写明实际结果。
 - 根目录 `l2-spec.md` 属于 root，若你能读就作为独立 L2 规范参考；不要覆盖它。若与本文冲突，先问用户。
 
 你的第一轮任务：
@@ -18,13 +19,14 @@
 1. 只读审计：读取需求文档、代码、测试和现有验收记录，不做部署、不重启服务、不改 `.runtime/data`。
 2. 生成 `docs/verification/REQUIREMENTS_AUDIT_NOTES.md`：对 `REQUIREMENTS_ALIGNMENT.md` 里的每个 ID 记录状态、代码位置、验证命令、观测结果、剩余缺口。设计中的能力（多模态图谱、生产 Sub-agent、RAG-005）必须标为“设计中”，不能写成“已实现”。
 3. 修复审计发现的最小范围文档/代码不一致；代码改动必须补测试。
-4. 跑回归：`cd server && ../.venv/bin/python -m pytest -q && ../.venv/bin/python -m compileall app`；`cd client && npm test && npm run build`。记录精确命令、通过/失败数量和失败原因。
+4. 跑回归：`cd server && ../.venv/bin/python -m pytest -q && ../.venv/bin/python -m compileall app`；`cd client && npm test && npx tsc -b && npx vite build --outDir /home/ubuntu/client-dist-build-$(date +%Y%m%d-%H%M%S) --emptyOutDir`。不要直接跑 `npm run build`，因为生产 Nginx 正在服务 `client/dist`。记录精确命令、通过/失败数量和失败原因。
 5. 更新 `docs/ENGINEER_TODO.md` 和 `TODO.md`，把审计与回归标成 DONE 或保留为明确的 TODO，部署另列为待用户批准。
 6. 最后给用户一份中文简报：审计结论、改了哪些文件、测试结果、仍未完成/待客户确认的事项、下一步建议。
 
 硬性约束：
 
 - 不重启、不重新部署 systemd 服务；不覆盖 `.runtime/data/`、`.runtime/backups/`、`.runtime/model-catalog.json`、`.runtime/service.env`、`.runtime/admin-password`、`.venv/`。
+- 不要在 `client/` 直接执行 `npm run build` 覆盖 `client/dist`；生产 Nginx 正在服务该目录。构建到 `/home/ubuntu/client-dist-build-<时间戳>`，或先备份再恢复。
 - 不把密钥、MCP 凭据、管理员密码、私有上游地址写进代码、日志或提交。
 - 不运行 `rm -rf` 项目根目录；改文件前先做时间戳备份。
 - 真实模型调用、客户 MCP 调用、花钱的验收必须先征得用户同意。

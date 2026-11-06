@@ -1,5 +1,18 @@
 # Project TODO
 
+## 产品主线状态（Product mainline status，2026-11-06）
+
+- **0.4.2 已发布。** 客户端、服务端、部署包三个正式归档及 `manifest.json` 位于 `dist/releases/0.4.2/`；0.1.0—0.4.2 六个正式版本的归档摘要都与各自清单匹配。0.4.2 的发布内容是会话并发隔离、会话独立记忆，以及切换模型后的身份查询修正。发布结论见 [交付验证](docs/DELIVERY_VERIFICATION.md)，工程明细见 [ENGINEER_TODO](docs/ENGINEER_TODO.md)，私有证据的当前位置见 [证据索引](docs/evidence/EVIDENCE_INDEX_2026-11-06.md)。
+- **当前工作树已经超出 0.4.2。** 2026-11-06 远程交接同步了新的需求文档、模型目录/推荐路由和客户端改动；当前服务端可收集 322 项测试，客户端源码有 53 项测试，`client/node_modules` 已恢复。当前树不能用来重打 0.4.2 归档：`python3 scripts/build_release.py --version 0.4.2 --stage final --check-only` 当前给出 client=88、server=79、deployment=57，而 0.4.2 正式包是 57/56/57。0.4.2 归档保持冻结，下一版本应使用新的版本号和新的 FINAL 验证记录。
+- **本轮需求审计与回归已完成（2026-11-06）。** 逐项审计见 [REQUIREMENTS_AUDIT_NOTES](docs/verification/REQUIREMENTS_AUDIT_NOTES.md)：27 个编号中 22 项已实现、4 项部分实现、1 项设计中；多模态知识图谱与生产 Sub-agent 仍明确为设计中。服务端当前开发树 322 项测试全部通过，客户端 53 项测试通过，TypeScript 检查和独立目录 Vite 构建通过；证据见 [服务端回归](docs/evidence/SERVER_REGRESSION_2026-11-06.md) 与 [客户端回归](docs/evidence/CLIENT_REGRESSION_2026-11-06.md)。
+- **本轮已修复的最小不一致。** `server/tests/test_model_catalog.py` 在替换 provider 环境后显式重新选择同一公共模型，保留配置变化必须返回 `409 MODEL_SELECTION_REQUIRED` 的产品行为；README 已补齐混元 4 和 Kimi 3.1 PRO 的公开目录说明，并注明未开通时不可用。一次授权的腾讯云内网 `npm ci` 已完成，`package-lock.json` 未变化。
+- **下一阶段待办（尚未开始）：**
+  1. **补齐 0.4.2 发布树的独立回归证据。** 当前开发树的 322 项通过不能替代 0.4.2 发布树历史记录中 319 项收集、316 通过和 3 失败的口径；需要在不改正式归档的临时副本中确认发布树最终测试数量，并解释 317/319 与当前 322 的差异。
+  2. **真实客户与模型开通验收。** 取得华微世纪真实 MCP 地址、认证方式、工具清单、业务样本、标准答案和原方案基线后，分别验收数据来源、知识来源、网页来源、质量、耗时和成功任务成本；确认混元 4、Kimi 3.1 PRO 的 TokenHub 上游与额度。
+  3. **下一版本规划。** 多模态图谱和 Sub-agent 仍处于设计阶段；生产部署、systemd 重启、容器验收、生产负载和灾备演练保持独立待批准事项。
+- **独立线程，不属于产品主线，保持原状：** Better AI PPT 截图理解（下方 2026-11-05 条目）、Linux Mint Live USB（下方 2026-11-04 条目）、旧 Intel Mac 启动（下方 2026-11-05 条目）继续各自独立记录。本轮不替用户决定它们是否继续由本项目跟踪，也不把它们排进产品版本计划。
+- **仍待用户或商务决策（本轮未完成）：** 商业化、计费与转售授权；客户真实 MCP、业务样本和原方案基线；外部界面最终品牌；是否允许生产重启或部署下一版本。
+
 ## 2026-11-05 — Design multimodal RAG and knowledge graph extension
 
 - [DONE] Inspect existing knowledge, evidence, permission, version, and run-snapshot contracts; architecture maps to implemented interfaces and calls out gaps.
@@ -78,7 +91,9 @@ Context: The user is considering a branded enterprise agent service whose execut
 
 ## 2026-11-06 — Remote development handoff to Tencent Cloud
 
-- [RUNNING] Sync the latest source and documentation to `/data/dengkw/workspace/open-claude-code` without touching `.runtime/data`, `.venv`, production services, or the root-owned `l2-spec.md`; back up overwritten files under `.runtime/sync-backups/20261106-remote-handoff/`.
-- [TODO] Remote agent completes `docs/verification/REQUIREMENTS_AUDIT_NOTES.md`, runs server/client regression, fixes document/code inconsistencies, and updates the requirements-alignment checklist.
+- [DONE] Synced the latest source and documentation to `/data/dengkw/workspace/open-claude-code` without touching `.runtime/data`, `.venv`, production services, or the root-owned `l2-spec.md`; 27 content files changed and 17 overwritten files were backed up under `.runtime/sync-backups/20261106-remote-handoff/`. Key-file SHA-256 values match the local source; production services stayed active and `/api/v1/health/ready` returned ready.
+- [DONE] Remote regression baseline: server `322 passed`, client `53 passed`, production client build succeeded; `client/node_modules` ownership/execute bits were repaired for the `ubuntu` account.
+- [DONE] The client build initially replaced the live Nginx root `client/dist`; restored the exact 0.4.2 build from `dist/releases/0.4.2/zhixing-client-0.4.2.zip`, verified all four hashes against `remote-final.json`, and backed up the new build under `.runtime/sync-backups/20261106-remote-handoff/new-client-dist/`.
+- [DONE] Remote agent completed `docs/verification/REQUIREMENTS_AUDIT_NOTES.md`, fixed the provider-fingerprint test fixture and README model-list inconsistency, and updated the requirements-alignment checklist with evidence links.
 - [TODO] Production restart or deployment is a separate step and requires explicit user approval; keep the current systemd services and production data intact until then.
 

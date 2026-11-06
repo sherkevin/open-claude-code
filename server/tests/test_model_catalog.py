@@ -131,6 +131,10 @@ def test_sdk_receives_selection_and_all_model_aliases(catalog_service, monkeypat
     cid = conversation["id"]
     service.patch_conversation(cid, {"reasoning_level": level}, user)
     service.settings.provider_env = lambda: {"ANTHROPIC_API_KEY": "old-key", "ANTHROPIC_MODEL": "old-model", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "old-small-model"}
+    # Provider configuration changes require explicit reselection. Re-pin the
+    # same public model/effort after replacing the environment so this test
+    # exercises SDK option mapping instead of the intentional 409 guard.
+    service.patch_conversation(cid, {"model_id": "dano-v2.1", "reasoning_level": level}, user)
     captured = {}
     class Client:
         def __init__(self, options):
