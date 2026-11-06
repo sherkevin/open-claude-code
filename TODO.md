@@ -2,6 +2,7 @@
 
 ## 产品主线状态（Product mainline status，2026-11-06）
 
+- **2026-11-06 已入 GitHub 并生成 Agent 交接包。** 代码与文档推送至私有仓库 `sherkevin/open-claude-code`（`main` 分支），学校云副本 `/media/data3/dengkw/projects/open-claude-code` 已同步。接手材料见 [docs/handover/README.md](docs/handover/README.md)：进展报告、任务说明，以及上一轮 Codex 会话 `01a1af39-f0d7-7b03-aa48-e4552a4059a1` 的完整记录（transcript + 原始 JSONL）。
 - **0.4.2 已发布。** 客户端、服务端、部署包三个正式归档及 `manifest.json` 位于 `dist/releases/0.4.2/`；0.1.0—0.4.2 六个正式版本的归档摘要都与各自清单匹配。0.4.2 的发布内容是会话并发隔离、会话独立记忆，以及切换模型后的身份查询修正。发布结论见 [交付验证](docs/DELIVERY_VERIFICATION.md)，工程明细见 [ENGINEER_TODO](docs/ENGINEER_TODO.md)，私有证据的当前位置见 [证据索引](docs/evidence/EVIDENCE_INDEX_2026-11-06.md)。
 - **当前工作树已经超出 0.4.2。** 2026-11-06 远程交接同步了新的需求文档、模型目录/推荐路由和客户端改动；当前服务端可收集 322 项测试，客户端源码有 53 项测试，`client/node_modules` 已恢复。当前树不能用来重打 0.4.2 归档：`python3 scripts/build_release.py --version 0.4.2 --stage final --check-only` 当前给出 client=88、server=79、deployment=57，而 0.4.2 正式包是 57/56/57。0.4.2 归档保持冻结，下一版本应使用新的版本号和新的 FINAL 验证记录。
 - **本轮需求审计与回归已完成（2026-11-06）。** 逐项审计见 [REQUIREMENTS_AUDIT_NOTES](docs/verification/REQUIREMENTS_AUDIT_NOTES.md)：27 个编号中 22 项已实现、4 项部分实现、1 项设计中；多模态知识图谱与生产 Sub-agent 仍明确为设计中。服务端当前开发树 322 项测试全部通过，客户端 53 项测试通过，TypeScript 检查和独立目录 Vite 构建通过；证据见 [服务端回归](docs/evidence/SERVER_REGRESSION_2026-11-06.md) 与 [客户端回归](docs/evidence/CLIENT_REGRESSION_2026-11-06.md)。
