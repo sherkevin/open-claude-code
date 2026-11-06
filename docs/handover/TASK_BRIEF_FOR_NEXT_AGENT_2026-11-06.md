@@ -2,7 +2,8 @@
 
 **你接手的是：** open-claude-code（产品名「知行工作台」）——Better AI 工业 Agent 场景的企业智能助手平台。  
 **接手上一个会话：** Codex `01a1af39-f0d7-7b03-aa48-e4552a4059a1`（被用户中断，见 [transcript](sessions/01a1af39-f0d7-7b03-aa48-e4552a4059a1_transcript.md)）。  
-**先读这份，再读：** [进展报告](PROGRESS_2026-11-06.md) → [产品升级计划](../PRODUCT_EVOLUTION_PLAN_2026-11-06.md) → [需求基线](../REQUIREMENTS_ALIGNMENT.md) → [需求审计](../verification/REQUIREMENTS_AUDIT_NOTES.md) → [L2 交接证据](../evidence/L2_HANDOFF_2026-11-06.md) → [远端接手提示词](../HANDOFF_REMOTE_2026-11-06.md) → [API 契约](../API_CONTRACT.md) → [可配置工作空间](../CONFIGURABLE_WORKSPACE.md) → [README](../../README.md)。
+**先读这份，再读：** [进展报告](PROGRESS_2026-11-06.md) → [产品升级计划](../PRODUCT_EVOLUTION_PLAN_2026-11-06.md) → [需求基线](../REQUIREMENTS_ALIGNMENT.md) → [需求审计](../verification/REQUIREMENTS_AUDIT_NOTES.md) → [L2 交接证据](../evidence/L2_HANDOFF_2026-11-06.md) → [远端接手提示词](../HANDOFF_REMOTE_2026-11-06.md) → [API 契约](../API_CONTRACT.md) → [可配置工作空间](../CONFIGURABLE_WORKSPACE.md) → [README](../../README.md)。  
+**准备动手时再看：** [详细任务说明](DETAILED_TASK_SPEC_2026-11-06.md)（T0 至 T7 任务分解、验收标准、启动提示词）｜ [证据与命令清单](EVIDENCE_AND_COMMANDS_2026-11-06.md)（回归命令、环境、备份和证据地图）。
 
 ---
 
