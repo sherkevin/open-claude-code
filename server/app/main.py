@@ -1,0 +1,365 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import mimetypes
+import secrets
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+
+from fastapi import Depends, FastAPI, File, Request, Response, UploadFile, Query
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+
+from .config import Settings
+from .db import dump, now, uid
+from .models import *
+from .middleware import BodyLimitMiddleware
+from .runtime import RunManager, SDKRuntime
+from .security import AppError, password_hash, password_matches, safe_name, token_hash
+from .service import Service, TERMINAL, user_view, connection_view, assistant_view, conversation_view, message_view, file_view, approval_view
+
+log = logging.getLogger(__name__)
+COOKIE = "zhixing_session"
+
+
+def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> FastAPI:
+    settings = settings or Settings()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        service = app.state.service = Service(settings)
+        manager = app.state.manager = RunManager(service, runtime_factory)
+        service.manager = manager
+        manager.recover()
+        app.state.login_attempts = {}
+        app.state.dummy_password_hash = password_hash(secrets.token_urlsafe(32))
+        yield
+        await manager.close()
+        service.db.close()
+
+    app = FastAPI(title="知行工作台 Server", version="0.4.2", lifespan=lifespan)
+    app.add_middleware(CORSMiddleware, allow_origins=list(settings.origins), allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID"])
+    app.add_middleware(BodyLimitMiddleware, maximum=settings.upload_max_bytes + 1024 * 1024)
+
+    @app.exception_handler(AppError)
+    async def app_error(request, exc):
+        return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message}})
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_ERROR", "message": "请求字段无效，请检查必填项、格式与长度"}})
+
+    @app.exception_handler(Exception)
+    async def unexpected(request, exc):
+        log.error("Unhandled API failure (%s)", type(exc).__name__)
+        return JSONResponse(status_code=500, content={"error": {"code": "INTERNAL_ERROR", "message": "服务暂时不可用，请稍后重试"}})
+
+    @app.middleware("http")
+    async def safety_headers(request: Request, call_next):
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            local_origin = f"{request.url.scheme}://{request.url.netloc}"
+            if (origin and origin.rstrip("/") not in {*settings.origins, local_origin}) or request.headers.get("sec-fetch-site") == "cross-site" and not origin:
+                return JSONResponse(status_code=403, content={"error": {"code": "ORIGIN_DENIED", "message": "请求来源未授权"}})
+            try:
+                too_large = int(request.headers.get("content-length", "0")) > settings.upload_max_bytes + 1024 * 1024
+            except ValueError:
+                too_large = True
+            if too_large:
+                return JSONResponse(status_code=413, content={"error": {"code": "UPLOAD_TOO_LARGE", "message": "上传内容超过大小限制"}})
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "same-origin"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    def svc(request: Request) -> Service:
+        return request.app.state.service
+
+    def authenticated(request: Request, service: Service = Depends(svc)):
+        token = request.cookies.get(COOKIE)
+        if not token:
+            raise AppError(401, "UNAUTHENTICATED", "请先登录")
+        row = service.db.one("SELECT users.* FROM sessions JOIN users ON sessions.user_id=users.id WHERE sessions.token_hash=? AND sessions.expires_at>? AND users.enabled=1", (token_hash(token), now()))
+        if not row:
+            raise AppError(401, "UNAUTHENTICATED", "登录已过期，请重新登录")
+        return row
+
+    def admin(user=Depends(authenticated), service: Service = Depends(svc)):
+        service.require_admin(user)
+        return user
+
+    from .mcp_import import create_import_router
+    app.include_router(create_import_router(svc, authenticated))
+    from .skills import create_skill_router
+    app.include_router(create_skill_router(svc, authenticated))
+    from .knowledge import create_knowledge_router
+    from .evidence import create_evidence_router
+    app.include_router(create_knowledge_router(svc, authenticated))
+    app.include_router(create_evidence_router(svc, authenticated))
+    from .memory import create_memory_router
+    app.include_router(create_memory_router(svc, authenticated))
+    from .context import create_context_router
+    app.include_router(create_context_router(svc, authenticated))
+
+    prefix = "/api/v1"
+
+    @app.get(prefix + "/config")
+    def config():
+        return {"brand_name": settings.brand_name, "upload_max_bytes": settings.upload_max_bytes, "auth_types": ["none", "bearer"], **app.state.service.catalog.defaults}
+
+    @app.get(prefix + "/models")
+    def models(user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.catalog.public()
+
+    @app.post(prefix + "/models/recommend")
+    async def recommend_model(data: ModelRecommendationRequest, user=Depends(authenticated), service: Service = Depends(svc)):
+        """Return an advisory model recommendation without changing a session."""
+        from .model_recommendation import provider_router
+        return await provider_router(service, data.task_summary, data.candidate_model_ids)
+
+    @app.get(prefix + "/health/live")
+    def live():
+        return {"status": "ok"}
+
+    @app.get(prefix + "/health/ready")
+    def ready(service: Service = Depends(svc)):
+        service.db.one("SELECT 1")
+        try:
+            provider = settings.provider_env()
+            configured = bool(provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN"))
+        except Exception:
+            configured = False
+        return {"status": "ready", "model_configured": configured}
+
+    @app.post(prefix + "/auth/login")
+    def login(data: Login, request: Request, response: Response, service: Service = Depends(svc)):
+        ip = request.client.host if request.client else ""
+        key, ip_key = ("account", ip, data.username.lower()), ("ip", ip)
+        attempts = request.app.state.login_attempts
+        stamp = time.monotonic()
+        for bucket, times in list(attempts.items()):
+            recent = [value for value in times if value > stamp - 60]
+            if recent:
+                attempts[bucket] = recent
+            else:
+                attempts.pop(bucket, None)
+        if len(attempts.get(key, [])) >= 8 or len(attempts.get(ip_key, [])) >= 40 or (len(attempts) >= 10000 and key not in attempts):
+            raise AppError(429, "LOGIN_RATE_LIMIT", "尝试次数过多，请稍后再试")
+        attempts[key] = attempts.get(key, []) + [stamp]
+        attempts[ip_key] = attempts.get(ip_key, []) + [stamp]
+        user = service.db.one("SELECT * FROM users WHERE username=?", (data.username,))
+        valid = password_matches(data.password, user["password_hash"] if user else request.app.state.dummy_password_hash)
+        if not user or not user["enabled"] or not valid:
+            raise AppError(401, "INVALID_CREDENTIALS", "用户名或密码不正确")
+        attempts.pop(key, None)
+        token = secrets.token_urlsafe(48)
+        service.db.execute("DELETE FROM sessions WHERE expires_at<?", (now(),))
+        service.db.execute("INSERT INTO sessions VALUES(?,?,?)", (token_hash(token), user["id"], (datetime.now(timezone.utc) + timedelta(hours=settings.session_hours)).isoformat()))
+        response.set_cookie(COOKIE, token, httponly=True, secure=settings.cookie_secure, samesite="lax", max_age=settings.session_hours * 3600, path="/")
+        return user_view(user)
+
+    @app.get(prefix + "/auth/me")
+    def me(user=Depends(authenticated)):
+        return user_view(user)
+
+    @app.post(prefix + "/auth/logout")
+    def logout(request: Request, response: Response, service: Service = Depends(svc)):
+        token = request.cookies.get(COOKIE)
+        if token:
+            service.db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(token),))
+        response.delete_cookie(COOKIE, path="/")
+        return {"ok": True}
+
+    @app.get(prefix + "/users")
+    def users(user=Depends(admin), service: Service = Depends(svc)):
+        return [user_view(row) for row in service.db.all("SELECT * FROM users ORDER BY created_at")]
+
+    @app.post(prefix + "/users", status_code=201)
+    def user_create(data: UserCreate, user=Depends(admin), service: Service = Depends(svc)):
+        return service.create_user(data.model_dump())
+
+    @app.patch(prefix + "/users/{item_id}")
+    def user_patch(item_id: str, data: UserPatch, user=Depends(admin), service: Service = Depends(svc)):
+        return service.patch_user(item_id, data.model_dump(exclude_unset=True), user)
+
+    @app.get(prefix + "/connections")
+    def connections(user=Depends(authenticated), service: Service = Depends(svc)):
+        return [connection_view(row, user) for row in service.db.all("SELECT * FROM connections WHERE deleted=0 ORDER BY name") if service.resource_access(row, user)]
+
+    @app.post(prefix + "/connections", status_code=201)
+    def connection_create(data: ConnectionCreate, user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.save_connection(data.model_dump(), user=user)
+
+    @app.get(prefix + "/connections/{item_id}")
+    def connection_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        return connection_view(service.require_resource("connections", item_id, user), user)
+
+    @app.patch(prefix + "/connections/{item_id}")
+    def connection_patch(item_id: str, data: ConnectionPatch, user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.save_connection(data.model_dump(exclude_unset=True), item_id, user=user)
+
+    @app.delete(prefix + "/connections/{item_id}", status_code=204)
+    def connection_delete(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        service.require_resource("connections", item_id, user, edit=True)
+        service.db.execute("UPDATE connections SET deleted=1,enabled=0,revision=revision+1 WHERE id=?", (item_id,))
+        return Response(status_code=204)
+
+    @app.post(prefix + "/connections/{item_id}/test")
+    async def connection_test(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        return await service.test_connection(item_id, user=user)
+
+    @app.get(prefix + "/assistants")
+    def assistants(manage: bool = False, user=Depends(authenticated), service: Service = Depends(svc)):
+        return [assistant_view(row, user) for row in service.db.all("SELECT * FROM assistants WHERE deleted=0 ORDER BY name") if service.assistant_access(row, user) or manage and service.resource_editable(row, user)]
+
+    @app.post(prefix + "/assistants", status_code=201)
+    def assistant_create(data: AssistantCreate, user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.save_assistant(data.model_dump(), user=user)
+
+    @app.get(prefix + "/assistants/{item_id}")
+    def assistant_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        row = service.require_resource("assistants", item_id, user)
+        if not service.resource_editable(row, user) and not service.assistant_access(row, user):
+            raise AppError(404, "NOT_FOUND", "助手不存在")
+        return assistant_view(row, user)
+
+    @app.patch(prefix + "/assistants/{item_id}")
+    def assistant_patch(item_id: str, data: AssistantPatch, user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.save_assistant(data.model_dump(exclude_unset=True), item_id, user=user)
+
+    @app.delete(prefix + "/assistants/{item_id}", status_code=204)
+    def assistant_delete(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        service.require_resource("assistants", item_id, user, edit=True)
+        service.db.execute("UPDATE assistants SET deleted=1,enabled=0,revision=revision+1 WHERE id=?", (item_id,))
+        return Response(status_code=204)
+
+    @app.get(prefix + "/conversations")
+    def conversations(q: str | None = Query(default=None, max_length=200), assistant_id: str | None = None, archived: bool | None = None, category: str | None = Query(default=None, max_length=100), user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.list_conversations(user, q=q, assistant_id=assistant_id, archived=archived, category=category)
+
+    @app.post(prefix + "/conversations", status_code=201)
+    def conversation_create(data: ConversationCreate, user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.create_conversation(data.model_dump(), user)
+
+    @app.get(prefix + "/conversations/{item_id}")
+    def conversation_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        return conversation_view(service.require("conversations", item_id, user))
+
+    @app.patch(prefix + "/conversations/{item_id}")
+    def conversation_patch(item_id: str, data: ConversationPatch, user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.patch_conversation(item_id, data.model_dump(exclude_unset=True), user)
+
+    @app.get(prefix + "/conversations/{item_id}/messages")
+    def messages(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        service.require("conversations", item_id, user)
+        return [message_view(row) for row in service.db.all("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at,rowid", (item_id,))]
+
+    @app.post(prefix + "/conversations/{item_id}/messages", status_code=202)
+    async def message_send(item_id: str, data: SendMessage, user=Depends(authenticated), service: Service = Depends(svc)):
+        result, created = service.prepare_run(item_id, data.model_dump(), user)
+        if created:
+            service.manager.submit(result["run_id"])
+        return result
+
+    @app.get(prefix + "/runs/{item_id}")
+    def run_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.run_view(service.require("runs", item_id, user))
+
+    @app.get(prefix + "/runs/{item_id}/trace")
+    def run_trace(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        row = service.require("runs", item_id, user)
+        end = datetime.fromisoformat(row["completed_at"] or now())
+        started = datetime.fromisoformat(row["created_at"])
+        result = {"schema_version": 1, "generated_at": now(), "run": {**service.run_view(row), "duration_ms": max(0, int((end - started).total_seconds() * 1000))}, "messages": [message_view(item) for item in service.db.all("SELECT * FROM messages WHERE run_id=? ORDER BY created_at,rowid", (item_id,))], "events": service.public_events(item_id, 0), "usage": json.loads(row["usage"]) if row["usage"] else None}
+        from .security import redact
+        return JSONResponse(content=redact(result, truncate=False), headers={"Content-Disposition": f'attachment; filename="run-{item_id}.json"'})
+
+    @app.get(prefix + "/runs/{item_id}/events")
+    async def run_events(item_id: str, request: Request, after: int = 0, user=Depends(authenticated), service: Service = Depends(svc)):
+        service.require("runs", item_id, user)
+        try:
+            cursor = max(after, int(request.headers.get("last-event-id", "0")), 0)
+        except ValueError:
+            raise AppError(422, "INVALID_CURSOR", "事件游标无效")
+
+        async def stream():
+            nonlocal cursor
+            quiet = 0
+            while True:
+                # Existing streams must stop after a user is disabled or session revoked.
+                try:
+                    authenticated(request, service)
+                except AppError:
+                    return
+                for event in service.public_events(item_id, cursor):
+                    cursor = event["id"]
+                    yield f"id: {cursor}\nevent: {event['type']}\ndata: {dump(event)}\n\n"
+                if service.require("runs", item_id, user)["status"] in TERMINAL:
+                    return
+                if await request.is_disconnected():
+                    return
+                quiet += 1
+                if quiet % 40 == 0:
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0.25)
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+    @app.post(prefix + "/runs/{item_id}/cancel")
+    async def run_cancel(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        service.require("runs", item_id, user)
+        await service.manager.cancel(item_id)
+        return service.run_view(service.require("runs", item_id, user))
+
+    @app.post(prefix + "/approvals/{item_id}/decision")
+    async def decide(item_id: str, data: ApprovalDecision, user=Depends(authenticated), service: Service = Depends(svc)):
+        row = service.require("approvals", item_id, user)
+        future = service.manager.approvals.get(item_id)
+        if row["status"] != "pending" or row["expires_at"] <= now() or not future or future.done():
+            raise AppError(409, "APPROVAL_EXPIRED", "此审批已处理或过期")
+        future.set_result(data.decision)
+        return {"id": item_id, "status": "allowed" if data.decision == "allow" else "denied"}
+
+    @app.post(prefix + "/files", status_code=201)
+    async def upload(file: UploadFile = File(...), user=Depends(authenticated), service: Service = Depends(svc)):
+        file_id, name = uid(), safe_name(file.filename or "attachment")
+        path = settings.data_dir / "files" / file_id
+        size = 0
+        try:
+            with path.open("xb") as output:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > settings.upload_max_bytes:
+                        raise AppError(413, "UPLOAD_TOO_LARGE", "附件超过大小限制")
+                    output.write(chunk)
+            mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            service.db.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?,NULL)", (file_id, user["id"], name, mime, size, str(path), now()))
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        finally:
+            await file.close()
+        return file_view(service.require("files", file_id, user))
+
+    @app.get(prefix + "/files/{item_id}")
+    def file_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        return file_view(service.require("files", item_id, user))
+
+    @app.get(prefix + "/files/{item_id}/content")
+    def file_content(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        row = service.require("files", item_id, user)
+        preview = row["mime_type"] in {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain"}
+        return FileResponse(row["path"], media_type=row["mime_type"] if preview else "application/octet-stream", filename=row["name"], content_disposition_type="inline" if preview else "attachment", headers={"Content-Security-Policy": "sandbox; default-src 'none'"})
+
+    @app.get(prefix + "/usage")
+    def usage(user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.usage(user)
+
+    return app
+
+
+app = create_app()

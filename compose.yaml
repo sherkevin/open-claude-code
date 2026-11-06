@@ -1,0 +1,32 @@
+services:
+  server:
+    build: ./server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AGENT_DATA_DIR: /data
+      AGENT_MODEL_CATALOG: /run/agent-config/model-catalog.json
+    volumes:
+      - agent-data:/data
+      - type: bind
+        source: ${AGENT_MODEL_CATALOG_HOST:?Set AGENT_MODEL_CATALOG_HOST in .env to an existing private JSON file}
+        target: /run/agent-config/model-catalog.json
+        read_only: true
+        bind:
+          create_host_path: false
+    expose:
+      - "8000"
+    init: true
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+  client:
+    build: ./client
+    restart: unless-stopped
+    ports:
+      - "${CLIENT_BIND:-127.0.0.1}:${CLIENT_PORT:-8080}:80"
+    depends_on:
+      - server
+volumes:
+  agent-data:
+

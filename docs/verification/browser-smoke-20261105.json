@@ -1,0 +1,172 @@
+{
+  "started_at": "2026-11-05T02:00:07.000Z",
+  "tag": "20261105020006-2e8bc",
+  "real_model_requested": false,
+  "status": "passed",
+  "checks": [
+    {
+      "name": "desktop_login",
+      "status": "passed",
+      "seconds": 0.748
+    },
+    {
+      "name": "create_mcp_connection_and_discover_tools",
+      "status": "passed",
+      "seconds": 1.237
+    },
+    {
+      "name": "create_assistant_and_bind_permissions",
+      "status": "passed",
+      "seconds": 0.486
+    },
+    {
+      "name": "chat_workspace_attachment_and_history",
+      "status": "passed",
+      "seconds": 0.626
+    },
+    {
+      "name": "members_and_usage_navigation",
+      "status": "passed",
+      "seconds": 0.212
+    },
+    {
+      "name": "mobile_workspace_connections_and_chat",
+      "status": "passed",
+      "seconds": 0.692
+    },
+    {
+      "name": "no_unexpected_browser_errors",
+      "status": "passed",
+      "seconds": 0
+    }
+  ],
+  "screenshots": [
+    {
+      "name": "01-desktop-login",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\01-desktop-login.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "02-desktop-workspace",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\02-desktop-workspace.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "03-desktop-connections",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\03-desktop-connections.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "04-desktop-tool-discovery",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\04-desktop-tool-discovery.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "05-desktop-assistant-permissions",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\05-desktop-assistant-permissions.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "06-desktop-assistants",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\06-desktop-assistants.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "07-desktop-attachment-preview",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\07-desktop-attachment-preview.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "08-desktop-chat",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\08-desktop-chat.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "10-desktop-members",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\10-desktop-members.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "11-desktop-usage",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\11-desktop-usage.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      }
+    },
+    {
+      "name": "12-mobile-workspace",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\12-mobile-workspace.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "name": "13-mobile-connections",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\13-mobile-connections.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "name": "14-mobile-chat",
+      "path": "D:\\open-claude-code\\.runtime\\local-browser\\20261105-100005-840884\\screenshots\\14-mobile-chat.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    }
+  ],
+  "resources": {
+    "connection_id": "a2fc90a9e2db4f5cba6f8e0d1f52cdb2",
+    "assistant_id": "fd3b2eca2b8a497cb0a3a8d8a52dcaa7",
+    "conversation_id": "8d0bf391840b407f8c1627a4a0dafc49",
+    "attachment_id": "91c3c790d3f74901914726ceca93f558"
+  },
+  "console_errors": [],
+  "page_errors": [],
+  "http_errors": [],
+  "request_failures": [],
+  "expected_initial_auth_401": 1,
+  "model_message_submissions": 0,
+  "limitations": [
+    "Only explicitly synthetic MCP data is used; customer business MCP authorization and server-restart recovery are outside this browser check.",
+    "REAL_MODEL was not enabled: the browser check did not submit a paid model turn."
+  ],
+  "cleanup": {
+    "retained": false,
+    "errors": [],
+    "note": "Uploaded synthetic attachment bytes remain as acceptance evidence; no unrelated resource is removed."
+  },
+  "logout_verified": true,
+  "finished_at": "2026-11-05T02:00:13.160Z"
+}
