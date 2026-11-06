@@ -1,11 +1,13 @@
 # 交接包（2026-11-06）
 
-给下一位 Agent / 同事接手 open-claude-code（知行工作台）用的最小必要材料。
+给下一位 Agent / 同事接手 open-claude-code（知行工作台）用的交接材料。
 
 | 文件 | 用途 |
 |---|---|
 | [PROGRESS_2026-11-06.md](PROGRESS_2026-11-06.md) | **当前进展报告**：背景、已落地结果、需求状态、卡点、建议 |
-| [TASK_BRIEF_FOR_NEXT_AGENT_2026-11-06.md](TASK_BRIEF_FOR_NEXT_AGENT_2026-11-06.md) | **任务说明**：身份位置、硬性约束、五分钟上手、第一轮任务、阶段路线、交付规范 |
+| [TASK_BRIEF_FOR_NEXT_AGENT_2026-11-06.md](TASK_BRIEF_FOR_NEXT_AGENT_2026-11-06.md) | **快速版任务说明**：身份位置、硬性约束、五分钟上手、第一轮任务、阶段路线、交付规范 |
+| [DETAILED_TASK_SPEC_2026-11-06.md](DETAILED_TASK_SPEC_2026-11-06.md) | **详细任务说明**：T0 至 T7 任务分解、每阶段验收标准、可直接粘贴的启动提示词 |
+| [EVIDENCE_AND_COMMANDS_2026-11-06.md](EVIDENCE_AND_COMMANDS_2026-11-06.md) | **证据与命令清单**：环境、回归命令、生产只读检查、备份清单、证据文件地图 |
 | [sessions/01a1af39-..._transcript.md](sessions/01a1af39-f0d7-7b03-aa48-e4552a4059a1_transcript.md) | 上一个 Codex 会话的可读记录（用户决策 + 助手汇报 + 关键命令） |
 | [sessions/01a1af39-....jsonl](sessions/01a1af39-f0d7-7b03-aa48-e4552a4059a1.jsonl) | 原始 rollout（928 条记录，未删改） |
 | [sessions/dsh-session-a3e1f28a_transcript.md](sessions/dsh-session-a3e1f28a_transcript.md) | 本窗口（DSH）操作记录：用户请求、助手回复、工具调用 |
@@ -23,6 +25,8 @@
 
 1. 本目录 `PROGRESS_2026-11-06.md`（10 分钟，建立全局）
 2. `TASK_BRIEF_FOR_NEXT_AGENT_2026-11-06.md`（约束与第一轮任务）
-3. `sessions/..._transcript.md`（用户原话与决策，尤其是 14:13 与 14:20 两条）
-4. `../PRODUCT_EVOLUTION_PLAN_2026-11-06.md` + `../REQUIREMENTS_ALIGNMENT.md`（范围与验收）
-5. `../evidence/` 下的回归证据（真实数字）
+3. `DETAILED_TASK_SPEC_2026-11-06.md`（准备开工时读 T0 至 T7 的详细任务和验收标准）
+4. `EVIDENCE_AND_COMMANDS_2026-11-06.md`（跑回归、做备份、更新证据时按命令执行）
+5. `sessions/..._transcript.md`（用户原话与决策，尤其是 14:13 与 14:20 两条）
+6. `../PRODUCT_EVOLUTION_PLAN_2026-11-06.md` + `../REQUIREMENTS_ALIGNMENT.md`（范围与验收）
+7. `../evidence/` 下的回归证据（真实数字）
