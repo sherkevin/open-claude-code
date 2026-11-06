@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appendEvent, pendingApprovalIds, streamText } from './stream';
+import { appendEvent, eventTypes, pendingApprovalIds, streamText } from './stream';
 import type { StreamEvent } from './types';
 
 const event = (id: number, type: string, data: Record<string, unknown>, run_id = 'run-1'): StreamEvent => ({ id, type, data, run_id, created_at: '2026-11-05T01:00:00Z' });
@@ -41,5 +41,15 @@ describe('approval lifecycle after reload', () => {
       const events = [event(1, 'approval.required', { id: 'approval-a' }), event(2, 'run.completed', { status })];
       expect(pendingApprovalIds(events).size).toBe(0);
     }
+  });
+  it('tracks child approvals and exposes redacted progress event types for the execution feed', () => {
+    const events = [
+      event(1, 'subagent.approval.required', { approval_id: 'child-approval', approval: { id: 'child-approval' } }),
+      event(2, 'subagent.progress', { child_id: 'child-1', progress: 50 }),
+      event(3, 'subagent.approval.resolved', { approval_id: 'child-approval', decision: 'deny' }),
+    ];
+    expect(pendingApprovalIds(events).size).toBe(0);
+    expect(eventTypes).toContain('subagent.progress');
+    expect(eventTypes).toContain('subagent.approval.required');
   });
 });

@@ -100,6 +100,7 @@ class ConversationCreate(InputModel):
     reasoning_level: str | None = Field(default=None, min_length=1, max_length=30)
     category: str = Field(default="", max_length=100)
     tags: list[Tag] = Field(default_factory=list, max_length=10)
+    auto_model_routing: bool | None = None
 
 
 class ConversationPatch(InputModel):
@@ -109,6 +110,7 @@ class ConversationPatch(InputModel):
     reasoning_level: str | None = Field(default=None, min_length=1, max_length=30)
     category: str | None = Field(default=None, max_length=100)
     tags: list[Tag] | None = Field(default=None, max_length=10)
+    auto_model_routing: bool | None = None
 
 
 class ModelRecommendationRequest(InputModel):
@@ -126,7 +128,40 @@ class SendMessage(InputModel):
     text: str = Field(default="", max_length=50000)
     file_ids: list[str] = Field(default_factory=list, max_length=10)
     skill_ids: list[str] = Field(default_factory=list, max_length=5)
+    # A one-shot model override is explicit and never invokes the router.
+    model_id: str | None = Field(default=None, min_length=1, max_length=100)
+    reasoning_level: str | None = Field(default=None, min_length=1, max_length=30)
+    auto_route: bool | None = None
 
 
 class ApprovalDecision(InputModel):
     decision: Literal["allow", "deny"]
+
+
+class ModelApprovalPolicy(InputModel):
+    """Administrator-owned, local-only model review boundary."""
+
+    enabled: bool = False
+    reviewer_mode: Literal["synthetic"] = "synthetic"
+    model_id: str = Field(default="synthetic-policy-v1", min_length=1, max_length=100)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=100)
+    allowed_data_scopes: list[str] = Field(default_factory=list, max_length=100)
+    max_amount: float = Field(default=0, ge=0, le=1_000_000_000)
+    allowed_operations: list[str] = Field(default_factory=list, max_length=100)
+
+
+class HighRiskApprovalPolicy(InputModel):
+    """Administrator-owned high-risk dual-approval boundary."""
+
+    enabled: bool = False
+    policy_id: str | None = Field(default=None, min_length=1, max_length=100)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=100)
+    admin_allowlist: list[str] = Field(default_factory=list, max_length=100)
+    required_approvals: int = Field(default=2, ge=2, le=2)
+
+
+class SubagentPlanRequest(InputModel):
+    """Protected local orchestration contract; model/network modes are absent."""
+
+    mode: Literal["synthetic"] = "synthetic"
+    tasks: list[str | dict] = Field(min_length=1, max_length=4)

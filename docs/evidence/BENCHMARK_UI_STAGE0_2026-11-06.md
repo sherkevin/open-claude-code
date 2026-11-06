@@ -1,0 +1,26 @@
+# 客户端合成对标可视化（阶段 0）
+
+本记录覆盖 `BENCH-003` 的最小安全交付：客户端提供管理员可见的合成基准页面、百分比柱状图、逐项指标状态、缺失指标空状态和经过校验的 JSON 导出。
+
+## 代码与测试
+
+- 页面：`client/src/BenchmarkPage.tsx`
+- 导航：`client/src/App.tsx`（仅管理员显示“对标基准”入口）
+- 样式：`client/src/styles.css`
+- 测试：`client/src/benchmark.test.tsx`
+
+```bash
+cd client
+npm test -- --run src/benchmark.test.tsx
+npx tsc -b
+```
+
+本轮结果：4 项客户端断言通过，TypeScript 检查通过。
+
+## 证据边界
+
+- 页面内置的快照绑定 `synthetic-industrial-v1`、版本 `1.0.0`、seed `20261106` 和 comparison key；所有数值明确标注合成夹具来源。
+- 合成夹具运行器的任务正确性和来源覆盖率显示为 100%（4/4），不代表产品助手或客户助手的业务正确率。
+- Token、费用、上下文、响应耗时、视觉质量和客户现有助手数据保持“待测”，前端不会用零值或估算填补。
+- 导出只生成当前合成报告 JSON；没有读取生产目录、客户数据、凭据或模型服务。
+- 后续接入服务端报告 API、真实同任务基线或付费模型前，必须沿用固定任务、数据、工具、预算和权限审批流程。

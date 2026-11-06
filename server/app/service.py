@@ -14,7 +14,10 @@ from .config import Settings
 from .db import Database, dump, now, uid
 from .model_catalog import ModelCatalog
 from .resources import TABLES, resource_access, resource_editable, scope_fields, choose_scope
-from .security import AppError, SecretStore, password_hash, redact, validate_mcp_url, workspace_path
+from .security import AppError, SecretStore, password_hash, redact, tool_risk_profile, validate_mcp_url, workspace_path
+from .subagents import SubagentOrchestrator
+from .model_approval import ModelApprovalService
+from .high_risk_approval import HighRiskApprovalService
 
 
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
@@ -33,7 +36,7 @@ def assistant_view(row, user=None):
 
 
 def conversation_view(row):
-    return {**{key: bool(row[key]) if key == "archived" else row[key] for key in ("id", "assistant_id", "title", "archived", "active_run_id", "created_at", "updated_at", "model_id", "model_label", "reasoning_level")}, "has_native_session": bool(row.get("sdk_session_id")), "category": row.get("category", ""), "tags": json.loads(row.get("tags") or "[]")}
+    return {**{key: bool(row[key]) if key in {"archived", "auto_model_routing"} else row[key] for key in ("id", "assistant_id", "title", "archived", "active_run_id", "created_at", "updated_at", "model_id", "model_label", "reasoning_level", "auto_model_routing")}, "has_native_session": bool(row.get("sdk_session_id")), "category": row.get("category", ""), "tags": json.loads(row.get("tags") or "[]")}
 
 
 def message_view(row):
@@ -45,7 +48,41 @@ def file_view(row):
 
 
 def approval_view(row):
-    return {key: redact(json.loads(row[key])) if key == "arguments" else row[key] for key in ("id", "run_id", "tool_name", "arguments", "status", "created_at", "expires_at")}
+    profile = tool_risk_profile(row["tool_name"])
+    return {
+        **{key: redact(json.loads(row[key])) if key == "arguments" else row[key] for key in ("id", "run_id", "tool_name", "arguments", "status", "created_at", "expires_at")},
+        **profile,
+        # The digest lets clients and audit exports prove that the approved
+        # arguments are the same immutable server-side snapshot without
+        # exposing secrets contained in those arguments.
+        "argument_digest": hashlib.sha256(row["arguments"].encode("utf-8")).hexdigest(),
+        "decided_at": row.get("decided_at"),
+        "decided_by": row.get("decided_by"),
+        "decision_source": row.get("decision_source"),
+        "strategy": "dual" if row.get("approval_mode") == "dual" else (row.get("strategy") or "user"),
+        "approval_mode": row.get("approval_mode") or "single",
+        "required_approvals": row.get("required_approvals") or 1,
+        "approver_ids": json.loads(row.get("approver_ids") or "[]"),
+        "approval_policy_id": row.get("approval_policy_id"),
+        "approval_policy_revision": row.get("approval_policy_revision"),
+        "approval_decision_reason": row.get("approval_decision_reason"),
+        # A child approval is still owned by the parent run for authorization,
+        # but the child identifier lets the progress view correlate the vote
+        # without exposing its task prompt.
+        "subagent_child_id": row.get("subagent_child_id"),
+        "review": {
+            "model_id": row.get("review_model_id"),
+            "policy_id": row.get("review_policy_id"),
+            "policy_revision": row.get("review_policy_revision"),
+            "policy_digest": row.get("review_policy_digest"),
+            "operation": row.get("review_operation"),
+            "data_scope": row.get("review_data_scope"),
+            "amount": row.get("review_amount"),
+            "reason": row.get("review_reason"),
+            "result": json.loads(row["review_result"]) if row.get("review_result") else None,
+            "decided_at": row.get("review_decided_at"),
+        } if row.get("review_model_id") or row.get("strategy") == "model" else None,
+    }
 
 
 class Service:
@@ -63,6 +100,24 @@ class Service:
         from .knowledge import KnowledgeService
         self.evidence = EvidenceService(self)
         self.knowledge = KnowledgeService(self)
+        # The first sub-agent slice is local synthetic fan-out only.  It does
+        # not share the parent SDK session and cannot access models, MCP or
+        # network tools.
+        self.subagents = SubagentOrchestrator(self)
+        self.model_approval = ModelApprovalService(self)
+        self.high_risk_approval = HighRiskApprovalService(self)
+
+    def model_approval_policy(self, assistant_id: str) -> dict:
+        return self.model_approval.policy_view(assistant_id)
+
+    def save_model_approval_policy(self, assistant_id: str, data: dict, user: dict) -> dict:
+        return self.model_approval.save_policy(assistant_id, data, user)
+
+    def high_risk_approval_policy(self, assistant_id: str) -> dict:
+        return self.high_risk_approval.policy_view(assistant_id)
+
+    def save_high_risk_approval_policy(self, assistant_id: str, data: dict, user: dict) -> dict:
+        return self.high_risk_approval.save_policy(assistant_id, data, user)
 
     def _migrate_model_selections(self):
         with self.db.transaction():
@@ -343,7 +398,10 @@ class Service:
         level = data.get("reasoning_level") or (assistant.get("default_reasoning_level") if not data.get("model_id") or data.get("model_id") == assistant.get("default_model_id") else None)
         selection = self.pin_provider(self.catalog.select(model_id, level))
         item_id, timestamp = uid(), now()
-        self.db.execute("INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,model_id,model_label,reasoning_level,model_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?)", (item_id, user["id"], data["assistant_id"], data["title"], timestamp, timestamp, selection["model_id"], selection["model_label"], selection["reasoning_level"], dump(selection)))
+        # Keep API clients that predate task-submit routing deterministic; the
+        # current client opts in explicitly on the create request.
+        auto_route = bool(data.get("auto_model_routing"))
+        self.db.execute("INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,model_id,model_label,reasoning_level,model_snapshot,auto_model_routing) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (item_id, user["id"], data["assistant_id"], data["title"], timestamp, timestamp, selection["model_id"], selection["model_label"], selection["reasoning_level"], dump(selection), int(auto_route)))
         self.memory.initialize_empty(item_id)
         self.db.execute("UPDATE conversations SET category=?,tags=? WHERE id=?", (data.get("category", ""), dump(list(dict.fromkeys(data.get("tags", [])))), item_id))
         return conversation_view(self.require("conversations", item_id, user))
@@ -385,6 +443,12 @@ class Service:
                     self.db.execute(f"UPDATE conversations SET {key}=? WHERE id=?", (data[key], item_id))
             if data.get("tags") is not None:
                 self.db.execute("UPDATE conversations SET tags=? WHERE id=?", (dump(list(dict.fromkeys(data["tags"]))), item_id))
+            if data.get("auto_model_routing") is not None:
+                self.db.execute("UPDATE conversations SET auto_model_routing=? WHERE id=?", (int(data["auto_model_routing"]), item_id))
+            elif data.get("model_id") is not None or data.get("reasoning_level") is not None:
+                # Choosing a model in the selector is the durable manual
+                # override. It can be re-enabled with the explicit flag.
+                self.db.execute("UPDATE conversations SET auto_model_routing=0 WHERE id=?", (item_id,))
             self.db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), item_id))
             return conversation_view(self.require("conversations", item_id, user))
 
@@ -402,6 +466,36 @@ class Service:
             if self.manager and conversation_id in self.manager.context_requests:
                 raise AppError(409, "CONTEXT_BUSY", "正在读取原生上下文，请稍后重试")
             selection = self.catalog.validate_snapshot(json.loads(conversation["model_snapshot"]))
+            route_decision = {"enabled": False, "applied": False, "mode": "manual", "reason": None}
+            requested_model = data.get("model_id")
+            route_enabled = data.get("auto_route") if data.get("auto_route") is not None else bool(conversation.get("auto_model_routing"))
+            if requested_model:
+                # A per-request model is a bounded, explicit user override.
+                selection = self.catalog.select(requested_model, data.get("reasoning_level"))
+                if conversation["sdk_session_id"] and selection["model_id"] != conversation["model_id"]:
+                    previous = json.loads(conversation["model_snapshot"])
+                    if self.catalog.requires_new_conversation(previous) or self.catalog.requires_new_conversation(selection):
+                        raise AppError(409, "MODEL_NEW_CONVERSATION_REQUIRED", "请新建对话使用此模型；原对话和记忆保留")
+                selection = self.pin_provider(selection)
+                route_decision = {"enabled": False, "applied": selection["model_id"] != conversation["model_id"], "mode": "manual", "reason": "用户明确指定模型"}
+            elif route_enabled:
+                route_decision = {"enabled": True, "applied": False, "mode": "bounded_local", "reason": None}
+                try:
+                    from .model_recommendation import bounded_router
+                    candidates = [item["id"] for item in self.catalog.public() if item["available"]]
+                    recommendation = bounded_router(self.catalog, data.get("text", ""), candidates)
+                    routed = self.catalog.select(recommendation["model_id"], recommendation["reasoning_level"])
+                    previous = selection
+                    if routed["model_id"] != previous["model_id"] and conversation["sdk_session_id"] and (self.catalog.requires_new_conversation(previous) or self.catalog.requires_new_conversation(routed)):
+                        raise AppError(409, "MODEL_NEW_CONVERSATION_REQUIRED", "当前会话不能自动切换模型")
+                    selection = self.pin_provider(routed)
+                    self._save_model_selection(conversation_id, selection)
+                    route_decision.update({"applied": selection["model_id"] != previous["model_id"], "model_id": selection["model_id"], "reason": recommendation["reason"]})
+                except (AppError, ValueError, TypeError) as error:
+                    # Routing is advisory: a bad summary, unavailable model or
+                    # provider mismatch falls back to the pinned selection.
+                    route_decision.update({"mode": "fallback", "reason": getattr(error, "message", "路由失败，沿用当前模型")})
+            selection = self.catalog.validate_snapshot(selection)
             provider_env = self.validated_provider(selection)
             self.memory.refresh(user["id"], conversation_id)
             if not data["text"].strip() and not data["file_ids"] and not data.get("skill_ids"):
@@ -423,7 +517,7 @@ class Service:
                 provider = urlsplit(provider_env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")).hostname
             except Exception:
                 provider = None
-            self.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump({"model": selection["upstream_model"], "effort": selection["upstream_effort"], "provider": provider, "selection": selection}), run_id))
+            self.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump({"model": selection["upstream_model"], "effort": selection["upstream_effort"], "provider": provider, "selection": selection, "model_routing": route_decision}), run_id))
             title = data["text"].strip()[:40] if conversation["title"] == "新对话" and data["text"].strip() else conversation["title"]
             if title == "新对话" and skills:
                 title = " / ".join(skill["name"] for skill in skills)[:40]
@@ -453,7 +547,10 @@ class Service:
                 self.memory.validate_write(memory, path, tool_name, arguments)
             if tool_name == "Glob" and (".." in str(arguments.get("pattern", "")).replace("\\", "/").split("/") or Path(str(arguments.get("pattern", ""))).is_absolute()):
                 raise AppError(403, "PATH_DENIED", "文件查找范围超出会话")
-            return True
+            # Only read-only workspace operations are safe to auto-approve.
+            # Write/Edit still pass path and memory guards, then require the
+            # active approval strategy in the SDK permission callback.
+            return tool_name in {"Read", "Glob", "Grep"}
         if tool_name in {"mcp__workspace__knowledge_search", "mcp__workspace__knowledge_read"}:
             ids = json.loads(assistant.get("knowledge_base_ids") or "[]")
             if snapshot:

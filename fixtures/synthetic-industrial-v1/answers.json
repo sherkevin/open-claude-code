@@ -1,0 +1,42 @@
+{
+  "fixture_id": "synthetic-industrial-v1",
+  "synthetic": true,
+  "answers_version": "1",
+  "tasks": [
+    {
+      "id": "quality-yield",
+      "tool": "query_quality_metrics",
+      "expected": {
+        "inspected_count": 4700,
+        "qualified_count": 4537,
+        "yield_rate_rounded": "96.53%",
+        "source_kind": "data"
+      }
+    },
+    {
+      "id": "knowledge-procedure",
+      "tool": "search_knowledge",
+      "expected": {
+        "terms": ["SUM(qualified_count)", "Asia/Shanghai", "synthetic"],
+        "source_kind": "knowledge"
+      }
+    },
+    {
+      "id": "session-memory",
+      "tool": "local_memory",
+      "expected": {
+        "marker": "SYN-MEM-042",
+        "scope": "session"
+      }
+    },
+    {
+      "id": "image-source",
+      "tool": "inspect_image",
+      "expected": {
+        "media_type": "image/svg+xml",
+        "source_kind": "image",
+        "visual_quality_status": "not_measured"
+      }
+    }
+  ]
+}

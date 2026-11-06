@@ -10,6 +10,28 @@ Status: implemented interface baseline, 2026-11-05; deployment acceptance is rec
 - Members own their conversations/files/runs and may configure private assistants, connections, knowledge bases and Skills. Administrators manage users and team resources; admin role does not reveal another member's private content or credentials. Each scoped resource exposes `owner_id`, `scope:private|team` and authoritative `can_edit`.
 - Product configuration never returns model-provider keys or MCP secrets. `credential` is write-only, omission retains the previous value, `clear_credential:true` removes it.
 
+## OpenAI-compatible model adapter (local validation slice)
+
+`server/app/openai_compat.py` defines the bounded internal adapter contract for
+compatible model gateways. It accepts either a Chat Completions envelope
+(`messages`) or a Responses envelope (`input`), normalizes both into a
+`NormalizedRequest`, and renders protocol-specific non-streaming responses or
+stream events. The injected transport receives only the normalized request;
+the adapter has no HTTP client, does not read credentials, and cannot contact
+an upstream model by itself. A configured model allowlist, message/tool/text
+limits, supported multimodal text/image parts, function tool calls, and
+provider-status mapping are enforced before and after transport execution.
+
+The public error mapping is stable (`MODEL_AUTHORIZATION_FAILED`,
+`MODEL_TIMEOUT`, `MODEL_RATE_LIMITED`, `MODEL_SERVICE_UNAVAILABLE`,
+`MODEL_EXECUTION_FAILED`); upstream response bodies and diagnostics are never
+returned. Usage is exposed only for non-negative integer fields actually
+provided by the transport (`input_tokens`, `output_tokens`, `total_tokens`,
+and optional cached-input tokens). This is a local synthetic compatibility
+slice, not authorization for a real endpoint, API-key route, or production
+deployment. `server/tests/test_openai_compat.py` covers both envelopes,
+streaming/non-streaming, function calls, bounds, error mapping, and redaction.
+
 ## Models
 
 `User`: id, username, display_name, role (`admin|member`), enabled.
@@ -26,7 +48,7 @@ Status: implemented interface baseline, 2026-11-05; deployment acceptance is rec
 
 `File`: id, name, mime_type, size, created_at. Download URL is `/api/v1/files/{id}/content`.
 
-`Approval`: id, run_id, tool_name, arguments (JSON object), status, created_at, expires_at. Decision approves immutable server-side args only.
+`Approval`: id, run_id, tool_name, arguments (JSON object), status, created_at, expires_at, risk_level (`low|medium|high`), approval_policy, impact, argument_digest, decided_at (nullable), decided_by (nullable), decision_source (`user|model|policy|dual_admin|timeout|cancelled|interrupted|restart|run_finished`, nullable), strategy (`user|model|dual`), approval_mode (`single|dual`), required_approvals, approver_ids, approval_policy_id and optional `review` (`model_id`, `policy_id`, `policy_revision`, `policy_digest`, `operation`, `data_scope`, `amount`, `reason`, `result`, `decided_at`). Arguments are redacted for display and remain an immutable server-side snapshot; the digest is only an audit proof and never exposes secret values. Decision approves those exact arguments only. Unknown tools use `deny_by_default`; external MCP tools are conservatively high risk. Model decisions are local synthetic evidence only and do not imply a real model endpoint is authorized. Dual decisions require two distinct enabled administrators from the immutable allowlist; the requester may deny but may never approve their own high-risk action, and a policy revision/restart/expiry invalidates the request.
 
 `UsageSummary`: total_runs, successful_runs, input_tokens, output_tokens, estimated_cost_usd (nullable), currency (`USD`), users (array of user aggregates, admin only). When provider accounting isn't reliable, mark cost unknown rather than zero or applying Claude pricing to DeepSeek.
 
@@ -47,15 +69,20 @@ Status: implemented interface baseline, 2026-11-05; deployment acceptance is rec
 | POST | /connections/{id}/test | Connection including tools/status/error |
 | GET/POST | /assistants | Assistant[] / assistant fields → Assistant |
 | GET/PATCH/DELETE | /assistants/{id} | Assistant / update / soft delete |
-| GET/POST | /conversations | Conversation[] / `{assistant_id,title?,model_id?,reasoning_level?,category?,tags?}` → Conversation |
-| GET/PATCH | /conversations/{id} | Conversation / `{title?,archived?,model_id?,reasoning_level?,category?,tags?}` |
+| GET/POST | /conversations | Conversation[] / `{assistant_id,title?,model_id?,reasoning_level?,category?,tags?,auto_model_routing?}` → Conversation |
+| GET/PATCH | /conversations/{id} | Conversation / `{title?,archived?,model_id?,reasoning_level?,category?,tags?,auto_model_routing?}` |
 | GET | /conversations/{id}/messages | Message[] |
-| POST | /conversations/{id}/messages | `{client_request_id,text,file_ids:[],skill_ids:[]}` → 202 `{message,run_id}` |
+| POST | /conversations/{id}/messages | `{client_request_id,text,file_ids:[],skill_ids:[],model_id?,reasoning_level?,auto_route?}` → 202 `{message,run_id}`；缺少显式 `model_id` 时，启用会话自动路由则按公开能力进行有界本地选模 |
 | GET | /runs/{id} | Run |
 | GET | /runs/{id}/trace | Owner-authorized sanitized JSON: run metadata/timing/usage, linked messages and persisted product events |
 | GET | /runs/{id}/events?after=0 | replayable SSE; Last-Event-ID supported |
+| POST/GET | /runs/{id}/subagents | Owner-authorized local synthetic child plan create/list; request `{mode:"synthetic",tasks:[string|object]}`; no model/network/MCP mode |
+| POST | /runs/{id}/subagents/cancel | Owner-authorized cancellation cascade for the synthetic child plan |
 | POST | /runs/{id}/cancel | Run or `{ok:true}` |
 | POST | /approvals/{id}/decision | `{decision:"allow"|"deny"}` → approval status |
+| GET | /approvals/pending | Administrator-only pending dual approvals assigned to the current administrator; arguments are redacted |
+| GET/PUT | /assistants/{id}/model-approval | Administrator-only local synthetic model-review policy; PUT accepts `{enabled,reviewer_mode:"synthetic",model_id,allowed_tools:[Read|Glob|Grep],allowed_data_scopes,max_amount,allowed_operations}`; `model_id` must use the `synthetic-*` namespace; default disabled and deny-first |
+| GET/PUT | /assistants/{id}/high-risk-approval | Administrator-only local high-risk policy; PUT accepts `{enabled,policy_id,allowed_tools,admin_allowlist,required_approvals:2}`. Enabled policies require two distinct enabled administrators; an empty tool/administrator allowlist denies by default. |
 | POST | /files | multipart field `file` → File |
 | GET | /files/{id}, /files/{id}/content | metadata / authorized bytes |
 | GET | /usage | UsageSummary |
@@ -67,6 +94,8 @@ Status: implemented interface baseline, 2026-11-05; deployment acceptance is rec
 Creating a conversation without an explicit selection uses the assistant defaults first, then the deployment defaults. The conversation remains bound to this assistant; its assistant_id is not patchable. A model change without `reasoning_level` uses that model's default. A change of only `reasoning_level` retains the current model. Dano's levels are `light`, `high`, `max`, privately mapped to upstream `low`, `high`, `max`. An unknown ID returns `422 UNKNOWN_MODEL`; a known but disabled/unconfigured deployment returns `503 MODEL_UNAVAILABLE`; an unsupported level returns `422 UNSUPPORTED_REASONING_LEVEL`. Failed changes do not alter the saved selection.
 
 GLM-5.3 currently sets `requires_new_conversation_on_switch:true`: use it in a new conversation. If a conversation has a native SDK session and a PATCH changes the public model ID, a protected old or new model returns `409 MODEL_NEW_CONVERSATION_REQUIRED` with `请新建对话使用此模型；原对话和记忆保留`. This rule is bidirectional, including historical public aliases whose private upstream route matches a protected catalog entry. It does not erase context, silently fork, or change the original model. An empty conversation without a native session may select GLM normally; subsequent turns within its GLM session remain available. Same-model reasoning changes and Dano/DeepSeek switching remain available. The client uses `has_native_session` and this public capability to explain the limitation before submitting a forbidden switch. This boundary follows observed repeated GLM continuation timeouts on cross-model history, while a fresh GLM conversation succeeded; it is not a general claim that the provider can never support such history.
+
+When `auto_model_routing` is enabled, task-submit routing is bounded and local: it uses only the sanitized current task text and available catalog capabilities, never calls the provider router, and records a public `model_routing` decision in the private run execution metadata. An explicit one-shot `model_id` bypasses routing for that run and does not change the conversation's durable selection. Active runs are rejected before routing; routing failures, unavailable candidates, and native-session switch restrictions retain the pinned selection. Changing the conversation model through the selector disables automatic routing until `auto_model_routing:true` is set explicitly.
 
 Selection is persisted per conversation. Changing model or reasoning while a run/approval is active returns `409 CONVERSATION_BUSY`; while native context measurement is active it returns `409 CONTEXT_BUSY`. A successful switch clears the old context statistics and changes the runtime fingerprint. The next operation rebuilds the native SDK client with the existing session ID; message history and the conversation memory scope remain available. Each prepared run freezes its selection privately, so its trace retains the original public model after later switches. The selection also pins a SHA-256 digest of the effective provider environment (global settings plus per-model overrides and selected model aliases); credentials are never copied into database snapshots. Endpoint/key/configuration changes require explicit reselection and cannot silently retarget a prepared run. Runtime initialization uses only the validated in-memory environment, never a second dynamic configuration-file read.
 
@@ -92,6 +121,10 @@ Each persisted event: `{id:number,run_id,type,created_at,data}`. SSE `id` is the
 - `artifact.created`: File.
 - `usage.updated`: usage object.
 - `run.completed`: `{status,message_id,error?,usage?,timings?}`.
+- `subagent.plan.created`: `{plan_id,mode:"synthetic",depth,max_children,children:[safe child summaries]}`.
+- `subagent.started` / `subagent.progress`: `{plan_id,child_id,stage,progress?}`.
+- `subagent.completed` / `subagent.failed` / `subagent.cancelled`: `{plan_id,child_id,stage}`; no task text, private history, credentials or chain-of-thought.
+- `subagent.plan.completed`: `{plan_id,status:"succeeded"|"partial"|"failed"|"cancelled"|"interrupted",summary}`.
 
 On terminal event, refetch canonical messages/conversation/run. Active run is returned when reopening a conversation. Same client_request_id returns original message/run, concurrent different request returns 409 CONVERSATION_BUSY. Startup marks in-flight runs interrupted and approvals invalid; never replay external writes automatically.
 
@@ -102,6 +135,8 @@ On terminal event, refetch canonical messages/conversation/run. Active run is re
 - Configure connections/assistants in the client; backend injects allowed config/credentials into per-conversation SDK sessions. Cwd/settings/transcripts isolated, no global user hooks/settings loading. Import only explicit provider environment keys from an authorized server-side config file.
 - No arbitrary user-supplied stdio commands or Bash/Agent tool access. Public web retrieval is a guarded product capability enabled per assistant, rather than unrestricted native WebFetch/WebSearch access. File operations remain within the current conversation workspace or the current conversation's native memory directory; other users, assistants and hidden SDK configuration are denied independently of approval.
 - Runtime evaluates current user/assistant/connection/tool grants on every tool call, not only when creating the session. Hook failures deny execution. `allowed_tools` auto-approval is distinct from authorization.
+- Model review is a separate strategy: only an enabled administrator policy can invoke the local synthetic reviewer for low-risk tools. The server rechecks authorization, exact argument digest and policy revision before execution; high-risk and unknown tools always use human/admin approval, while reviewer errors, timeouts, malformed/extra fields, low confidence or uncertainty deny by default.
+- High-risk dual approval is opt-in per assistant in this local phase; without a configured policy the existing user-confirmation path remains visible as an incomplete legacy boundary and must not be called production delivery. When enabled, only allowlisted tools and administrators can approve; one deny terminates the request, two distinct allows are required, and restart/cancel/expiry never replays votes.
 - Session idle reap, interrupt/drain, explicit SDK session ID resume and persisted workspace are required. SDK result estimates must not be assumed to be actual DeepSeek billing.
 
 ## Delivery and acceptance
@@ -209,6 +244,7 @@ Messages accept up to5 unique `skill_ids`. The server validates assistant bindin
 | POST | /knowledge-documents/{id}/reindex | Rebuild current version index; returns document status |
 | DELETE | /knowledge-documents/{id} | Soft delete file and remove access from retrieval/source views |
 | POST | /knowledge-bases/{id}/search | `{query,limit?}` → `{results,retrieval}` |
+| GET | /knowledge-bases/{id}/graph?q=&limit= | Current ready document-version graph with source-linked nodes and edges; authorized knowledge-base access is rechecked |
 
 KnowledgeBase fields include `id,name,description,scope,owner_id,can_edit,enabled,revision,default_for_new_assistants,document_count,index_status,retrieval`. Only administrators may mark an enabled team knowledge base as a default. `index_status` is a count map by status, not a fabricated completion percentage.
 

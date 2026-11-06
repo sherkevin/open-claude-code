@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import AssistantConfiguration, { assistantChanges, assistantDraft, loadAssistantResources, saveAssistantConfiguration, toggleBindingTool, type AssistantResources } from './AssistantConfiguration';
+import { highRiskPolicyDefaults, modelPolicyDefaults, parsePolicyList } from './ApprovalPolicyPanel';
 import { assistantModelSelection } from './NewSession';
 import type { AppConfig, Assistant, Connection, KnowledgeBase, ModelOption, Skill } from './types';
 
@@ -13,6 +14,12 @@ const assistant:Assistant={id:'assistant',name:'工业助手',description:'',ins
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('assistant configuration safety',()=>{
+  it('normalizes explicit approval allowlists without creating wildcard entries',()=>{
+    expect(parsePolicyList(' Read, Glob\nRead,  ')).toEqual(['Read','Glob']);
+    expect(parsePolicyList('*, all, Read')).toEqual(['Read']);
+    expect(modelPolicyDefaults('a').enabled).toBe(false);
+    expect(highRiskPolicyDefaults('a').required_approvals).toBe(2);
+  });
   it('preserves unavailable bindings and full nested grants when changing only a name',()=>{
     const baseline=assistantDraft(assistant,resources);const draft=assistantDraft(assistant,resources);draft.name='  新名称  ';
     expect(assistantChanges(baseline,draft)).toEqual({name:'新名称'});
@@ -37,6 +44,14 @@ describe('assistant configuration safety',()=>{
     const html=renderToStaticMarkup(<AssistantConfiguration value={{...assistant,can_edit:false}} resources={resources} admin inline onSaved={()=>{}} onDirtyChange={()=>{}} onSavingChange={()=>{}} onReload={()=>{}}/>);
     for(const label of ['数据连接与工具','知识库','Skills','网页搜索'])expect(html).toContain(`aria-label="${label}"`);
     expect(html).toContain('<fieldset class="plain-fieldset" disabled="">');expect(html).not.toContain('保存助手');expect(html).toContain('无法访问的数据连接');expect(html).toContain('无法访问的知识库');expect(html).toContain('无法访问的 Skill');expect(html).toContain('未发现的工具：missing-tool');expect(html).toContain('<details class="binding-permissions">');expect(html).not.toContain('<details class="binding-permissions" open');
+  });
+  it('renders administrator-only approval policy controls and keeps member view free of policy inputs',()=>{
+    const adminHtml=renderToStaticMarkup(<AssistantConfiguration value={assistant} resources={resources} admin inline onSaved={()=>{}} onDirtyChange={()=>{}} onSavingChange={()=>{}} onReload={()=>{}}/>);
+    expect(adminHtml).toContain('aria-label="审批策略"');
+    expect(adminHtml).toContain('模型代审（仅低风险）');
+    expect(adminHtml).toContain('高风险双人审批');
+    const memberHtml=renderToStaticMarkup(<AssistantConfiguration value={assistant} resources={resources} admin={false} onSaved={()=>{}} onDirtyChange={()=>{}} onSavingChange={()=>{}} onReload={()=>{}}/>);
+    expect(memberHtml).not.toContain('aria-label="审批策略"');
   });
   it('keeps bound disabled resources visible while hiding unrelated disabled choices',()=>{
     const data={...resources,connections:[{...connection,enabled:false},{...connection,id:'unused',name:'无关停用连接',enabled:false}],knowledge:[{...knowledge,enabled:false},{...knowledge,id:'unused',name:'无关停用知识库',enabled:false}],skills:[{...skill,enabled:false},{...skill,id:'unused',name:'无关停用Skill',enabled:false}]};

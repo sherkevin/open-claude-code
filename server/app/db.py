@@ -30,13 +30,73 @@ CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, user_id TEXT NOT N
 CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), role TEXT NOT NULL, text TEXT NOT NULL, file_ids TEXT NOT NULL DEFAULT '[]', run_id TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), user_id TEXT NOT NULL REFERENCES users(id), client_request_id TEXT NOT NULL, message_id TEXT NOT NULL, assistant_message_id TEXT, status TEXT NOT NULL, error TEXT, usage TEXT, created_at TEXT NOT NULL, completed_at TEXT, UNIQUE(conversation_id,client_request_id));
 CREATE TABLE IF NOT EXISTS events(run_id TEXT NOT NULL REFERENCES runs(id), id INTEGER NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(run_id,id));
-CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), user_id TEXT NOT NULL, tool_name TEXT NOT NULL, arguments TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), user_id TEXT NOT NULL, tool_name TEXT NOT NULL, arguments TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, subagent_child_id TEXT);
 CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL, conversation_id TEXT);
 CREATE TABLE IF NOT EXISTS raw_events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS conversations_owner ON conversations(user_id,updated_at);
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
 CREATE INDEX IF NOT EXISTS runs_owner ON runs(user_id,created_at);
 CREATE TABLE IF NOT EXISTS memory_scopes(user_id TEXT NOT NULL REFERENCES users(id),assistant_id TEXT NOT NULL REFERENCES assistants(id),revision INTEGER NOT NULL DEFAULT 0,digest TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(user_id,assistant_id));
+CREATE TABLE IF NOT EXISTS subagent_children(
+    child_id TEXT PRIMARY KEY,
+    parent_run_id TEXT NOT NULL REFERENCES runs(id),
+    root_run_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    depth INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    status TEXT NOT NULL,
+    stop_reason TEXT,
+    task_digest TEXT NOT NULL,
+    capability_snapshot TEXT NOT NULL,
+    workspace_id TEXT NOT NULL UNIQUE,
+    memory_scope_id TEXT NOT NULL UNIQUE,
+    reserved_budget REAL NOT NULL DEFAULT 0,
+    observed_usage TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    cancelled_at TEXT,
+    result_json TEXT
+);
+CREATE INDEX IF NOT EXISTS subagent_children_parent ON subagent_children(parent_run_id,created_at);
+CREATE INDEX IF NOT EXISTS subagent_children_root ON subagent_children(root_run_id,created_at);
+CREATE INDEX IF NOT EXISTS subagent_children_status ON subagent_children(status);
+CREATE TABLE IF NOT EXISTS model_approval_policies(
+    assistant_id TEXT PRIMARY KEY REFERENCES assistants(id),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    reviewer_mode TEXT NOT NULL DEFAULT 'synthetic',
+    model_id TEXT NOT NULL DEFAULT 'synthetic-policy-v1',
+    allowed_tools TEXT NOT NULL DEFAULT '[]',
+    allowed_data_scopes TEXT NOT NULL DEFAULT '[]',
+    max_amount REAL NOT NULL DEFAULT 0,
+    allowed_operations TEXT NOT NULL DEFAULT '[]',
+    revision INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT
+);
+CREATE INDEX IF NOT EXISTS model_approval_policies_enabled ON model_approval_policies(enabled);
+CREATE TABLE IF NOT EXISTS high_risk_approval_policies(
+    assistant_id TEXT PRIMARY KEY REFERENCES assistants(id),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    policy_id TEXT NOT NULL,
+    allowed_tools TEXT NOT NULL DEFAULT '[]',
+    admin_allowlist TEXT NOT NULL DEFAULT '[]',
+    required_approvals INTEGER NOT NULL DEFAULT 2,
+    revision INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT
+);
+CREATE INDEX IF NOT EXISTS high_risk_approval_policies_enabled ON high_risk_approval_policies(enabled);
+CREATE TABLE IF NOT EXISTS approval_votes(
+    approval_id TEXT NOT NULL REFERENCES approvals(id),
+    voter_id TEXT NOT NULL REFERENCES users(id),
+    decision TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    role TEXT NOT NULL,
+    PRIMARY KEY(approval_id,voter_id)
+);
+CREATE INDEX IF NOT EXISTS approval_votes_approval ON approval_votes(approval_id,decided_at);
 """
 
 
@@ -62,6 +122,27 @@ class Database:
         for column in ("model_id", "model_label", "reasoning_level", "model_snapshot"):
             if column not in conversation_columns:
                 self.conn.execute(f"ALTER TABLE conversations ADD COLUMN {column} TEXT")
+        if "auto_model_routing" not in conversation_columns:
+            # Existing sessions were explicitly pinned before task-submit
+            # routing existed; keep their behavior unchanged. New sessions
+            # opt in through the create path below.
+            self.conn.execute("ALTER TABLE conversations ADD COLUMN auto_model_routing INTEGER NOT NULL DEFAULT 0")
+        approval_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(approvals)")}
+        for column, definition in (("decided_at", "TEXT"), ("decided_by", "TEXT"), ("decision_source", "TEXT"),
+                                   ("strategy", "TEXT NOT NULL DEFAULT 'user'"), ("review_model_id", "TEXT"),
+                                   ("review_policy_id", "TEXT"), ("review_policy_revision", "INTEGER"),
+                                   ("review_policy_digest", "TEXT"), ("review_operation", "TEXT"),
+                                   ("review_data_scope", "TEXT"), ("review_amount", "REAL"),
+                                   ("review_reason", "TEXT"), ("review_result", "TEXT"),
+                                   ("review_decided_at", "TEXT"), ("approval_mode", "TEXT NOT NULL DEFAULT 'single'"),
+                                   ("required_approvals", "INTEGER NOT NULL DEFAULT 1"),
+                                   ("approver_allowlist", "TEXT NOT NULL DEFAULT '[]'"),
+                                   ("approver_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                                   ("approval_policy_id", "TEXT"), ("approval_policy_revision", "INTEGER"),
+                                   ("approval_policy_digest", "TEXT"), ("approval_request_digest", "TEXT"),
+                                   ("approval_decision_reason", "TEXT"), ("subagent_child_id", "TEXT")):
+            if column not in approval_columns:
+                self.conn.execute(f"ALTER TABLE approvals ADD COLUMN {column} {definition}")
         additions = {
             "connections": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "source_metadata": "TEXT NOT NULL DEFAULT '{}'"},
             "assistants": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "knowledge_base_ids": "TEXT NOT NULL DEFAULT '[]'", "skill_ids": "TEXT NOT NULL DEFAULT '[]'", "web_search_enabled": "INTEGER NOT NULL DEFAULT 0", "default_model_id": "TEXT", "default_reasoning_level": "TEXT"},
@@ -98,6 +179,10 @@ CREATE TABLE IF NOT EXISTS conversation_memory_scopes(conversation_id TEXT PRIMA
     def execute(self, query, values=()):
         with self.lock:
             return self.conn.execute(query, values)
+
+    def executemany(self, query, values):
+        with self.lock:
+            return self.conn.executemany(query, values)
 
     @contextmanager
     def transaction(self):

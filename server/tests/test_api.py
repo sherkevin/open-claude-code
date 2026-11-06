@@ -176,9 +176,16 @@ def test_approval_immutable_and_cancel(client):
     waiting = poll(client, run["run_id"], {"awaiting_approval"})
     approval = waiting["approvals"][0]
     assert approval["arguments"]["api_token"] == "[redacted]"
+    assert approval["risk_level"] == "high"
+    assert approval["approval_policy"] == "deny_by_default"
+    assert len(approval["argument_digest"]) == 64
+    assert approval["decided_at"] is None and approval["decided_by"] is None
     denied_mutation = client.post(f"/api/v1/approvals/{approval['id']}/decision", json={"decision": "allow", "arguments": {}})
     assert denied_mutation.status_code == 422
-    assert client.post(f"/api/v1/approvals/{approval['id']}/decision", json={"decision": "deny"}).status_code == 200
+    decision = client.post(f"/api/v1/approvals/{approval['id']}/decision", json={"decision": "deny"})
+    assert decision.status_code == 200 and decision.json()["decided_at"]
+    audited = client.app.state.service.db.one("SELECT * FROM approvals WHERE id=?", (approval["id"],))
+    assert audited["status"] == "denied" and audited["decided_at"] and audited["decided_by"] and audited["decision_source"] == "user"
     assert poll(client, run["run_id"])["status"] == "succeeded"
     assert client.post(f"/api/v1/approvals/{approval['id']}/decision", json={"decision": "allow"}).status_code == 409
     waiting_run = send(client, cid, "wait", "request-wait")
@@ -187,6 +194,13 @@ def test_approval_immutable_and_cancel(client):
     assert conflict.status_code == 409
     assert client.post(f"/api/v1/runs/{waiting_run['run_id']}/cancel").status_code == 200
     assert poll(client, waiting_run["run_id"])["status"] == "cancelled"
+    cancelled_run = send(client, cid, "approval", "request-approval-cancel")
+    cancelled_waiting = poll(client, cancelled_run["run_id"], {"awaiting_approval"})
+    cancelled_approval = cancelled_waiting["approvals"][0]
+    assert client.post(f"/api/v1/runs/{cancelled_run['run_id']}/cancel").status_code == 200
+    assert poll(client, cancelled_run["run_id"])["status"] == "cancelled"
+    cancelled_audit = client.app.state.service.db.one("SELECT * FROM approvals WHERE id=?", (cancelled_approval["id"],))
+    assert cancelled_audit["status"] == "denied" and cancelled_audit["decision_source"] == "cancelled"
 
 
 def test_ownership_files_and_path_guards(client, configured):

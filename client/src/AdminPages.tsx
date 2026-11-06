@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, ArrowDownLeft, ArrowUpRight, CheckCircle2, CircleDollarSign, Pencil, Plus, RefreshCw, Users } from 'lucide-react';
+import { Activity, ArrowDownLeft, ArrowUpRight, Check, CheckCircle2, CircleDollarSign, Pencil, Plus, RefreshCw, ShieldCheck, Users, X } from 'lucide-react';
 import { api, errorText, patch, post } from './api';
-import type { UsageSummary, User } from './types';
+import type { Approval, UsageSummary, User } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 
 export function UsersPage({ currentUser }: { currentUser: User }) {
@@ -18,12 +18,21 @@ function UserEditor({ value, currentUser, onClose, onSaved }: { value: User | nu
 
 const numberText = (value: unknown) => Number.isFinite(Number(value)) ? Number(value).toLocaleString('zh-CN') : '—';
 const costText = (value: unknown) => value === null || value === undefined ? '未提供' : Number.isFinite(Number(value)) ? `$${Number(value).toFixed(4)}` : '未提供';
+export const approvalProgress = (approval: Approval) => ({ votes: approval.approver_ids?.length || 0, required: approval.required_approvals || 2 });
 
 export function UsagePage({ admin }: { admin: boolean }) {
   const [usage, setUsage] = useState<UsageSummary | null>(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   const load = useCallback(async () => { setBusy(true); setError(''); try { setUsage(await api<UsageSummary>('/usage')); } catch (e) { setError(errorText(e)); } finally { setBusy(false); } }, []);
   useEffect(() => { void load(); }, [load]);
   return <div className="page"><PageHeader eyebrow="让投入清晰可见" title="用量记录" description={admin ? '查看工作台累计执行情况与成员用量。' : '查看你的累计执行情况与用量。'} actions={<Button variant="secondary" busy={busy} onClick={() => void load()}><RefreshCw size={16}/>刷新记录</Button>}/><ErrorNotice message={error}/>{!usage ? busy ? <Loader/> : <EmptyState icon={<Activity size={28}/>} title="暂时无法读取用量" description="请点击刷新记录重试。"/> : <><div className="usage-grid"><Metric icon={<Activity size={19}/>} label="任务执行" value={numberText(usage.total_runs)} unit="次" footnote="包含已完成及未完成的运行"/><Metric icon={<CheckCircle2 size={19}/>} label="成功完成" value={numberText(usage.successful_runs)} unit="次" footnote={usage.total_runs ? `${Math.round(usage.successful_runs / usage.total_runs * 100)}% 执行成功率` : '开始工作后记录会显示在这里'}/><Metric icon={<ArrowDownLeft size={19}/>} label="输入 Token" value={numberText(usage.input_tokens)} footnote="按服务端实际记录汇总"/><Metric icon={<ArrowUpRight size={19}/>} label="输出 Token" value={numberText(usage.output_tokens)} footnote="按服务端实际记录汇总"/></div><div className="cost-panel"><span className="cost-icon"><CircleDollarSign size={26}/></span><div><span className="eyebrow">费用估算 · {usage.currency}</span><h2>{costText(usage.estimated_cost_usd)}</h2></div><p>{usage.estimated_cost_usd == null ? '当前模型服务未提供可靠费用数据。账单请以模型服务商记录为准。' : '这里展示运行时的费用估算，实际账单以模型服务商记录为准。'}</p></div>{admin && <section className="member-usage"><div className="section-label"><span>成员用量</span><span>{usage.users.length} 位成员</span></div>{usage.users.length === 0 ? <p className="section-help">暂无成员用量记录。</p> : <div className="table-container"><table><thead><tr><th>成员</th><th>执行次数</th><th>成功次数</th><th>输入 Token</th><th>输出 Token</th><th>估算费用</th></tr></thead><tbody>{usage.users.map((item, i) => <tr key={String(item.user_id || item.id || i)}><td>{String(item.display_name || item.username || item.user_id || '成员')}</td><td>{numberText(item.total_runs)}</td><td>{numberText(item.successful_runs)}</td><td>{numberText(item.input_tokens)}</td><td>{numberText(item.output_tokens)}</td><td>{costText(item.estimated_cost_usd)}</td></tr>)}</tbody></table></div>}</section>}</> }</div>;
+}
+
+export function ApprovalsPage() {
+  const [items, setItems] = useState<Approval[]>([]); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(''); const [error, setError] = useState('');
+  const load = useCallback(async () => { setLoading(true); setError(''); try { setItems(await api<Approval[]>('/approvals/pending')); } catch (e) { setError(errorText(e)); } finally { setLoading(false); } }, []);
+  useEffect(() => { void load(); }, [load]);
+  const decide = async (approval: Approval, decision: 'allow' | 'deny') => { setBusy(approval.id); setError(''); try { await post(`/approvals/${approval.id}/decision`, { decision }); await load(); } catch (e) { setError(errorText(e)); } finally { setBusy(''); } };
+  return <div className="page"><PageHeader eyebrow="高风险控制" title="待审批操作" description="这里只显示分配给当前管理员的高风险双人审批请求。" actions={<Button variant="secondary" busy={loading} onClick={() => void load()}><RefreshCw size={16}/>刷新</Button>}/><ErrorNotice message={error}/>{loading ? <Loader/> : !items.length ? <EmptyState icon={<ShieldCheck size={30}/>} title="暂无待审批操作" description="当前没有分配给你的高风险双人审批请求。"/> : <div className="approval-queue">{items.map(approval => { const { votes, required } = approvalProgress(approval); return <section className="approval-card" key={approval.id}><div className="approval-title"><ShieldCheck size={18}/><strong>高风险操作 · 双人审批</strong></div><h3>{approval.tool_name}</h3><p className="approval-impact">管理员投票进度：{votes}/{required} · 参数不可修改</p><details><summary>查看参数摘要</summary><pre>{JSON.stringify(approval.arguments, null, 2)}</pre></details><small>有效至 {approval.expires_at}</small><div className="approval-actions"><Button variant="secondary" disabled={busy === approval.id} onClick={() => void decide(approval, 'deny')}><X size={15}/>拒绝</Button><Button busy={busy === approval.id} disabled={busy !== ''} onClick={() => void decide(approval, 'allow')}><Check size={15}/>投票允许</Button></div></section>;})}</div>}</div>;
 }
 
 function Metric({ icon, label, value, unit, footnote }: { icon: React.ReactNode; label: string; value: string; unit?: string; footnote: string }) { return <div className="metric-card"><div className="metric-label">{label}{icon}</div><div className="metric-value">{value}<small>{unit}</small></div><p>{footnote}</p></div>; }

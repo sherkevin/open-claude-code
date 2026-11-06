@@ -1,0 +1,22 @@
+{
+  "fixture_id": "synthetic-industrial-v1",
+  "synthetic": true,
+  "protocol": "local-deterministic-mcp-contract",
+  "tools": [
+    {
+      "name": "search_knowledge",
+      "read_only": true,
+      "description": "在合成工业知识文件中检索统计口径和来源。"
+    },
+    {
+      "name": "query_quality_metrics",
+      "read_only": true,
+      "description": "读取合成批次表并计算加权合格率。"
+    },
+    {
+      "name": "inspect_image",
+      "read_only": true,
+      "description": "登记合成图片文件的媒体类型和内容摘要；不执行视觉模型。"
+    }
+  ]
+}

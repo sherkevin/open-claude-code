@@ -5,6 +5,8 @@
 **先读这份，再读：** [进展报告](PROGRESS_2026-11-06.md) → [产品升级计划](../PRODUCT_EVOLUTION_PLAN_2026-11-06.md) → [需求基线](../REQUIREMENTS_ALIGNMENT.md) → [需求审计](../verification/REQUIREMENTS_AUDIT_NOTES.md) → [L2 交接证据](../evidence/L2_HANDOFF_2026-11-06.md) → [远端接手提示词](../HANDOFF_REMOTE_2026-11-06.md) → [API 契约](../API_CONTRACT.md) → [可配置工作空间](../CONFIGURABLE_WORKSPACE.md) → [README](../../README.md)。  
 **准备动手时再看：** [详细任务说明](DETAILED_TASK_SPEC_2026-11-06.md)（T0 至 T7 任务分解、验收标准、启动提示词）｜ [证据与命令清单](EVIDENCE_AND_COMMANDS_2026-11-06.md)（回归命令、环境、备份和证据地图）。
 
+> **当前复核补充（2026-11-06，学校云）：** 本地权威复核目录是 `/media/data3/dengkw/projects/open-claude-code`，本轮未连接生产数据、真实模型或客户 MCP。阶段 0 synthetic 最小闭环已完成：固定夹具、标准答案、只读回环 MCP、`plan/run/verify/clean` runner 和 JSON 证据见 `fixtures/synthetic-industrial-v1/`、`scripts/synthetic_benchmark.py`、`docs/evidence/SYNTHETIC_BENCHMARK_STAGE0_2026-11-06.md`；4 个离线任务和 5 项断言通过。当前 44 项需求统计为 22 已实现 / 21 部分实现 / 1 设计中 / 0 TODO。优先级 1 Sub-agent、优先级 2 模型代审、优先级 3 高风险双人审批均已完成本地合成最小闭环，但仍不是生产交付。下文部分服务器、生产目录和阶段 0“进行中”描述属于原始交接历史；以 [最新进展报告](PROGRESS_2026-11-06.md)、[需求对齐表](../REQUIREMENTS_ALIGNMENT.md) 和 [需求审计](../verification/REQUIREMENTS_AUDIT_NOTES.md) 为准。
+
 ---
 
 ## 1. 身份、位置与权限
@@ -49,7 +51,7 @@ cd ~/work/open-claude-code
 ## 4. 现状一句话
 
 - 0.4.2 已发布并**冻结**；当前工作树已超出 0.4.2（服务端 322 tests、客户端 53 tests、构建通过）。
-- 需求基线 v0.2 共 44 个编号：22 已实现 / 11 部分实现 / 4 设计中 / 7 TODO；其中 17 个新编号**还没逐项审计**。
+- 需求基线 v0.2 共 44 个编号：22 已实现 / 21 部分实现 / 1 设计中 / 0 TODO；逐项差距见 `docs/verification/PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06.md`。
 - 用户把产品目标升级为「对标并全面超越客户现有助手」，并已冻结协议、上传格式、四级审批、对标方式等边界。
 
 ## 5. 你的第一轮任务（按顺序，做完再动代码）
@@ -83,11 +85,11 @@ cd ~/work/open-claude-code
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 0 | 需求与基准冻结（编号、验收命令、合成夹具设计） | **进行中，未收口** |
+| 0 | 需求与基准冻结（编号、验收命令、合成夹具设计） | **本地合成阶段已收口，真实基线仍待外部证据** |
 | 1 | 协议与数据摄取（OpenAI-compatible 适配器、合成 MCP、八类文档摄取） | 待执行 |
 | 2 | RAG 与多模态图谱（版本化模型、来源指针、检索链/图谱 API、可视化） | 待执行 |
-| 3 | 模型路由与审批控制（自动路由、四种审批、审计字段） | 待执行 |
-| 4 | Sub-agent 与执行体验（有界拆分、隔离、级联取消、滚动进度） | 待执行 |
+| 3 | 模型路由与审批控制（自动路由、四种审批、审计字段） | 模型代审与高风险双人审批本地合成已完成；真实模型/客户角色待执行 |
+| 4 | Sub-agent 与执行体验（有界拆分、隔离、级联取消、滚动进度） | **优先级 1 本地合成已完成；真实模型/审批/UI 待执行** |
 | 5 | 对标与交付（合成基准 → 真实样例，JSON + 图表） | 待执行 |
 
 ## 7. 交付与汇报

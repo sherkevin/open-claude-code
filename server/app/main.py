@@ -232,6 +232,24 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
     def assistant_patch(item_id: str, data: AssistantPatch, user=Depends(authenticated), service: Service = Depends(svc)):
         return service.save_assistant(data.model_dump(exclude_unset=True), item_id, user=user)
 
+    @app.get(prefix + "/assistants/{item_id}/model-approval")
+    def model_approval_get(item_id: str, user=Depends(admin), service: Service = Depends(svc)):
+        service.require("assistants", item_id)
+        return service.model_approval_policy(item_id)
+
+    @app.put(prefix + "/assistants/{item_id}/model-approval")
+    def model_approval_put(item_id: str, data: ModelApprovalPolicy, user=Depends(admin), service: Service = Depends(svc)):
+        return service.save_model_approval_policy(item_id, data.model_dump(), user)
+
+    @app.get(prefix + "/assistants/{item_id}/high-risk-approval")
+    def high_risk_approval_get(item_id: str, user=Depends(admin), service: Service = Depends(svc)):
+        service.require("assistants", item_id)
+        return service.high_risk_approval_policy(item_id)
+
+    @app.put(prefix + "/assistants/{item_id}/high-risk-approval")
+    def high_risk_approval_put(item_id: str, data: HighRiskApprovalPolicy, user=Depends(admin), service: Service = Depends(svc)):
+        return service.save_high_risk_approval_policy(item_id, data.model_dump(), user)
+
     @app.delete(prefix + "/assistants/{item_id}", status_code=204)
     def assistant_delete(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
         service.require_resource("assistants", item_id, user, edit=True)
@@ -309,20 +327,88 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
                 await asyncio.sleep(0.25)
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
+    @app.post(prefix + "/runs/{item_id}/subagents", status_code=202)
+    async def subagent_plan(item_id: str, data: SubagentPlanRequest, user=Depends(authenticated), service: Service = Depends(svc)):
+        """Start a protected, local synthetic read-only child plan.
+
+        This endpoint is intentionally not a model or MCP delegation surface;
+        it exists to exercise the bounded lifecycle contract without customer
+        data, credentials, network calls, or paid model calls.
+        """
+        service.require("runs", item_id, user)
+        plan = service.subagents.create_plan(item_id, user["id"], data.tasks, data.mode)
+        service.subagents.start_plan(item_id, user["id"])
+        return plan
+
+    @app.get(prefix + "/runs/{item_id}/subagents")
+    def subagent_list(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        service.require("runs", item_id, user)
+        return service.subagents.plan_view(item_id, user["id"])
+
+    @app.post(prefix + "/runs/{item_id}/subagents/cancel")
+    async def subagent_cancel(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        service.require("runs", item_id, user)
+        return await service.subagents.cancel_plan(item_id, user["id"])
+
     @app.post(prefix + "/runs/{item_id}/cancel")
     async def run_cancel(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
         service.require("runs", item_id, user)
         await service.manager.cancel(item_id)
         return service.run_view(service.require("runs", item_id, user))
 
+    @app.get(prefix + "/approvals/pending")
+    def pending_approvals(user=Depends(admin), service: Service = Depends(svc)):
+        """Return only pending dual approvals assigned to this administrator.
+
+        Arguments are projected through the existing redactor; the endpoint
+        never exposes a global queue or credentials to non-allowlisted users.
+        """
+        rows = service.db.all("SELECT * FROM approvals WHERE status='pending' AND approval_mode='dual' ORDER BY created_at")
+        visible = []
+        for row in rows:
+            # Do not surface approvals whose immutable policy snapshot is no
+            # longer current. Voting such a request is rejected server-side;
+            # hiding it here avoids presenting stale work in the admin queue.
+            if row.get("expires_at") <= now():
+                continue
+            if not service.high_risk_approval._row_policy_current(row):
+                continue
+            if user["id"] in json.loads(row.get("approver_allowlist") or "[]"):
+                visible.append(approval_view(row))
+        return visible
+
     @app.post(prefix + "/approvals/{item_id}/decision")
     async def decide(item_id: str, data: ApprovalDecision, user=Depends(authenticated), service: Service = Depends(svc)):
+        row = service.require("approvals", item_id)
+        if row.get("approval_mode") == "dual":
+            result = service.high_risk_approval.record_vote(row, user, data.decision)
+            # Only the final vote wakes the waiting runtime.  The immutable
+            # vote and progress event are persisted even while the approval
+            # remains pending for a second, distinct administrator.
+            service.db.event(row["run_id"], "approval.dual_vote", {
+                "approval_id": row["id"], "decision": data.decision,
+                "votes": result.get("votes", 0), "required": result.get("required", row.get("required_approvals", 2)),
+                "voter_id": user["id"], "terminal": result.get("terminal", False),
+            })
+            if not result.get("terminal"):
+                return {"id": item_id, **result, "decision_source": "dual_admin"}
+            future = service.manager.approvals.get(item_id)
+            if future and not future.done():
+                future.set_result(data.decision)
+            return {"id": item_id, **result, "decided_at": service.db.one("SELECT decided_at FROM approvals WHERE id=?", (item_id,))["decided_at"], "decision_source": "dual_admin"}
         row = service.require("approvals", item_id, user)
         future = service.manager.approvals.get(item_id)
         if row["status"] != "pending" or row["expires_at"] <= now() or not future or future.done():
             raise AppError(409, "APPROVAL_EXPIRED", "此审批已处理或过期")
+        # Persist the authenticated decision maker before waking the runtime.
+        # The arguments remain the original immutable server-side snapshot;
+        # clients cannot replace them through this endpoint.
+        decided_at = now()
+        updated = service.db.execute("UPDATE approvals SET decided_at=?,decided_by=?,decision_source='user' WHERE id=? AND status='pending'", (decided_at, user["id"], item_id))
+        if updated.rowcount != 1:
+            raise AppError(409, "APPROVAL_EXPIRED", "此审批已处理或过期")
         future.set_result(data.decision)
-        return {"id": item_id, "status": "allowed" if data.decision == "allow" else "denied"}
+        return {"id": item_id, "status": "allowed" if data.decision == "allow" else "denied", "decided_at": decided_at, "decision_source": "user"}
 
     @app.post(prefix + "/files", status_code=201)
     async def upload(file: UploadFile = File(...), user=Depends(authenticated), service: Service = Depends(svc)):

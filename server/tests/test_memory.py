@@ -89,6 +89,8 @@ def test_memory_user_assistant_isolation_and_scope_guards(memory_app):
     (own / "MEMORY.md").write_text("owner-only", encoding="utf-8")
     assert service.authorize_tool(a["id"], "Read", {"file_path": str(own / "MEMORY.md")})
     assert service.authorize_tool(a["id"], "Glob", {"path": str(own), "pattern": "*.md"})
+    assert service.authorize_tool(a["id"], "Write", {"file_path": str(own / "MEMORY.md"), "content": "updated"}) is False
+    assert service.authorize_tool(a["id"], "Edit", {"file_path": str(own / "MEMORY.md"), "old_string": "owner-only", "new_string": "updated"}) is False
     with pytest.raises(AppError):
         service.authorize_tool(b["id"], "Read", {"file_path": str(own / "MEMORY.md")})
     for path in (service.memory.root(other["id"], a["id"]) / "MEMORY.md", service.memory.root(user["id"], b["id"]) / "MEMORY.md", service.memory.legacy_root(user["id"], assistant["id"]) / "MEMORY.md", own / ".hidden.md", service.settings.data_dir / "sdk-config" / a["id"] / "settings.json", service.settings.data_dir / "workspaces" / b["id"] / "secret.txt"):

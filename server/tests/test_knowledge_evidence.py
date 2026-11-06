@@ -144,6 +144,49 @@ def test_docx_paragraph_extraction_and_xml_entity_rejection(system):
     assert service.knowledge.upload(kb['id'], user, 'entity.docx', malicious.getvalue())['status'] == 'failed'
 
 
+def test_xlsx_cell_extraction_and_sheet_provenance(system):
+    _, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'XLSX'}, user)
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, 'w') as archive:
+        archive.writestr('xl/sharedStrings.xml', '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>设备</t></si><si><t>压力</t></si></sst>')
+        archive.writestr('xl/workbook.xml', '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="质量数据" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        archive.writestr('xl/worksheets/sheet1.xml', '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>0</v></c><c r="B2"><v>7.2</v></c></row></sheetData></worksheet>')
+    document = service.knowledge.upload(kb['id'], user, 'quality.xlsx', data.getvalue())
+    assert document['status'] == 'ready' and document['extraction'] == ['xlsx-cells']
+    chunk = service.knowledge.chunks(document['id'], user)[0]
+    assert '质量数据' in chunk['text'] and '压力' in chunk['text'] and '7.2' in chunk['text']
+
+
+def test_knowledge_graph_is_versioned_and_source_linked(system):
+    client, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'Graph'}, user)
+    doc = service.knowledge.upload(kb['id'], user, 'graph.md', '# 泵站压力\n\n泵站压力上限为 7 bar。'.encode())
+    graph = service.knowledge.graph(kb['id'], user)
+    labels = {item['label'] for item in graph['nodes']}
+    assert graph['versioned'] and {'泵站压力', 'bar'}.issubset(labels)
+    assert graph['edges'] and graph['edges'][0]['provenance']['document_id'] == doc['id']
+    login(client, 'owner')
+    response = client.get(f"/api/v1/knowledge-bases/{kb['id']}/graph?q=泵站")
+    assert response.status_code == 200 and response.json()['nodes']
+    service.knowledge.upload(kb['id'], user, 'graph.md', '# 泵站压力\n\n泵站压力上限为 9 bar。'.encode(), doc['id'])
+    current = service.knowledge.graph(kb['id'], user)
+    assert all(item['source']['version'] == 2 for item in current['nodes'])
+
+
+def test_image_upload_reports_local_ocr_requirement(system, monkeypatch):
+    _, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'Images'}, user)
+    def missing_ocr(*args):
+        raise AppError(422, 'OCR_REQUIRED', 'OCR missing')
+    monkeypatch.setattr(service.knowledge.parser, 'ocr_image', missing_ocr)
+    image = service.knowledge.upload(kb['id'], user, 'nameplate.png', b'not-an-image')
+    assert image['status'] == 'needs_ocr' and image['chunk_count'] == 0
+
+
 def test_data_provenance_preserves_actual_result_and_missing_fields(system):
     _, service, users = system
     user = users['owner']

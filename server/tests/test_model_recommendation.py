@@ -47,3 +47,35 @@ def test_recommendation_requires_short_summary(tmp_path):
         login(client)
         assert client.post("/api/v1/models/recommend", json={"task_summary": ""}).status_code == 422
 
+
+def test_task_submit_auto_routes_without_provider_call_and_allows_manual_override(tmp_path):
+    catalog = tmp_path / "models.json"
+    catalog.write_text(json.dumps({"default_model_id": "deepseek-v4.1-flash", "models": [
+        {"id": "deepseek-v4.1-flash", "label": "DeepSeek", "upstream_model": "deepseek", "capabilities": ["reasoning"], "reasoning_levels": {"default": None}},
+        {"id": "vision", "label": "Vision", "upstream_model": "vision", "capabilities": ["multimodal"], "reasoning_levels": {"default": None}},
+    ]}), encoding="utf-8")
+    app = create_app(Settings(data_dir=tmp_path / "data", model_catalog=str(catalog), origins=("http://testserver",), provider_settings=""))
+    with TestClient(app) as client:
+        service = app.state.service
+        user = service.create_user({"username": "admin", "display_name": "Admin", "password": PASSWORD, "role": "admin"})
+        assistant = service.save_assistant({"name": "QA", "instructions": "", "connections": []}, user=user)
+        conversation = service.create_conversation({"assistant_id": assistant["id"], "title": "新对话", "auto_model_routing": True}, user)
+        result, created = service.prepare_run(conversation["id"], {"client_request_id": "request-auto-1", "text": "请分析一张图片", "file_ids": [], "skill_ids": []}, user)
+        assert created and result["run_id"]
+        metadata = json.loads(service.require("runs", result["run_id"])["execution_meta"])
+        assert metadata["model_routing"]["enabled"] is True
+        assert metadata["model_routing"]["mode"] == "bounded_local"
+        assert metadata["model_routing"]["model_id"] == "vision"
+        assert metadata["model_routing"]["reason"]
+        assert service.require("conversations", conversation["id"])["model_id"] == "vision"
+
+        # A one-shot model_id is explicit and bypasses automatic routing.
+        conversation = service.create_conversation({"assistant_id": assistant["id"], "title": "手动", "auto_model_routing": True}, user)
+        result, _ = service.prepare_run(conversation["id"], {"client_request_id": "request-manual-1", "text": "请分析一张图片", "file_ids": [], "skill_ids": [], "model_id": "deepseek-v4.1-flash"}, user)
+        metadata = json.loads(service.require("runs", result["run_id"])["execution_meta"])
+        assert metadata["model_routing"]["mode"] == "manual"
+        assert metadata["selection"]["model_id"] == "deepseek-v4.1-flash"
+        # A request-level override is intentionally ephemeral; durable model
+        # changes still use PATCH /conversations/{id}.
+        assert service.require("conversations", conversation["id"])["model_id"] == "deepseek-v4.1-flash"
+

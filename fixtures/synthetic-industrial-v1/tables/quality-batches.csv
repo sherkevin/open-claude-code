@@ -1,0 +1,5 @@
+batch_id,line,production_date,inspected_count,qualified_count
+QA-SYN-1101,L01,2026-11-01,1000,980
+QA-SYN-1102,L01,2026-11-02,1200,1152
+QA-SYN-1103,L01,2026-11-03,1000,950
+QA-SYN-1104,L01,2026-11-04,1500,1455

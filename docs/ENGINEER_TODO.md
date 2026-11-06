@@ -103,6 +103,20 @@ Long-term goal created on 2026-11-04. Scope authorized by the user: implement an
 
 ## Current evidence boundary
 
+## Stage 0/next-version implementation — 2026-11-06
+
+- [DONE] 建立初始 17 项部分实现需求的逐项差距登记，并在优先级 1/2 后补充 SUB-001/SUB-002/APR-002：[PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06](verification/PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06.md)。当前状态为 22 项已实现、21 项部分实现、1 项设计中、0 项 TODO；合成 Sub-agent、模型代审和高风险双人审批仍不等于生产交付。
+
+- [DONE] 优先级 1：完成本地合成/只读 Sub-agent 隔离编排（`server/app/subagents.py`、`server/app/db.py`、受保护 API 与 `server/tests/test_subagents.py`）。专项和既有回归通过；证据见 [SUBAGENT_LOCAL_PRIORITY1_2026-11-06](evidence/SUBAGENT_LOCAL_PRIORITY1_2026-11-06.md)。真实客户和生产部署仍未推进。
+- [DONE] 优先级 2：完成本地合成模型代审最小闭环（`server/app/model_approval.py`、管理员策略 API、前后授权复核、审计字段、默认拒绝与 8 项专项测试）。证据见 [MODEL_APPROVAL_PRIORITY2_2026-11-06](evidence/MODEL_APPROVAL_PRIORITY2_2026-11-06.md)；真实模型质量/成本/延迟和客户策略仍缺外部证据。
+- [DONE] 优先级 3：完成本地合成高风险管理员/双人审批最小闭环（管理员白名单快照、两名不同管理员投票、拒绝优先、重启/策略变更失效、管理员待审批过滤队列），并补充 Sub-agent 子任务审批级联、默认拒绝和父取消过期。仍缺真实子会话、生产角色和客户风险矩阵。证据见 [HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06](evidence/HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06) 与 [SUBAGENT_APPROVAL_CASCADE_PRIORITY3_2026-11-07](evidence/SUBAGENT_APPROVAL_CASCADE_PRIORITY3_2026-11-07)。
+- [DONE] 优先级 1/2/3 收口回归：修复父取消与执行竞态下的重复终态事件、允许终态父任务只读查询、后台任务不可重放时的中断收口，并为合成输入、模型代审、OpenAI-compatible 本地适配器和子任务审批级联补充边界校验；最终全量服务端 358 项通过（1 个第三方警告），客户端 61 项通过，TypeScript 检查通过。
+
+- [DONE] Added `fixtures/synthetic-industrial-v1/`, deterministic `scripts/synthetic_benchmark.py`, a loopback-only Streamable HTTP MCP fixture, standard answers, SHA-256 checks, source markers, JSON evidence, and explicit report cleanup. Offline validation: 4 tasks and 5 assertions passed; Token, cost, native context, visual quality, and cross-platform comparison remain `not_measured`.
+- [DONE] Added local XLSX cell extraction, optional local image OCR with `needs_ocr` failure state, versioned source-linked graph nodes/edges, `GET /knowledge-bases/{id}/graph`, and a client SVG graph view. Added XLSX, OCR failure, graph versioning, and provenance tests. This is a bounded co-occurrence graph, not the complete semantic multimodal graph.
+- [DONE] Added explicit conversation-level automatic model routing with local bounded scoring, fallback, active-run protection, request-level manual override, and private routing evidence. Existing conversations remain opt-in; new client sessions enable it. Real model cost/latency and provider compatibility remain unverified.
+- [DONE] School-cloud validation used temporary `/tmp/open-claude-pylib` Python dependencies and ignored `client/node_modules`: server `326 passed` (one Starlette/httpx warning), client `53 passed`, TypeScript and isolated Vite build succeeded. This does not create a project `.venv` or modify production; the historical remote 322/53 record remains separately identified.
+
 ## Continued delivery hardening — 2026-11-05
 
 User requested continued work after0.1.0 delivery. Preserve the released archives; continue the original client/server pilot toward operational handoff and real customer integration.
@@ -149,9 +163,11 @@ User requested continued work after0.1.0 delivery. Preserve the released archive
 
 - [DONE] Reviewed the full conversation requirements against the current client, server, model catalog, RAG/source contracts, assistant/session configuration, live execution progress, and remote deployment.
 - [DONE] Produced the human-readable [requirements alignment document](REQUIREMENTS_ALIGNMENT.md) with scope, roles, user flows, functional and non-functional requirements, security/permission rules, model/router behavior, RAG/knowledge-graph/sub-agent phases, and acceptance criteria. Every item has an ID, priority, status, and verification method.
-- [DONE] Completed the independent consistency audit against current source, tests, deployed health endpoint, and evidence boundaries on the Tencent development host. The per-ID result is in [REQUIREMENTS_AUDIT_NOTES](verification/REQUIREMENTS_AUDIT_NOTES.md); 27 IDs are classified as 22 implemented, 4 partial, and 1 design-only. No document claim was upgraded beyond observed implementation; customer and design-only gaps retain owners and next actions.
+- [DONE] Completed the independent consistency audit for the original 27 IDs against current source, tests, deployed health endpoint, and evidence boundaries on the Tencent development host. The original result is in [REQUIREMENTS_AUDIT_NOTES](verification/REQUIREMENTS_AUDIT_NOTES.md); 27 IDs were classified as 22 implemented, 4 partial, and 1 design-only. No document claim was upgraded beyond observed implementation; customer and design-only gaps retain owners and next actions.
+- [DONE] After the next-agent handoff, audited the 17 new v0.2 IDs against the school-cloud source tree and recorded code paths, tests, evidence limits, and gaps in section 6 of [REQUIREMENTS_AUDIT_NOTES](verification/REQUIREMENTS_AUDIT_NOTES.md). The full 44-ID table is now 22 implemented, 16 partial, 3 design-only, and 3 TODO. The original project `.venv` is absent, but temporary Python dependencies and ignored client dependencies enabled the current recheck; see [REGRESSION_RECHECK_2026-11-06](evidence/REGRESSION_RECHECK_2026-11-06.md).
+- [DONE] Closed the stage-0 synthetic benchmark loop for `PROT-003`, `BENCH-001` and `BENCH-002`: fixed fixture, seed/version/hash, read-only loopback MCP, answer key, offline `plan/run/verify/clean` runner, and JSON evidence are in `fixtures/synthetic-industrial-v1/`, `examples/synthetic_industrial_mcp.py`, `scripts/synthetic_benchmark.py` and `docs/evidence/SYNTHETIC_BENCHMARK_STAGE0_2026-11-06.md`. The four offline tasks and five assertions pass; real product E2E, cross-platform runs, model tokens/context and visual quality remain unmeasured.
 - [DONE] Repaired the provider-fingerprint test fixture while preserving the intentional `409 MODEL_SELECTION_REQUIRED` behavior. Evidence: [server regression](evidence/SERVER_REGRESSION_2026-11-06.md).
-- [DONE] Re-ran current-tree regression: server 322 passed with one third-party warning, `compileall app` passed, client 53 passed, TypeScript build passed, and Vite build passed to an isolated output directory. Evidence: [server regression](evidence/SERVER_REGRESSION_2026-11-06.md) and [client regression](evidence/CLIENT_REGRESSION_2026-11-06.md).
+- [DONE] Re-ran current-tree regression: school-cloud server 326 passed with one third-party warning, `py_compile` passed, client 53 passed, TypeScript build passed, and Vite build passed to an isolated output directory. The historical remote evidence remains 322/53; current local command details are in [regression recheck](evidence/REGRESSION_RECHECK_2026-11-06.md).
 - [DONE] Closed this checklist with links to the requirements document, audit evidence, test evidence, and remaining customer/design/deployment gaps.
 
 ## Remote development handoff — 2026-11-06

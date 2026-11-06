@@ -1,0 +1,36 @@
+{
+  "fixture_id": "synthetic-industrial-v1",
+  "fixture_version": "1.0.0",
+  "synthetic": true,
+  "purpose": "development_and_acceptance_only",
+  "seed": 20261106,
+  "license": "internal-test-fixture",
+  "source_policy": "Every tool result and answer must retain synthetic=true and fixture_id.",
+  "files": [
+    {
+      "path": "documents/quality-policy.md",
+      "media_type": "text/markdown",
+      "sha256": "6ab0f675d590531756ff8cd011d394150a2e764c28db3da5f91f91c9ac126634"
+    },
+    {
+      "path": "tables/quality-batches.csv",
+      "media_type": "text/csv",
+      "sha256": "ab876702fb3885be57d144999b400c1f789d3f9867d0e103fbcd33552d5df5b7"
+    },
+    {
+      "path": "images/quality-inspection.svg",
+      "media_type": "image/svg+xml",
+      "sha256": "71cd284dc01e3ecf178fd38860920e81f664e2f09bc11bc5f2f82e68f0f04b34"
+    },
+    {
+      "path": "mcp/tools.json",
+      "media_type": "application/json",
+      "sha256": "193180aa76141769341e3f3fe7cf4639521d257c9bd321fe1f76829ddee5f46d"
+    },
+    {
+      "path": "answers.json",
+      "media_type": "application/json",
+      "sha256": "f9d22e1b197d0dd385488bef37726e57ad9e90968a7b99632f2d912840bf5a23"
+    }
+  ]
+}

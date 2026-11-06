@@ -158,17 +158,26 @@ class SDKRuntime:
             try:
                 tool, arguments = data["tool_name"], data.get("tool_input", {})
                 automatic = self.check_tool(tool, arguments)
+                model_review = self.service.model_approval.requires_review(self.conversation_id, tool)
                 self.tool_started[tool_use_id] = time.monotonic()
                 await self.emit("run.stage", {"stage": "tool", "tool_name": tool})
-                await self.emit("tool.started", {"tool_call_id": tool_use_id or uid(), "tool_name": tool, "arguments": redact(arguments), "requires_approval": not automatic})
-                return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow" if automatic else "ask"}}
+                await self.emit("tool.started", {"tool_call_id": tool_use_id or uid(), "tool_name": tool, "arguments": redact(arguments), "requires_approval": not automatic or model_review})
+                return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow" if automatic and not model_review else "ask"}}
             except Exception:
                 return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "应用权限校验拒绝此工具调用"}}
 
         async def permission(tool, arguments, context):
             try:
                 automatic = self.check_tool(tool, arguments)
-                allowed = automatic or await self.approve(tool, arguments)
+                # Evaluate a configured model policy before safe-read's normal
+                # automatic path. A policy allowlist therefore cannot be
+                # bypassed merely because a tool is normally auto-approved.
+                run = self.service.require("runs", self.current_run_id)
+                review = await self.service.model_approval.review(run, tool, arguments)
+                if review is not None:
+                    allowed = await self.approve(tool, arguments, review=review, review_checked=True)
+                else:
+                    allowed = automatic or await self.approve(tool, arguments, review_checked=True)
                 self.check_tool(tool, arguments)
                 if allowed:
                     return PermissionResultAllow(updated_input=arguments)
@@ -282,8 +291,22 @@ class SDKRuntime:
                     raise AppError(422, "PDF_TEXT_UNAVAILABLE", "此 PDF 的文字或 OCR 解析未完成。原件仍可预览或下载，请检查文件后重试") from exc
             elif item["mime_type"].startswith("image/"):
                 raise AppError(422, "VISION_UNAVAILABLE", "当前模型尚未启用经过验证的图片理解；图片已保存，可预览，请同时提供文字说明")
+            elif destination.suffix.lower() in {".docx", ".xlsx"}:
+                try:
+                    pages = await asyncio.to_thread(self.service.knowledge.parser.parse, destination, item["name"])
+                    text = "\n\n".join(f"[第 {page['page']} 页]\n{page['text']}" for page in pages)[:300000]
+                    if not text.strip():
+                        raise ValueError("no text")
+                    extracted = destination.with_suffix(".extracted.txt")
+                    extracted.write_text(text, encoding="utf-8")
+                    self.attachment_snapshots[str(extracted.resolve())] = hashlib.sha256(extracted.read_bytes()).hexdigest()
+                    references.append(f"文档文本附件：{extracted.relative_to(root)}（本地解析，保留工作表/段落）")
+                except AppError:
+                    raise
+                except Exception as exc:
+                    raise AppError(422, "DOCUMENT_TEXT_UNAVAILABLE", "此文档的本地文字解析未完成，请检查文件后重试") from exc
             elif destination.suffix.lower() not in {".txt", ".md", ".csv", ".json", ".log", ".xml", ".yaml", ".yml", ".html", ".py", ".js", ".ts", ".sql"}:
-                raise AppError(422, "ATTACHMENT_UNSUPPORTED", "当前支持文本、CSV、JSON 和可提取文字的 PDF；其他附件可保存下载")
+                raise AppError(422, "ATTACHMENT_UNSUPPORTED", "当前支持文本、CSV、JSON、DOCX、XLSX 和可提取文字的 PDF；图片需在知识库中进行本地 OCR")
             else:
                 references.append(f"文本附件：{destination.relative_to(root)}")
         prompt = message["text"] + ("\n\n已上传附件（需要时使用 Read 读取）：\n" + "\n".join(references) if references else "")
@@ -453,27 +476,85 @@ class SessionActor:
             self.service.db.execute("UPDATE runs SET usage=? WHERE id=?", (dump(data), run_id))
         self.service.db.event(run_id, kind, data)
 
-    async def approve(self, tool, arguments):
+    async def approve(self, tool, arguments, *, review=None, review_checked=False):
         if self.cancelled:
             return False
         run = self.service.require("runs", self.current_run_id)
+        # Model-as-user approval is an explicit administrator policy.  The
+        # policy evaluator is fail-closed and uses an injectable local
+        # reviewer; it can never widen a high-risk or unknown tool grant.
+        if not review_checked:
+            review = await self.service.model_approval.review(run, tool, arguments)
+        if review is not None:
+            if review.decision == "allow":
+                try:
+                    valid = self.service.model_approval.verify(review, run, tool, arguments)
+                except Exception:
+                    valid = False
+                if not valid:
+                    review = dataclasses.replace(review, decision="deny", reason="授权或策略在代审后发生变化，已安全拒绝", result={"status": "stale_authorization"})
+            audit = self.service.model_approval.audit_payload(review)
+            approval_id = uid()
+            decided_at = audit["decided_at"]
+            self.service.db.execute(
+                "INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,decided_at,decided_by,decision_source,strategy,review_model_id,review_policy_id,review_policy_revision,review_policy_digest,review_operation,review_data_scope,review_amount,review_reason,review_result,review_decided_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (approval_id, run["id"], run["user_id"], tool, dump(arguments), "allowed" if review.decision == "allow" else "denied", now(), decided_at, decided_at, None, "model", "model", review.model_id, review.policy_id, review.policy_revision, review.policy_digest, review.operation, review.data_scope, review.amount, review.reason, dump(review.result), decided_at),
+            )
+            await self.emit("approval.model_decided", {"approval_id": approval_id, **self.service.model_approval.audit_payload(review), "decision": review.decision})
+            if review.decision != "allow" or self.cancelled:
+                return False
+            return True
+        dual_snapshot = self.service.high_risk_approval.request_snapshot(run, tool, arguments)
         approval_id = uid()
         expiry = (datetime.now(timezone.utc) + timedelta(seconds=self.service.settings.approval_seconds)).isoformat()
-        self.service.db.execute("INSERT INTO approvals VALUES(?,?,?,?,?,?,?,?)", (approval_id, run["id"], run["user_id"], tool, dump(arguments), "pending", now(), expiry))
+        if dual_snapshot:
+            self.service.db.execute(
+                "INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,strategy,approval_mode,required_approvals,approver_allowlist,approver_ids,approval_policy_id,approval_policy_revision,approval_policy_digest,approval_request_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (approval_id, run["id"], run["user_id"], tool, dump(arguments), "pending", now(), expiry,
+                 "dual", dual_snapshot["approval_mode"], dual_snapshot["required_approvals"], dump(dual_snapshot["approver_allowlist"]), "[]",
+                 dual_snapshot["approval_policy_id"], dual_snapshot["approval_policy_revision"], dual_snapshot["approval_policy_digest"], dual_snapshot["approval_request_digest"]),
+            )
+            if not dual_snapshot["tool_allowed"]:
+                decided_at = now()
+                self.service.db.execute("UPDATE approvals SET status='denied',decided_at=?,decision_source='policy',approval_decision_reason=? WHERE id=?", (decided_at, "工具不在高风险审批白名单，默认拒绝", approval_id))
+                await self.emit("approval.resolved", {"approval_id": approval_id, "decision": "deny", "decision_at": decided_at, "decided_by": None, "decision_source": "policy"})
+                return False
+        else:
+            self.service.db.execute("INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)", (approval_id, run["id"], run["user_id"], tool, dump(arguments), "pending", now(), expiry))
         future = asyncio.get_running_loop().create_future()
         self.manager.approvals[approval_id] = future
         self.service.db.execute("UPDATE runs SET status='awaiting_approval' WHERE id=?", (run["id"],))
         await self.emit("approval.required", approval_view(self.service.require("approvals", approval_id)))
         decision = "deny"
+        decision_source = "timeout"
         try:
             decision = await asyncio.wait_for(future, self.service.settings.approval_seconds)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+            decision_source = "user" if not self.cancelled else "cancelled"
+            # The final dual vote marks the durable row as allowed before it
+            # wakes this waiter.  Revalidate the exact policy/argument
+            # snapshot once more so a revocation racing with that wake-up can
+            # never turn a stale allow into tool execution.
+            if decision == "allow" and (self.cancelled or (dual_snapshot and not self.service.high_risk_approval.snapshot_current(run, tool, arguments, dual_snapshot))):
+                reason = "任务已取消，审批结果不再有效" if self.cancelled else "高风险审批策略在最终投票后发生变化，已安全拒绝"
+                source = "cancelled" if self.cancelled else "policy"
+                invalidated = self.service.db.execute(
+                    "UPDATE approvals SET status='denied',decision_source=?,approval_decision_reason=? WHERE id=? AND status='allowed'",
+                    (source, reason, approval_id),
+                )
+                if invalidated.rowcount:
+                    await self.emit("approval.resolved", {"approval_id": approval_id, "decision": "deny", "decision_at": now(), "decided_by": None, "decision_source": source})
+                decision = "deny"
+                decision_source = source
+        except asyncio.TimeoutError:
+            decision_source = "timeout"
+        except asyncio.CancelledError:
+            decision_source = "cancelled" if self.cancelled else "interrupted"
         finally:
             self.manager.approvals.pop(approval_id, None)
-            self.service.db.execute("UPDATE approvals SET status=? WHERE id=? AND status='pending'", ("allowed" if decision == "allow" else "denied", approval_id))
+            self.service.db.execute("UPDATE approvals SET status=?,decided_at=COALESCE(decided_at,?),decided_by=COALESCE(decided_by,?),decision_source=COALESCE(decision_source,?) WHERE id=? AND status='pending'", ("allowed" if decision == "allow" else "denied", now(), None, decision_source, approval_id))
             self.service.db.execute("UPDATE runs SET status='running' WHERE id=? AND status='awaiting_approval'", (run["id"],))
-            await self.emit("approval.resolved", {"approval_id": approval_id, "decision": decision})
+            resolved = self.service.require("approvals", approval_id)
+            await self.emit("approval.resolved", {"approval_id": approval_id, "decision": decision, "decision_at": resolved.get("decided_at"), "decided_by": resolved.get("decided_by"), "decision_source": resolved.get("decision_source")})
         return decision == "allow" and not self.cancelled
 
     async def loop(self):
@@ -583,9 +664,10 @@ class RunManager:
         self.context_requests = {}
 
     def recover(self):
+        self.service.subagents.recover()
         for row in self.service.db.all("SELECT * FROM runs WHERE status NOT IN ('succeeded','failed','cancelled','interrupted')"):
-            self.finish(row["id"], "interrupted", "服务已重启，任务未自动重放；可继续发送消息")
-        self.service.db.execute("UPDATE approvals SET status='expired' WHERE status='pending'")
+            self.finish(row["id"], "interrupted", "服务已重启，任务未自动重放；可继续发送消息", approval_source="restart")
+        self.service.db.execute("UPDATE approvals SET status='expired',decided_at=COALESCE(decided_at,?),decided_by=NULL,decision_source=COALESCE(decision_source,'restart') WHERE status='pending'", (now(),))
 
     def actor_for(self, conversation_id):
         actor = self.actors.get(conversation_id)
@@ -626,7 +708,7 @@ class RunManager:
             actor.queue.put_nowait(("context", future))
         return await asyncio.shield(future)
 
-    def finish(self, run_id, status, error=None):
+    def finish(self, run_id, status, error=None, approval_source="run_finished"):
         run = self.service.require("runs", run_id)
         if run["status"] in TERMINAL:
             return
@@ -654,7 +736,7 @@ class RunManager:
             self.service.db.event(run_id, "context.compaction_result", value)
         self.service.db.execute("UPDATE runs SET status=?,error=?,completed_at=? WHERE id=?", (status, error, now(), run_id))
         self.service.db.execute("UPDATE conversations SET active_run_id=NULL,updated_at=? WHERE id=? AND active_run_id=?", (now(), run["conversation_id"], run_id))
-        self.service.db.execute("UPDATE approvals SET status='expired' WHERE run_id=? AND status='pending'", (run_id,))
+        self.service.db.execute("UPDATE approvals SET status='expired',decided_at=COALESCE(decided_at,?),decided_by=NULL,decision_source=COALESCE(decision_source,?) WHERE run_id=? AND status='pending'", (now(), approval_source, run_id))
         self.service.db.event(run_id, "run.completed", {"status": status, "message_id": run["assistant_message_id"], "error": error, "usage": json.loads(run["usage"]) if run["usage"] else None, "timings": timings})
 
     async def cancel(self, run_id):
@@ -662,6 +744,10 @@ class RunManager:
         if run["status"] in TERMINAL:
             return
         self.service.db.execute("UPDATE runs SET status='cancelling' WHERE id=?", (run_id,))
+        # A parent cancellation must stop every synthetic child before the
+        # parent actor is interrupted.  The operation is idempotent and emits
+        # only redacted child lifecycle summaries on the parent event stream.
+        await self.service.subagents.cancel_plan(run_id, run["user_id"])
         actor = self.actors.get(run["conversation_id"])
         if actor:
             await actor.cancel()
@@ -669,6 +755,7 @@ class RunManager:
             self.finish(run_id, "cancelled")
 
     async def close(self):
+        await self.service.subagents.close()
         actors = list(self.actors.values())
         for actor in actors:
             await actor.cancel()

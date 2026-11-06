@@ -5,12 +5,14 @@
 - **2026-11-06 已入 GitHub 并生成 Agent 交接包。** 代码与文档推送至私有仓库 `sherkevin/open-claude-code`（`main` 分支），学校云副本 `/media/data3/dengkw/projects/open-claude-code` 已同步。接手材料见 [docs/handover/README.md](docs/handover/README.md)：进展报告、任务说明，以及上一轮 Codex 会话 `01a1af39-f0d7-7b03-aa48-e4552a4059a1` 的完整记录（transcript + 原始 JSONL）。
 - **0.4.2 已发布。** 客户端、服务端、部署包三个正式归档及 `manifest.json` 位于 `dist/releases/0.4.2/`；0.1.0—0.4.2 六个正式版本的归档摘要都与各自清单匹配。0.4.2 的发布内容是会话并发隔离、会话独立记忆，以及切换模型后的身份查询修正。发布结论见 [交付验证](docs/DELIVERY_VERIFICATION.md)，工程明细见 [ENGINEER_TODO](docs/ENGINEER_TODO.md)，私有证据的当前位置见 [证据索引](docs/evidence/EVIDENCE_INDEX_2026-11-06.md)。
 - **当前工作树已经超出 0.4.2。** 2026-11-06 远程交接同步了新的需求文档、模型目录/推荐路由和客户端改动；当前服务端可收集 322 项测试，客户端源码有 53 项测试，`client/node_modules` 已恢复。当前树不能用来重打 0.4.2 归档：`python3 scripts/build_release.py --version 0.4.2 --stage final --check-only` 当前给出 client=88、server=79、deployment=57，而 0.4.2 正式包是 57/56/57。0.4.2 归档保持冻结，下一版本应使用新的版本号和新的 FINAL 验证记录。
-- **本轮需求审计与回归已完成（2026-11-06）。** 逐项审计见 [REQUIREMENTS_AUDIT_NOTES](docs/verification/REQUIREMENTS_AUDIT_NOTES.md)：27 个编号中 22 项已实现、4 项部分实现、1 项设计中；多模态知识图谱与生产 Sub-agent 仍明确为设计中。服务端当前开发树 322 项测试全部通过，客户端 53 项测试通过，TypeScript 检查和独立目录 Vite 构建通过；证据见 [服务端回归](docs/evidence/SERVER_REGRESSION_2026-11-06.md) 与 [客户端回归](docs/evidence/CLIENT_REGRESSION_2026-11-06.md)。
+- **旧 27 项需求审计与远端回归已完成（2026-11-06）。** 逐项审计见 [REQUIREMENTS_AUDIT_NOTES](docs/verification/REQUIREMENTS_AUDIT_NOTES.md)：旧基线为 22 项已实现、4 项部分实现、1 项设计中；多模态知识图谱与生产 Sub-agent 仍明确为设计中。远端开发树历史基线是服务端 322 项、客户端 53 项通过，TypeScript 检查和独立目录 Vite 构建通过；证据见 [服务端回归](docs/evidence/SERVER_REGRESSION_2026-11-06.md) 与 [客户端回归](docs/evidence/CLIENT_REGRESSION_2026-11-06.md)。
+- **接手复核已补齐 v0.2 新增 17 项，并完成优先级 1/2/3 本地闭环（2026-11-06）。** 44 个编号当前按需求对齐表统计为 22 项已实现、21 项部分实现、1 项设计中、0 项 TODO；新增项的代码位置、测试入口和缺口见审计记录第 6、7、9、10 节。学校云本轮使用临时 Python 依赖完成既有服务端回归，客户端 57 项、TypeScript 和隔离构建也通过；模型代审与高风险双人审批均仅有本地合成专项证据。证据与临时依赖边界见 [回归环境记录](docs/evidence/REGRESSION_RECHECK_2026-11-06.md)、[Sub-agent 优先级 1 证据](docs/evidence/SUBAGENT_LOCAL_PRIORITY1_2026-11-06.md)、[模型代审优先级 2 证据](docs/evidence/MODEL_APPROVAL_PRIORITY2_2026-11-06.md) 和 [高风险双人审批优先级 3 证据](docs/evidence/HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06.md)。
 - **本轮已修复的最小不一致。** `server/tests/test_model_catalog.py` 在替换 provider 环境后显式重新选择同一公共模型，保留配置变化必须返回 `409 MODEL_SELECTION_REQUIRED` 的产品行为；README 已补齐混元 4 和 Kimi 3.1 PRO 的公开目录说明，并注明未开通时不可用。一次授权的腾讯云内网 `npm ci` 已完成，`package-lock.json` 未变化。
 - **下一阶段待办（尚未开始）：**
-  1. **补齐 0.4.2 发布树的独立回归证据。** 当前开发树的 322 项通过不能替代 0.4.2 发布树历史记录中 319 项收集、316 通过和 3 失败的口径；需要在不改正式归档的临时副本中确认发布树最终测试数量，并解释 317/319 与当前 322 的差异。
-  2. **真实客户与模型开通验收。** 取得华微世纪真实 MCP 地址、认证方式、工具清单、业务样本、标准答案和原方案基线后，分别验收数据来源、知识来源、网页来源、质量、耗时和成功任务成本；确认混元 4、Kimi 3.1 PRO 的 TokenHub 上游与额度。
-  3. **下一版本规划。** 多模态图谱和 Sub-agent 仍处于设计阶段；生产部署、systemd 重启、容器验收、生产负载和灾备演练保持独立待批准事项。
+  1. **阶段 0 合成基准最小闭环已完成。** `fixtures/synthetic-industrial-v1/`、只读回环 MCP、标准答案、固定版本与哈希、清理命令和 JSON 指标报告已建立；离线 4 项任务和 5 项断言通过。真实产品助手、多平台运行、Token/上下文/视觉指标仍待后续阶段，不把合成结果当作客户对标结论。
+  2. **补齐 0.4.2 发布树的独立回归证据。** 当前开发树的 322 项通过不能替代 0.4.2 发布树历史记录中 319 项收集、316 通过和 3 失败的口径；需要在不改正式归档的临时副本中确认发布树最终测试数量，并解释 317/319 与当前 322 的差异。
+  3. **真实客户与模型开通验收。** 取得华微世纪真实 MCP 地址、认证方式、工具清单、业务样本、标准答案和原方案基线后，分别验收数据来源、知识来源、网页来源、质量、耗时和成功任务成本；确认混元 4、Kimi 3.1 PRO 的 TokenHub 上游与额度。
+  4. **下一版本规划。** 图谱已有最小版本化 API/画布，但语义多模态图谱、审批级联、Sub-agent 真实调度和对标图表仍未完成；生产部署、systemd 重启、容器验收、生产负载和灾备演练保持独立待批准事项。
 - **独立线程，不属于产品主线，保持原状：** Better AI PPT 截图理解（下方 2026-11-05 条目）、Linux Mint Live USB（下方 2026-11-04 条目）、旧 Intel Mac 启动（下方 2026-11-05 条目）继续各自独立记录。本轮不替用户决定它们是否继续由本项目跟踪，也不把它们排进产品版本计划。
 - **仍待用户或商务决策（本轮未完成）：** 商业化、计费与转售授权；客户真实 MCP、业务样本和原方案基线；外部界面最终品牌；是否允许生产重启或部署下一版本。
 
@@ -90,6 +92,15 @@ Context: The user is considering a branded enterprise agent service whose execut
 - [WAITING] User boots the USB into the Mint live desktop and checks Wi-Fi, microphone and speakers. Actual Mac UI is only available through user-provided observations; no startup-manager/live-desktop result observed yet.
 - [TODO] Once the live environment works, identify the internal Mac SSD separately from the similarly sized Kingston USB before any requested installation. No internal-drive erase has been performed or instructed in this troubleshooting step.
 
+## 2026-11-06 — v0.3 partial-requirement gap register
+
+- [DONE] 为初始 17 项部分实现建立逐项差距清单，并在优先级 1/2/3 后补充 SUB-001/SUB-002/APR-002/APR-004：[PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06](docs/verification/PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06.md)。当前状态为 22 项已实现、21 项部分实现、1 项设计中、0 项 TODO。
+- [DONE] 优先级 1 本地合成 Sub-agent 已完成隔离、失败隔离、父取消级联、终态事件唯一、只读历史和恢复不重放收口；优先级 2 本地合成模型代审已完成默认拒绝与审计收口；最新全量服务端回归 340 项通过、客户端 57 项通过。
+- [DONE] 优先级 2 本地合成模型代审已完成默认拒绝、低风险白名单、数据/操作/金额边界、前后授权复核、最小化 reviewer 输入和审计；专项 6 项通过。真实模型质量、成本和客户规则仍缺外部证据。
+- [DONE] 优先级 3 本地合成高风险管理员/双人审批已完成策略版本快照、管理员白名单、两名不同管理员投票、拒绝优先、重启/取消失效和安全审计；专项 4 项通过，另有管理员白名单过滤队列和策略版本失效测试，证据见 [HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06](docs/evidence/HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06.md)。子任务审批级联、完整客户端双人交互、生产角色和客户风险矩阵仍缺证据。
+- [DONE] 同步更新 [REQUIREMENTS_ALIGNMENT.md](docs/REQUIREMENTS_ALIGNMENT.md)、[REQUIREMENTS_AUDIT_NOTES.md](docs/verification/REQUIREMENTS_AUDIT_NOTES.md) 和 [ENGINEER_TODO.md](docs/ENGINEER_TODO.md)。本轮只完成本地合成/只读 Sub-agent 隔离编排，未把页面、设计、合成快照或专项测试升级为完整生产交付。
+- [TODO] 下一步补齐 Sub-agent 子任务审批级联、完整客户端双人交互、生产角色和客户风险矩阵；生产部署、服务重启、真实客户数据、凭据、付费模型和线上构建仍需单独批准。
+
 ## 2026-11-06 — Remote development handoff to Tencent Cloud
 
 - [DONE] Synced the latest source and documentation to `/data/dengkw/workspace/open-claude-code` without touching `.runtime/data`, `.venv`, production services, or the root-owned `l2-spec.md`; 27 content files changed and 17 overwritten files were backed up under `.runtime/sync-backups/20261106-remote-handoff/`. Key-file SHA-256 values match the local source; production services stayed active and `/api/v1/health/ready` returned ready.
@@ -97,4 +108,3 @@ Context: The user is considering a branded enterprise agent service whose execut
 - [DONE] The client build initially replaced the live Nginx root `client/dist`; restored the exact 0.4.2 build from `dist/releases/0.4.2/zhixing-client-0.4.2.zip`, verified all four hashes against `remote-final.json`, and backed up the new build under `.runtime/sync-backups/20261106-remote-handoff/new-client-dist/`.
 - [DONE] Remote agent completed `docs/verification/REQUIREMENTS_AUDIT_NOTES.md`, fixed the provider-fingerprint test fixture and README model-list inconsistency, and updated the requirements-alignment checklist with evidence links.
 - [TODO] Production restart or deployment is a separate step and requires explicit user approval; keep the current systemd services and production data intact until then.
-

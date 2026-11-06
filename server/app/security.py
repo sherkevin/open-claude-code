@@ -68,6 +68,40 @@ class SecretStore:
 SENSITIVE = re.compile(r"(^|[_-])(password|passwd|secret|token|authorization|api.?key|cookie|credentials?)($|[_-])", re.I)
 
 
+def tool_risk_profile(tool_name: str) -> dict[str, object]:
+    """Return the conservative, product-level approval profile for a tool.
+
+    This is intentionally a small classification layer rather than a second
+    authorization system. ``authorize_tool`` still checks the current
+    conversation, assistant and connection grants on every call. Unknown or
+    external tools default to the stricter profile so a newly discovered tool
+    cannot accidentally inherit a read-only policy.
+    """
+    if tool_name in {"Read", "Glob", "Grep", "mcp__workspace__knowledge_search", "mcp__workspace__knowledge_read", "mcp__workspace__web_search", "mcp__workspace__web_read"}:
+        return {
+            "risk_level": "low",
+            "approval_policy": "safe_read",
+            "impact": "只读取当前会话已授权的数据，不修改工作区或外部系统",
+        }
+    if tool_name in {"Write", "Edit"}:
+        return {
+            "risk_level": "medium",
+            "approval_policy": "user_confirmation",
+            "impact": "修改当前会话工作区或记忆，执行前需要用户明确确认",
+        }
+    if tool_name.startswith("mcp__"):
+        return {
+            "risk_level": "high",
+            "approval_policy": "connection_policy",
+            "impact": "调用外部业务系统，可能产生业务副作用；默认按连接策略审批",
+        }
+    return {
+        "risk_level": "high",
+        "approval_policy": "deny_by_default",
+        "impact": "未知工具默认拒绝，不能仅凭用户确认绕过服务端授权",
+    }
+
+
 def redact(value, truncate=True):
     if isinstance(value, dict):
         return {str(k): "[redacted]" if SENSITIVE.search(str(k)) else redact(v, truncate) for k, v in value.items()}

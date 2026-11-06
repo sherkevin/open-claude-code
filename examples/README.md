@@ -2,6 +2,35 @@
 
 这些文件提供可重复的产品验收环境。知识条目、报销金额、响应时间和工单全部是合成演示数据，不代表任何客户的实际制度，也不连接客户生产系统。
 
+## 阶段 0 合成工业基准
+
+`fixtures/synthetic-industrial-v1/` 是固定版本的工业基准夹具，包含质量统计文档、
+批次表、图片来源、只读工具契约和标准答案。它只用于开发和验收，所有结果带有
+`synthetic=true`。不启动产品服务也可以运行离线闭环：
+
+```bash
+python3 scripts/synthetic_benchmark.py plan
+python3 scripts/synthetic_benchmark.py run --platform synthetic-reference \
+  --output /tmp/zhixing-synthetic-benchmark-stage0.json
+python3 scripts/synthetic_benchmark.py verify \
+  --report /tmp/zhixing-synthetic-benchmark-stage0.json
+python3 scripts/synthetic_benchmark.py clean \
+  --output /tmp/zhixing-synthetic-benchmark-stage0.json
+```
+
+该运行器不访问网络、模型、产品数据库或客户 MCP。任务正确性、来源覆盖率、
+本地操作耗时和合成会话标记可测量；Token、费用、原生上下文和视觉质量缺失时
+明确记为 `not_measured`。完整证据边界见
+[`SYNTHETIC_BENCHMARK_STAGE0_2026-11-06.md`](../docs/evidence/SYNTHETIC_BENCHMARK_STAGE0_2026-11-06.md)。
+
+需要测试标准 Streamable HTTP MCP 时，可在回环地址启动同一夹具：
+
+```bash
+.venv/bin/python examples/synthetic_industrial_mcp.py --host 127.0.0.1 --port 8777
+```
+
+这个 HTTP 进程是只读验收服务，不能暴露到公网，也不能配置到生产数据目录。
+
 ## 启动演示 MCP
 
 使用服务端的 Python 虚拟环境和已固定的依赖（`mcp==1.30.0`）：

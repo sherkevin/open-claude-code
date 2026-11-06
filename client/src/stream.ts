@@ -17,10 +17,11 @@ export function pendingApprovalIds(events: StreamEvent[]): Set<string> {
   const pending = new Set<string>();
   for (const event of events) {
     if (event.type === 'approval.required' && typeof event.data.id === 'string') pending.add(event.data.id);
-    if (event.type === 'approval.resolved' && typeof event.data.approval_id === 'string') pending.delete(event.data.approval_id);
+    if (event.type === 'subagent.approval.required' && typeof event.data.approval_id === 'string') pending.add(event.data.approval_id);
+    if (['approval.resolved', 'approval.model_decided', 'subagent.approval.denied', 'subagent.approval.resolved'].includes(event.type) && typeof event.data.approval_id === 'string') pending.delete(event.data.approval_id);
     if (event.type === 'run.completed') pending.clear();
   }
   return pending;
 }
 
-export const eventTypes = ['run.started', 'run.stage', 'timing.updated', 'message.updated', 'message.delta', 'tool.started', 'tool.completed', 'approval.required', 'approval.resolved', 'artifact.created', 'usage.updated', 'context.compaction_started', 'context.compacted', 'context.compaction_result', 'run.completed'];
+export const eventTypes = ['run.started', 'run.stage', 'timing.updated', 'message.updated', 'message.delta', 'tool.started', 'tool.completed', 'approval.required', 'approval.resolved', 'approval.model_decided', 'approval.dual_vote', 'subagent.plan.created', 'subagent.started', 'subagent.progress', 'subagent.completed', 'subagent.failed', 'subagent.cancelled', 'subagent.plan.completed', 'subagent.approval.required', 'subagent.approval.denied', 'subagent.approval.resolved', 'artifact.created', 'usage.updated', 'context.compaction_started', 'context.compacted', 'context.compaction_result', 'run.completed'];

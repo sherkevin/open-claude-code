@@ -1,6 +1,6 @@
 # Autonomous sub-agent orchestration design
 
-**Status:** research/design only; no production deployment or feature flag change is included.
+**Status:** phase-1 local synthetic contract and phase-3 local synthetic high-risk approval cascade are implemented for verification only; production deployment, native Agent/Task delegation and feature-flag enablement remain disabled.
 
 **Review date:** 2026-11-05
 
@@ -8,7 +8,7 @@
 
 This note answers whether and how the current server could add autonomous child agents. It is based on a read-only inspection of the local source and contracts, plus the primary sources linked below. It does not claim that the pinned `claude_agent_sdk` version in this checkout supports every current Agent SDK or Managed Agents feature. Provider billing, real customer MCP behavior, load limits, and cross-process recovery have not been qualified.
 
-The proposed controls are design requirements. They are not evidence that a child-agent implementation already exists.
+The proposed production controls remain design requirements. The local phase-1 evidence is intentionally narrower and is recorded in [SUBAGENT_LOCAL_PRIORITY1_2026-11-06.md](../evidence/SUBAGENT_LOCAL_PRIORITY1_2026-11-06.md). The phase-3 synthetic child-approval cascade is recorded in [SUBAGENT_APPROVAL_CASCADE_PRIORITY3_2026-11-07.md](../evidence/SUBAGENT_APPROVAL_CASCADE_PRIORITY3_2026-11-07.md). Neither is evidence that a production child-agent implementation already exists.
 
 ## Current runtime boundary
 
@@ -86,4 +86,3 @@ Memory handoff should be explicit and provenance-bearing. A parent may pass a bo
 - Provider cost may remain unknown for DeepSeek/other routes. A child budget reservation can bound requested work, but it cannot manufacture provider billing data.
 - Cross-process durable children, distributed leases, and remote MCP side-effect semantics need dedicated acceptance tests. The current process-local actor map is not a distributed coordinator.
 - Native model “parallel tool use” is different from parallel child agents. Tool-call concurrency must still obey per-tool authorization, side-effect ordering and approval policy.
-

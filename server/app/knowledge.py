@@ -26,6 +26,7 @@ MAX_PAGES = 200
 MAX_TEXT = 2_000_000
 MAX_CHUNKS = 5000
 MODEL = "BAAI/bge-small-zh-v1.5"
+GRAPH_STOPWORDS = {"设备", "系统", "数据", "文件", "内容", "说明", "检查", "需要", "可以", "以及", "进行", "其中", "这个", "当前"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS knowledge_bases(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,
  owner_id TEXT NOT NULL,scope TEXT NOT NULL,enabled INTEGER NOT NULL,default_for_new_assistants INTEGER NOT NULL DEFAULT 0,
@@ -45,6 +46,14 @@ CREATE INDEX IF NOT EXISTS knowledge_chunks_document ON knowledge_chunks(documen
 CREATE TABLE IF NOT EXISTS knowledge_run_snapshots(run_id TEXT PRIMARY KEY,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS knowledge_run_documents(run_id TEXT NOT NULL,document_id TEXT NOT NULL,version INTEGER NOT NULL,
  PRIMARY KEY(run_id,document_id));
+CREATE TABLE IF NOT EXISTS knowledge_graph_nodes(id TEXT PRIMARY KEY,kb_id TEXT NOT NULL,document_id TEXT NOT NULL,version INTEGER NOT NULL,
+ label TEXT NOT NULL,normalized TEXT NOT NULL,kind TEXT NOT NULL,source_page INTEGER,source_paragraph INTEGER,source_start INTEGER,source_end INTEGER,
+ created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS knowledge_graph_edges(id TEXT PRIMARY KEY,kb_id TEXT NOT NULL,document_id TEXT NOT NULL,version INTEGER NOT NULL,
+ source_node_id TEXT NOT NULL,target_node_id TEXT NOT NULL,relation TEXT NOT NULL,source_page INTEGER,source_paragraph INTEGER,source_start INTEGER,source_end INTEGER,
+ created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS knowledge_graph_nodes_kb ON knowledge_graph_nodes(kb_id,document_id,version);
+CREATE INDEX IF NOT EXISTS knowledge_graph_edges_kb ON knowledge_graph_edges(kb_id,document_id,version);
 """
 
 
@@ -126,6 +135,99 @@ class DocumentParser:
         self.ocr = None
         self.lock = threading.Lock()
 
+    def ocr_image(self, path):
+        """Run optional local OCR for raster uploads without network access."""
+        try:
+            import numpy as np
+            from PIL import Image
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError as exc:
+            raise AppError(422, "OCR_REQUIRED", "图片需要安装本地 OCR 组件后重新索引") from exc
+        with self.lock:
+            if self.ocr is None:
+                self.ocr = RapidOCR(intra_op_num_threads=2, inter_op_num_threads=1)
+            try:
+                with Image.open(path) as image:
+                    image.thumbnail((2600, 2600))
+                    pixels = np.asarray(image.convert("RGB")).copy()
+            except Exception as exc:
+                raise AppError(422, "INVALID_DOCUMENT", "图片文件无法读取") from exc
+            result, _ = self.ocr(pixels)
+            return "\n".join(item[1] for item in (result or []) if len(item) > 2 and float(item[2]) >= 0.35)
+
+    @staticmethod
+    def _xlsx_column(reference):
+        letters = re.match(r"[A-Z]+", reference or "")
+        if not letters:
+            return 0
+        value = 0
+        for char in letters.group(0):
+            value = value * 26 + ord(char) - ord("A") + 1
+        return value - 1
+
+    def parse_xlsx(self, path):
+        """Extract bounded worksheet rows using only the standard library."""
+        namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if len(entries) > 10000 or sum(item.file_size for item in entries) > 100 * 1024 * 1024:
+                raise AppError(413, "DOCUMENT_TOO_LARGE", "文档解压大小超过处理上限")
+            names = set(archive.namelist())
+            shared = []
+            if "xl/sharedStrings.xml" in names:
+                raw = archive.read("xl/sharedStrings.xml")
+                if b"<!DOCTYPE" in raw or b"<!ENTITY" in raw:
+                    raise AppError(422, "INVALID_DOCUMENT", "文档 XML 结构不受支持")
+                root = ElementTree.fromstring(raw)
+                shared = ["".join(item.itertext()) for item in root.findall(f"{{{namespace}}}si")]
+            sheet_names = []
+            if "xl/workbook.xml" in names:
+                raw = archive.read("xl/workbook.xml")
+                if b"<!DOCTYPE" in raw or b"<!ENTITY" in raw:
+                    raise AppError(422, "INVALID_DOCUMENT", "文档 XML 结构不受支持")
+                root = ElementTree.fromstring(raw)
+                sheet_names = [item.attrib.get("name", f"Sheet {index + 1}") for index, item in enumerate(root.findall(f".//{{{namespace}}}sheet"))]
+            worksheet_names = sorted((name for name in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", name)), key=lambda value: int(re.search(r"(\d+)", value).group(1)))
+            if not worksheet_names:
+                raise AppError(422, "EMPTY_DOCUMENT", "Excel 文件没有可读取的工作表")
+            if len(worksheet_names) > MAX_PAGES:
+                raise AppError(413, "DOCUMENT_TOO_LARGE", f"单个知识文档最多支持 {MAX_PAGES} 个工作表")
+            pages = []
+            for index, worksheet in enumerate(worksheet_names):
+                raw = archive.read(worksheet)
+                if b"<!DOCTYPE" in raw or b"<!ENTITY" in raw:
+                    raise AppError(422, "INVALID_DOCUMENT", "文档 XML 结构不受支持")
+                root = ElementTree.fromstring(raw)
+                rows = []
+                for row in root.findall(f".//{{{namespace}}}row"):
+                    cells = {}
+                    for cell in row.findall(f"{{{namespace}}}c"):
+                        value = cell.find(f"{{{namespace}}}v")
+                        if cell.attrib.get("t") == "inlineStr":
+                            text = "".join(cell.find(f"{{{namespace}}}is").itertext()) if cell.find(f"{{{namespace}}}is") is not None else ""
+                        elif value is None:
+                            text = ""
+                        else:
+                            text = value.text or ""
+                            if cell.attrib.get("t") == "s":
+                                try:
+                                    text = shared[int(text)]
+                                except (IndexError, ValueError):
+                                    text = ""
+                            elif cell.attrib.get("t") == "b":
+                                text = "是" if text == "1" else "否"
+                        cells[self._xlsx_column(cell.attrib.get("r"))] = text.strip()
+                    if cells:
+                        width = max(cells) + 1
+                        line = "\t".join(cells.get(column, "") for column in range(width)).rstrip()
+                        if line:
+                            rows.append(line)
+                text = "\n".join(rows)
+                if text.strip():
+                    title = sheet_names[index] if index < len(sheet_names) else f"Sheet {index + 1}"
+                    pages.append({"page": index + 1, "text": f"[{title}]\n{text}", "extraction": "xlsx-cells"})
+            return pages
+
     def ocr_page(self, page):
         try:
             import numpy as np
@@ -190,6 +292,8 @@ class DocumentParser:
                 ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
                 text = "\n\n".join("".join(p.itertext()) for p in root.findall(".//w:p", ns))
                 pages = [{"page": 1, "text": text, "extraction": "docx-paragraphs"}]
+        elif suffix == ".xlsx":
+            pages = self.parse_xlsx(path)
         elif suffix in {".txt", ".md", ".csv", ".json"}:
             raw = path.read_bytes()
             encoding = "utf-16" if raw[:2] in {b"\xff\xfe", b"\xfe\xff"} else "utf-8-sig"
@@ -197,8 +301,11 @@ class DocumentParser:
             if "\x00" in text:
                 raise AppError(422, "INVALID_DOCUMENT", "文件内容不是可读取的文本")
             pages = [{"page": 1, "text": text, "extraction": "text"}]
+        elif suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+            text = self.ocr_image(path)
+            pages = [{"page": 1, "text": text, "extraction": "local-ocr"}]
         else:
-            raise AppError(415, "DOCUMENT_TYPE_UNSUPPORTED", "支持 PDF、DOCX、Markdown、TXT、CSV 和 JSON 文件")
+            raise AppError(415, "DOCUMENT_TYPE_UNSUPPORTED", "支持 PDF、DOCX、XLSX、Markdown、TXT、CSV、JSON 和常见图片文件")
         if sum(len(page["text"]) for page in pages) > MAX_TEXT:
             raise AppError(413, "DOCUMENT_TOO_LARGE", "文档文本超过处理上限")
         if not any(page["text"].strip() for page in pages):
@@ -315,9 +422,9 @@ class KnowledgeService:
         self.require(kb_id, user, edit=True)
         name = safe_name(name)
         suffix = Path(name).suffix.lower()
-        mime = {".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv", ".json": "application/json"}.get(suffix)
+        mime = {".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv", ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp", ".tif": "image/tiff", ".tiff": "image/tiff"}.get(suffix)
         if not mime:
-            raise AppError(415, "DOCUMENT_TYPE_UNSUPPORTED", "支持 PDF、DOCX、Markdown、TXT、CSV 和 JSON 文件")
+            raise AppError(415, "DOCUMENT_TYPE_UNSUPPORTED", "支持 PDF、DOCX、XLSX、Markdown、TXT、CSV、JSON 和常见图片文件")
         if not data or len(data) > self.service.settings.upload_max_bytes:
             raise AppError(413, "DOCUMENT_TOO_LARGE", "文件为空或超过上传大小限制")
         digest, stamp = hashlib.sha256(data).hexdigest(), now()
@@ -359,10 +466,80 @@ class KnowledgeService:
                     self.db.execute("INSERT INTO knowledge_pages VALUES(?,?,?,?,?)", (document_id, version, page["page"], page["text"], page["extraction"]))
                 for chunk, vector in zip(chunks, vectors):
                     self.db.execute("INSERT INTO knowledge_chunks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (chunk["id"], document_id, version, chunk["page"], chunk["section"], chunk["paragraph"], chunk["start"], chunk["end"], chunk["text"], dump(terms(chunk["text"])), dump(vector), self.embeddings.name))
+                self._build_graph(document_id, version, chunks)
                 self.db.execute("UPDATE knowledge_versions SET status='ready',error=NULL,page_count=?,chunk_count=?,extraction=?,embedding_model=? WHERE document_id=? AND version=?", (len(pages), len(chunks), dump(sorted({page["extraction"] for page in pages})), self.embeddings.name, document_id, version))
         except Exception as exc:
             message = exc.message if isinstance(exc, AppError) else "文档解析或索引失败，请检查格式后重试"
             self.db.execute("UPDATE knowledge_versions SET status=?,error=? WHERE document_id=? AND version=?", ("needs_ocr" if isinstance(exc, AppError) and exc.code == "OCR_REQUIRED" else "failed", message, document_id, version))
+
+    def _build_graph(self, document_id, version, chunks):
+        """Build a deterministic, source-linked co-occurrence graph for a version."""
+        document = self.db.one("SELECT kb_id FROM knowledge_documents WHERE id=?", (document_id,))
+        if not document:
+            return
+        kb_id = document["kb_id"]
+        stamp = now()
+        self.db.execute("DELETE FROM knowledge_graph_edges WHERE document_id=? AND version=?", (document_id, version))
+        self.db.execute("DELETE FROM knowledge_graph_nodes WHERE document_id=? AND version=?", (document_id, version))
+        nodes = {}
+        edges = {}
+        for chunk in chunks:
+            labels = []
+            for value in re.findall(r"[\u3400-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_-]{2,30}", chunk["text"]):
+                normalized = value.casefold().strip(" _-")
+                if len(normalized) < 2 or normalized in GRAPH_STOPWORDS or normalized in labels:
+                    continue
+                labels.append(normalized)
+                if len(labels) >= 8:
+                    break
+            if len(labels) < 1:
+                continue
+            source = (chunk["page"], chunk["paragraph"], chunk["start"], chunk["end"])
+            node_ids = []
+            for normalized in labels:
+                node_id = hashlib.sha256(f"{kb_id}:{document_id}:{version}:{normalized}".encode()).hexdigest()[:32]
+                node_ids.append(node_id)
+                nodes.setdefault(node_id, {"id": node_id, "label": normalized, "normalized": normalized, "kind": "term" if normalized.isascii() else "entity", "source": source})
+            for left, right in zip(node_ids, node_ids[1:]):
+                source_id, target_id = sorted((left, right))
+                edge_id = hashlib.sha256(f"{document_id}:{version}:{source_id}:{target_id}:{chunk['id']}".encode()).hexdigest()[:32]
+                edges.setdefault(edge_id, {"id": edge_id, "source": source_id, "target": target_id, "relation": "co_occurs", "location": source})
+        for node in nodes.values():
+            page, paragraph, start, end = node["source"]
+            self.db.execute("INSERT INTO knowledge_graph_nodes VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (node["id"], kb_id, document_id, version, node["label"], node["normalized"], node["kind"], page, paragraph, start, end, stamp))
+        for edge in edges.values():
+            page, paragraph, start, end = edge["location"]
+            self.db.execute("INSERT INTO knowledge_graph_edges VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (edge["id"], kb_id, document_id, version, edge["source"], edge["target"], edge["relation"], page, paragraph, start, end, stamp))
+
+    def graph(self, kb_id, user, query=None, limit=120):
+        self.require(kb_id, user)
+        limit = max(1, min(200, int(limit)))
+        values = [kb_id]
+        query_clause = ""
+        if query and query.strip():
+            query_clause = " AND (n.label LIKE ? OR n.normalized LIKE ?)"
+            needle = f"%{query.strip()[:80]}%"
+            values.extend([needle, needle])
+        values.append(limit)
+        nodes = self.db.all(f"""SELECT n.* FROM knowledge_graph_nodes n
+            JOIN knowledge_documents d ON d.id=n.document_id AND d.current_version=n.version AND d.deleted=0
+            JOIN knowledge_versions v ON v.document_id=n.document_id AND v.version=n.version AND v.status='ready'
+            WHERE n.kb_id=?{query_clause} ORDER BY n.label,n.id LIMIT ?""", values)
+        node_ids = {node["id"] for node in nodes}
+        edges = []
+        if node_ids:
+            placeholders = ",".join("?" for _ in node_ids)
+            edge_values = [kb_id, *node_ids, *node_ids]
+            edges = self.db.all(f"""SELECT e.* FROM knowledge_graph_edges e
+                JOIN knowledge_documents d ON d.id=e.document_id AND d.current_version=e.version AND d.deleted=0
+                JOIN knowledge_versions v ON v.document_id=e.document_id AND v.version=e.version AND v.status='ready'
+                WHERE e.kb_id=? AND e.source_node_id IN ({placeholders}) AND e.target_node_id IN ({placeholders})
+                ORDER BY e.id LIMIT ?""", [*edge_values, limit * 3])
+        def source(row):
+            return {"document_id": row["document_id"], "version": row["version"], "page": row["source_page"], "paragraph": row["source_paragraph"], "start": row["source_start"], "end": row["source_end"]}
+        return {"nodes": [{"id": row["id"], "label": row["label"], "kind": row["kind"], "source": source(row)} for row in nodes],
+                "edges": [{"id": row["id"], "source": row["source_node_id"], "target": row["target_node_id"], "relation": row["relation"], "provenance": source(row)} for row in edges],
+                "versioned": True, "source": "local-extraction", "query": query or ""}
 
     def reindex(self, document_id, user):
         self.document(document_id, user, edit=True)
@@ -531,6 +708,9 @@ def create_knowledge_router(svc, authenticated):
     @router.get("/knowledge-bases/{kb_id}/documents")
     def documents(kb_id: str, user=Depends(authenticated), service=Depends(svc)):
         return service.knowledge.documents(kb_id, user)
+    @router.get("/knowledge-bases/{kb_id}/graph")
+    def graph(kb_id: str, q: str | None = Query(default=None, max_length=80), limit: int = Query(default=120, ge=1, le=200), user=Depends(authenticated), service=Depends(svc)):
+        return service.knowledge.graph(kb_id, user, q, limit)
     async def ingest(kb_id, file, user, service, document_id=None):
         service.knowledge.require(kb_id, user, edit=True)
         data = await file.read(service.settings.upload_max_bytes + 1)
