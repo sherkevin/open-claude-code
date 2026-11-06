@@ -8,6 +8,8 @@
 | [TASK_BRIEF_FOR_NEXT_AGENT_2026-11-06.md](TASK_BRIEF_FOR_NEXT_AGENT_2026-11-06.md) | **任务说明**：身份位置、硬性约束、五分钟上手、第一轮任务、阶段路线、交付规范 |
 | [sessions/01a1af39-..._transcript.md](sessions/01a1af39-f0d7-7b03-aa48-e4552a4059a1_transcript.md) | 上一个 Codex 会话的可读记录（用户决策 + 助手汇报 + 关键命令） |
 | [sessions/01a1af39-....jsonl](sessions/01a1af39-f0d7-7b03-aa48-e4552a4059a1.jsonl) | 原始 rollout（928 条记录，未删改） |
+| [sessions/dsh-session-a3e1f28a_transcript.md](sessions/dsh-session-a3e1f28a_transcript.md) | 本窗口（DSH）操作记录：用户请求、助手回复、工具调用 |
+| [sessions/dsh-session-a3e1f28a.jsonl](sessions/dsh-session-a3e1f28a.jsonl) | 本窗口原始记录（695 条，含模型推理与工具输出） |
 
 配套材料（项目原有）：
 
