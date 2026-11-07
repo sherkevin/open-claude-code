@@ -223,3 +223,9 @@ class WorkflowRollback(InputModel):
 class WorkflowRunRequest(InputModel):
     input: dict[str, object] = Field(default_factory=dict, max_length=30)
     conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class WorkflowNodeDebugRequest(InputModel):
+    """Bounded input for testing one draft agent node before publishing."""
+
+    input: dict[str, object] = Field(default_factory=dict, max_length=30)

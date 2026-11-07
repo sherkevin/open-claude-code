@@ -190,3 +190,56 @@ def test_model_mode_is_limited_to_agent_nodes():
     with pytest.raises(AppError) as error:
         validate_graph(payload)
     assert error.value.code == "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN"
+
+
+def test_model_agent_node_debug_runs_draft_and_records_audited_trace(monkeypatch, client):
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-debug-token")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"type": "text", "text": "草稿节点调试结果。"}]}
+
+    class FakeClient:
+        calls = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, endpoint, json):
+            self.calls.append({"endpoint": endpoint, "json": json})
+            return FakeResponse()
+
+    monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
+    assistant = client.post(f"/api/v1/assistants", json={"name": "节点调试助手", "instructions": "只输出可核验结论"}).json()
+    graph = {
+        "nodes": [
+            {"id": "review", "type": "agent", "label": "审核草稿", "config": {"mode": "model", "model_id": "legacy-model", "role": "审核员", "system_prompt": "只依据输入回答", "prompt": "判断是否通过"}},
+            {"id": "approval", "type": "approval", "label": "人工确认", "config": {}},
+        ],
+        "edges": [{"source": "review", "target": "approval", "label": "交给人工"}],
+    }
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "节点调试", "graph": graph}).json()
+
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/nodes/review/debug", json={"input": {"amount": 1200}})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["version"] == workflow["draft_version"]
+    assert run["synthetic"] is False and run["output"]["debug"] is True
+    assert run["output"]["node_output"] == "草稿节点调试结果。"
+    assert run["permission_snapshot"]["debug_node_id"] == "review"
+    assert run["trace"][0]["model_label"]
+    assert FakeClient.calls[0]["json"]["model"] == "deepseek-v4.1-flash-1017"
+    fetched = client.get(f"/api/v1/workflow-runs/{run['id']}")
+    assert fetched.status_code == 200 and fetched.json()["output"]["debug"] is True
+
+    rejected = client.post(f"/api/v1/workflows/{workflow['id']}/nodes/approval/debug", json={})
+    assert rejected.status_code == 409 and rejected.json()["error"]["code"] == "WORKFLOW_NODE_NOT_MODEL"

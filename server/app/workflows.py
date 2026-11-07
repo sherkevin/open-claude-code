@@ -19,6 +19,7 @@ from .models import (
     WorkflowCreate,
     WorkflowDraftPatch,
     WorkflowGraph,
+    WorkflowNodeDebugRequest,
     WorkflowRollback,
     WorkflowRunRequest,
     WorkflowTemplateCreate,
@@ -569,6 +570,122 @@ def _insert_workflow_run(service, *, run_id: str, workflow_id: str, conversation
     )
 
 
+async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNodeDebugRequest, user):
+    """Execute one draft agent node and persist the bounded debug trace."""
+
+    row = _editable(service, workflow_id, user)
+    if len(json.dumps(body.input, ensure_ascii=False).encode("utf-8")) > _MAX_JSON:
+        raise AppError(422, "WORKFLOW_INPUT_TOO_LARGE", "工作流输入超过大小限制")
+    list(_walk_values(body.input))
+    version = service.db.one("SELECT * FROM workflow_versions WHERE workflow_id=? AND version=?", (workflow_id, row["draft_version"]))
+    if not version:
+        raise AppError(409, "WORKFLOW_DRAFT_MISSING", "没有可调试的工作流草稿")
+    graph, graph_hash, _ = validate_graph(json.loads(version["graph"]))
+    if graph_hash != version["graph_hash"]:
+        raise AppError(409, "WORKFLOW_VERSION_CORRUPT", "工作流版本校验失败")
+    node = next((item for item in graph["nodes"] if item["id"] == node_id), None)
+    if not node:
+        raise AppError(404, "WORKFLOW_NODE_NOT_FOUND", "工作流节点不存在")
+    config = node.get("config") or {}
+    if node["type"] != "agent" or config.get("mode", "synthetic") != "model":
+        raise AppError(409, "WORKFLOW_NODE_NOT_MODEL", "只有模型执行的智能体节点可以调试")
+
+    assistant = service.usable_assistant(row["assistant_id"], user)
+    selection = _agent_selection(service, assistant, config)
+    safe_input = _validated_input(graph, body.input)
+    public_model = {key: selection[key] for key in ("model_id", "model_label", "reasoning_level")}
+    permission_payload = {
+        "assistant_id": assistant["id"],
+        "assistant_revision": assistant["revision"],
+        "workflow_revision": row["revision"],
+        "workflow_version": version["version"],
+        "debug_node_id": node_id,
+        "user_id": user["id"],
+        "models": [public_model],
+    }
+    permission_digest = hashlib.sha256(json.dumps(permission_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    permission_snapshot = {
+        "schema_version": 2,
+        "mode": "model",
+        "debug": True,
+        "debug_node_id": node_id,
+        "assistant_id": assistant["id"],
+        "assistant_revision": assistant["revision"],
+        "assistant_scope": assistant.get("scope", "private"),
+        "workflow_id": workflow_id,
+        "workflow_revision": row["revision"],
+        "workflow_version": version["version"],
+        "user_id": user["id"],
+        "user_role": user.get("role"),
+        "models": [{"node_id": node_id, **public_model}],
+    }
+    run_id, timestamp = uid(), now()
+    role, system_prompt = _agent_system_prompt(assistant, config)
+    trace: list[dict] = []
+    try:
+        text = await _invoke_agent_model(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config), config)
+        trace.append({
+            "sequence": 1,
+            "node_id": node_id,
+            "node_type": "agent",
+            "status": "completed",
+            "external_call": True,
+            "approval_required": False,
+            "model_id": selection["model_id"],
+            "model_label": selection["model_label"],
+            "reasoning_level": selection["reasoning_level"],
+            "role": role,
+            "output_preview": text[:600],
+        })
+        output = {
+            "debug": True,
+            "synthetic": False,
+            "execution_mode": "model",
+            "workflow_id": workflow_id,
+            "version": version["version"],
+            "graph_hash": graph_hash,
+            "completed_nodes": 1,
+            "node_id": node_id,
+            "input": safe_input,
+            "node_output": text,
+            "agent_outputs": {node_id: text},
+            "permission_snapshot": permission_snapshot,
+        }
+        with service.db.transaction():
+            _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="succeeded", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp)
+        return {"id": run_id, "workflow_id": workflow_id, "conversation_id": None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": False, "execution_mode": "model", "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
+    except AppError as error:
+        trace.append({
+            "sequence": 1,
+            "node_id": node_id,
+            "node_type": "agent",
+            "status": "failed",
+            "external_call": True,
+            "approval_required": False,
+            "model_id": selection["model_id"],
+            "model_label": selection["model_label"],
+            "reasoning_level": selection["reasoning_level"],
+            "role": role,
+            "error_code": error.code,
+        })
+        output = {
+            "debug": True,
+            "synthetic": False,
+            "execution_mode": "model",
+            "workflow_id": workflow_id,
+            "version": version["version"],
+            "graph_hash": graph_hash,
+            "completed_nodes": 0,
+            "node_id": node_id,
+            "input": safe_input,
+            "agent_outputs": {},
+            "permission_snapshot": permission_snapshot,
+        }
+        with service.db.transaction():
+            _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="failed", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp, error=error.message)
+        raise
+
+
 async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
     row = _readable(service, workflow_id, user)
     conversation = _bind_conversation(service, row, body.conversation_id, user)
@@ -779,6 +896,10 @@ def create_workflow_router(service_dependency, authenticated):
     @router.post("/workflows/{workflow_id}/runs", status_code=201)
     async def run(workflow_id: str, body: WorkflowRunRequest, user=Depends(authenticated), service=Depends(service_dependency)):
         return await run_workflow(service, workflow_id, body, user)
+
+    @router.post("/workflows/{workflow_id}/nodes/{node_id}/debug", status_code=201)
+    async def debug(workflow_id: str, node_id: str, body: WorkflowNodeDebugRequest, user=Depends(authenticated), service=Depends(service_dependency)):
+        return await debug_node(service, workflow_id, node_id, body, user)
 
     @router.get("/workflow-runs/{run_id}")
     def get_run(run_id: str, user=Depends(authenticated), service=Depends(service_dependency)):
