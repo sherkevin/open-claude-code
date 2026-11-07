@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceEdgeKeys, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceEdgeKeys, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -106,6 +106,39 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowReferenceEdgeKeys(graph, 'review', 'archive')).toEqual(['review->archive']);
     expect(workflowReferenceEdgeKeys({ ...graph, edges: [{ source: 'review', target: 'explain', label: '结果' }, { source: 'explain', target: 'archive', label: '继续' }] }, 'review', 'archive')).toEqual(['review->explain', 'explain->archive']);
     expect(workflowReferenceEdgeKeys(graph, 'archive', 'review')).toEqual([]);
+  });
+
+  it('extracts references from conditions, knowledge queries, and tool arguments', () => {
+    const condition = { id: 'gate', type: 'condition' as const, label: '判断', config: { value_source: 'node.review.output.score' } };
+    const knowledge = { id: 'lookup', type: 'knowledge_search' as const, label: '检索', config: { query: '请查 {{input.topic}}，再核对 {{node.review.output.decision}}' } };
+    const tool = { id: 'read', type: 'mcp_read' as const, label: '读取', config: { arguments_json: '{"query":"{{input.topic}}","filters":{"decision":"{{node.review.output.decision}}"}}' } };
+    expect(workflowTemplateReferences(knowledge.config.query)).toEqual(['input.topic', 'node.review.output.decision']);
+    expect(workflowNodeReferences(condition)).toEqual([{ key: '判断值来源', source: 'node.review.output.score' }]);
+    expect(workflowNodeReferences(knowledge)).toEqual([
+      { key: '检索问题', source: 'input.topic' },
+      { key: '检索问题', source: 'node.review.output.decision' },
+    ]);
+    expect(workflowNodeReferences(tool)).toEqual([
+      { key: '工具参数 · query', source: 'input.topic' },
+      { key: '工具参数 · filters.decision', source: 'node.review.output.decision' },
+    ]);
+  });
+
+  it('includes non-agent consumers in the downstream reference map', () => {
+    const graph = {
+      nodes: [
+        { id: 'review', type: 'agent' as const, label: '审核', config: {} },
+        { id: 'lookup', type: 'knowledge_search' as const, label: '检索', config: { query: '{{node.review.output.decision}}' } },
+        { id: 'gate', type: 'condition' as const, label: '判断', config: { value_source: 'node.review.output.decision' } },
+        { id: 'read', type: 'mcp_read' as const, label: '读取', config: { arguments_json: '{"decision":"{{node.review.output.decision}}"}' } },
+      ],
+      edges: [{ source: 'review', target: 'lookup', label: '依据' }, { source: 'lookup', target: 'gate', label: '判断' }, { source: 'gate', target: 'read', label: '继续' }],
+    };
+    expect(workflowDownstreamReferences(graph, 'review', 'decision')).toEqual([
+      { node_id: 'lookup', node_label: '检索', key: '检索问题', source: 'node.review.output.decision' },
+      { node_id: 'gate', node_label: '判断', key: '判断值来源', source: 'node.review.output.decision' },
+      { node_id: 'read', node_label: '读取', key: '工具参数 · decision', source: 'node.review.output.decision' },
+    ]);
   });
 
   it('resolves run input and structured output references for trace previews', () => {
