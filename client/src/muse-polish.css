@@ -379,6 +379,7 @@
 }
 .muse-theme .zhixing-flowgram-editor,
 .muse-theme .zhixing-flowgram-shell .gedit-playground { position: absolute; inset: 0; }
+.muse-theme .zhixing-flowgram-loading { display: grid; height: 560px; min-height: 420px; place-items: center; border: 1px dashed #d9e5d3; border-radius: 3px; color: #789070; background: #f6f8f1; font-size: 11px; letter-spacing: .04em; }
 .muse-theme .zhixing-flowgram-shell .gedit-playground { background: var(--g-editor-background); }
 .muse-theme .zhixing-flowgram-shell .gedit-playground-pipeline { background-image: radial-gradient(circle, rgba(111, 148, 100, .16) 1px, transparent 1px); background-size: 22px 22px; }
 .muse-theme .zhixing-flowgram-shell .gedit-flow-activity-node { z-index: 20; }
@@ -428,6 +429,7 @@
 .muse-theme .workflow-canvas-legend .legend-draft { background: #8d6b8f; box-shadow: 0 0 0 3px #f0e7f1; }
 @media (max-width: 760px) {
   .muse-theme .zhixing-flowgram-shell { height: 470px; min-height: 380px; }
+  .muse-theme .zhixing-flowgram-loading { height: 470px; min-height: 380px; }
   .muse-theme .zhixing-flow-node { width: 196px; }
   .muse-theme .zhixing-flowgram-toolbar { left: 10px; bottom: 10px; }
   .muse-theme .workflow-canvas-legend { gap: 9px; }
