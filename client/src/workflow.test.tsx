@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, parseWorkflowInputBindings, topologicalOrder, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, parseWorkflowInputBindings, topologicalOrder, workflowConditionIssue, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -48,5 +48,14 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowKnowledgeIssue(graph)).toBe('');
     expect(workflowKnowledgeIssue({ ...graph, nodes: [{ ...graph.nodes[0] }, { ...graph.nodes[1], config: { query: '{{node.future.output}}' } }], edges: graph.edges })).toContain('来源节点不存在');
     expect(workflowKnowledgeIssue({ ...graph, nodes: [{ ...graph.nodes[0] }, { ...graph.nodes[1], config: { top_k: 21 } }], edges: graph.edges })).toContain('召回条数');
+  });
+
+  it('requires labeled exits for a condition branch', () => {
+    const graph = {
+      nodes: [{ id: 'gate', type: 'condition' as const, label: '判断', config: { field: 'amount', operator: 'gt', value: 5000 } }, { id: 'next', type: 'artifact' as const, label: '下一步', config: {} }, { id: 'other', type: 'artifact' as const, label: '另一步', config: {} }],
+      edges: [{ source: 'gate', target: 'next', label: '' }, { source: 'gate', target: 'other', label: '' }],
+    };
+    expect(workflowConditionIssue(graph)).toContain('填写连线标签');
+    expect(workflowConditionIssue({ ...graph, edges: [{ ...graph.edges[0], label: 'high' }, { ...graph.edges[1], label: 'low' }] })).toBe('');
   });
 });

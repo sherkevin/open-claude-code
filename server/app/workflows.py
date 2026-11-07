@@ -48,6 +48,7 @@ _MAX_AGENT_CONTEXT = 12_000
 _MAX_AGENT_OUTPUT = 12_000
 _MAX_KNOWLEDGE_QUERY = 2_000
 _MAX_KNOWLEDGE_CONTEXT = 12_000
+_CONDITION_OPERATORS = {"exists", "eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"}
 
 
 _TEMPLATE_DEFINITIONS = {
@@ -94,6 +95,24 @@ _TEMPLATE_DEFINITIONS = {
         },
     },
 }
+
+_WORKFLOW_RUNTIME_SCHEMA = """
+CREATE TABLE IF NOT EXISTS workflow_approvals(
+    id TEXT PRIMARY KEY,
+    workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+    workflow_id TEXT NOT NULL REFERENCES workflows(id),
+    node_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL,
+    decision TEXT,
+    comment TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by TEXT REFERENCES users(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_approvals_run_node ON workflow_approvals(workflow_run_id,node_id);
+CREATE INDEX IF NOT EXISTS workflow_approvals_pending ON workflow_approvals(status,created_at);
+"""
 
 
 def _template(template_id: str) -> dict:
@@ -227,6 +246,23 @@ def _validate_knowledge_config(config: dict) -> None:
         raise AppError(422, "WORKFLOW_KNOWLEDGE_CONFIG_INVALID", "知识检索上下文长度超出限制")
 
 
+def _validate_condition_config(config: dict) -> None:
+    operator = config.get("operator")
+    if operator is not None and operator not in _CONDITION_OPERATORS:
+        raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支运算符不在允许范围内")
+    field = config.get("field")
+    if field is not None and (not isinstance(field, str) or not _FIELD_ID.fullmatch(field)):
+        raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支字段必须使用英文标识")
+    required_fields = config.get("required_fields")
+    if required_fields is not None:
+        if not isinstance(required_fields, list) or len(required_fields) > 30 or any(not isinstance(item, str) or not item.strip() or len(item) > 120 for item in required_fields):
+            raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支必填字段配置无效")
+    for key in ("true_label", "false_label"):
+        value = config.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 120):
+            raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支标签配置无效")
+
+
 def _agent_selection(service, assistant: dict, config: dict) -> dict:
     """Resolve a node's public model selection and pin its provider digest."""
 
@@ -275,6 +311,8 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
         _validate_form_fields(config)
         if node_type == "knowledge_search":
             _validate_knowledge_config(config)
+        if node_type == "condition":
+            _validate_condition_config(config)
         mode = config.get("mode")
         if mode is not None and mode not in {"synthetic", "model"}:
             raise AppError(422, "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN", "当前工作流只允许 synthetic 或 model 执行模式")
@@ -340,6 +378,17 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
                     raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_INVALID", f"知识检索问题引用的来源节点不存在：{source_id}")
                 if source_id == node_id or order_index[source_id] >= order_index[node_id]:
                     raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_ORDER", "知识检索问题只能引用已经完成的上游节点输出")
+
+    condition_edges: dict[str, list[dict]] = defaultdict(list)
+    for edge in canonical_edges:
+        condition_edges[edge["source"]].append(edge)
+    for node_id, node in node_map.items():
+        if node["type"] != "condition" or len(condition_edges[node_id]) <= 1:
+            continue
+        # Validate both outcomes while saving the graph so a published run
+        # cannot discover a missing branch label only after receiving input.
+        _condition_selected_edges(node, condition_edges[node_id], True)
+        _condition_selected_edges(node, condition_edges[node_id], False)
 
     canonical = {"nodes": [node_map[node_id] for node_id in sorted(node_map)], "edges": sorted(canonical_edges, key=lambda item: (item["source"], item["target"], item["label"]))}
     serialized = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -805,6 +854,105 @@ def _simulated_node_output(node: dict) -> str:
     return json.dumps({"status": "simulated", "node_id": node["id"], "node_type": node["type"]}, ensure_ascii=False, separators=(",", ":"))
 
 
+def _skipped_node_output(node: dict, reason: str = "condition_branch") -> str:
+    return json.dumps({"status": "skipped", "node_id": node["id"], "node_type": node["type"], "reason": reason}, ensure_ascii=False, separators=(",", ":"))
+
+
+def _condition_value(config: dict, safe_input: dict):
+    field = config.get("field")
+    if not field and "amount_limit" in config:
+        field = "amount"
+    return field, safe_input.get(field) if isinstance(field, str) else None
+
+
+def _condition_result(node: dict, safe_input: dict) -> dict:
+    """Evaluate a deterministic, input-only branch without invoking a model."""
+
+    config = node.get("config") or {}
+    required_fields = config.get("required_fields")
+    if isinstance(required_fields, list) and required_fields:
+        aliases = {"金额": "amount", "事由": "reason", "日期": "date"}
+        missing = []
+        for field in required_fields:
+            key = aliases.get(field, field)
+            if key not in safe_input or safe_input[key] in (None, "", []):
+                missing.append(field)
+        return {"kind": "condition", "result": not missing, "operator": "required", "missing": missing, "reason": "required_fields"}
+
+    field, actual = _condition_value(config, safe_input)
+    expected = config.get("value", config.get("amount_limit"))
+    operator = config.get("operator") or ("lte" if "amount_limit" in config else "exists")
+    result = False
+    if operator == "exists":
+        result = actual not in (None, "", [])
+    elif operator == "eq":
+        result = actual == expected
+    elif operator == "neq":
+        result = actual != expected
+    elif operator in {"gt", "gte", "lt", "lte"}:
+        try:
+            if isinstance(actual, bool) or isinstance(expected, bool):
+                result = False
+            elif operator == "gt":
+                result = actual > expected
+            elif operator == "gte":
+                result = actual >= expected
+            elif operator == "lt":
+                result = actual < expected
+            else:
+                result = actual <= expected
+        except TypeError:
+            result = False
+    elif operator == "contains":
+        try:
+            result = expected in actual
+        except TypeError:
+            result = False
+    elif operator == "in":
+        result = isinstance(expected, list) and actual in expected
+    return {"kind": "condition", "result": bool(result), "operator": operator, "field": field, "expected": expected, "actual": actual, "reason": "comparison"}
+
+
+def _condition_edge_matches(label: str, result: bool, config: dict) -> bool:
+    value = label.strip()
+    if config.get("true_label") and value == config["true_label"]:
+        return result
+    if config.get("false_label") and value == config["false_label"]:
+        return not result
+    normalized = value.casefold()
+    true_labels = {"true", "yes", "y", "pass", "passed", "approved", "ok", "1", "是", "通过", "满足", "符合"}
+    false_labels = {"false", "no", "n", "fail", "failed", "rejected", "deny", "0", "否", "不通过", "不满足", "不符合"}
+    return normalized in (true_labels if result else false_labels)
+
+
+def _condition_selected_edges(node: dict, outgoing: list[dict], result: bool) -> set[tuple[str, str]]:
+    if len(outgoing) <= 1 or not any(str(edge.get("label") or "").strip() for edge in outgoing):
+        return {(edge["source"], edge["target"]) for edge in outgoing}
+    selected = {(edge["source"], edge["target"]) for edge in outgoing if _condition_edge_matches(str(edge.get("label") or ""), result, node.get("config") or {})}
+    if not selected:
+        fallback = {(edge["source"], edge["target"]) for edge in outgoing if not str(edge.get("label") or "").strip()}
+        selected = fallback
+    if not selected:
+        raise AppError(422, "WORKFLOW_CONDITION_BRANCH_INVALID", "条件分支没有与结果匹配的出口标签")
+    return selected
+
+
+def _graph_edges(graph: dict) -> tuple[dict[str, list[dict]], dict[str, list[dict]], set[tuple[str, str]]]:
+    by_source: dict[str, list[dict]] = defaultdict(list)
+    by_target: dict[str, list[dict]] = defaultdict(list)
+    all_edges = set()
+    for edge in graph.get("edges", []):
+        by_source[edge["source"]].append(edge)
+        by_target[edge["target"]].append(edge)
+        all_edges.add((edge["source"], edge["target"]))
+    return by_source, by_target, all_edges
+
+
+def _node_reachable(node_id: str, incoming: dict[str, list[dict]], active_edges: set[tuple[str, str]]) -> bool:
+    edges = incoming.get(node_id, [])
+    return not edges or any((edge["source"], edge["target"]) in active_edges for edge in edges)
+
+
 async def _invoke_agent_model(service, selection: dict, system_prompt: str, user_prompt: str, config: dict) -> str:
     provider = service.validated_provider(selection)
     token = provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN")
@@ -842,11 +990,35 @@ async def _invoke_agent_model(service, selection: dict, system_prompt: str, user
     return text[:_MAX_AGENT_OUTPUT]
 
 
-def _insert_workflow_run(service, *, run_id: str, workflow_id: str, conversation_id: str | None, version: int, graph_hash: str, permission_digest: str, permission_snapshot: dict, user_id: str, status: str, safe_input: dict, output: dict, trace: list[dict], timestamp: str, error: str | None = None) -> None:
+def _ensure_workflow_runtime_schema(service) -> None:
+    with service.db.lock:
+        service.db.conn.executescript(_WORKFLOW_RUNTIME_SCHEMA)
+        columns = {row["name"] for row in service.db.conn.execute("PRAGMA table_info(workflow_approvals)")}
+        if "decided_by" not in columns:
+            service.db.conn.execute("ALTER TABLE workflow_approvals ADD COLUMN decided_by TEXT REFERENCES users(id)")
+
+
+def _insert_workflow_run(service, *, run_id: str, workflow_id: str, conversation_id: str | None, version: int, graph_hash: str, permission_digest: str, permission_snapshot: dict, user_id: str, status: str, safe_input: dict, output: dict, trace: list[dict], timestamp: str, error: str | None = None, completed: bool = True) -> None:
     service.db.execute(
         "INSERT INTO workflow_runs(id,workflow_id,conversation_id,version,graph_hash,permission_digest,permission_snapshot_json,user_id,status,input_json,output_json,trace_json,error,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (run_id, workflow_id, conversation_id, version, graph_hash, permission_digest, dump(permission_snapshot), user_id, status, dump(safe_input), dump(output), dump(trace), error, timestamp, now()),
+        (run_id, workflow_id, conversation_id, version, graph_hash, permission_digest, dump(permission_snapshot), user_id, status, dump(safe_input), dump(output), dump(trace), error, timestamp, now() if completed else None),
     )
+
+
+def _update_workflow_run(service, run_id: str, *, status: str, output: dict, trace: list[dict], error: str | None = None, completed: bool = True) -> None:
+    service.db.execute(
+        "UPDATE workflow_runs SET status=?,output_json=?,trace_json=?,error=?,completed_at=? WHERE id=?",
+        (status, dump(output), dump(trace), error, now() if completed else None, run_id),
+    )
+
+
+def _workflow_approval_view(row: dict) -> dict:
+    return {key: row.get(key) for key in ("id", "workflow_run_id", "workflow_id", "node_id", "status", "decision", "comment", "created_at", "decided_at", "decided_by")}
+
+
+def _workflow_approvals(service, run_id: str) -> list[dict]:
+    _ensure_workflow_runtime_schema(service)
+    return [_workflow_approval_view(item) for item in service.db.all("SELECT * FROM workflow_approvals WHERE workflow_run_id=? ORDER BY created_at", (run_id,))]
 
 
 async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNodeDebugRequest, user):
@@ -968,7 +1140,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
         raise
 
 
-async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
+async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume_run: dict | None = None, approved_node_id: str | None = None):
     row = _readable(service, workflow_id, user)
     conversation = _bind_conversation(service, row, body.conversation_id, user)
     if row["published_version"] is None:
@@ -1012,13 +1184,89 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
     trace: list[dict] = []
     outputs: dict[str, str] = {}
     knowledge_outputs: dict[str, dict] = {}
+    condition_outputs: dict[str, dict] = {}
+    outgoing, incoming, all_edges = _graph_edges(graph)
+    active_edges = set(all_edges)
+    start_index = 0
     run_id, timestamp = uid(), now()
+    if resume_run:
+        if resume_run.get("workflow_id") != workflow_id or resume_run.get("status") != "awaiting_approval":
+            raise AppError(409, "WORKFLOW_RUN_NOT_RESUMABLE", "此工作流运行当前不能继续")
+        if resume_run.get("graph_hash") != graph_hash or resume_run.get("version") != version["version"]:
+            raise AppError(409, "WORKFLOW_VERSION_CHANGED", "工作流版本已改变，不能继续旧运行")
+        if resume_run.get("permission_digest") != permission_digest:
+            raise AppError(409, "WORKFLOW_PERMISSION_CHANGED", "工作流权限或模型配置已改变，请重新运行")
+        try:
+            prior_output = json.loads(resume_run.get("output_json") or "{}")
+            trace = json.loads(resume_run.get("trace_json") or "[]")
+            outputs = {str(key): str(value) for key, value in (prior_output.get("node_outputs") or {}).items()}
+            outputs.update({str(key): str(value) for key, value in (prior_output.get("agent_outputs") or {}).items()})
+            outputs.update({str(key): str(value) for key, value in (prior_output.get("knowledge_outputs") or {}).items() if isinstance(value, str)})
+            outputs.update({str(key): json.dumps(value, ensure_ascii=False, separators=(",", ":")) for key, value in (prior_output.get("condition_outputs") or {}).items()})
+            knowledge_outputs = prior_output.get("knowledge_outputs") or {}
+            condition_outputs = prior_output.get("condition_outputs") or {}
+            start_index = int(prior_output.get("next_node_index", 0))
+            active_edges = {tuple(edge) for edge in (prior_output.get("active_edges") or [list(edge) for edge in all_edges]) if isinstance(edge, list) and len(edge) == 2}
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise AppError(409, "WORKFLOW_RUN_CORRUPT", "待审批工作流运行记录无法读取") from error
+        permission_snapshot = json.loads(resume_run.get("permission_snapshot_json") or "{}")
+        run_id, timestamp = resume_run["id"], resume_run["created_at"]
+        if approved_node_id:
+            approved_preview = json.dumps({"kind": "workflow_approval", "status": "approved", "node_id": approved_node_id}, ensure_ascii=False, separators=(",", ":"))
+            for item in trace:
+                if item.get("node_id") == approved_node_id and item.get("status") == "awaiting_approval":
+                    item["status"] = "approved"
+                    item["approval_decision"] = "approve"
+                    item["decided_at"] = now()
+                    item["output_preview"] = approved_preview
+            if approved_node_id in outputs:
+                outputs[approved_node_id] = approved_preview
+
+    def run_output(next_node_index: int | None = None) -> dict:
+        return {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "agent_outputs": {key: value for key, value in outputs.items() if node_map.get(key, {}).get("type") == "agent"}, "knowledge_outputs": knowledge_outputs, "condition_outputs": condition_outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
+
     current_node = None
     try:
         for index, node_id in enumerate(order, 1):
+            if resume_run and index <= start_index:
+                continue
             node = node_map[node_id]
             config = node.get("config") or {}
+            if not _node_reachable(node_id, incoming, active_edges):
+                outputs[node_id] = _skipped_node_output(node)
+                for edge in outgoing.get(node_id, []):
+                    active_edges.discard((edge["source"], edge["target"]))
+                trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "skipped", "external_call": False, "approval_required": False, "branch_skipped": True, "output_preview": outputs[node_id]})
+                continue
+            if node["type"] == "approval":
+                current_node = node
+                outputs[node_id] = json.dumps({"kind": "workflow_approval", "status": "pending", "node_id": node_id}, ensure_ascii=False, separators=(",", ":"))
+                trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "awaiting_approval", "external_call": False, "approval_required": True, "approval_role": config.get("role"), "output_preview": outputs[node_id]})
+                approval_id = uid()
+                output = run_output(index)
+                _ensure_workflow_runtime_schema(service)
+                with service.db.transaction():
+                    if resume_run:
+                        _update_workflow_run(service, run_id, status="awaiting_approval", output=output, trace=trace, completed=False)
+                    else:
+                        _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="awaiting_approval", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp, completed=False)
+                    service.db.execute("INSERT INTO workflow_approvals(id,workflow_run_id,workflow_id,node_id,user_id,status,decision,comment,created_at,decided_at,decided_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (approval_id, run_id, workflow_id, node_id, user["id"], "pending", None, "", timestamp, None, None))
+                current_node = None
+                approval = {"id": approval_id, "workflow_run_id": run_id, "workflow_id": workflow_id, "node_id": node_id, "status": "pending", "decision": None, "comment": "", "created_at": timestamp, "decided_at": None}
+                return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "awaiting_approval", "synthetic": False, "execution_mode": "model", "approval": approval, "approvals": [approval], "output": output, "trace": trace, "created_at": timestamp, "completed_at": None}
             if node_id not in selections:
+                if node["type"] == "condition":
+                    current_node = node
+                    result = _condition_result(node, safe_input)
+                    selected_edges = _condition_selected_edges(node, outgoing.get(node_id, []), bool(result["result"]))
+                    outputs[node_id] = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+                    condition_outputs[node_id] = result
+                    for edge in outgoing.get(node_id, []):
+                        if (edge["source"], edge["target"]) not in selected_edges:
+                            active_edges.discard((edge["source"], edge["target"]))
+                    trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": False, "approval_required": False, "condition_result": bool(result["result"]), "condition_operator": result.get("operator"), "selected_targets": [edge["target"] for edge in outgoing.get(node_id, []) if (edge["source"], edge["target"]) in selected_edges], "output_preview": outputs[node_id][:600]})
+                    current_node = None
+                    continue
                 if node["type"] == "knowledge_search":
                     current_node = node
                     payload, serialized = await _run_knowledge_search(service, assistant, user, node, safe_input, outputs, knowledge_scope)
@@ -1037,19 +1285,25 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
             outputs[node_id] = text
             trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "input_bindings": _binding_trace(config), "output_preview": text[:600]})
             current_node = None
-        output = {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "agent_outputs": outputs, "knowledge_outputs": knowledge_outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
+        output = run_output()
         with service.db.transaction():
-            _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="succeeded", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp)
-        return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": False, "execution_mode": "model", "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
+            if resume_run:
+                _update_workflow_run(service, run_id, status="succeeded", output=output, trace=trace, completed=True)
+            else:
+                _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="succeeded", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp)
+        return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": False, "execution_mode": "model", "approvals": _workflow_approvals(service, run_id), "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
     except AppError as error:
         if current_node:
             if current_node["id"] in selections:
                 trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
             else:
                 trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": False, "approval_required": False, "knowledge_retrieval": current_node["type"] == "knowledge_search", "error_code": error.code})
-        output = {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "agent_outputs": outputs, "knowledge_outputs": knowledge_outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
+        output = run_output()
         with service.db.transaction():
-            _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="failed", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp, error=error.message)
+            if resume_run:
+                _update_workflow_run(service, run_id, status="failed", output=output, trace=trace, error=error.message, completed=True)
+            else:
+                _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="failed", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp, error=error.message)
         raise
 
 
@@ -1064,7 +1318,7 @@ async def run_workflow(service, workflow_id, body: WorkflowRunRequest, user):
     return run_synthetic(service, workflow_id, body, user)
 
 
-def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user):
+def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_run: dict | None = None, approved_node_id: str | None = None):
     row = _readable(service, workflow_id, user)
     conversation = _bind_conversation(service, row, body.conversation_id, user)
     if row["published_version"] is None:
@@ -1080,19 +1334,6 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user):
     node_map = {node["id"]: node for node in graph["nodes"]}
     artifact_previews = _artifact_previews(graph, safe_input)
     artifact_index = {preview["node_id"]: index for index, preview in enumerate(artifact_previews)}
-    trace = [
-        {
-            "sequence": index,
-            "node_id": node_id,
-            "node_type": node_map[node_id]["type"],
-            "status": "simulated",
-            "external_call": False,
-            "approval_required": node_map[node_id]["type"] == "approval",
-            **({"artifact_preview": artifact_index[node_id]} if node_id in artifact_index else {}),
-        }
-        for index, node_id in enumerate(order, 1)
-    ]
-    run_id, timestamp = uid(), now()
     assistant = service.require("assistants", row["assistant_id"])
     permission_payload = {
         "assistant_id": assistant["id"],
@@ -1115,13 +1356,88 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user):
         "user_id": user["id"],
         "user_role": user.get("role"),
     }
-    output = {"synthetic": True, "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
+    trace: list[dict] = []
+    outputs: dict[str, str] = {}
+    condition_outputs: dict[str, dict] = {}
+    outgoing, incoming, all_edges = _graph_edges(graph)
+    active_edges = set(all_edges)
+    start_index = 0
+    run_id, timestamp = uid(), now()
+    if resume_run:
+        if resume_run.get("workflow_id") != workflow_id or resume_run.get("status") != "awaiting_approval":
+            raise AppError(409, "WORKFLOW_RUN_NOT_RESUMABLE", "此工作流运行当前不能继续")
+        if resume_run.get("graph_hash") != graph_hash or resume_run.get("version") != version["version"]:
+            raise AppError(409, "WORKFLOW_VERSION_CHANGED", "工作流版本已改变，不能继续旧运行")
+        if resume_run.get("permission_digest") != permission_digest:
+            raise AppError(409, "WORKFLOW_PERMISSION_CHANGED", "工作流权限配置已改变，请重新运行")
+        try:
+            prior_output = json.loads(resume_run.get("output_json") or "{}")
+            trace = json.loads(resume_run.get("trace_json") or "[]")
+            outputs = {str(key): str(value) for key, value in (prior_output.get("node_outputs") or {}).items()}
+            condition_outputs = prior_output.get("condition_outputs") or {}
+            start_index = int(prior_output.get("next_node_index", 0))
+            active_edges = {tuple(edge) for edge in (prior_output.get("active_edges") or [list(edge) for edge in all_edges]) if isinstance(edge, list) and len(edge) == 2}
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise AppError(409, "WORKFLOW_RUN_CORRUPT", "待审批工作流运行记录无法读取") from error
+        permission_snapshot = json.loads(resume_run.get("permission_snapshot_json") or "{}")
+        run_id, timestamp = resume_run["id"], resume_run["created_at"]
+        if approved_node_id:
+            approved_preview = json.dumps({"kind": "workflow_approval", "status": "approved", "node_id": approved_node_id}, ensure_ascii=False, separators=(",", ":"))
+            for item in trace:
+                if item.get("node_id") == approved_node_id and item.get("status") == "awaiting_approval":
+                    item["status"] = "approved"
+                    item["approval_decision"] = "approve"
+                    item["decided_at"] = now()
+                    item["output_preview"] = approved_preview
+            if approved_node_id in outputs:
+                outputs[approved_node_id] = approved_preview
+
+    def run_output(next_node_index: int | None = None) -> dict:
+        return {"synthetic": True, "execution_mode": "synthetic", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "condition_outputs": condition_outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
+
+    for index, node_id in enumerate(order, 1):
+        if resume_run and index <= start_index:
+            continue
+        node = node_map[node_id]
+        if not _node_reachable(node_id, incoming, active_edges):
+            outputs[node_id] = _skipped_node_output(node)
+            for edge in outgoing.get(node_id, []):
+                active_edges.discard((edge["source"], edge["target"]))
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "skipped", "external_call": False, "approval_required": False, "branch_skipped": True, "output_preview": outputs[node_id]})
+            continue
+        if node["type"] == "condition":
+            result = _condition_result(node, safe_input)
+            selected_edges = _condition_selected_edges(node, outgoing.get(node_id, []), bool(result["result"]))
+            outputs[node_id] = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            condition_outputs[node_id] = result
+            for edge in outgoing.get(node_id, []):
+                if (edge["source"], edge["target"]) not in selected_edges:
+                    active_edges.discard((edge["source"], edge["target"]))
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": False, "approval_required": False, "condition_result": bool(result["result"]), "condition_operator": result.get("operator"), "selected_targets": [edge["target"] for edge in outgoing.get(node_id, []) if (edge["source"], edge["target"]) in selected_edges], "output_preview": outputs[node_id][:600]})
+            continue
+        if node["type"] == "approval":
+            outputs[node_id] = json.dumps({"kind": "workflow_approval", "status": "pending", "node_id": node_id}, ensure_ascii=False, separators=(",", ":"))
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "awaiting_approval", "external_call": False, "approval_required": True, "approval_role": (node.get("config") or {}).get("role"), "output_preview": outputs[node_id]})
+            approval_id = uid()
+            output = run_output(index)
+            _ensure_workflow_runtime_schema(service)
+            with service.db.transaction():
+                if resume_run:
+                    _update_workflow_run(service, run_id, status="awaiting_approval", output=output, trace=trace, completed=False)
+                else:
+                    _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="awaiting_approval", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp, completed=False)
+                service.db.execute("INSERT INTO workflow_approvals(id,workflow_run_id,workflow_id,node_id,user_id,status,decision,comment,created_at,decided_at,decided_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (approval_id, run_id, workflow_id, node_id, user["id"], "pending", None, "", timestamp, None, None))
+            approval = {"id": approval_id, "workflow_run_id": run_id, "workflow_id": workflow_id, "node_id": node_id, "status": "pending", "decision": None, "comment": "", "created_at": timestamp, "decided_at": None, "decided_by": None}
+            return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "awaiting_approval", "synthetic": True, "execution_mode": "synthetic", "approval": approval, "approvals": [approval], "output": output, "trace": trace, "created_at": timestamp, "completed_at": None}
+        outputs[node_id] = _simulated_node_output(node)
+        trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "simulated", "external_call": False, "approval_required": False, "output_preview": outputs[node_id], **({"artifact_preview": artifact_index[node_id]} if node_id in artifact_index else {})})
+    output = run_output()
     with service.db.transaction():
-        service.db.execute(
-            "INSERT INTO workflow_runs(id,workflow_id,conversation_id,version,graph_hash,permission_digest,permission_snapshot_json,user_id,status,input_json,output_json,trace_json,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (run_id, workflow_id, conversation["id"] if conversation else None, version["version"], graph_hash, permission_digest, dump(permission_snapshot), user["id"], "succeeded", dump(safe_input), dump(output), dump(trace), timestamp, timestamp),
-        )
-    return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": True, "output": output, "trace": trace, "created_at": timestamp, "completed_at": timestamp}
+        if resume_run:
+            _update_workflow_run(service, run_id, status="succeeded", output=output, trace=trace, completed=True)
+        else:
+            _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="succeeded", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp)
+    return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": True, "execution_mode": "synthetic", "approvals": _workflow_approvals(service, run_id), "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
 
 
 def run_view(service, row, user):
@@ -1130,6 +1446,7 @@ def run_view(service, row, user):
         # runs to team members who did not start them.
         _readable(service, row["workflow_id"], user)
     output = json.loads(row["output_json"])
+    approvals = _workflow_approvals(service, row["id"])
     return {
         "id": row["id"],
         "workflow_id": row["workflow_id"],
@@ -1143,10 +1460,91 @@ def run_view(service, row, user):
         "execution_mode": output.get("execution_mode", "synthetic"),
         "output": output,
         "trace": json.loads(row["trace_json"]),
+        "approvals": approvals,
+        **({"approval": next((item for item in approvals if item["status"] == "pending"), None)} if any(item["status"] == "pending" for item in approvals) else {}),
         "error": row["error"],
         "created_at": row["created_at"],
         "completed_at": row["completed_at"],
     }
+
+
+def _approval_decision_body(body: dict) -> tuple[str, str]:
+    if not isinstance(body, dict):
+        raise AppError(422, "WORKFLOW_APPROVAL_INVALID", "审批决定格式无效")
+    decision = body.get("decision")
+    if decision not in {"approve", "reject"}:
+        raise AppError(422, "WORKFLOW_APPROVAL_INVALID", "审批决定必须是 approve 或 reject")
+    comment = body.get("comment", "")
+    if not isinstance(comment, str) or len(comment) > 1000:
+        raise AppError(422, "WORKFLOW_APPROVAL_INVALID", "审批说明不能超过 1000 个字符")
+    return decision, comment.strip()
+
+
+def _record_approval_resume_failure(service, run_id: str, approval_id: str, node_id: str, decided_at: str, user: dict, error: Exception) -> None:
+    message = error.message if isinstance(error, AppError) else "工作流审批后继续执行失败"
+    code = error.code if isinstance(error, AppError) else "WORKFLOW_RESUME_FAILED"
+    current = service.db.one("SELECT * FROM workflow_runs WHERE id=?", (run_id,))
+    with service.db.transaction():
+        if current and current["status"] == "awaiting_approval":
+            failed_output = json.loads(current["output_json"] or "{}")
+            failed_trace = json.loads(current["trace_json"] or "[]")
+            failed_output["approval_status"] = "approved_but_resume_failed"
+            failed_trace.append({"sequence": len(failed_trace) + 1, "node_id": node_id, "node_type": "approval", "status": "failed", "external_call": False, "approval_required": True, "error_code": code, "output_preview": message})
+            _update_workflow_run(service, run_id, status="failed", output=failed_output, trace=failed_trace, error=message, completed=True)
+        service.db.execute("UPDATE workflow_approvals SET status='approved',decided_at=?,decided_by=? WHERE id=?", (decided_at, user["id"], approval_id))
+
+
+async def decide_workflow_approval(service, run_id: str, node_id: str, body: dict, user):
+    _ensure_workflow_runtime_schema(service)
+    run_row = service.db.one("SELECT * FROM workflow_runs WHERE id=?", (run_id,))
+    if not run_row:
+        raise AppError(404, "NOT_FOUND", "工作流运行不存在")
+    _readable(service, run_row["workflow_id"], user)
+    approval_row = service.db.one("SELECT * FROM workflow_approvals WHERE workflow_run_id=? AND node_id=?", (run_id, node_id))
+    if not approval_row:
+        raise AppError(404, "WORKFLOW_APPROVAL_NOT_FOUND", "工作流审批节点不存在")
+    if approval_row["status"] != "pending" or run_row["status"] != "awaiting_approval":
+        raise AppError(409, "WORKFLOW_APPROVAL_DECIDED", "此审批已经处理，不能重复决定")
+    decision, comment = _approval_decision_body(body)
+    decided_at = now()
+    if decision == "reject":
+        output = json.loads(run_row["output_json"] or "{}")
+        trace = json.loads(run_row["trace_json"] or "[]")
+        for item in trace:
+            if item.get("node_id") == node_id and item.get("status") == "awaiting_approval":
+                item["status"] = "rejected"
+                item["approval_decision"] = "reject"
+                item["approval_comment"] = comment
+                item["decided_at"] = decided_at
+        output["approval_status"] = "rejected"
+        with service.db.transaction():
+            service.db.execute("UPDATE workflow_approvals SET status='rejected',decision=?,comment=?,decided_at=?,decided_by=? WHERE id=? AND status='pending'", (decision, comment, decided_at, user["id"], approval_row["id"]))
+            _update_workflow_run(service, run_id, status="failed", output=output, trace=trace, error="工作流审批被拒绝", completed=True)
+        return run_view(service, service.db.one("SELECT * FROM workflow_runs WHERE id=?", (run_id,)), user)
+
+    with service.db.transaction():
+        updated = service.db.execute("UPDATE workflow_approvals SET status='deciding',decision=?,comment=? WHERE id=? AND status='pending'", (decision, comment, approval_row["id"]))
+        if updated.rowcount != 1:
+            raise AppError(409, "WORKFLOW_APPROVAL_DECIDED", "此审批已经处理，不能重复决定")
+    try:
+        stored_input = json.loads(run_row["input_json"] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        failure = AppError(409, "WORKFLOW_RUN_CORRUPT", "工作流运行输入无法读取")
+        _record_approval_resume_failure(service, run_id, approval_row["id"], node_id, decided_at, user, failure)
+        raise failure from error
+    resume_body = WorkflowRunRequest(input=stored_input, conversation_id=run_row.get("conversation_id"))
+    output = json.loads(run_row["output_json"] or "{}")
+    try:
+        if output.get("execution_mode") == "model":
+            resumed = await run_model(service, run_row["workflow_id"], resume_body, user, resume_run=run_row, approved_node_id=node_id)
+        else:
+            resumed = run_synthetic(service, run_row["workflow_id"], resume_body, user, resume_run=run_row, approved_node_id=node_id)
+    except Exception as error:
+        _record_approval_resume_failure(service, run_id, approval_row["id"], node_id, decided_at, user, error)
+        raise
+    with service.db.transaction():
+        service.db.execute("UPDATE workflow_approvals SET status='approved',decided_at=?,decided_by=? WHERE id=?", (decided_at, user["id"], approval_row["id"]))
+    return run_view(service, service.db.one("SELECT * FROM workflow_runs WHERE id=?", (run_id,)), user)
 
 
 def create_workflow_router(service_dependency, authenticated):
@@ -1208,5 +1606,9 @@ def create_workflow_router(service_dependency, authenticated):
         if not row:
             raise AppError(404, "NOT_FOUND", "工作流运行不存在")
         return run_view(service, row, user)
+
+    @router.post("/workflow-runs/{run_id}/approvals/{node_id}/decision")
+    async def decide_approval(run_id: str, node_id: str, body: dict, user=Depends(authenticated), service=Depends(service_dependency)):
+        return await decide_workflow_approval(service, run_id, node_id, body, user)
 
     return router

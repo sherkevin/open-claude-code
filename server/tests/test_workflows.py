@@ -40,11 +40,17 @@ def test_workflow_requires_publish_and_replays_a_pinned_synthetic_version(client
     assert len(value["graph_hash"]) == 64 and len(value["permission_digest"]) == 64
     assert value["permission_snapshot"]["conversation_id"] == conversation["id"]
     assert value["permission_snapshot"]["workflow_version"] == pinned
+    assert value["status"] == "awaiting_approval" and value["approval"]["status"] == "pending"
+    resumed = client.post(f"/api/v1/workflow-runs/{value['id']}/approvals/{value['approval']['node_id']}/decision", json={"decision": "approve", "comment": "测试通过"})
+    assert resumed.status_code == 200, resumed.text
+    value = resumed.json()
+    assert value["status"] == "succeeded"
     assert all(item["external_call"] is False for item in value["trace"])
     fetched = client.get(f"/api/v1/workflow-runs/{value['id']}")
     assert fetched.status_code == 200 and fetched.json()["version"] == pinned
     assert fetched.json()["graph_hash"] == value["graph_hash"]
     assert fetched.json()["permission_snapshot"] == value["permission_snapshot"]
+    assert fetched.json()["approvals"][0]["decision"] == "approve"
 
 
 def test_workflow_session_binding_rejects_a_different_assistant(client):
@@ -120,8 +126,54 @@ def test_synthetic_finance_templates_are_listed_and_create_versioned_workflows(c
     missing = client.post(f"/api/v1/workflows/{payload['id']}/runs", json={})
     assert missing.status_code == 422 and missing.json()["error"]["code"] == "WORKFLOW_FORM_REQUIRED"
     run = client.post(f"/api/v1/workflows/{payload['id']}/runs", json={"input": {"reason": "客户拜访", "amount": 1200, "date": "2026-11-07"}}).json()
-    assert run["synthetic"] is True and run["output"]["completed_nodes"] == 5
-    assert run["output"]["artifacts"][0]["format"] == "xlsx" and run["output"]["artifacts"][0]["written"] is False
+    assert run["synthetic"] is True and run["status"] == "awaiting_approval"
+    resumed = client.post(f"/api/v1/workflow-runs/{run['id']}/approvals/{run['approval']['node_id']}/decision", json={"decision": "approve"}).json()
+    assert resumed["status"] == "succeeded" and resumed["output"]["completed_nodes"] == 5
+    assert resumed["output"]["artifacts"][0]["format"] == "xlsx" and resumed["output"]["artifacts"][0]["written"] is False
+
+
+def test_condition_node_selects_only_the_matching_branch_in_a_synthetic_run(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "条件分支助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "form", "type": "skill", "label": "填写金额", "config": {"form_fields": [{"id": "amount", "type": "number", "label": "金额", "required": True}]}},
+            {"id": "gate", "type": "condition", "label": "金额判断", "config": {"field": "amount", "operator": "gt", "value": 5000, "true_label": "high", "false_label": "low"}},
+            {"id": "high", "type": "artifact", "label": "高金额产物", "config": {"format": "xlsx"}},
+            {"id": "low", "type": "artifact", "label": "普通金额产物", "config": {"format": "xlsx"}},
+        ],
+        "edges": [
+            {"source": "form", "target": "gate", "label": "判断"},
+            {"source": "gate", "target": "high", "label": "high"},
+            {"source": "gate", "target": "low", "label": "low"},
+        ],
+    }
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "金额分支", "graph": graph}).json()
+    client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {"amount": 8000}})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["output"]["condition_outputs"]["gate"]["result"] is True
+    assert run["trace"][1]["selected_targets"] == ["high"]
+    assert run["trace"][2]["status"] == "simulated"
+    assert run["trace"][3]["status"] == "skipped"
+    assert run["output"]["node_outputs"]["low"].startswith('{"status":"skipped"')
+
+
+def test_workflow_approval_rejection_is_terminal_and_audited(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "拒绝审批助手"}).json()
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "拒绝流程", "graph": graph()}).json()
+    client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    waiting = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {"batch": "reject"}}).json()
+    approval = waiting["approval"]
+    rejected = client.post(f"/api/v1/workflow-runs/{waiting['id']}/approvals/{approval['node_id']}/decision", json={"decision": "reject", "comment": "风险未确认"})
+    assert rejected.status_code == 200, rejected.text
+    result = rejected.json()
+    assert result["status"] == "failed" and result["error"] == "工作流审批被拒绝"
+    assert result["approvals"][0]["status"] == "rejected"
+    assert result["approvals"][0]["comment"] == "风险未确认"
+    assert result["trace"][-1]["status"] == "rejected"
+    repeated = client.post(f"/api/v1/workflow-runs/{waiting['id']}/approvals/{approval['node_id']}/decision", json={"decision": "approve"})
+    assert repeated.status_code == 409 and repeated.json()["error"]["code"] == "WORKFLOW_APPROVAL_DECIDED"
 
 
 def test_unknown_template_fails_closed(client):
@@ -172,6 +224,10 @@ def test_model_agent_node_uses_assistant_catalog_and_records_execution(monkeypat
     client.post(f"/api/v1/workflows/{workflow['id']}/publish")
     response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {"amount": 1200}})
     assert response.status_code == 201, response.text
+    waiting = response.json()
+    assert waiting["status"] == "awaiting_approval" and len(FakeClient.calls) == 1
+    response = client.post(f"/api/v1/workflow-runs/{waiting['id']}/approvals/{waiting['approval']['node_id']}/decision", json={"decision": "approve", "comment": "已核对"})
+    assert response.status_code == 200, response.text
     run = response.json()
     assert run["synthetic"] is False and run["execution_mode"] == "model"
     assert run["output"]["agent_outputs"]["review"] == "模型节点已完成审核。"
@@ -192,6 +248,68 @@ def test_model_mode_is_limited_to_agent_nodes():
     with pytest.raises(AppError) as error:
         validate_graph(payload)
     assert error.value.code == "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN"
+
+
+def test_model_workflow_resumes_after_approval_without_repeating_completed_nodes(monkeypatch, client):
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-resume-token")
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"type": "text", "text": self.text}]}
+
+    class FakeClient:
+        calls = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, endpoint, json):
+            self.calls.append({"endpoint": endpoint, "json": json})
+            return FakeResponse("第一步结论" if len(self.calls) == 1 else "审批后结果")
+
+    monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
+    assistant = client.post("/api/v1/assistants", json={"name": "审批恢复助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "first", "type": "agent", "label": "先判断", "config": {"mode": "model", "model_id": "legacy-model"}},
+            {"id": "approval", "type": "approval", "label": "人工确认", "config": {"role": "审核人"}},
+            {"id": "approval2", "type": "approval", "label": "部门复核", "config": {"role": "部门负责人"}},
+            {"id": "second", "type": "agent", "label": "再输出", "config": {"mode": "model", "model_id": "legacy-model", "input_bindings": [{"key": "prior", "source": "node.first.output"}]}},
+        ],
+        "edges": [{"source": "first", "target": "approval", "label": "提交"}, {"source": "approval", "target": "approval2", "label": "部门复核"}, {"source": "approval2", "target": "second", "label": "继续"}],
+    }
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "审批恢复", "graph": graph}).json()
+    client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    waiting = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {"topic": "合同"}}).json()
+    assert waiting["status"] == "awaiting_approval" and len(FakeClient.calls) == 1
+    assert waiting["trace"][1]["status"] == "awaiting_approval"
+    next_waiting = client.post(f"/api/v1/workflow-runs/{waiting['id']}/approvals/approval/decision", json={"decision": "approve"})
+    assert next_waiting.status_code == 200, next_waiting.text
+    next_payload = next_waiting.json()
+    assert next_payload["status"] == "awaiting_approval" and [item["status"] for item in next_payload["approvals"]] == ["approved", "pending"]
+    resumed = client.post(f"/api/v1/workflow-runs/{waiting['id']}/approvals/approval2/decision", json={"decision": "approve", "comment": "部门复核完成"})
+    assert resumed.status_code == 200, resumed.text
+    result = resumed.json()
+    assert result["status"] == "succeeded" and len(FakeClient.calls) == 2
+    assert result["output"]["agent_outputs"]["second"] == "审批后结果"
+    assert [item["status"] for item in result["trace"]] == ["completed", "approved", "approved", "completed"]
+    assert '"status":"approved"' in result["trace"][1]["output_preview"]
+    assert '"mapped_inputs":{"prior":"第一步结论"}' in FakeClient.calls[1]["json"]["messages"][0]["content"]
+    assert [item["status"] for item in result["approvals"]] == ["approved", "approved"]
+    assert result["approvals"][0]["decided_by"]
+
 
 
 def test_workflow_rejects_invalid_or_downstream_agent_input_bindings(client):
