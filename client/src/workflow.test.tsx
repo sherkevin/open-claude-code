@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowArtifactIssue, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowRunHistoryLabel, workflowRunSummary, workflowToolArgumentsIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowArtifactIssue, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowRunHistoryLabel, workflowRunSummary, workflowToolArgumentsIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -44,6 +44,14 @@ describe('low-code workflow canvas contracts', () => {
     expect(copy.config.__ui).toEqual({ position: { x: 58, y: 68 } });
     expect(source.config.__ui).toEqual({ position: { x: 10, y: 20 } });
     expect(copy).not.toBe(source);
+  });
+
+  it('changes node type without losing the custom label or canvas position', () => {
+    const source = { id: 'review', type: 'agent' as const, label: '政策审核', config: { mode: 'model', role: '审核员', system_prompt: '严谨核验', __ui: { position: { x: 120, y: 240 }, collapsed: false } } };
+    const changed = changeWorkflowNodeType(source, 'knowledge_search');
+    expect(changed.label).toBe('政策审核');
+    expect(changed.config).toEqual({ mode: 'synthetic', __ui: { position: { x: 120, y: 240 }, collapsed: false } });
+    expect(source.config).toEqual({ mode: 'model', role: '审核员', system_prompt: '严谨核验', __ui: { position: { x: 120, y: 240 }, collapsed: false } });
   });
 
   it('inserts a new node between the selected step and its single successor', () => {
