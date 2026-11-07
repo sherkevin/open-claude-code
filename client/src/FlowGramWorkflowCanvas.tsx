@@ -15,7 +15,7 @@ import {
 import '@flowgram.ai/free-layout-editor/index.css';
 import { Redo2, Undo2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import type { WorkflowGraph, WorkflowNodeType } from './types';
-import { flowJSONToWorkflowGraph, workflowGraphToFlowJSON } from './workflowFlowgram';
+import { flowJSONToWorkflowGraph, workflowGraphHasCycle, workflowGraphToFlowJSON } from './workflowFlowgram';
 
 const NODE_TYPES: WorkflowNodeType[] = [
   'agent',
@@ -146,11 +146,15 @@ export default function FlowGramWorkflowCanvas({
 }: {
   graph: WorkflowGraph;
   editable: boolean;
-  resetToken: number;
+  resetToken: string | number;
   onChange: (graph: WorkflowGraph) => void;
   onSelectNode: (nodeId: string) => void;
 }) {
   const readyRef = useRef(false);
+  const graphRef = useRef(graph);
+  const editableRef = useRef(editable);
+  graphRef.current = graph;
+  editableRef.current = editable;
   const initialData = useMemo(() => workflowGraphToFlowJSON(graph), [graph, resetToken]);
   const editorProps = useMemo<FreeLayoutProps>(
     () => ({
@@ -185,7 +189,16 @@ export default function FlowGramWorkflowCanvas({
       history: { enable: true, enableChangeNode: true },
       canDeleteNode: () => editable,
       canDeleteLine: () => editable,
-      canAddLine: () => editable,
+      canAddLine: (_ctx, fromPort, toPort) => {
+        if (!editableRef.current || fromPort.portType !== 'output' || toPort.portType !== 'input') return false;
+        const source = String(fromPort.node.id);
+        const target = String(toPort.node.id);
+        if (source === target || graphRef.current.edges.some(edge => edge.source === source && edge.target === target)) return false;
+        return !workflowGraphHasCycle({
+          ...graphRef.current,
+          edges: [...graphRef.current.edges, { source, target, label: '下一步' }],
+        });
+      },
       lineColor: {
         hidden: 'transparent',
         default: '#a8bba0',

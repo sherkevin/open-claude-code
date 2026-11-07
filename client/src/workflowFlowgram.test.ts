@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { flowJSONToWorkflowGraph, workflowGraphToFlowJSON } from './workflowFlowgram';
+import { flowJSONToWorkflowGraph, workflowGraphHasCycle, workflowGraphToFlowJSON } from './workflowFlowgram';
 
 describe('FlowGram workflow adapter', () => {
   it('keeps business nodes, edges and canvas positions across a round trip', () => {
@@ -40,5 +40,17 @@ describe('FlowGram workflow adapter', () => {
       label: '未配置节点',
       config: { mode: 'synthetic' },
     });
+  });
+
+  it('rejects a line that would make the graph cyclic', () => {
+    const graph = {
+      nodes: [
+        { id: 'a', type: 'agent' as const, label: 'A', config: {} },
+        { id: 'b', type: 'approval' as const, label: 'B', config: {} },
+      ],
+      edges: [{ source: 'a', target: 'b', label: '下一步' }],
+    };
+    expect(workflowGraphHasCycle(graph)).toBe(false);
+    expect(workflowGraphHasCycle({ ...graph, edges: [...graph.edges, { source: 'b', target: 'a', label: '回流' }] })).toBe(true);
   });
 });

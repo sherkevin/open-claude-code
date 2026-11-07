@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, topologicalOrder, workflowFormFields } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, topologicalOrder, workflowFormFields } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -11,6 +11,12 @@ describe('low-code workflow canvas contracts', () => {
     const graph = { ...DEFAULT_WORKFLOW_GRAPH, edges: [...DEFAULT_WORKFLOW_GRAPH.edges, { source: 'approval', target: 'agent', label: '回流' }] };
     expect(graphHasCycle(graph)).toBe(true);
     expect(topologicalOrder(graph)).toHaveLength(0);
+  });
+
+  it('flags disconnected nodes before the client submits a draft', () => {
+    const graph = { ...DEFAULT_WORKFLOW_GRAPH, nodes: [...DEFAULT_WORKFLOW_GRAPH.nodes, { id: 'artifact-1', type: 'artifact' as const, label: '未连接产物', config: {} }] };
+    expect(graphHasIsolatedNode(graph)).toBe(true);
+    expect(graphHasIsolatedNode(DEFAULT_WORKFLOW_GRAPH)).toBe(false);
   });
 
   it('keeps the visual contract explicitly synthetic', () => {

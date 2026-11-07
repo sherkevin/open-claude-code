@@ -88,3 +88,29 @@ export function flowJSONToWorkflowGraph(json: WorkflowJSON): WorkflowGraph {
     })),
   };
 }
+
+/** Keep client-side line validation aligned with the server graph contract. */
+export function workflowGraphHasCycle(graph: WorkflowGraph): boolean {
+  const indegree = new Map(graph.nodes.map(node => [node.id, 0]));
+  const next = new Map<string, string[]>();
+  graph.nodes.forEach(node => next.set(node.id, []));
+
+  graph.edges.forEach(edge => {
+    if (!indegree.has(edge.target) || !next.has(edge.source)) return;
+    indegree.set(edge.target, (indegree.get(edge.target) || 0) + 1);
+    next.get(edge.source)?.push(edge.target);
+  });
+
+  const queue = [...indegree.entries()].filter(([, value]) => value === 0).map(([id]) => id);
+  let visited = 0;
+  while (queue.length) {
+    const id = queue.shift()!;
+    visited += 1;
+    for (const target of next.get(id) || []) {
+      const value = (indegree.get(target) || 0) - 1;
+      indegree.set(target, value);
+      if (value === 0) queue.push(target);
+    }
+  }
+  return visited !== graph.nodes.length;
+}

@@ -1,8 +1,9 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronRight, CircleDot, GitBranch, Play, Plus, RotateCcw, Save, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { api, errorText, patch, post } from './api';
 import { Button, ErrorNotice, Field, Loader, PageHeader, SuccessNotice } from './components';
 import type { Workflow, WorkflowGraph, WorkflowNode, WorkflowNodeType, WorkflowRun, WorkflowTemplate } from './types';
+import { workflowGraphHasCycle } from './workflowFlowgram';
 
 const FlowGramWorkflowCanvas = lazy(() => import('./FlowGramWorkflowCanvas'));
 
@@ -39,7 +40,13 @@ export function topologicalOrder(graph: WorkflowGraph): string[] {
   return result;
 }
 
-export function graphHasCycle(graph: WorkflowGraph) { return topologicalOrder(graph).length !== graph.nodes.length; }
+export function graphHasCycle(graph: WorkflowGraph) { return workflowGraphHasCycle(graph); }
+export function graphHasIsolatedNode(graph: WorkflowGraph) {
+  if (graph.nodes.length <= 1) return false;
+  const connected = new Set<string>();
+  graph.edges.forEach(edge => { connected.add(edge.source); connected.add(edge.target); });
+  return graph.nodes.some(node => !connected.has(node.id));
+}
 export interface WorkflowFormField { id: string; type: 'text' | 'number' | 'date' | 'choice'; label: string; required: boolean; options?: string[] }
 export function workflowFormFields(graph: WorkflowGraph): WorkflowFormField[] {
   const seen = new Set<string>(); const result: WorkflowFormField[] = [];
@@ -55,7 +62,7 @@ function cloneGraph(graph: WorkflowGraph): WorkflowGraph { return { nodes: graph
 function graphFrom(workflow: Workflow): WorkflowGraph { return cloneGraph(workflow.versions.find(version => version.version === workflow.draft_version)?.graph || DEFAULT_WORKFLOW_GRAPH); }
 function nodeId(type: WorkflowNodeType, nodes: WorkflowNode[]) { const stem = type.replace('_', '-'); let index = 1; while (nodes.some(node => node.id === `${stem}-${index}`)) index += 1; return `${stem}-${index}`; }
 
-export default function WorkflowPage({ assistantId, editable }: { assistantId: string; editable: boolean }) {
+export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, onDirtyChange, onSavingChange }: { assistantId: string; editable: boolean; resetEpoch?: number; onDirtyChange?: (dirty: boolean) => void; onSavingChange?: (saving: boolean) => void }) {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [selected, setSelected] = useState<Workflow | null>(null);
@@ -73,6 +80,10 @@ export default function WorkflowPage({ assistantId, editable }: { assistantId: s
   const [edgeSource, setEdgeSource] = useState('');
   const [edgeTarget, setEdgeTarget] = useState('');
   const [canvasResetToken, setCanvasResetToken] = useState(0);
+  const dirtyCallbackRef = useRef(onDirtyChange);
+  const savingCallbackRef = useRef(onSavingChange);
+  dirtyCallbackRef.current = onDirtyChange;
+  savingCallbackRef.current = onSavingChange;
 
   const replaceGraph = (next: WorkflowGraph | ((current: WorkflowGraph) => WorkflowGraph)) => {
     setCanvasResetToken(value => value + 1);
@@ -112,6 +123,23 @@ export default function WorkflowPage({ assistantId, editable }: { assistantId: s
   const activeNode = graph.nodes.find(node => node.id === selectedNode) || graph.nodes[0];
   const activeNodeFields = activeNode ? workflowFormFields({ nodes: [activeNode], edges: [] }) : [];
   const dirty = !!selected && (name !== selected.name || description !== selected.description || JSON.stringify(graph) !== JSON.stringify(graphFrom(selected)));
+  const graphIssue = graphHasCycle(graph)
+    ? '不能保存：工作流不能形成循环依赖。'
+    : graphHasIsolatedNode(graph)
+      ? '不能保存：每个节点都必须连接到工作流。'
+      : '';
+
+  useEffect(() => {
+    dirtyCallbackRef.current?.(dirty);
+  }, [dirty]);
+
+  useEffect(() => () => dirtyCallbackRef.current?.(false), []);
+
+  useEffect(() => {
+    savingCallbackRef.current?.(busy);
+  }, [busy]);
+
+  useEffect(() => () => savingCallbackRef.current?.(false), []);
 
   const create = async () => {
     if (!editable || !newName.trim()) return;
@@ -134,7 +162,7 @@ export default function WorkflowPage({ assistantId, editable }: { assistantId: s
   };
 
   const save = async () => {
-    if (!selected || !editable || !dirty || graphHasCycle(graph)) return;
+    if (!selected || !editable || !dirty || graphIssue) return;
     setBusy(true); setError('');
     try { const saved = await patch<Workflow>(`/workflows/${encodeURIComponent(selected.id)}/draft`, { expected_revision: selected.revision, name, description, graph }); setSelected(saved); setWorkflows(values => values.map(item => item.id === saved.id ? saved : item)); replaceGraph(graphFrom(saved)); setNotice(`草稿 v${saved.draft_version} 已保存。`); }
     catch (cause) { setError(errorText(cause)); }
@@ -183,9 +211,10 @@ export default function WorkflowPage({ assistantId, editable }: { assistantId: s
     <div className="workflow-layout">
       <aside className="workflow-library" aria-label="工作流列表"><div className="workflow-library-head"><div><span className="eyebrow">能力池</span><strong>{workflows.length} 个工作流</strong></div><GitBranch size={20}/></div>{workflows.length ? workflows.map(item => <button type="button" key={item.id} className={`workflow-list-item ${selected?.id === item.id ? 'selected' : ''}`} onClick={()=>void selectWorkflow(item.id)}><span className="workflow-list-dot"/><span><strong>{item.name}</strong><small>{item.published_version ? `已发布 v${item.published_version}` : '仅草稿'} · v{item.revision}</small></span><ChevronRight size={15}/></button>) : <div className="workflow-empty"><GitBranch size={27}/><p>还没有工作流</p><small>从一个业务流程开始，把能力组合起来。</small></div>}<div className="workflow-template-library"><div className="workflow-template-head"><span>预置模板</span><small>全部为合成数据</small></div>{templates.map(template=><button type="button" key={template.template_id} disabled={!editable||busy} onClick={()=>void createFromTemplate(template)}><span className="workflow-template-mark"><Plus size={13}/></span><span><strong>{template.name}</strong><small>{template.description}</small></span></button>)}</div></aside>
       <section className="workflow-editor" aria-label="工作流编辑器">{!selected ? <div className="workflow-empty large"><GitBranch size={38}/><h2>建立你的第一个业务流程</h2><p>工作流由人来设计，模型只能在后续生成待审核草稿。</p></div> : <>
-        <div className="workflow-editor-head"><div><div className="workflow-kicker"><span className={`workflow-status ${selected.published_version ? 'published' : ''}`}>{selected.published_version ? `已发布 v${selected.published_version}` : '草稿'}</span><span>服务端版本 v{selected.revision}</span><span className="workflow-synthetic"><CircleDot size={11}/>合成环境</span></div><input className="workflow-title-input" value={name} disabled={!editable||busy} aria-label="工作流名称" onChange={event=>setName(event.target.value)}/><input className="workflow-description-input" value={description} disabled={!editable||busy} aria-label="工作流说明" placeholder="说明这个流程解决什么业务问题" onChange={event=>setDescription(event.target.value)}/></div><div className="workflow-actions"><Button variant="secondary" disabled={!editable||busy||!dirty||!!graphHasCycle(graph)} onClick={()=>void save()}><Save size={15}/>保存草稿</Button><Button variant="secondary" disabled={!editable||busy||dirty} onClick={()=>void publish()}><Upload size={15}/>发布版本</Button><Button disabled={busy||selected.published_version===null||dirty} onClick={()=>void testRun()}><Play size={15}/>合成测试</Button></div></div>
+        <div className="workflow-editor-head"><div><div className="workflow-kicker"><span className={`workflow-status ${selected.published_version ? 'published' : ''}`}>{selected.published_version ? `已发布 v${selected.published_version}` : '草稿'}</span><span>服务端版本 v{selected.revision}</span><span className="workflow-synthetic"><CircleDot size={11}/>合成环境</span></div><input className="workflow-title-input" value={name} disabled={!editable||busy} aria-label="工作流名称" onChange={event=>setName(event.target.value)}/><input className="workflow-description-input" value={description} disabled={!editable||busy} aria-label="工作流说明" placeholder="说明这个流程解决什么业务问题" onChange={event=>setDescription(event.target.value)}/></div><div className="workflow-actions"><Button variant="secondary" disabled={!editable||busy||!dirty||!!graphIssue} onClick={()=>void save()}><Save size={15}/>保存草稿</Button><Button variant="secondary" disabled={!editable||busy||dirty} onClick={()=>void publish()}><Upload size={15}/>发布版本</Button><Button disabled={busy||selected.published_version===null||dirty} onClick={()=>void testRun()}><Play size={15}/>合成测试</Button></div></div>
+        {graphIssue && <ErrorNotice message={graphIssue}/>}
         <div className="workflow-boundary"><ShieldCheck size={15}/><span>安全边界：节点只生成计划和状态，不访问生产数据、凭据、模型或外部业务系统。</span></div>
-        <div className="workflow-canvas-card workflow-flowgram-card"><div className="workflow-section-head"><div><h2>流程画布</h2><p>拖拽节点、连接步骤，使用画布工具缩放和撤销；双击节点名称可直接编辑。</p></div><span>{graph.nodes.length} 节点 · {graph.edges.length} 条连线</span></div><Suspense fallback={<div className="zhixing-flowgram-loading">正在加载画布…</div>}><FlowGramWorkflowCanvas graph={graph} editable={editable && !busy} resetToken={canvasResetToken} onChange={handleCanvasGraphChange} onSelectNode={setSelectedNode} /></Suspense><div className="workflow-canvas-legend"><span><i className="legend-safe"/>节点执行边界</span><span><i className="legend-approval"/>人工审批点</span><span><i className="legend-draft"/>未发布修改</span></div></div>
+        <div className="workflow-canvas-card workflow-flowgram-card"><div className="workflow-section-head"><div><h2>流程画布</h2><p>拖拽节点、连接步骤，使用画布工具缩放和撤销；双击节点名称可直接编辑。</p></div><span>{graph.nodes.length} 节点 · {graph.edges.length} 条连线</span></div><Suspense fallback={<div className="zhixing-flowgram-loading">正在加载画布…</div>}><FlowGramWorkflowCanvas graph={graph} editable={editable} resetToken={`${canvasResetToken}:${busy ? 'busy' : 'ready'}:${editable ? 'editable' : 'readonly'}:${resetEpoch}`} onChange={handleCanvasGraphChange} onSelectNode={setSelectedNode} /></Suspense><div className="workflow-canvas-legend"><span><i className="legend-safe"/>节点执行边界</span><span><i className="legend-approval"/>人工审批点</span><span><i className="legend-draft"/>未发布修改</span></div></div>
         <div className="workflow-lower-grid"><section className="workflow-panel workflow-palette"><div className="workflow-section-head"><div><h2>添加能力节点</h2><p>只展示当前安全契约允许的节点。</p></div></div><div className="workflow-palette-grid">{(Object.keys(NODE_META) as WorkflowNodeType[]).map(type=><button type="button" key={type} disabled={!editable||busy} onClick={()=>addNode(type)}><span style={{ color: NODE_META[type].color }}><Plus size={14}/></span><span><strong>{NODE_META[type].label}</strong><small>{NODE_META[type].hint}</small></span></button>)}</div></section><section className="workflow-panel workflow-inspector"><div className="workflow-section-head"><div><h2>节点配置</h2><p>配置只保存业务标签，不保存凭据或私有提示词。</p></div>{activeNode&&<Button variant="ghost" disabled={!editable||busy||graph.nodes.length<=1} onClick={removeNode}><Trash2 size={14}/>移除</Button>}</div>{activeNode ? <div className="workflow-inspector-fields"><Field label="节点名称"><input value={activeNode.label} disabled={!editable||busy} onChange={event=>setGraph(value=>({...value,nodes:value.nodes.map(node=>node.id===activeNode.id?{...node,label:event.target.value}:node)}))} onBlur={()=>setCanvasResetToken(value=>value+1)}/></Field><Field label="节点类型"><select value={activeNode.type} disabled={!editable||busy} onChange={event=>{const type=event.target.value as WorkflowNodeType;replaceGraph(value=>({...value,nodes:value.nodes.map(node=>node.id===activeNode.id?{...node,type,label:NODE_META[type].label,config:type==='agent'||type==='knowledge_search'||type==='mcp_read'?{mode:'synthetic'}:{}}:node)}));}}>{(Object.keys(NODE_META) as WorkflowNodeType[]).map(type=><option key={type} value={type}>{NODE_META[type].label}</option>)}</select></Field><div className="workflow-node-contract"><Check size={14}/><span>执行模式：<strong>synthetic</strong><small>真实模型和外部工具需另行授权验收。</small></span></div>{activeNodeFields.length>0&&<div className="workflow-form-preview"><div className="workflow-form-preview-head"><strong>结构化表单字段</strong><small>合成模板输入</small></div>{activeNodeFields.map(field=><label key={field.id}><span>{field.label}{field.required&&<b>*</b>}</span><input aria-label={field.label} type={field.type==='number'?'number':field.type==='date'?'date':'text'} value={String(runInput[field.id]??'')} disabled={!editable||busy} onChange={event=>setRunInput(value=>({...value,[field.id]:field.type==='number'?(event.target.value===''?'':Number(event.target.value)):event.target.value}))}/></label>)}</div>}</div> : <p className="section-help">从画布选择一个节点开始配置。</p>}</section></div>
         <section className="workflow-panel workflow-edge-panel"><div className="workflow-section-head"><div><h2>连接步骤</h2><p>从一个节点指向另一个节点，服务端会拒绝循环和孤立节点。</p></div></div><div className="workflow-edge-form"><select aria-label="连线起点" value={edgeSource} disabled={!editable||busy} onChange={event=>setEdgeSource(event.target.value)}>{graph.nodes.map(node=><option key={node.id} value={node.id}>{node.label}</option>)}</select><ChevronRight size={15}/><select aria-label="连线终点" value={edgeTarget} disabled={!editable||busy} onChange={event=>setEdgeTarget(event.target.value)}>{graph.nodes.map(node=><option key={node.id} value={node.id}>{node.label}</option>)}</select><Button variant="secondary" disabled={!editable||busy||!edgeSource||!edgeTarget||edgeSource===edgeTarget} onClick={addEdge}><Plus size={14}/>添加连线</Button></div><div className="workflow-edge-list">{graph.edges.map(edge=><span key={`${edge.source}-${edge.target}`}>{graph.nodes.find(node=>node.id===edge.source)?.label}<ChevronRight size={12}/>{graph.nodes.find(node=>node.id===edge.target)?.label}</span>)}</div></section>
         <section className="workflow-panel workflow-versions"><div className="workflow-section-head"><div><h2>版本与回滚</h2><p>已发布版本不可变；回滚只建立新草稿，必须再次人工发布。</p></div></div><div className="workflow-version-list">{selected.versions.map(version=><div key={version.version} className={`workflow-version-row ${version.version===selected.published_version?'current':''}`}><span className="workflow-version-number">v{version.version}</span><span><strong>{version.status==='published'?'已发布':version.status==='draft'?'草稿':'历史版本'}</strong><small>{version.graph_hash.slice(0,12)} · {new Date(version.created_at).toLocaleString('zh-CN')}</small></span>{editable&&version.version!==selected.draft_version&&<Button variant="ghost" disabled={busy} onClick={()=>void rollback(version.version)}><RotateCcw size={13}/>回滚为草稿</Button>}</div>)}</div></section>
