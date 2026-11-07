@@ -54,6 +54,11 @@ def test_workflow_requires_publish_and_replays_a_pinned_synthetic_version(client
     assert fetched.json()["graph_hash"] == value["graph_hash"]
     assert fetched.json()["permission_snapshot"] == value["permission_snapshot"]
     assert fetched.json()["approvals"][0]["decision"] == "approve"
+    history = client.get(f"/api/v1/workflows/{workflow['id']}/runs?limit=5")
+    assert history.status_code == 200
+    assert history.json()[0]["id"] == value["id"]
+    assert history.json()[0]["trace_count"] == len(value["trace"])
+    assert "output" not in history.json()[0]
 
 
 def test_input_node_defines_the_runtime_form_contract(client):

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowArtifactIssue, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowToolArgumentsIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowArtifactIssue, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowRunHistoryLabel, workflowRunSummary, workflowToolArgumentsIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -53,6 +53,12 @@ describe('low-code workflow canvas contracts', () => {
     };
     const inserted = insertWorkflowNode(graph, { id: 'lookup', type: 'knowledge_search', label: '检索', config: {} }, 'plan');
     expect(inserted.edges).toEqual([{ source: 'start', target: 'plan', label: '输入' }, { source: 'plan', target: 'lookup', label: '下一步' }, { source: 'lookup', target: 'review', label: '提交审批' }]);
+  });
+
+  it('summarizes a run for the bounded history list', () => {
+    const run = { id: 'run-1', workflow_id: 'flow-1', version: 3, graph_hash: 'hash', permission_digest: 'digest', status: 'awaiting_approval', synthetic: true, execution_mode: 'synthetic' as const, approval: { id: 'approval-1', workflow_run_id: 'run-1', workflow_id: 'flow-1', node_id: 'review', status: 'pending' as const, decision: null, comment: '', created_at: '2026-11-08T00:00:00Z', decided_at: null }, output: {}, trace: [{ sequence: 1, node_id: 'review', node_type: 'approval' as const, status: 'awaiting_approval', external_call: false, approval_required: true }], created_at: '2026-11-08T00:00:00Z', completed_at: null };
+    expect(workflowRunSummary(run)).toMatchObject({ id: 'run-1', version: 3, trace_count: 1, approval_node_id: 'review' });
+    expect(workflowRunHistoryLabel(workflowRunSummary(run))).toBe('等待审批');
   });
 
   it('validates manually configured skill input fields and artifact columns', () => {

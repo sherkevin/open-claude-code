@@ -15,7 +15,7 @@ from collections import defaultdict, deque
 from datetime import timedelta
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from .db import dump, now, uid
 from .models import (
@@ -2076,6 +2076,34 @@ def run_view(service, row, user):
     }
 
 
+def run_summary(service, row, user):
+    """Return a bounded history entry without replaying full run payloads."""
+    if row["user_id"] != user["id"]:
+        _readable(service, row["workflow_id"], user)
+    try:
+        output = json.loads(row.get("output_json") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        output = {}
+    try:
+        trace = json.loads(row.get("trace_json") or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        trace = []
+    pending = next((item for item in _workflow_approvals(service, row["id"]) if item["status"] == "pending"), None)
+    return {
+        "id": row["id"],
+        "workflow_id": row["workflow_id"],
+        "version": row["version"],
+        "status": row["status"],
+        "synthetic": bool(output.get("synthetic", False)),
+        "execution_mode": output.get("execution_mode", "synthetic"),
+        "trace_count": len(trace) if isinstance(trace, list) else 0,
+        "approval_node_id": pending.get("node_id") if pending else None,
+        "error": row.get("error"),
+        "created_at": row["created_at"],
+        "completed_at": row.get("completed_at"),
+    }
+
+
 def _approval_decision_body(body: dict) -> tuple[str, str]:
     if not isinstance(body, dict):
         raise AppError(422, "WORKFLOW_APPROVAL_INVALID", "审批决定格式无效")
@@ -2187,6 +2215,12 @@ def create_workflow_router(service_dependency, authenticated):
     @router.get("/workflows/{workflow_id}")
     def get(workflow_id: str, user=Depends(authenticated), service=Depends(service_dependency)):
         return _view(service, _readable(service, workflow_id, user), user)
+
+    @router.get("/workflows/{workflow_id}/runs")
+    def list_runs(workflow_id: str, limit: int = Query(default=20, ge=1, le=50), user=Depends(authenticated), service=Depends(service_dependency)):
+        _readable(service, workflow_id, user)
+        rows = service.db.all("SELECT * FROM workflow_runs WHERE workflow_id=? ORDER BY created_at DESC,id DESC LIMIT ?", (workflow_id, limit))
+        return [run_summary(service, row, user) for row in rows]
 
     @router.patch("/workflows/{workflow_id}/draft")
     def draft(workflow_id: str, body: WorkflowDraftPatch, user=Depends(authenticated), service=Depends(service_dependency)):
