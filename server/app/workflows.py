@@ -333,6 +333,9 @@ def _validate_condition_config(config: dict) -> None:
     field = config.get("field")
     if field is not None and (not isinstance(field, str) or not _FIELD_ID.fullmatch(field)):
         raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支字段必须使用英文标识")
+    value_source = config.get("value_source")
+    if value_source not in (None, "") and (not isinstance(value_source, str) or not _BINDING_SOURCE.fullmatch(value_source)):
+        raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支值来源必须是 input、input.字段、node.节点.output 或 node.节点.output.字段")
     required_fields = config.get("required_fields")
     if required_fields is not None:
         if not isinstance(required_fields, list) or len(required_fields) > 30 or any(not isinstance(item, str) or not item.strip() or len(item) > 120 for item in required_fields):
@@ -496,6 +499,23 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
                 declared_fields = {item["name"] for item in (source_schema or {}).get("fields", [])}
                 if not source_schema or (field_name not in declared_fields and not source_schema.get("allow_extra")):
                     raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", f"变量来源节点未声明可用的模型输出字段：{source_id}.{field_name}")
+        value_source = node["config"].get("value_source") if node["type"] == "condition" else None
+        if isinstance(value_source, str) and value_source.startswith("node."):
+            parsed_source = _node_output_source(value_source)
+            if not parsed_source:
+                raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支值来源格式无效")
+            source_id, field_name = parsed_source
+            if source_id not in node_map:
+                raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", f"条件分支值来源节点不存在：{source_id}")
+            if source_id == node_id or order_index[source_id] >= order_index[node_id]:
+                raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支只能引用已经完成的上游节点输出")
+            if field_name:
+                source_node = node_map[source_id]
+                source_config = source_node.get("config") or {}
+                source_schema = _output_schema(source_config) if source_node.get("type") == "agent" and source_config.get("mode", "synthetic") == "model" else None
+                declared_fields = {item["name"] for item in (source_schema or {}).get("fields", [])}
+                if not source_schema or (field_name not in declared_fields and not source_schema.get("allow_extra")):
+                    raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", f"条件分支值来源未声明可用的模型输出字段：{source_id}.{field_name}")
         if node["type"] == "knowledge_search":
             for source in _knowledge_query_sources(node["config"].get("query")):
                 if not source.startswith("node."):
@@ -850,21 +870,24 @@ def _parse_structured_agent_output(text: str, schema: dict | None) -> dict | Non
     return bounded
 
 
+def _resolve_workflow_reference(source: str, safe_input: dict, outputs: dict[str, str] | None = None, structured_outputs: dict[str, dict] | None = None):
+    outputs = outputs or {}
+    structured_outputs = structured_outputs or {}
+    if source == "input":
+        return safe_input
+    if source.startswith("input."):
+        return safe_input.get(source[6:])
+    source_id, field_name = _node_output_source(source) or (source[5:-7], None)
+    return structured_outputs.get(source_id, {}).get(field_name) if field_name else outputs.get(source_id)
+
+
 def _resolve_input_bindings(config: dict, safe_input: dict, outputs: dict[str, str], structured_outputs: dict[str, dict] | None = None) -> dict | None:
     bindings = config.get("input_bindings") or []
     if not bindings:
         return None
     resolved = {}
-    structured_outputs = structured_outputs or {}
     for binding in bindings:
-        source = binding["source"]
-        if source == "input":
-            value = safe_input
-        elif source.startswith("input."):
-            value = safe_input.get(source[6:])
-        else:
-            source_id, field_name = _node_output_source(source) or (source[5:-7], None)
-            value = structured_outputs.get(source_id, {}).get(field_name) if field_name else outputs.get(source_id)
+        value = _resolve_workflow_reference(binding["source"], safe_input, outputs, structured_outputs)
         resolved[binding["key"]] = value
     return resolved
 
@@ -1279,14 +1302,17 @@ def _skipped_node_output(node: dict, reason: str = "condition_branch") -> str:
     return json.dumps({"status": "skipped", "node_id": node["id"], "node_type": node["type"], "reason": reason}, ensure_ascii=False, separators=(",", ":"))
 
 
-def _condition_value(config: dict, safe_input: dict):
+def _condition_value(config: dict, safe_input: dict, outputs: dict[str, str] | None = None, structured_outputs: dict[str, dict] | None = None):
+    value_source = config.get("value_source")
+    if isinstance(value_source, str) and value_source:
+        return value_source, _resolve_workflow_reference(value_source, safe_input, outputs, structured_outputs)
     field = config.get("field")
     if not field and "amount_limit" in config:
         field = "amount"
     return field, safe_input.get(field) if isinstance(field, str) else None
 
 
-def _condition_result(node: dict, safe_input: dict) -> dict:
+def _condition_result(node: dict, safe_input: dict, outputs: dict[str, str] | None = None, structured_outputs: dict[str, dict] | None = None) -> dict:
     """Evaluate a deterministic, input-only branch without invoking a model."""
 
     config = node.get("config") or {}
@@ -1300,7 +1326,7 @@ def _condition_result(node: dict, safe_input: dict) -> dict:
                 missing.append(field)
         return {"kind": "condition", "result": not missing, "operator": "required", "missing": missing, "reason": "required_fields"}
 
-    field, actual = _condition_value(config, safe_input)
+    field, actual = _condition_value(config, safe_input, outputs, structured_outputs)
     expected = config.get("value", config.get("amount_limit"))
     operator = config.get("operator") or ("lte" if "amount_limit" in config else "exists")
     result = False
@@ -1711,7 +1737,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
             if node_id not in selections:
                 if node["type"] == "condition":
                     current_node = node
-                    result = _condition_result(node, safe_input)
+                    result = _condition_result(node, safe_input, outputs, agent_structured_outputs)
                     selected_edges = _condition_selected_edges(node, outgoing.get(node_id, []), bool(result["result"]))
                     outputs[node_id] = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
                     condition_outputs[node_id] = result

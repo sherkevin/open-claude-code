@@ -344,6 +344,70 @@ def test_workflow_marks_invalid_agent_output_as_failed(monkeypatch, client):
     assert response.json()["error"]["code"] == "WORKFLOW_AGENT_OUTPUT_INVALID"
 
 
+def test_condition_can_branch_on_a_structured_agent_field(monkeypatch, client):
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-condition-output-token")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"type": "text", "text": '{"score":0.92}'}]}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, endpoint, json):
+            return FakeResponse()
+
+    monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
+    assistant = client.post("/api/v1/assistants", json={"name": "结构化条件助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "review", "type": "agent", "label": "评分", "config": {"mode": "model", "model_id": "legacy-model", "output_schema_json": '{"fields":[{"name":"score","type":"number","required":true}]}' }},
+            {"id": "gate", "type": "condition", "label": "判断分数", "config": {"value_source": "node.review.output.score", "operator": "gte", "value": 0.8, "true_label": "通过", "false_label": "不通过"}},
+            {"id": "pass", "type": "artifact", "label": "通过产物", "config": {}},
+            {"id": "fail", "type": "artifact", "label": "不通过产物", "config": {}},
+        ],
+        "edges": [
+            {"source": "review", "target": "gate", "label": "评分完成"},
+            {"source": "gate", "target": "pass", "label": "通过"},
+            {"source": "gate", "target": "fail", "label": "不通过"},
+        ],
+    }
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "结构化条件流程", "graph": graph}).json()
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["status"] == "succeeded"
+    assert run["trace"][1]["condition_result"] is True
+    assert run["output"]["condition_outputs"]["gate"]["actual"] == 0.92
+    trace_by_node = {item["node_id"]: item for item in run["trace"]}
+    assert trace_by_node["fail"]["status"] == "skipped"
+    assert trace_by_node["pass"]["status"] == "simulated"
+
+
+def test_condition_rejects_an_undeclared_structured_field(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "条件字段边界助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "review", "type": "agent", "label": "评分", "config": {"mode": "model", "model_id": "legacy-model", "output_schema_json": '{"fields":[{"name":"score","type":"number","required":true}]}' }},
+            {"id": "gate", "type": "condition", "label": "判断", "config": {"value_source": "node.review.output.decision", "operator": "exists"}},
+        ],
+        "edges": [{"source": "review", "target": "gate", "label": "完成"}],
+    }
+    response = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "非法条件字段", "graph": graph})
+    assert response.status_code == 422 and response.json()["error"]["code"] == "WORKFLOW_CONDITION_CONFIG_INVALID"
+
+
 def test_live_mcp_read_node_calls_bound_readonly_tool_and_persists_evidence(monkeypatch, client):
     class FakeResult:
         isError = False

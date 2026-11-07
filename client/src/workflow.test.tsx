@@ -68,4 +68,13 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowConditionIssue(graph)).toContain('填写连线标签');
     expect(workflowConditionIssue({ ...graph, edges: [{ ...graph.edges[0], label: 'high' }, { ...graph.edges[1], label: 'low' }] })).toBe('');
   });
+
+  it('validates condition branches that read structured agent fields', () => {
+    const review = { id: 'review', type: 'agent' as const, label: '评分', config: { mode: 'model', output_schema_json: '{"fields":[{"name":"score","type":"number","required":true}]}' } };
+    const gate = { id: 'gate', type: 'condition' as const, label: '判断', config: { value_source: 'node.review.output.score', operator: 'gte', value: 0.8 } };
+    const graph = { nodes: [review, gate, { id: 'pass', type: 'artifact' as const, label: '通过', config: {} }], edges: [{ source: 'review', target: 'gate', label: '完成' }, { source: 'gate', target: 'pass', label: '通过' }] };
+    expect(workflowConditionIssue(graph)).toBe('');
+    expect(workflowConditionIssue({ ...graph, nodes: [review, { ...gate, config: { ...gate.config, value_source: 'node.review.output.decision' } }, graph.nodes[2]] })).toContain('判断字段未在来源节点中声明');
+    expect(workflowConditionIssue({ ...graph, nodes: [review, { ...gate, config: { ...gate.config, value_source: 'node.missing.output.score' } }, graph.nodes[2]] })).toContain('来源节点不存在');
+  });
 });
