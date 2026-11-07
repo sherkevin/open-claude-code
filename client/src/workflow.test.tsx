@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputReferenceBinding, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputReferenceBinding, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -89,6 +89,7 @@ describe('low-code workflow canvas contracts', () => {
 
   it('resolves run input and structured output references for trace previews', () => {
     const run = { output: { input: { topic: '合同' }, node_outputs: { review: '{"decision":"approve"}' }, agent_structured_outputs: { review: { decision: 'approve', score: 0.92 } } } } as never;
+    expect(workflowRunInput(run)).toEqual({ topic: '合同' });
     expect(workflowRunReferenceValue(run, 'input.topic')).toBe('合同');
     expect(workflowRunReferenceValue(run, 'node.review.output.decision')).toBe('approve');
     expect(workflowRunReferenceValue(run, 'node.review.output.score')).toBe(0.92);
