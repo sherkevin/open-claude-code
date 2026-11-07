@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceEdgeKeys, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceEdgeKeys, workflowReferenceRelations, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -145,6 +145,21 @@ describe('low-code workflow canvas contracts', () => {
       { node_id: 'lookup', node_label: '检索', key: '检索问题', source: 'node.review.output.decision' },
       { node_id: 'gate', node_label: '判断', key: '判断值来源', source: 'node.review.output.decision' },
       { node_id: 'read', node_label: '读取', key: '工具参数 · decision', source: 'node.review.output.decision' },
+    ]);
+  });
+
+  it('builds a global variable relation map with input and node sources', () => {
+    const graph = {
+      nodes: [
+        { id: 'review', type: 'agent' as const, label: '审核', config: { input_bindings: [{ key: 'topic', source: 'input.topic' }] } },
+        { id: 'lookup', type: 'knowledge_search' as const, label: '检索', config: { query: '{{node.review.output}} for {{input.topic}}' } },
+      ],
+      edges: [{ source: 'review', target: 'lookup', label: '依据' }],
+    };
+    expect(workflowReferenceRelations(graph)).toEqual([
+      { source: 'input.topic', source_node_id: '', source_label: '运行输入', target_node_id: 'review', target_label: '审核', key: 'topic' },
+      { source: 'node.review.output', source_node_id: 'review', source_label: '审核', target_node_id: 'lookup', target_label: '检索', key: '检索问题' },
+      { source: 'input.topic', source_node_id: '', source_label: '运行输入', target_node_id: 'lookup', target_label: '检索', key: '检索问题' },
     ]);
   });
 
