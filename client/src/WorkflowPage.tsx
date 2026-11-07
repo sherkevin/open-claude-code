@@ -458,6 +458,56 @@ export function workflowRunInput(run: WorkflowRun): Record<string, unknown> | nu
   return workflowRecord(output?.input);
 }
 
+export interface WorkflowRunNodeComparison {
+  node_id: string;
+  input_changes: Array<{ key: string; before: string; after: string }>;
+  output_before: string;
+  output_after: string;
+  output_changed: boolean;
+  status_before: string;
+  status_after: string;
+  model_before: string;
+  model_after: string;
+  duration_delta_ms?: number;
+  attempts_delta?: number;
+  retries_delta?: number;
+  error_before: string;
+  error_after: string;
+}
+
+function workflowComparableValue(value: unknown): string {
+  if (value === undefined) return '__undefined__';
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+export function workflowRunNodeComparison(before: WorkflowRun, after: WorkflowRun, nodeId: string): WorkflowRunNodeComparison | null {
+  const beforeTrace = before.trace.find(item => item.node_id === nodeId);
+  const afterTrace = after.trace.find(item => item.node_id === nodeId);
+  if (!beforeTrace && !afterTrace) return null;
+  const beforeInput = workflowRunInput(before) || {};
+  const afterInput = workflowRunInput(after) || {};
+  const keys = [...new Set([...Object.keys(beforeInput), ...Object.keys(afterInput)])].sort();
+  const input_changes = keys.filter(key => workflowComparableValue(beforeInput[key]) !== workflowComparableValue(afterInput[key])).map(key => ({ key, before: workflowValuePreview(beforeInput[key], `input.${key}`) || '未提供', after: workflowValuePreview(afterInput[key], `input.${key}`) || '未提供' }));
+  const output_before = beforeTrace?.output_preview || '';
+  const output_after = afterTrace?.output_preview || '';
+  return {
+    node_id: nodeId,
+    input_changes,
+    output_before,
+    output_after,
+    output_changed: output_before !== output_after,
+    status_before: beforeTrace?.status || '未执行',
+    status_after: afterTrace?.status || '未执行',
+    model_before: beforeTrace?.model_label || beforeTrace?.model_id || '未记录',
+    model_after: afterTrace?.model_label || afterTrace?.model_id || '未记录',
+    ...(typeof beforeTrace?.duration_ms === 'number' && typeof afterTrace?.duration_ms === 'number' ? { duration_delta_ms: afterTrace.duration_ms - beforeTrace.duration_ms } : {}),
+    ...(typeof beforeTrace?.model_attempts === 'number' && typeof afterTrace?.model_attempts === 'number' ? { attempts_delta: afterTrace.model_attempts - beforeTrace.model_attempts } : {}),
+    ...(typeof beforeTrace?.model_retries === 'number' && typeof afterTrace?.model_retries === 'number' ? { retries_delta: afterTrace.model_retries - beforeTrace.model_retries } : {}),
+    error_before: beforeTrace?.error_code || '无',
+    error_after: afterTrace?.error_code || '无',
+  };
+}
+
 export function workflowValuePreview(value: unknown, source = ''): string {
   if (value === undefined) return '';
   if (/(?:password|passwd|token|secret|credential|api[_-]?key|authorization)/i.test(source)) return '[已隐藏]';
@@ -553,6 +603,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [run, setRun] = useState<WorkflowRun | null>(null);
+  const [runComparisonBaseline, setRunComparisonBaseline] = useState<{ run: WorkflowRun; nodeId: string } | null>(null);
   const [runHistory, setRunHistory] = useState<WorkflowRunSummary[]>([]);
   const [selectedTraceNodeId, setSelectedTraceNodeId] = useState('');
   const [approvalComment, setApprovalComment] = useState('');
@@ -609,7 +660,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
       try { history = await api<WorkflowRunSummary[]>(`/workflows/${encodeURIComponent(workflowId)}/runs?limit=20`); } catch { /* Older servers can omit run history while the editor remains usable. */ }
       setSelected(detail); setWorkflows(list.map(item => item.id === detail.id ? { ...item, ...detail } : item));
       setName(detail.name); setDescription(detail.description); replaceGraph(graphFrom(detail));
-      const nextGraph = graphFrom(detail); const first = topologicalOrder(nextGraph)[0] || nextGraph.nodes[0]?.id || ''; setSelectedNode(first); setEdgeSource(first); setEdgeTarget(nextGraph.nodes.find(node => node.id !== first)?.id || ''); setRunInput(Object.fromEntries(workflowFormFields(nextGraph).map(field => [field.id, field.type === 'number' ? '' : '']))); setRun(null); setSelectedTraceNodeId('');
+      const nextGraph = graphFrom(detail); const first = topologicalOrder(nextGraph)[0] || nextGraph.nodes[0]?.id || ''; setSelectedNode(first); setEdgeSource(first); setEdgeTarget(nextGraph.nodes.find(node => node.id !== first)?.id || ''); setRunInput(Object.fromEntries(workflowFormFields(nextGraph).map(field => [field.id, field.type === 'number' ? '' : '']))); setRun(null); setRunComparisonBaseline(null); setSelectedTraceNodeId('');
       setRunHistory(history);
       setApprovalComment('');
     } catch (cause) { setError(errorText(cause)); }
@@ -665,6 +716,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
     : graphHasIsolatedNode(graph)
       ? '不能保存：每个节点都必须连接到工作流。'
       : workflowFormIssue(graph) || workflowArtifactIssue(graph) || workflowOutputSchemaIssue(graph) || workflowInputBindingsIssue(graph) || workflowKnowledgeIssue(graph) || workflowToolArgumentsIssue(graph) || workflowConditionIssue(graph);
+  const nodeComparison = runComparisonBaseline && run && !dirty && runComparisonBaseline.nodeId === selectedTrace?.node_id ? workflowRunNodeComparison(runComparisonBaseline.run, run, selectedTrace.node_id) : null;
 
   useEffect(() => {
     dirtyCallbackRef.current?.(dirty);
@@ -701,7 +753,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
   const save = async () => {
     if (!selected || !editable || !dirty || graphIssue) return;
     setBusy(true); setError('');
-    try { const saved = await patch<Workflow>(`/workflows/${encodeURIComponent(selected.id)}/draft`, { expected_revision: selected.revision, name, description, graph }); setSelected(saved); setWorkflows(values => values.map(item => item.id === saved.id ? saved : item)); replaceGraph(graphFrom(saved)); setNotice(`草稿 v${saved.draft_version} 已保存。`); }
+    try { const saved = await patch<Workflow>(`/workflows/${encodeURIComponent(selected.id)}/draft`, { expected_revision: selected.revision, name, description, graph }); setSelected(saved); setRunComparisonBaseline(null); setWorkflows(values => values.map(item => item.id === saved.id ? saved : item)); replaceGraph(graphFrom(saved)); setNotice(`草稿 v${saved.draft_version} 已保存。`); }
     catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
   };
@@ -710,7 +762,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
     if (!selected || !editable) return;
     if (dirty) { setError('请先保存当前草稿，再发布。'); return; }
     setBusy(true); setError('');
-    try { const published = await post<Workflow>(`/workflows/${encodeURIComponent(selected.id)}/publish`); setSelected(published); setWorkflows(values => values.map(item => item.id === published.id ? published : item)); setNotice(`v${published.published_version} 已发布，运行会固定此版本。`); }
+    try { const published = await post<Workflow>(`/workflows/${encodeURIComponent(selected.id)}/publish`); setSelected(published); setRunComparisonBaseline(null); setWorkflows(values => values.map(item => item.id === published.id ? published : item)); setNotice(`v${published.published_version} 已发布，运行会固定此版本。`); }
     catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
   };
@@ -718,7 +770,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
   const rollback = async (version: number) => {
     if (!selected || !editable) return;
     setBusy(true); setError('');
-    try { const rolled = await post<Workflow>(`/workflows/${encodeURIComponent(selected.id)}/rollback`, { version }); setSelected(rolled); setWorkflows(values => values.map(item => item.id === rolled.id ? rolled : item)); replaceGraph(graphFrom(rolled)); setName(rolled.name); setDescription(rolled.description); setNotice(`已从 v${version} 建立新的未发布草稿。`); }
+    try { const rolled = await post<Workflow>(`/workflows/${encodeURIComponent(selected.id)}/rollback`, { version }); setSelected(rolled); setRunComparisonBaseline(null); setWorkflows(values => values.map(item => item.id === rolled.id ? rolled : item)); replaceGraph(graphFrom(rolled)); setName(rolled.name); setDescription(rolled.description); setNotice(`已从 v${version} 建立新的未发布草稿。`); }
     catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
   };
@@ -730,6 +782,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
     try {
       const next = await post<WorkflowRun>(`/workflows/${encodeURIComponent(selected.id)}/runs`, { input: runInput, ...(workflowConversationId ? { conversation_id: workflowConversationId } : {}) });
       setRun(next);
+      setRunComparisonBaseline(null);
       setRunHistory(values => [workflowRunSummary(next), ...values.filter(item => item.id !== next.id)].slice(0, 20));
       setSelectedTraceNodeId(next.trace[next.trace.length - 1]?.node_id || '');
       setApprovalComment('');
@@ -745,6 +798,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
     try {
       const next = await post<WorkflowRun>(`/workflow-runs/${encodeURIComponent(run.id)}/approvals/${encodeURIComponent(approval.node_id)}/decision`, { decision, comment: approvalComment.trim() });
       setRun(next);
+      setRunComparisonBaseline(null);
       setRunHistory(values => [workflowRunSummary(next), ...values.filter(item => item.id !== next.id)].slice(0, 20));
       setSelectedTraceNodeId(next.trace[next.trace.length - 1]?.node_id || '');
       setApprovalComment('');
@@ -758,7 +812,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
     if (!selected || !target || target.type !== 'agent' || nodeConfigText(target, 'mode', 'synthetic') !== 'model' || !editable) return;
     if (dirty) { setError('请先保存当前草稿，再调试节点。'); return; }
     setBusy(true); setError('');
-    try { const next = await post<WorkflowRun>(`/workflows/${encodeURIComponent(selected.id)}/nodes/${encodeURIComponent(target.id)}/debug`, { input: runInput }); setRun(next); setRunHistory(values => [workflowRunSummary(next), ...values.filter(item => item.id !== next.id)].slice(0, 20)); setSelectedNode(target.id); setSelectedTraceNodeId(next.trace[next.trace.length - 1]?.node_id || target.id); setNotice(`节点“${target.label}”调试完成，使用的是当前草稿配置。`); }
+    try { const next = await post<WorkflowRun>(`/workflows/${encodeURIComponent(selected.id)}/nodes/${encodeURIComponent(target.id)}/debug`, { input: runInput }); setRunComparisonBaseline(run ? { run, nodeId: target.id } : null); setRun(next); setRunHistory(values => [workflowRunSummary(next), ...values.filter(item => item.id !== next.id)].slice(0, 20)); setSelectedNode(target.id); setSelectedTraceNodeId(next.trace[next.trace.length - 1]?.node_id || target.id); setNotice(`节点“${target.label}”调试完成，使用的是当前草稿配置。`); }
     catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
   };
@@ -784,6 +838,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
         }
       }
       setRun(detail);
+      setRunComparisonBaseline(null);
       setSelectedTraceNodeId(detail.trace[detail.trace.length - 1]?.node_id || '');
       setNotice(`已打开 ${new Date(summary.created_at).toLocaleString('zh-CN')} 的运行记录${historicalInput ? '，已带入本次运行输入。' : '。'}`);
     } catch (cause) { setError(errorText(cause)); }
@@ -828,7 +883,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
         <section className="workflow-panel workflow-edge-panel"><div className="workflow-section-head"><div><h2>连接步骤</h2><p>从一个节点指向另一个节点；条件分支可用连线标签选择出口，服务端会拒绝循环和孤立节点。</p></div></div><div className="workflow-edge-form"><select aria-label="连线起点" value={edgeSource} disabled={!editable||busy} onChange={event=>setEdgeSource(event.target.value)}>{graph.nodes.map(node=><option key={node.id} value={node.id}>{node.label}</option>)}</select><ChevronRight size={15}/><select aria-label="连线终点" value={edgeTarget} disabled={!editable||busy} onChange={event=>setEdgeTarget(event.target.value)}>{graph.nodes.map(node=><option key={node.id} value={node.id}>{node.label}</option>)}</select><Button variant="secondary" disabled={!editable||busy||!edgeSource||!edgeTarget||edgeSource===edgeTarget} onClick={addEdge}><Plus size={14}/>添加连线</Button></div><div className="workflow-edge-list">{graph.edges.map(edge=><span key={`${edge.source}-${edge.target}`}><span>{graph.nodes.find(node=>node.id===edge.source)?.label}<ChevronRight size={12}/>{graph.nodes.find(node=>node.id===edge.target)?.label}</span><input aria-label={`连线标签 ${edge.source} 到 ${edge.target}`} value={edge.label||''} placeholder="分支标签" disabled={!editable||busy} onChange={event=>setGraph(value=>({...value,edges:value.edges.map(item=>item.source===edge.source&&item.target===edge.target?{...item,label:event.target.value}:item)}))}/></span>)}</div></section>
         <section className="workflow-panel workflow-versions"><div className="workflow-section-head"><div><h2>版本与回滚</h2><p>已发布版本不可变；回滚只建立新草稿，必须再次人工发布。</p></div></div><div className="workflow-version-list">{selected.versions.map(version=><div key={version.version} className={`workflow-version-row ${version.version===selected.published_version?'current':''}`}><span className="workflow-version-number">v{version.version}</span><span><strong>{version.status==='published'?'已发布':version.status==='draft'?'草稿':'历史版本'}</strong><small>{version.graph_hash.slice(0,12)} · {new Date(version.created_at).toLocaleString('zh-CN')}</small></span>{editable&&version.version!==selected.draft_version&&<Button variant="ghost" disabled={busy} onClick={()=>void rollback(version.version)}><RotateCcw size={13}/>回滚为草稿</Button>}</div>)}</div></section>
         <section className="workflow-panel workflow-run-history"><div className="workflow-section-head"><div><h2>运行记录</h2><p>保留最近 20 次运行和节点调试；点击记录可重新查看完整轨迹与审计摘要。</p></div><span>{runHistory.length} 条记录</span></div>{runHistory.length ? <div className="workflow-run-history-list">{runHistory.map(item => <button type="button" key={item.id} className={`workflow-run-history-item ${run?.id === item.id ? 'selected' : ''}`} disabled={busy} aria-current={run?.id === item.id ? 'true' : undefined} onClick={() => void openRun(item)}><span className="workflow-run-history-icon"><History size={14}/></span><span><strong>{workflowRunHistoryLabel(item)} · v{item.version}</strong><small>{new Date(item.created_at).toLocaleString('zh-CN')} · {item.trace_count} 个节点{item.approval_node_id ? ` · 等待 ${item.approval_node_id} 审批` : ''}{item.error ? ` · ${item.error}` : ''}</small></span><ChevronRight size={14}/></button>)}</div> : <p className="section-help">发布后运行或调试节点，记录会出现在这里。</p>}</section>
-        {run&&<section className={`workflow-run-card ${run.synthetic && run.execution_mode !== 'tool' ? '' : 'workflow-run-model'} ${run.status === 'awaiting_approval' ? 'workflow-run-awaiting' : ''}`}><div><span className="workflow-run-pill">{run.status === 'awaiting_approval' ? <ShieldCheck size={13}/> : <Check size={13}/>} {runIsDebug ? '节点调试成功' : runStatusLabel}</span><strong>{runIsDebug ? `已调试草稿节点${runDebugNodeId ? ` · ${runDebugNodeId}` : ''}` : `已运行发布版本 v${run.version}`}</strong><small>{runIsDebug ? `草稿版本 v${run.version} · ` : ''}图哈希 {run.graph_hash.slice(0,16)} · 权限摘要 {run.permission_digest.slice(0,16)}</small>{runFromHistory&&<small className="workflow-run-context-note">当前草稿为 v{selected?.draft_version}；重跑将使用当前草稿配置。</small>}{!runFromHistory&&dirty&&!runIsDebug&&<small className="workflow-run-context-note">当前草稿有未保存修改；重跑前需要先保存。</small>}{run.tool_evidence_records?.length ? <small>已登记 {run.tool_evidence_records.length} 组只读工具来源证据</small> : null}{pendingApproval&&<div className="workflow-run-approval"><span><strong>审批节点：{pendingApproval.node_id}</strong><small>明确选择后才会继续，决定会写入运行审计。</small></span><input aria-label="审批说明" maxLength={1000} value={approvalComment} placeholder="可选：写下审批依据" onChange={event=>setApprovalComment(event.target.value)}/><div><Button variant="secondary" disabled={busy} onClick={()=>void decideApproval(pendingApproval, 'approve')}>批准继续</Button><Button variant="ghost" disabled={busy} onClick={()=>void decideApproval(pendingApproval, 'reject')}>拒绝运行</Button></div></div>}</div><div className="workflow-run-trace-column"><div className="workflow-run-trace">{run.trace.map(item=><button type="button" className={`workflow-run-trace-item ${item.output_preview ? 'has-output' : ''} ${selectedTrace?.node_id === item.node_id ? 'selected' : ''}`} key={`${item.sequence}-${item.node_id}`} title={item.output_preview || undefined} aria-label={`查看节点 ${item.node_id} 的运行详情`} aria-pressed={selectedTrace?.node_id === item.node_id} onClick={()=>{setSelectedTraceNodeId(item.node_id); setSelectedNode(item.node_id);}}><span><CircleDot size={12}/>{item.node_id}{item.model_label&&<small>{item.model_label}</small>}{item.model_retries ? <small>重试 {item.model_retries} 次</small> : null}{item.duration_ms !== undefined ? <small>{item.duration_ms} 毫秒</small> : null}{item.tool_call&&<small>{item.evidence_count || 0} 条证据</small>}{item.structured_output&&<small>结构化输出</small>}<small>{item.status}</small></span>{item.output_preview&&<em>{item.output_preview}</em>}</button>)}</div>{selectedTrace&&<div className="workflow-run-detail" aria-live="polite"><div className="workflow-run-detail-head"><div><strong>节点运行详情</strong><span>{selectedTrace.node_id} · {selectedTrace.status}</span></div>{canDebugSelectedTrace&&<Button variant="secondary" busy={busy} disabled={!editable||busy||dirty} onClick={()=>void debugNode(selectedTrace.node_id)}><Play size={13}/>用本次输入重跑</Button>}</div><div className="workflow-run-detail-grid">{selectedTrace.model_label&&<span><small>模型</small><strong>{selectedTrace.model_label}</strong></span>}{selectedTrace.model_id&&<span><small>模型标识</small><strong>{selectedTrace.model_id}</strong></span>}{selectedTrace.role&&<span><small>角色定位</small><strong>{selectedTrace.role}</strong></span>}{selectedTrace.reasoning_level&&<span><small>推理级别</small><strong>{selectedTrace.reasoning_level}</strong></span>}{selectedTrace.model_attempts !== undefined&&<span><small>模型尝试</small><strong>{selectedTrace.model_attempts} 次</strong></span>}{selectedTrace.model_retries !== undefined&&<span><small>失败重试</small><strong>{selectedTrace.model_retries} 次</strong></span>}{selectedTrace.duration_ms !== undefined&&<span><small>模型耗时</small><strong>{selectedTrace.duration_ms} 毫秒</strong></span>}{selectedTrace.tool_name&&<span><small>工具</small><strong>{selectedTrace.tool_name}</strong></span>}{selectedTrace.evidence_count !== undefined&&<span><small>来源证据</small><strong>{selectedTrace.evidence_count} 条</strong></span>}</div>{selectedTrace.input_bindings?.length ? <div className="workflow-run-detail-block"><small>输入变量（含本次解析值）</small><span className="workflow-run-binding-values">{selectedTrace.input_bindings.map(binding=>{const value=workflowValuePreview(workflowRunReferenceValue(run,binding.source),binding.source);return <code key={`${binding.key}-${binding.source}`}>{binding.key} ← {binding.source}{value ? ` = ${value}` : ''}</code>;})}</span></div> : null}{selectedTrace.selected_targets?.length ? <div className="workflow-run-detail-block"><small>分支出口</small><span>{selectedTrace.selected_targets.join('、')}</span></div> : null}{selectedTrace.structured_fields?.length ? <div className="workflow-run-detail-block"><small>结构化字段（可引用到下游智能体）</small><span className="workflow-run-structured-fields">{selectedTrace.structured_fields.map(field=>{const source=`node.${selectedTrace.node_id}.output.${field}`;const value=workflowValuePreview(workflowRunReferenceValue(run,source),source);return <span className="workflow-run-structured-field" key={field}><code>{field}{value ? ` = ${value}` : ''}</code><button type="button" className="workflow-run-field-action" disabled={busy} onClick={()=>insertStructuredOutputBinding(selectedTrace.node_id,field)}>引用到当前节点</button></span>;})}</span></div> : null}{selectedTrace.output_preview&&<div className="workflow-run-detail-block"><small>节点输出</small><pre>{selectedTrace.output_preview}</pre></div>}{selectedTrace.error_code&&<div className="workflow-run-detail-block workflow-run-detail-error"><small>错误编码</small><span>{selectedTrace.error_code}</span></div>}</div>}</div></section>}
+        {run&&<section className={`workflow-run-card ${run.synthetic && run.execution_mode !== 'tool' ? '' : 'workflow-run-model'} ${run.status === 'awaiting_approval' ? 'workflow-run-awaiting' : ''}`}><div><span className="workflow-run-pill">{run.status === 'awaiting_approval' ? <ShieldCheck size={13}/> : <Check size={13}/>} {runIsDebug ? '节点调试成功' : runStatusLabel}</span><strong>{runIsDebug ? `已调试草稿节点${runDebugNodeId ? ` · ${runDebugNodeId}` : ''}` : `已运行发布版本 v${run.version}`}</strong><small>{runIsDebug ? `草稿版本 v${run.version} · ` : ''}图哈希 {run.graph_hash.slice(0,16)} · 权限摘要 {run.permission_digest.slice(0,16)}</small>{runFromHistory&&<small className="workflow-run-context-note">当前草稿为 v{selected?.draft_version}；重跑将使用当前草稿配置。</small>}{!runFromHistory&&dirty&&!runIsDebug&&<small className="workflow-run-context-note">当前草稿有未保存修改；重跑前需要先保存。</small>}{run.tool_evidence_records?.length ? <small>已登记 {run.tool_evidence_records.length} 组只读工具来源证据</small> : null}{pendingApproval&&<div className="workflow-run-approval"><span><strong>审批节点：{pendingApproval.node_id}</strong><small>明确选择后才会继续，决定会写入运行审计。</small></span><input aria-label="审批说明" maxLength={1000} value={approvalComment} placeholder="可选：写下审批依据" onChange={event=>setApprovalComment(event.target.value)}/><div><Button variant="secondary" disabled={busy} onClick={()=>void decideApproval(pendingApproval, 'approve')}>批准继续</Button><Button variant="ghost" disabled={busy} onClick={()=>void decideApproval(pendingApproval, 'reject')}>拒绝运行</Button></div></div>}</div><div className="workflow-run-trace-column"><div className="workflow-run-trace">{run.trace.map(item=><button type="button" className={`workflow-run-trace-item ${item.output_preview ? 'has-output' : ''} ${selectedTrace?.node_id === item.node_id ? 'selected' : ''}`} key={`${item.sequence}-${item.node_id}`} title={item.output_preview || undefined} aria-label={`查看节点 ${item.node_id} 的运行详情`} aria-pressed={selectedTrace?.node_id === item.node_id} onClick={()=>{setSelectedTraceNodeId(item.node_id); setSelectedNode(item.node_id);}}><span><CircleDot size={12}/>{item.node_id}{item.model_label&&<small>{item.model_label}</small>}{item.model_retries ? <small>重试 {item.model_retries} 次</small> : null}{item.duration_ms !== undefined ? <small>{item.duration_ms} 毫秒</small> : null}{item.tool_call&&<small>{item.evidence_count || 0} 条证据</small>}{item.structured_output&&<small>结构化输出</small>}<small>{item.status}</small></span>{item.output_preview&&<em>{item.output_preview}</em>}</button>)}</div>{selectedTrace&&<div className="workflow-run-detail" aria-live="polite"><div className="workflow-run-detail-head"><div><strong>节点运行详情</strong><span>{selectedTrace.node_id} · {selectedTrace.status}</span></div>{canDebugSelectedTrace&&<Button variant="secondary" busy={busy} disabled={!editable||busy||dirty} onClick={()=>void debugNode(selectedTrace.node_id)}><Play size={13}/>用本次输入重跑</Button>}</div><div className="workflow-run-detail-grid">{selectedTrace.model_label&&<span><small>模型</small><strong>{selectedTrace.model_label}</strong></span>}{selectedTrace.model_id&&<span><small>模型标识</small><strong>{selectedTrace.model_id}</strong></span>}{selectedTrace.role&&<span><small>角色定位</small><strong>{selectedTrace.role}</strong></span>}{selectedTrace.reasoning_level&&<span><small>推理级别</small><strong>{selectedTrace.reasoning_level}</strong></span>}{selectedTrace.model_attempts !== undefined&&<span><small>模型尝试</small><strong>{selectedTrace.model_attempts} 次</strong></span>}{selectedTrace.model_retries !== undefined&&<span><small>失败重试</small><strong>{selectedTrace.model_retries} 次</strong></span>}{selectedTrace.duration_ms !== undefined&&<span><small>模型耗时</small><strong>{selectedTrace.duration_ms} 毫秒</strong></span>}{selectedTrace.tool_name&&<span><small>工具</small><strong>{selectedTrace.tool_name}</strong></span>}{selectedTrace.evidence_count !== undefined&&<span><small>来源证据</small><strong>{selectedTrace.evidence_count} 条</strong></span>}</div>{nodeComparison&&<div className="workflow-run-comparison" aria-label="节点重跑对比"><div className="workflow-run-comparison-head"><small>与重跑前基线对比</small><span>{nodeComparison.status_before} → {nodeComparison.status_after}</span></div><div className="workflow-run-comparison-grid"><span><small>输入变化</small><strong>{nodeComparison.input_changes.length ? `${nodeComparison.input_changes.length} 个字段` : '未变化'}</strong></span><span><small>输出变化</small><strong>{nodeComparison.output_changed ? '已变化' : '未变化'}</strong></span><span><small>耗时变化</small><strong>{nodeComparison.duration_delta_ms === undefined ? '无基线' : `${nodeComparison.duration_delta_ms > 0 ? '+' : ''}${nodeComparison.duration_delta_ms} 毫秒`}</strong></span><span><small>尝试变化</small><strong>{nodeComparison.attempts_delta === undefined ? '无基线' : `${nodeComparison.attempts_delta > 0 ? '+' : ''}${nodeComparison.attempts_delta} 次`}</strong></span><span><small>错误编码</small><strong>{nodeComparison.error_before} → {nodeComparison.error_after}</strong></span></div>{nodeComparison.input_changes.length ? <div className="workflow-run-comparison-block"><small>变化输入</small><span>{nodeComparison.input_changes.map(change=><code key={change.key}>{change.key}: {change.before} → {change.after}</code>)}</span></div> : null}<div className="workflow-run-comparison-block"><small>输出对比（基线 / 本次）</small><div className="workflow-run-comparison-output"><pre>{nodeComparison.output_before || '无输出'}</pre><pre>{nodeComparison.output_after || '无输出'}</pre></div></div></div>}{selectedTrace.input_bindings?.length ? <div className="workflow-run-detail-block"><small>输入变量（含本次解析值）</small><span className="workflow-run-binding-values">{selectedTrace.input_bindings.map(binding=>{const value=workflowValuePreview(workflowRunReferenceValue(run,binding.source),binding.source);return <code key={`${binding.key}-${binding.source}`}>{binding.key} ← {binding.source}{value ? ` = ${value}` : ''}</code>;})}</span></div> : null}{selectedTrace.selected_targets?.length ? <div className="workflow-run-detail-block"><small>分支出口</small><span>{selectedTrace.selected_targets.join('、')}</span></div> : null}{selectedTrace.structured_fields?.length ? <div className="workflow-run-detail-block"><small>结构化字段（可引用到下游智能体）</small><span className="workflow-run-structured-fields">{selectedTrace.structured_fields.map(field=>{const source=`node.${selectedTrace.node_id}.output.${field}`;const value=workflowValuePreview(workflowRunReferenceValue(run,source),source);return <span className="workflow-run-structured-field" key={field}><code>{field}{value ? ` = ${value}` : ''}</code><button type="button" className="workflow-run-field-action" disabled={busy} onClick={()=>insertStructuredOutputBinding(selectedTrace.node_id,field)}>引用到当前节点</button></span>;})}</span></div> : null}{selectedTrace.output_preview&&<div className="workflow-run-detail-block"><small>节点输出</small><pre>{selectedTrace.output_preview}</pre></div>}{selectedTrace.error_code&&<div className="workflow-run-detail-block workflow-run-detail-error"><small>错误编码</small><span>{selectedTrace.error_code}</span></div>}</div>}</div></section>}
       </>}</section>
     </div>
   </div>;

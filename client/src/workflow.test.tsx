@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputReferenceBinding, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputReferenceBinding, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -95,6 +95,18 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowRunReferenceValue(run, 'node.review.output.score')).toBe(0.92);
     expect(workflowValuePreview({ decision: 'approve' })).toBe('{"decision":"approve"}');
     expect(workflowValuePreview('secret-token', 'input.api_token')).toBe('[已隐藏]');
+  });
+
+  it('compares a node rerun while masking sensitive input changes', () => {
+    const before = { output: { input: { topic: '合同', api_token: 'old-secret' } }, trace: [{ node_id: 'review', status: 'completed', model_label: '旧模型', model_attempts: 1, model_retries: 0, duration_ms: 120, output_preview: '旧结论' }] } as never;
+    const after = { output: { input: { topic: '制度', api_token: 'new-secret' } }, trace: [{ node_id: 'review', status: 'completed', model_label: '新模型', model_attempts: 2, model_retries: 1, duration_ms: 180, output_preview: '新结论' }] } as never;
+    expect(workflowRunNodeComparison(before, after, 'review')).toMatchObject({
+      input_changes: [{ key: 'api_token', before: '[已隐藏]', after: '[已隐藏]' }, { key: 'topic', before: '合同', after: '制度' }],
+      output_before: '旧结论', output_after: '新结论', output_changed: true,
+      duration_delta_ms: 60, attempts_delta: 1, retries_delta: 1,
+      model_before: '旧模型', model_after: '新模型',
+    });
+    expect(workflowRunNodeComparison(before, after, 'missing')).toBeNull();
   });
 
   it('inserts a new node between the selected step and its single successor', () => {
