@@ -358,3 +358,77 @@
 @media (prefers-reduced-motion: reduce) {
   .muse-theme *, .muse-theme *::before, .muse-theme *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* FlowGram canvas: keep the open-source editor inside the workbench's quiet, editorial visual system. */
+.muse-theme .workflow-flowgram-card { padding-bottom: 14px; }
+.muse-theme .zhixing-flowgram-shell {
+  position: relative;
+  height: 560px;
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--muse-line);
+  border-radius: 3px;
+  background: #f6f8f1;
+  --g-selection-background: #6d9560;
+  --g-editor-background: #f6f8f1;
+  --g-playground-select: #6d9560;
+  --g-playground-hover: #7ca46e;
+  --g-playground-line: #a8bba0;
+  --g-playground-selectBox-outline: #7ca46e;
+  --g-playground-selectBox-background: rgba(124, 164, 110, .12);
+}
+.muse-theme .zhixing-flowgram-editor,
+.muse-theme .zhixing-flowgram-shell .gedit-playground { position: absolute; inset: 0; }
+.muse-theme .zhixing-flowgram-shell .gedit-playground { background: var(--g-editor-background); }
+.muse-theme .zhixing-flowgram-shell .gedit-playground-pipeline { background-image: radial-gradient(circle, rgba(111, 148, 100, .16) 1px, transparent 1px); background-size: 22px 22px; }
+.muse-theme .zhixing-flowgram-shell .gedit-flow-activity-node { z-index: 20; }
+.muse-theme .zhixing-flow-node {
+  width: 220px;
+  min-height: 116px;
+  padding: 0;
+  overflow: visible;
+  border: 1px solid #d9e5d3;
+  border-left: 3px solid #769b68;
+  border-radius: 11px;
+  background: #fffefb;
+  box-shadow: 0 10px 24px rgba(54, 76, 55, .10);
+  color: #4b6543;
+  cursor: grab;
+  transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.muse-theme .zhixing-flow-node:active { cursor: grabbing; }
+.muse-theme .zhixing-flow-node.selected { border-color: #87a879; box-shadow: 0 0 0 3px #e0edd8, 0 12px 28px rgba(54, 76, 55, .14); }
+.muse-theme .zhixing-flow-node.activated { border-color: #6d9560; }
+.muse-theme .zhixing-flow-node-head { display: flex; align-items: center; gap: 7px; padding: 10px 11px 8px; border-bottom: 1px solid #edf1e8; color: #58794c; font-size: 10px; letter-spacing: .06em; line-height: 1.2; }
+.muse-theme .zhixing-flow-node-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #769b68; box-shadow: 0 0 0 3px #edf4e9; }
+.muse-theme .zhixing-flow-node-approval { border-left-color: #b07c4f; }
+.muse-theme .zhixing-flow-node-approval .zhixing-flow-node-dot { background: #b07c4f; box-shadow: 0 0 0 3px #f5e9de; }
+.muse-theme .zhixing-flow-node-condition { border-left-color: #8d6b8f; }
+.muse-theme .zhixing-flow-node-condition .zhixing-flow-node-dot { background: #8d6b8f; box-shadow: 0 0 0 3px #f0e7f1; }
+.muse-theme .zhixing-flow-node-knowledge-search { border-left-color: #527d8f; }
+.muse-theme .zhixing-flow-node-knowledge-search .zhixing-flow-node-dot { background: #527d8f; box-shadow: 0 0 0 3px #e5eff3; }
+.muse-theme .zhixing-flow-node-number { margin-left: auto; color: #b1c1a8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; letter-spacing: 0; }
+.muse-theme .zhixing-flow-node-form { display: grid; gap: 5px; padding: 9px 11px 11px; }
+.muse-theme .zhixing-flow-node-title-input { width: 100%; padding: 2px 0; border: 0; border-bottom: 1px solid transparent; outline: none; background: transparent; color: #324d38; font-size: 12px; font-weight: 500; line-height: 1.35; }
+.muse-theme .zhixing-flow-node-title-input:focus { border-bottom-color: #b8cfb0; }
+.muse-theme .zhixing-flow-node-title-input:disabled { color: #324d38; opacity: 1; }
+.muse-theme .zhixing-flow-node-type { color: #789070; font-size: 10px; }
+.muse-theme .zhixing-flow-node-mode { color: #a0ada0; font-size: 9px; letter-spacing: .04em; }
+.muse-theme .zhixing-flowgram-toolbar { position: absolute; z-index: 40; left: 16px; bottom: 14px; display: flex; align-items: center; gap: 4px; padding: 5px 7px; border: 1px solid #d9e5d3; border-radius: 7px; background: rgba(255, 254, 251, .94); box-shadow: 0 8px 20px rgba(54, 76, 55, .12); color: #6b8066; backdrop-filter: blur(6px); }
+.muse-theme .zhixing-flowgram-toolbar-label { margin: 0 4px 0 3px; color: #58794c; font-size: 10px; letter-spacing: .08em; }
+.muse-theme .zhixing-flowgram-toolbar button { display: inline-grid; width: 26px; height: 26px; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #6b8066; cursor: pointer; }
+.muse-theme .zhixing-flowgram-toolbar button:hover:not(:disabled) { background: #edf4e9; color: #3d6243; }
+.muse-theme .zhixing-flowgram-toolbar button:disabled { color: #c3cec0; cursor: default; }
+.muse-theme .zhixing-flowgram-zoom { min-width: 35px; color: #80917b; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-align: center; }
+.muse-theme .zhixing-flowgram-toolbar-divider { width: 1px; height: 16px; margin: 0 3px; background: #e1e9dd; }
+.muse-theme .workflow-canvas-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; color: var(--muse-muted); font-size: 10px; letter-spacing: .02em; }
+.muse-theme .workflow-canvas-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.muse-theme .workflow-canvas-legend i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #769b68; box-shadow: 0 0 0 3px #edf4e9; }
+.muse-theme .workflow-canvas-legend .legend-approval { background: #b07c4f; box-shadow: 0 0 0 3px #f5e9de; }
+.muse-theme .workflow-canvas-legend .legend-draft { background: #8d6b8f; box-shadow: 0 0 0 3px #f0e7f1; }
+@media (max-width: 760px) {
+  .muse-theme .zhixing-flowgram-shell { height: 470px; min-height: 380px; }
+  .muse-theme .zhixing-flow-node { width: 196px; }
+  .muse-theme .zhixing-flowgram-toolbar { left: 10px; bottom: 10px; }
+  .muse-theme .workflow-canvas-legend { gap: 9px; }
+}

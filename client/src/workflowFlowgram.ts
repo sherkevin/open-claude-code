@@ -1,0 +1,90 @@
+import type { WorkflowJSON, WorkflowNodeJSON } from '@flowgram.ai/free-layout-editor';
+import type { WorkflowGraph, WorkflowNodeType } from './types';
+
+const WORKFLOW_NODE_TYPES: WorkflowNodeType[] = [
+  'agent',
+  'skill',
+  'knowledge_search',
+  'mcp_read',
+  'condition',
+  'approval',
+  'artifact',
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function workflowNodeType(value: unknown): WorkflowNodeType {
+  return typeof value === 'string' && WORKFLOW_NODE_TYPES.includes(value as WorkflowNodeType)
+    ? (value as WorkflowNodeType)
+    : 'agent';
+}
+
+function positionFor(index: number): { x: number; y: number } {
+  return {
+    x: 64 + (index % 3) * 300,
+    y: 64 + Math.floor(index / 3) * 190,
+  };
+}
+
+function uiPosition(config: Record<string, unknown>): { x: number; y: number } | undefined {
+  const ui = isRecord(config.__ui) ? config.__ui : undefined;
+  const position = ui && isRecord(ui.position) ? ui.position : undefined;
+  if (typeof position?.x !== 'number' || typeof position.y !== 'number') return undefined;
+  return { x: position.x, y: position.y };
+}
+
+function withUiPosition(config: Record<string, unknown>, position: unknown): Record<string, unknown> {
+  if (!isRecord(position) || typeof position.x !== 'number' || typeof position.y !== 'number') {
+    return { ...config };
+  }
+  const currentUi = isRecord(config.__ui) ? config.__ui : {};
+  return { ...config, __ui: { ...currentUi, position: { x: position.x, y: position.y } } };
+}
+
+/** Convert the server graph into the JSON document consumed by FlowGram. */
+export function workflowGraphToFlowJSON(graph: WorkflowGraph): WorkflowJSON {
+  return {
+    nodes: graph.nodes.map((node, index) => ({
+      id: node.id,
+      type: node.type,
+      meta: { position: uiPosition(node.config) || positionFor(index) },
+      data: {
+        title: node.label,
+        nodeType: node.type,
+        config: node.config,
+      },
+    })),
+    edges: graph.edges.map(edge => ({
+      sourceNodeID: edge.source,
+      targetNodeID: edge.target,
+      data: { label: edge.label },
+    })),
+  };
+}
+
+function nodeConfig(node: WorkflowNodeJSON): Record<string, unknown> {
+  return isRecord(node.data?.config) ? { ...node.data.config } : { mode: 'synthetic' };
+}
+
+/** Convert FlowGram edits back into the existing server graph contract. */
+export function flowJSONToWorkflowGraph(json: WorkflowJSON): WorkflowGraph {
+  return {
+    nodes: json.nodes.map(node => {
+      const config = withUiPosition(nodeConfig(node), node.meta?.position);
+      const data = isRecord(node.data) ? node.data : {};
+      return {
+        id: String(node.id),
+        type: workflowNodeType(node.type),
+        label: typeof data.title === 'string' ? data.title : String(node.id),
+        config,
+      };
+    }),
+    edges: json.edges.map(edge => ({
+      source: String(edge.sourceNodeID),
+      target: String(edge.targetNodeID),
+      label: isRecord(edge.data) && typeof edge.data.label === 'string' ? edge.data.label : '下一步',
+    })),
+  };
+}
