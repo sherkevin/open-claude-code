@@ -276,6 +276,112 @@ export function workflowReferenceRelations(graph: WorkflowGraph): WorkflowRefere
     };
   }));
 }
+export type WorkflowReferenceDiagnosticSeverity = 'error' | 'warning';
+export interface WorkflowReferenceDiagnostic {
+  node_id: string;
+  node_label: string;
+  target_node_id: string;
+  key: string;
+  source: string;
+  source_node_id: string;
+  severity: WorkflowReferenceDiagnosticSeverity;
+  code: string;
+  message: string;
+}
+function workflowReferenceTemplateSyntaxIssue(value: string): boolean {
+  return (value.includes('{{') || value.includes('}}')) && workflowTemplateReferences(value).length !== (value.match(/\{\{/g) || []).length;
+}
+function workflowReferenceFieldDeclared(graph: WorkflowGraph, sourceNodeId: string, field: string): boolean {
+  const sourceNode = graph.nodes.find(node => node.id === sourceNodeId);
+  if (!sourceNode || sourceNode.type !== 'agent' || sourceNode.config.mode !== 'model') return false;
+  const schema = workflowOutputSchemaDraft(sourceNode);
+  return schema.valid && (schema.allowExtra || schema.fields.some(item => item.name === field));
+}
+function workflowReferenceCandidates(node: WorkflowNode): { references: WorkflowNodeReference[]; syntaxIssue?: { key: string; message: string } } {
+  if (node.type === 'agent') return { references: workflowInputBindings(node) };
+  if (node.type === 'condition') {
+    const source = typeof node.config.value_source === 'string' ? node.config.value_source.trim() : '';
+    return { references: source ? [{ key: '判断值来源', source }] : workflowNodeReferences(node) };
+  }
+  if (node.type === 'knowledge_search') {
+    const query = typeof node.config.query === 'string' ? node.config.query : '';
+    return { references: workflowTemplateReferences(query).map(source => ({ key: '检索问题', source })), ...(workflowReferenceTemplateSyntaxIssue(query) ? { syntaxIssue: { key: '检索问题', message: '模板包含不支持的引用或未闭合的 {{ }}。' } } : {}) };
+  }
+  if (node.type === 'mcp_read') {
+    const raw = node.config.arguments_json ?? node.config.arguments;
+    if (raw === undefined || raw === '') return { references: [] };
+    if (typeof raw === 'string') {
+      try {
+        const value = JSON.parse(raw);
+        const references = workflowArgumentReferences(value);
+        const text = JSON.stringify(value);
+        return { references, ...(workflowReferenceTemplateSyntaxIssue(text) ? { syntaxIssue: { key: '工具参数', message: '参数模板包含不支持的引用或未闭合的 {{ }}。' } } : {}) };
+      } catch {
+        return { references: [], syntaxIssue: { key: '工具参数', message: '工具参数不是有效 JSON，无法建立依赖。' } };
+      }
+    }
+    return { references: workflowArgumentReferences(raw) };
+  }
+  return { references: [] };
+}
+export function workflowReferenceDiagnostics(graph: WorkflowGraph): WorkflowReferenceDiagnostic[] {
+  const positions = new Map(topologicalOrder(graph).map((id, index) => [id, index]));
+  const formFields = workflowFormFields(graph);
+  const fieldIds = new Set(formFields.map(field => field.id));
+  const diagnostics: WorkflowReferenceDiagnostic[] = [];
+  const add = (node: WorkflowNode, reference: WorkflowNodeReference, severity: WorkflowReferenceDiagnosticSeverity, code: string, message: string, sourceNodeId = '') => {
+    diagnostics.push({ node_id: node.id, node_label: node.label || node.id, target_node_id: node.id, key: reference.key, source: reference.source, source_node_id: sourceNodeId, severity, code, message });
+  };
+  graph.nodes.forEach(node => {
+    const candidates = workflowReferenceCandidates(node);
+    if (candidates.syntaxIssue) add(node, { key: candidates.syntaxIssue.key, source: '' }, 'error', 'template_invalid', candidates.syntaxIssue.message);
+    candidates.references.forEach(reference => {
+      const source = reference.source;
+      if (!workflowReferenceSourcePattern.test(source)) {
+        add(node, reference, 'error', 'source_invalid', '引用格式无效，支持 input、input.字段或 node.节点.output[.字段]。');
+        return;
+      }
+      if (source === 'input') return;
+      const inputMatch = /^input\.([A-Za-z][A-Za-z0-9_-]{0,63})$/.exec(source);
+      if (inputMatch) {
+        if (formFields.length && !fieldIds.has(inputMatch[1])) add(node, reference, 'warning', 'input_missing', '运行输入字段尚未在开始 / 输入节点中声明。');
+        return;
+      }
+      const nodeMatch = workflowReferenceNodeSourcePattern.exec(source);
+      if (!nodeMatch) {
+        add(node, reference, 'error', 'source_invalid', '节点输出引用格式无效。');
+        return;
+      }
+      const sourceNodeId = nodeMatch[1];
+      const sourceNode = graph.nodes.find(item => item.id === sourceNodeId);
+      if (!sourceNode) {
+        add(node, reference, 'error', 'source_missing', '来源节点不存在。', sourceNodeId);
+        return;
+      }
+      if (sourceNodeId === node.id) {
+        add(node, reference, 'error', 'source_self', '节点不能引用自己的输出。', sourceNodeId);
+        return;
+      }
+      if (!positions.has(sourceNodeId) || !positions.has(node.id) || (positions.get(sourceNodeId) ?? 0) >= (positions.get(node.id) ?? 0)) {
+        add(node, reference, 'error', 'source_order', '来源节点没有在当前节点之前完成。', sourceNodeId);
+        return;
+      }
+      const field = nodeMatch[2];
+      if (field && !workflowReferenceFieldDeclared(graph, sourceNodeId, field)) {
+        add(node, reference, 'error', 'field_missing', '来源节点没有声明可引用的模型输出字段。', sourceNodeId);
+        return;
+      }
+      if (!workflowReferenceEdgeKeys(graph, sourceNodeId, node.id).length) add(node, reference, 'warning', 'source_path', '来源节点与当前节点之间没有连线路径，建议补充显式连线。', sourceNodeId);
+    });
+  });
+  const seen = new Set<string>();
+  return diagnostics.filter(item => {
+    const key = `${item.node_id}|${item.key}|${item.source}|${item.code}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 export function workflowReferenceEdgeKeys(graph: WorkflowGraph, sourceNodeId: string, targetNodeId: string): string[] {
   if (!sourceNodeId || !targetNodeId || sourceNodeId === targetNodeId) return [];
   const next = new Map<string, Array<{ nodeId: string; edgeKey: string }>>();
@@ -815,13 +921,17 @@ function WorkflowOutputSchemaEditor({ node, disabled, onChange }: { node: Workfl
 
 function WorkflowReferenceMap({ graph, highlightedReference, onHighlightReference, onClearHighlight }: { graph: WorkflowGraph; highlightedReference?: WorkflowCanvasReferenceHighlight | null; onHighlightReference: (sourceNodeId: string, targetNodeId: string) => void; onClearHighlight: () => void }) {
   const relations = workflowReferenceRelations(graph);
+  const diagnostics = workflowReferenceDiagnostics(graph);
   const sourceCount = new Set(relations.map(relation => relation.source)).size;
+  const errorCount = diagnostics.filter(item => item.severity === 'error').length;
+  const warningCount = diagnostics.filter(item => item.severity === 'warning').length;
   return <section className="workflow-reference-map" aria-label="变量依赖总览">
-    <div className="workflow-reference-map-head"><div><strong>变量依赖</strong><small>所有可追踪的输入、上游输出和节点参数引用</small></div><span>{relations.length} 条关系 · {sourceCount} 个来源</span>{highlightedReference && <button type="button" className="workflow-reference-clear" onClick={onClearHighlight}>清除高亮</button>}</div>
+    <div className="workflow-reference-map-head"><div><strong>变量依赖</strong><small>所有可追踪的输入、上游输出和节点参数引用</small></div><span>{relations.length} 条关系 · {sourceCount} 个来源{diagnostics.length ? ` · ${errorCount} 个错误 · ${warningCount} 个提醒` : ''}</span>{highlightedReference && <button type="button" className="workflow-reference-clear" onClick={onClearHighlight}>清除高亮</button>}</div>
     {relations.length ? <div className="workflow-reference-map-list">{relations.map(relation => {
       const selected = highlightedReference?.sourceNodeId === relation.source_node_id && highlightedReference.targetNodeId === relation.target_node_id;
       return <button type="button" className={`workflow-reference-map-row ${selected ? 'selected' : ''}`} key={`${relation.target_node_id}-${relation.key}-${relation.source}`} aria-pressed={selected} aria-label={`查看 ${relation.source_label} 到 ${relation.target_label} 的变量关系`} onClick={() => onHighlightReference(relation.source_node_id, relation.target_node_id)}><span className="workflow-reference-map-source"><strong>{relation.source_label}</strong><code>{relation.source}</code></span><ChevronRight size={13}/><span className="workflow-reference-map-target"><strong>{relation.target_label}</strong><small>{relation.key}</small></span></button>;
     })}</div> : <p className="workflow-reference-map-empty">当前流程还没有可追踪的变量关系。配置输入映射、检索模板、条件来源或工具参数后，这里会显示完整依赖。</p>}
+    {diagnostics.length ? <div className="workflow-reference-diagnostics"><div className="workflow-reference-diagnostics-head"><strong>依赖诊断</strong><small>错误会阻止保存；提醒用于补齐流程结构。</small></div><div className="workflow-reference-diagnostics-list">{diagnostics.map(item => <div className={`workflow-reference-diagnostic workflow-reference-diagnostic-${item.severity}`} key={`${item.node_id}-${item.key}-${item.source}-${item.code}`}><span className="workflow-reference-diagnostic-mark">{item.severity === 'error' ? '错误' : '提醒'}</span><span className="workflow-reference-diagnostic-copy"><strong>{item.node_label} · {item.key}</strong><small>{item.message}{item.source ? ` · ${item.source}` : ''}</small></span><button type="button" onClick={() => onHighlightReference(item.source_node_id, item.target_node_id)}>定位</button></div>)}</div></div> : null}
   </section>;
 }
 

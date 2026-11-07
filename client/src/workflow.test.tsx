@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceEdgeKeys, workflowReferenceRelations, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceDiagnostics, workflowReferenceEdgeKeys, workflowReferenceRelations, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -161,6 +161,39 @@ describe('low-code workflow canvas contracts', () => {
       { source: 'node.review.output', source_node_id: 'review', source_label: '审核', target_node_id: 'lookup', target_label: '检索', key: '检索问题' },
       { source: 'input.topic', source_node_id: '', source_label: '运行输入', target_node_id: 'lookup', target_label: '检索', key: '检索问题' },
     ]);
+  });
+
+  it('diagnoses broken references separately from structural path reminders', () => {
+    const graph = {
+      nodes: [
+        { id: 'start', type: 'input' as const, label: '开始', config: { form_fields: [{ id: 'topic', type: 'text', label: '主题', required: true }] } },
+        { id: 'review', type: 'agent' as const, label: '审核', config: { mode: 'model', output_schema_json: '{"fields":[{"name":"decision","type":"text"}]}' } },
+        { id: 'lookup', type: 'knowledge_search' as const, label: '检索', config: { query: '{{node.review.output.missing}}' } },
+        { id: 'gate', type: 'condition' as const, label: '判断', config: { value_source: 'node.review.output' } },
+        { id: 'read', type: 'mcp_read' as const, label: '读取', config: { arguments_json: '{"topic":"{{input.missing}}"}' } },
+      ],
+      edges: [{ source: 'start', target: 'review', label: '输入' }, { source: 'review', target: 'lookup', label: '依据' }, { source: 'lookup', target: 'gate', label: '判断' }, { source: 'gate', target: 'read', label: '继续' }],
+    };
+    const diagnostics = workflowReferenceDiagnostics(graph);
+    expect(diagnostics.find(item => item.code === 'field_missing')).toMatchObject({ node_id: 'lookup', severity: 'error', source_node_id: 'review' });
+    expect(diagnostics.find(item => item.code === 'input_missing')).toMatchObject({ node_id: 'read', severity: 'warning', source: 'input.missing' });
+    expect(diagnostics.some(item => item.code === 'source_path')).toBe(false);
+
+    const disconnectedReference = {
+      nodes: [
+        { id: 'start', type: 'input' as const, label: '开始', config: {} },
+        { id: 'a', type: 'agent' as const, label: '来源', config: {} },
+        { id: 'b', type: 'artifact' as const, label: '中间产物', config: {} },
+        { id: 'c', type: 'condition' as const, label: '目标', config: { value_source: 'node.a.output' } },
+      ],
+      edges: [{ source: 'start', target: 'a', label: '来源' }, { source: 'start', target: 'b', label: '分支' }, { source: 'b', target: 'c', label: '继续' }],
+    };
+    expect(workflowReferenceDiagnostics(disconnectedReference).find(item => item.code === 'source_path')).toMatchObject({ node_id: 'c', severity: 'warning', source_node_id: 'a' });
+  });
+
+  it('diagnoses malformed reference templates before publishing', () => {
+    const graph = { nodes: [{ id: 'lookup', type: 'knowledge_search' as const, label: '检索', config: { query: '{{input.topic} and {{unsupported}}' } }], edges: [] };
+    expect(workflowReferenceDiagnostics(graph)).toEqual([expect.objectContaining({ code: 'template_invalid', node_id: 'lookup', severity: 'error' })]);
   });
 
   it('resolves run input and structured output references for trace previews', () => {
