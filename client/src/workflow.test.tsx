@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunSummary, workflowToolArgumentsIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputReferenceBinding, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -74,6 +74,26 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowOutputSchemaDraft(node)).toEqual({ valid: true, raw: node.config.output_schema_json, fields: [{ name: 'decision', type: 'text', required: true, description: '审批结论' }], allowExtra: false });
     expect(workflowOutputSchemaDraft({ ...node, config: { output_schema_json: '{bad' } })).toMatchObject({ valid: false, raw: '{bad' });
     expect(serializeWorkflowOutputSchema([], false)).toBe('');
+  });
+
+  it('creates a safe downstream binding from a structured output field', () => {
+    const graph = {
+      nodes: [{ id: 'start', type: 'input' as const, label: '开始', config: {} }, { id: 'review', type: 'agent' as const, label: '审核', config: {} }, { id: 'explain', type: 'agent' as const, label: '说明', config: {} }],
+      edges: [{ source: 'start', target: 'review', label: '输入' }, { source: 'review', target: 'explain', label: '结果' }],
+    };
+    expect(workflowOutputReferenceBinding(graph, 'explain', 'review', 'decision')).toEqual({ key: 'decision', source: 'node.review.output.decision' });
+    expect(workflowOutputReferenceBinding(graph, 'explain', 'review', 'decision', [{ key: 'decision', source: 'input.topic' }])).toEqual({ key: 'decision_2', source: 'node.review.output.decision' });
+    expect(workflowOutputReferenceBinding(graph, 'review', 'explain', 'decision')).toBeNull();
+    expect(workflowOutputReferenceBinding(graph, 'explain', 'review', '字段')).toBeNull();
+  });
+
+  it('resolves run input and structured output references for trace previews', () => {
+    const run = { output: { input: { topic: '合同' }, node_outputs: { review: '{"decision":"approve"}' }, agent_structured_outputs: { review: { decision: 'approve', score: 0.92 } } } } as never;
+    expect(workflowRunReferenceValue(run, 'input.topic')).toBe('合同');
+    expect(workflowRunReferenceValue(run, 'node.review.output.decision')).toBe('approve');
+    expect(workflowRunReferenceValue(run, 'node.review.output.score')).toBe(0.92);
+    expect(workflowValuePreview({ decision: 'approve' })).toBe('{"decision":"approve"}');
+    expect(workflowValuePreview('secret-token', 'input.api_token')).toBe('[已隐藏]');
   });
 
   it('inserts a new node between the selected step and its single successor', () => {
