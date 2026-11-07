@@ -276,6 +276,12 @@ def _validate_agent_config(config: dict, node_type: str) -> None:
     max_tokens = config.get("max_tokens")
     if max_tokens is not None and (isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 32 <= max_tokens <= 4096):
         raise AppError(422, "WORKFLOW_AGENT_PARAMETER_INVALID", "输出长度必须在 32 到 4096 之间")
+    max_retries = config.get("max_retries", 0)
+    if isinstance(max_retries, bool) or not isinstance(max_retries, int) or not 0 <= max_retries <= 3:
+        raise AppError(422, "WORKFLOW_AGENT_RETRY_INVALID", "模型失败重试次数必须在 0 到 3 次之间")
+    retry_backoff_ms = config.get("retry_backoff_ms", 250)
+    if isinstance(retry_backoff_ms, bool) or not isinstance(retry_backoff_ms, int) or not 0 <= retry_backoff_ms <= 5_000:
+        raise AppError(422, "WORKFLOW_AGENT_RETRY_INVALID", "模型重试间隔必须在 0 到 5000 毫秒之间")
     _output_schema(config)
     bindings = config.get("input_bindings", [])
     if bindings is None:
@@ -1488,6 +1494,24 @@ async def _invoke_agent_model(service, selection: dict, system_prompt: str, user
     return text[:_MAX_AGENT_OUTPUT]
 
 
+async def _invoke_agent_model_with_retry(service, selection: dict, system_prompt: str, user_prompt: str, config: dict) -> tuple[str, int]:
+    """Retry only transient provider failures and report the number of attempts."""
+
+    max_retries = int(config.get("max_retries", 0) or 0)
+    backoff_ms = int(config.get("retry_backoff_ms", 250) or 0)
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return await _invoke_agent_model(service, selection, system_prompt, user_prompt, config), attempts
+        except AppError as error:
+            if error.code not in {"WORKFLOW_MODEL_FAILED", "WORKFLOW_MODEL_EMPTY"} or attempts > max_retries:
+                raise
+            delay = min(5_000, backoff_ms * (2 ** (attempts - 1))) / 1_000
+            if delay:
+                await asyncio.sleep(delay)
+
+
 def _ensure_workflow_runtime_schema(service) -> None:
     with service.db.lock:
         service.db.conn.executescript(_WORKFLOW_RUNTIME_SCHEMA)
@@ -1588,7 +1612,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
     trace: list[dict] = []
     try:
         mapped_inputs = _resolve_input_bindings(config, safe_input, {})
-        text = await _invoke_agent_model(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config, mapped_inputs), config)
+        text, model_attempts = await _invoke_agent_model_with_retry(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config, mapped_inputs), config)
         structured = _parse_structured_agent_output(text, _output_schema(config))
         trace.append({
             "sequence": 1,
@@ -1601,6 +1625,8 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "model_label": selection["model_label"],
             "reasoning_level": selection["reasoning_level"],
             "role": role,
+            "model_attempts": model_attempts,
+            "model_retries": max(0, model_attempts - 1),
             "input_bindings": _binding_trace(config),
             **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}),
             "output_preview": text[:600],
@@ -1618,6 +1644,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "node_output": text,
             "agent_outputs": {node_id: text},
             "agent_structured_outputs": {node_id: structured} if structured is not None else {},
+            "model_attempts": model_attempts,
             "permission_snapshot": permission_snapshot,
         }
         with service.db.transaction():
@@ -1821,12 +1848,12 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
             current_node = node
             role, system_prompt = _agent_system_prompt(assistant, config)
             mapped_inputs = _resolve_input_bindings(config, safe_input, outputs, agent_structured_outputs)
-            text = await _invoke_agent_model(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config)
+            text, model_attempts = await _invoke_agent_model_with_retry(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config)
             structured = _parse_structured_agent_output(text, _output_schema(config))
             outputs[node_id] = text
             if structured is not None:
                 agent_structured_outputs[node_id] = structured
-            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "input_bindings": _binding_trace(config), **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}), "output_preview": text[:600]})
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "model_attempts": model_attempts, "model_retries": max(0, model_attempts - 1), "input_bindings": _binding_trace(config), **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}), "output_preview": text[:600]})
             current_node = None
         output = run_output()
         with service.db.transaction():

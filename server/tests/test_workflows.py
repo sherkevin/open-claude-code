@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 
 from app.security import AppError
@@ -242,6 +243,62 @@ def test_model_agent_node_uses_assistant_catalog_and_records_execution(monkeypat
     assert '"mapped_inputs":{"amount":1200}' in FakeClient.calls[0]["json"]["messages"][0]["content"]
     assert run["trace"][0]["input_bindings"] == [{"key": "amount", "source": "input.amount"}]
 
+
+
+def test_model_agent_retries_transient_provider_failure(monkeypatch, client):
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-retry-token")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"type": "text", "text": "重试后完成。"}]}
+
+    class FakeClient:
+        calls = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, endpoint, json):
+            self.calls.append({"endpoint": endpoint, "json": json})
+            if len(self.calls) == 1:
+                raise httpx.ReadTimeout("temporary provider timeout")
+            return FakeResponse()
+
+    monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
+    assistant = client.post("/api/v1/assistants", json={"name": "重试助手"}).json()
+    graph = {
+        "nodes": [{"id": "review", "type": "agent", "label": "重试审核", "config": {"mode": "model", "model_id": "legacy-model", "max_retries": 1, "retry_backoff_ms": 0}}],
+        "edges": [],
+    }
+    created = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "重试流程", "graph": graph})
+    assert created.status_code == 201, created.text
+    workflow = created.json()
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {}})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["status"] == "succeeded"
+    assert len(FakeClient.calls) == 2
+    assert run["trace"][0]["model_attempts"] == 2
+    assert run["trace"][0]["model_retries"] == 1
+
+
+def test_workflow_rejects_invalid_agent_retry_config():
+    from app.workflows import validate_graph
+
+    payload = {"nodes": [{"id": "review", "type": "agent", "label": "审核", "config": {"mode": "model", "max_retries": 4}}], "edges": []}
+    with pytest.raises(AppError) as error:
+        validate_graph(payload)
+    assert error.value.code == "WORKFLOW_AGENT_RETRY_INVALID"
 
 def test_model_mode_is_limited_to_agent_nodes():
     from app.workflows import validate_graph
