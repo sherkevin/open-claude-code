@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowArtifactIssue, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowRunHistoryLabel, workflowRunSummary, workflowToolArgumentsIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunSummary, workflowToolArgumentsIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -52,6 +52,28 @@ describe('low-code workflow canvas contracts', () => {
     expect(changed.label).toBe('政策审核');
     expect(changed.config).toEqual({ mode: 'synthetic', __ui: { position: { x: 120, y: 240 }, collapsed: false } });
     expect(source.config).toEqual({ mode: 'model', role: '审核员', system_prompt: '严谨核验', __ui: { position: { x: 120, y: 240 }, collapsed: false } });
+  });
+
+  it('offers only runtime inputs and completed upstream output fields as binding sources', () => {
+    const graph = {
+      nodes: [
+        { id: 'start', type: 'input' as const, label: '开始', config: { form_fields: [{ id: 'topic', type: 'text', label: '主题', required: true }] } },
+        { id: 'review', type: 'agent' as const, label: '审核', config: { mode: 'model', output_schema_json: '{"fields":[{"name":"decision","type":"text","required":true}]}' } },
+        { id: 'explain', type: 'agent' as const, label: '说明', config: {} },
+        { id: 'future', type: 'agent' as const, label: '后续节点', config: {} },
+      ],
+      edges: [{ source: 'start', target: 'review', label: '输入' }, { source: 'review', target: 'explain', label: '结果' }, { source: 'explain', target: 'future', label: '继续' }],
+    };
+    const options = workflowBindingSourceOptions(graph, 'explain');
+    expect(options.map(item => item.value)).toEqual(['input', 'input.topic', 'node.start.output', 'node.review.output', 'node.review.output.decision']);
+    expect(options.some(item => item.value.includes('future'))).toBe(false);
+  });
+
+  it('round-trips the structured output schema editor contract', () => {
+    const node = { id: 'review', type: 'agent' as const, label: '审核', config: { output_schema_json: serializeWorkflowOutputSchema([{ name: 'decision', type: 'text' as const, required: true, description: '审批结论' }], false) } };
+    expect(workflowOutputSchemaDraft(node)).toEqual({ valid: true, raw: node.config.output_schema_json, fields: [{ name: 'decision', type: 'text', required: true, description: '审批结论' }], allowExtra: false });
+    expect(workflowOutputSchemaDraft({ ...node, config: { output_schema_json: '{bad' } })).toMatchObject({ valid: false, raw: '{bad' });
+    expect(serializeWorkflowOutputSchema([], false)).toBe('');
   });
 
   it('inserts a new node between the selected step and its single successor', () => {
