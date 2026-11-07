@@ -9,11 +9,13 @@ const FlowGramWorkflowCanvas = lazy(() => import('./FlowGramWorkflowCanvas'));
 
 export const DEFAULT_WORKFLOW_GRAPH: WorkflowGraph = {
   nodes: [
+    { id: 'start', type: 'input', label: '开始 / 输入', config: { mode: 'synthetic', form_fields: [] } },
     { id: 'agent', type: 'agent', label: '拆解业务目标', config: { mode: 'synthetic' } },
     { id: 'knowledge', type: 'knowledge_search', label: '检索公司知识', config: { mode: 'synthetic' } },
     { id: 'approval', type: 'approval', label: '人工确认', config: {} },
   ],
   edges: [
+    { source: 'start', target: 'agent', label: '提交输入' },
     { source: 'agent', target: 'knowledge', label: '需要依据' },
     { source: 'knowledge', target: 'approval', label: '提交审批' },
   ],
