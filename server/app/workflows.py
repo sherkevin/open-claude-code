@@ -1500,22 +1500,32 @@ async def _invoke_agent_model(service, selection: dict, system_prompt: str, user
     return text[:_MAX_AGENT_OUTPUT]
 
 
-async def _invoke_agent_model_with_retry(service, selection: dict, system_prompt: str, user_prompt: str, config: dict) -> tuple[str, int]:
-    """Retry only transient provider failures and report the number of attempts."""
+async def _invoke_agent_model_with_retry(service, selection: dict, system_prompt: str, user_prompt: str, config: dict, retry_trace: list[dict] | None = None) -> tuple[str, int]:
+    """Retry only transient provider failures and record bounded attempt metadata."""
 
     max_retries = int(config.get("max_retries", 0) or 0)
     backoff_ms = int(config.get("retry_backoff_ms", 250) or 0)
     attempts = 0
+    events = retry_trace if retry_trace is not None else []
     while True:
         attempts += 1
+        attempt_started_at = perf_counter()
         try:
-            return await _invoke_agent_model(service, selection, system_prompt, user_prompt, config), attempts
+            text = await _invoke_agent_model(service, selection, system_prompt, user_prompt, config)
         except AppError as error:
+            event = {"attempt": attempts, "status": "failed", "error_code": error.code, "duration_ms": _model_duration_ms(attempt_started_at)}
             if error.code not in {"WORKFLOW_MODEL_FAILED", "WORKFLOW_MODEL_EMPTY"} or attempts > max_retries:
+                events.append(event)
                 raise
-            delay = min(5_000, backoff_ms * (2 ** (attempts - 1))) / 1_000
+            delay_ms = min(5_000, backoff_ms * (2 ** (attempts - 1)))
+            event["retry_backoff_ms"] = delay_ms
+            events.append(event)
+            delay = delay_ms / 1_000
             if delay:
                 await asyncio.sleep(delay)
+            continue
+        events.append({"attempt": attempts, "status": "succeeded", "duration_ms": _model_duration_ms(attempt_started_at)})
+        return text, attempts
 
 
 def _model_duration_ms(started_at: float) -> int:
@@ -1621,11 +1631,13 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
     role, system_prompt = _agent_system_prompt(assistant, config)
     trace: list[dict] = []
     model_duration_ms: int | None = None
+    model_attempts = 0
+    model_retry_trace: list[dict] = []
     try:
         mapped_inputs = _resolve_input_bindings(config, safe_input, {})
         model_started_at = perf_counter()
         try:
-            text, model_attempts = await _invoke_agent_model_with_retry(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config, mapped_inputs), config)
+            text, model_attempts = await _invoke_agent_model_with_retry(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config, mapped_inputs), config, model_retry_trace)
         finally:
             model_duration_ms = _model_duration_ms(model_started_at)
         structured = _parse_structured_agent_output(text, _output_schema(config))
@@ -1642,6 +1654,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "role": role,
             "model_attempts": model_attempts,
             "model_retries": max(0, model_attempts - 1),
+            "model_retry_trace": model_retry_trace,
             "duration_ms": model_duration_ms,
             "input_bindings": _binding_trace(config),
             **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}),
@@ -1667,6 +1680,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="succeeded", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp)
         return {"id": run_id, "workflow_id": workflow_id, "conversation_id": None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": False, "execution_mode": "model", "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
     except AppError as error:
+        model_attempts = max(model_attempts, len(model_retry_trace))
         trace.append({
             "sequence": 1,
             "node_id": node_id,
@@ -1678,6 +1692,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "model_label": selection["model_label"],
             "reasoning_level": selection["reasoning_level"],
             "role": role,
+            **({"model_attempts": model_attempts, "model_retries": max(0, model_attempts - 1), "model_retry_trace": model_retry_trace} if model_attempts else {}),
             **({"duration_ms": model_duration_ms} if model_duration_ms is not None else {}),
             "input_bindings": _binding_trace(config),
             "error_code": error.code,
@@ -1809,6 +1824,8 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
             node = node_map[node_id]
             config = node.get("config") or {}
             model_duration_ms = None
+            model_attempts = 0
+            model_retry_trace: list[dict] = []
             if not _node_reachable(node_id, incoming, active_edges):
                 outputs[node_id] = _skipped_node_output(node)
                 for edge in outgoing.get(node_id, []):
@@ -1869,14 +1886,14 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
             mapped_inputs = _resolve_input_bindings(config, safe_input, outputs, agent_structured_outputs)
             model_started_at = perf_counter()
             try:
-                text, model_attempts = await _invoke_agent_model_with_retry(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config)
+                text, model_attempts = await _invoke_agent_model_with_retry(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config, model_retry_trace)
             finally:
                 model_duration_ms = _model_duration_ms(model_started_at)
             structured = _parse_structured_agent_output(text, _output_schema(config))
             outputs[node_id] = text
             if structured is not None:
                 agent_structured_outputs[node_id] = structured
-            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "model_attempts": model_attempts, "model_retries": max(0, model_attempts - 1), "duration_ms": model_duration_ms, "input_bindings": _binding_trace(config), **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}), "output_preview": text[:600]})
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "model_attempts": model_attempts, "model_retries": max(0, model_attempts - 1), "model_retry_trace": model_retry_trace, "duration_ms": model_duration_ms, "input_bindings": _binding_trace(config), **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}), "output_preview": text[:600]})
             current_node = None
         output = run_output()
         with service.db.transaction():
@@ -1888,7 +1905,8 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
     except AppError as error:
         if current_node:
             if current_node["id"] in selections:
-                trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], **({"model_label": selections[current_node["id"]]["model_label"], "reasoning_level": selections[current_node["id"]]["reasoning_level"], "duration_ms": model_duration_ms} if model_duration_ms is not None else {}), "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
+                model_attempts = max(model_attempts, len(model_retry_trace))
+                trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], **({"model_label": selections[current_node["id"]]["model_label"], "reasoning_level": selections[current_node["id"]]["reasoning_level"], "duration_ms": model_duration_ms} if model_duration_ms is not None else {}), **({"model_attempts": model_attempts, "model_retries": max(0, model_attempts - 1), "model_retry_trace": model_retry_trace} if model_attempts else {}), "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
             else:
                 trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": current_node["type"] == "mcp_read", "approval_required": False, "knowledge_retrieval": current_node["type"] == "knowledge_search", "tool_call": current_node["type"] == "mcp_read", "tool_name": (current_node.get("config") or {}).get("tool_name") if current_node["type"] == "mcp_read" else None, "error_code": error.code})
         output = run_output()

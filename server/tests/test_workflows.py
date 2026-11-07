@@ -347,6 +347,12 @@ def test_model_agent_retries_transient_provider_failure(monkeypatch, client):
     assert len(FakeClient.calls) == 2
     assert run["trace"][0]["model_attempts"] == 2
     assert run["trace"][0]["model_retries"] == 1
+    retry_trace = run["trace"][0]["model_retry_trace"]
+    assert len(retry_trace) == 2
+    assert retry_trace[0]["attempt"] == 1 and retry_trace[0]["status"] == "failed"
+    assert retry_trace[0]["error_code"] == "WORKFLOW_MODEL_FAILED" and retry_trace[0]["retry_backoff_ms"] == 0
+    assert retry_trace[1]["attempt"] == 2 and retry_trace[1]["status"] == "succeeded"
+    assert all(isinstance(item["duration_ms"], int) for item in retry_trace)
     assert isinstance(run["trace"][0]["duration_ms"], int)
 
 

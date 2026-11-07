@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunReferenceValue, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -136,6 +136,15 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowErrorRecoveryHint('WORKFLOW_AGENT_OUTPUT_INVALID')).toContain('输出字段');
     expect(workflowErrorRecoveryHint('WORKFLOW_MODEL_UNAVAILABLE')).toContain('授权');
     expect(workflowErrorRecoveryHint('UNKNOWN_WORKFLOW_ERROR')).toContain('节点配置');
+  });
+
+  it('normalizes workflow trace statuses for the canvas and detail view', () => {
+    expect(workflowRunTraceStatusLabel('awaiting_approval')).toBe('等待审批');
+    expect(workflowRunTraceStatusLabel('unknown_status')).toBe('unknown_status');
+    expect(workflowRunTraceStatusClass('rejected')).toBe('failed');
+    expect(workflowRunTraceStatusClass('awaiting_approval')).toBe('waiting');
+    expect(workflowRunTraceStatusClass('skipped')).toBe('skipped');
+    expect(workflowRunTraceStatusClass('completed')).toBe('completed');
   });
 
   it('inserts a new node between the selected step and its single successor', () => {
