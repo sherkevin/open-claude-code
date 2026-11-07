@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowConditionIssue, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowToolArgumentsIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowArtifactIssue, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowToolArgumentsIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -27,6 +27,15 @@ describe('low-code workflow canvas contracts', () => {
   it('exposes declared template fields without accepting arbitrary secret inputs', () => {
     const fields = workflowFormFields({ nodes: [{ id: 'form', type: 'skill', label: '表单', config: { form_fields: [{ id: 'amount', type: 'number', label: '金额', required: true }] } }], edges: [] });
     expect(fields).toEqual([{ id: 'amount', type: 'number', label: '金额', required: true, options: undefined }]);
+  });
+
+  it('validates manually configured skill input fields and artifact columns', () => {
+    const skill = { id: 'form', type: 'skill' as const, label: '申请表', config: { form_fields_json: '[{\"id\":\"amount\",\"type\":\"number\",\"label\":\"金额\",\"required\":true}]' } };
+    const artifact = { id: 'export', type: 'artifact' as const, label: '导出', config: { format: 'xlsx', columns: ['amount', 'date'] } };
+    expect(workflowFormIssue({ nodes: [skill], edges: [] })).toBe('');
+    expect(workflowArtifactIssue({ nodes: [artifact], edges: [] })).toBe('');
+    expect(workflowFormIssue({ nodes: [{ ...skill, config: { form_fields_json: '[{\"id\":\"amount\",\"type\":\"choice\",\"label\":\"金额\"}]' } }], edges: [] })).toContain('选择字段');
+    expect(workflowArtifactIssue({ nodes: [{ ...artifact, config: { columns: [''] } }], edges: [] })).toContain('产物字段');
   });
 
   it('round-trips explicit node input bindings in the editor format', () => {
