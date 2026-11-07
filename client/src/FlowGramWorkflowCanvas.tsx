@@ -46,6 +46,25 @@ const NODE_REGISTRIES: WorkflowNodeRegistry[] = NODE_TYPES.map(type => ({
   },
 }));
 
+export interface WorkflowCanvasRunTrace {
+  status: string;
+  model_retries?: number;
+  duration_ms?: number;
+  error_code?: string;
+}
+
+function runTraceStatusClass(status: string): string {
+  if (status === 'failed' || status === 'rejected') return 'failed';
+  if (status === 'awaiting_approval') return 'waiting';
+  if (status === 'skipped') return 'skipped';
+  if (status === 'simulated') return 'simulated';
+  return 'completed';
+}
+
+function runTraceStatusLabel(status: string): string {
+  return ({ completed: '已完成', simulated: '已模拟', failed: '失败', skipped: '已跳过', awaiting_approval: '等待审批', approved: '已批准', rejected: '已拒绝' } as Record<string, string>)[status] || status || '未开始';
+}
+
 function DefaultNodeForm({ editable, models, defaultModelId }: { editable: boolean; models: ModelOption[]; defaultModelId?: string | null }) {
   return (
     <div className="zhixing-flow-node-form">
@@ -83,17 +102,21 @@ function FlowNode({
   editable,
   models,
   defaultModelId,
+  runTrace,
   onSelectNode,
 }: {
   props: WorkflowNodeProps;
   editable: boolean;
   models: ModelOption[];
   defaultModelId?: string | null;
+  runTrace: Record<string, WorkflowCanvasRunTrace>;
   onSelectNode: (nodeId: string) => void;
 }) {
   const { node, form, selected, activated } = useNodeRender();
   const type = (typeof node.flowNodeType === 'string' ? node.flowNodeType : 'agent') as WorkflowNodeType;
   const meta = node.getNodeMeta<FlowNodeMeta>();
+  const runState = runTrace[String(node.id)];
+  const runStatusClass = runState ? runTraceStatusClass(runState.status) : '';
 
   useEffect(() => {
     if (selected || activated) onSelectNode(String(node.id));
@@ -102,13 +125,14 @@ function FlowNode({
   return (
     <WorkflowNodeRenderer
       node={props.node}
-      className={`zhixing-flow-node zhixing-flow-node-${type.replaceAll('_', '-')}`}
+      className={`zhixing-flow-node zhixing-flow-node-${type.replaceAll('_', '-')} ${runState ? `zhixing-flow-node-run-${runStatusClass}` : ''}`}
       style={meta.wrapperStyle}
     >
       <div className="zhixing-flow-node-head">
         <span className="zhixing-flow-node-dot" />
         <span>{NODE_LABELS[type] || '业务节点'}</span>
         <span className="zhixing-flow-node-number">{String(node.id).slice(0, 6)}</span>
+        {runState && <span className="zhixing-flow-node-run-state" title={runState.error_code || runTraceStatusLabel(runState.status)}><span className={`zhixing-flow-node-run-state-dot zhixing-flow-node-run-state-${runStatusClass}`} />{runTraceStatusLabel(runState.status)}</span>}
       </div>
       {form?.render() || <DefaultNodeForm editable={editable} models={models} defaultModelId={defaultModelId} />}
     </WorkflowNodeRenderer>
@@ -158,6 +182,7 @@ export default function FlowGramWorkflowCanvas({
   editable,
   models,
   defaultModelId,
+  runTrace,
   resetToken,
   onChange,
   onSelectNode,
@@ -166,6 +191,7 @@ export default function FlowGramWorkflowCanvas({
   editable: boolean;
   models: ModelOption[];
   defaultModelId?: string | null;
+  runTrace: Record<string, WorkflowCanvasRunTrace>;
   resetToken: string | number;
   onChange: (graph: WorkflowGraph) => void;
   onSelectNode: (nodeId: string) => void;
@@ -194,7 +220,7 @@ export default function FlowGramWorkflowCanvas({
       }),
       materials: {
         renderDefaultNode: (props: WorkflowNodeProps) => (
-          <FlowNode props={props} editable={editable} models={models} defaultModelId={defaultModelId} onSelectNode={onSelectNode} />
+          <FlowNode props={props} editable={editable} models={models} defaultModelId={defaultModelId} runTrace={runTrace} onSelectNode={onSelectNode} />
         ),
       },
       onContentChange: ctx => {
@@ -229,7 +255,7 @@ export default function FlowGramWorkflowCanvas({
         flowing: '#6d9560',
       },
     }),
-    [defaultModelId, editable, initialData, models, onChange, onSelectNode],
+    [defaultModelId, editable, initialData, models, onChange, onSelectNode, runTrace],
   );
 
   return (
