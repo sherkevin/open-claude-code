@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunReferenceValue, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -95,6 +95,15 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowRunReferenceValue(run, 'node.review.output.score')).toBe(0.92);
     expect(workflowValuePreview({ decision: 'approve' })).toBe('{"decision":"approve"}');
     expect(workflowValuePreview('secret-token', 'input.api_token')).toBe('[已隐藏]');
+  });
+
+  it('builds a redacted node debug context from run inputs and upstream outputs', () => {
+    const run = { output: { input: { topic: '合同', api_token: 'secret' }, node_outputs: { plan: '{"decision":"approve"}' } } } as never;
+    const trace = { input_bindings: [{ key: 'topic', source: 'input.topic' }, { key: 'prior', source: 'node.plan.output' }] } as never;
+    expect(workflowRunNodeContext(run, trace)).toEqual({
+      input_fields: [{ key: 'api_token', value: '[已隐藏]' }, { key: 'topic', value: '合同' }],
+      upstream_outputs: [{ source: 'node.plan.output', value: '{"decision":"approve"}' }],
+    });
   });
 
   it('compares a node rerun while masking sensitive input changes', () => {
