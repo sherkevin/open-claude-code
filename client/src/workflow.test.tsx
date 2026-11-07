@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, parseWorkflowInputBindings, topologicalOrder, workflowConditionIssue, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowConditionIssue, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -35,6 +35,16 @@ describe('low-code workflow canvas contracts', () => {
     expect(parseWorkflowInputBindings(workflowInputBindingsText(node))).toEqual(node.config.input_bindings);
     expect(workflowInputBindingsIssue({ nodes: [node, { id: 'plan', type: 'agent', label: '计划', config: {} }], edges: [{ source: 'plan', target: 'review', label: '结论' }] })).toBe('');
     expect(workflowInputBindingsIssue({ nodes: [{ ...node, config: { input_bindings: [{ key: 'amount', source: 'node.missing.output' }] } }], edges: [] })).toContain('来源节点不存在');
+  });
+
+  it('validates structured agent outputs and field bindings', () => {
+    const review = { id: 'review', type: 'agent' as const, label: '审核', config: { mode: 'model', output_schema_json: '{"fields":[{"name":"decision","type":"text","required":true}]}' } };
+    const explain = { id: 'explain', type: 'agent' as const, label: '说明', config: { input_bindings: [{ key: 'decision', source: 'node.review.output.decision' }] } };
+    expect(nodeOutputSchemaText(review)).toContain('decision');
+    expect(workflowOutputSchemaIssue({ nodes: [review, explain], edges: [{ source: 'review', target: 'explain', label: '传递' }] })).toBe('');
+    expect(workflowInputBindingsIssue({ nodes: [review, explain], edges: [{ source: 'review', target: 'explain', label: '传递' }] })).toBe('');
+    expect(workflowInputBindingsIssue({ nodes: [{ ...review, config: {} }, explain], edges: [{ source: 'review', target: 'explain', label: '传递' }] })).toContain('已接入模型');
+    expect(workflowOutputSchemaIssue({ nodes: [{ ...review, config: { output_schema_json: '{"fields":[{"name":"score","type":"money"}]}' } }, explain], edges: [{ source: 'review', target: 'explain', label: '传递' }] })).toContain('输出字段类型无效');
   });
 
   it('validates knowledge query templates and bounded retrieval controls', () => {

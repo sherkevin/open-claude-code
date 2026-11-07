@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 from collections import defaultdict, deque
 from datetime import timedelta
@@ -43,10 +44,14 @@ _MAX_JSON = 16_000
 _FIELD_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
 _REASONING_LEVEL = re.compile(r"^[A-Za-z0-9._-]{1,30}$")
-_BINDING_SOURCE = re.compile(r"^(?:input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output)$")
+_NODE_OUTPUT_SOURCE = re.compile(r"^node\.([A-Za-z0-9_-]{1,64})\.output(?:\.([A-Za-z][A-Za-z0-9_-]{0,63}))?$")
+_BINDING_SOURCE = re.compile(r"^(?:input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?)$")
 _KNOWLEDGE_TEMPLATE = re.compile(r"\{\{\s*(input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output)\s*\}\}")
 _MAX_AGENT_CONTEXT = 12_000
 _MAX_AGENT_OUTPUT = 12_000
+_OUTPUT_TYPES = {"text", "number", "boolean", "object", "array"}
+_MAX_OUTPUT_SCHEMA_FIELDS = 20
+_MAX_OUTPUT_SCHEMA_DESCRIPTION = 240
 _MAX_KNOWLEDGE_QUERY = 2_000
 _MAX_KNOWLEDGE_CONTEXT = 12_000
 _MAX_TOOL_OUTPUT = 12_000
@@ -194,6 +199,58 @@ def _validate_form_fields(config: dict) -> list[dict]:
     return result
 
 
+def _output_schema(config: dict) -> dict | None:
+    """Return the bounded structured-output contract for an agent node.
+
+    The editor stores the contract as JSON text so a user can type it without
+    the UI having to maintain a half-valid object on every keystroke.  The
+    server accepts the object form as well for API clients.
+    """
+
+    raw = config.get("output_schema")
+    if raw is None:
+        raw = config.get("output_schema_json")
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, str):
+        if len(raw) > _MAX_JSON:
+            raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出结构定义过长")
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出结构必须是有效的 JSON 对象") from error
+    if not isinstance(raw, dict):
+        raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出结构必须是 JSON 对象")
+    fields = raw.get("fields", [])
+    if not isinstance(fields, list) or len(fields) > _MAX_OUTPUT_SCHEMA_FIELDS:
+        raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出字段最多配置 20 项")
+    normalized_fields = []
+    seen = set()
+    for field in fields:
+        if not isinstance(field, dict):
+            raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出字段格式无效")
+        name = field.get("name", field.get("id"))
+        field_type = field.get("type", "text")
+        if not isinstance(name, str) or not _FIELD_ID.fullmatch(name) or name in seen:
+            raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出字段名称必须唯一且使用英文标识")
+        if field_type not in _OUTPUT_TYPES:
+            raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出字段类型不在允许范围内")
+        required = field.get("required", False)
+        if not isinstance(required, bool):
+            raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出字段 required 必须是布尔值")
+        description = field.get("description", "")
+        if not isinstance(description, str) or len(description) > _MAX_OUTPUT_SCHEMA_DESCRIPTION:
+            raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出字段说明过长或格式无效")
+        seen.add(name)
+        normalized_fields.append({"name": name, "type": field_type, "required": required, **({"description": description} if description else {})})
+    allow_extra = raw.get("allow_extra", False)
+    if not isinstance(allow_extra, bool):
+        raise AppError(422, "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID", "智能体输出结构 allow_extra 必须是布尔值")
+    if not normalized_fields and not allow_extra:
+        return None
+    return {"fields": normalized_fields, "allow_extra": allow_extra}
+
+
 def _validate_agent_config(config: dict, node_type: str) -> None:
     """Validate the public, non-secret portion of an agent node contract."""
 
@@ -218,6 +275,7 @@ def _validate_agent_config(config: dict, node_type: str) -> None:
     max_tokens = config.get("max_tokens")
     if max_tokens is not None and (isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 32 <= max_tokens <= 4096):
         raise AppError(422, "WORKFLOW_AGENT_PARAMETER_INVALID", "输出长度必须在 32 到 4096 之间")
+    _output_schema(config)
     bindings = config.get("input_bindings", [])
     if bindings is None:
         return
@@ -231,8 +289,13 @@ def _validate_agent_config(config: dict, node_type: str) -> None:
         if not isinstance(key, str) or not _FIELD_ID.fullmatch(key) or key in seen:
             raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", "智能体输入变量名称必须唯一且使用英文标识")
         if not isinstance(source, str) or not _BINDING_SOURCE.fullmatch(source):
-            raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", "变量来源必须是 input、input.字段或 node.节点.output")
+            raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", "变量来源必须是 input、input.字段、node.节点.output 或 node.节点.output.字段")
         seen.add(key)
+
+
+def _node_output_source(source: str) -> tuple[str, str | None] | None:
+    match = _NODE_OUTPUT_SOURCE.fullmatch(source)
+    return (match.group(1), match.group(2)) if match else None
 
 
 def _knowledge_query_sources(query: str | None) -> list[str]:
@@ -418,11 +481,21 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
             source = binding.get("source", "")
             if not source.startswith("node."):
                 continue
-            source_id = source[5:-7]
+            parsed_source = _node_output_source(source)
+            if not parsed_source:
+                raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", "变量来源格式无效")
+            source_id, field_name = parsed_source
             if source_id not in node_map:
                 raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", f"变量来源节点不存在：{source_id}")
             if source_id == node_id or order_index[source_id] >= order_index[node_id]:
                 raise AppError(422, "WORKFLOW_AGENT_BINDING_ORDER", "变量只能引用已经完成的上游节点输出")
+            if field_name:
+                source_node = node_map[source_id]
+                source_config = source_node.get("config") or {}
+                source_schema = _output_schema(source_config) if source_node.get("type") == "agent" and source_config.get("mode", "synthetic") == "model" else None
+                declared_fields = {item["name"] for item in (source_schema or {}).get("fields", [])}
+                if not source_schema or (field_name not in declared_fields and not source_schema.get("allow_extra")):
+                    raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", f"变量来源节点未声明可用的模型输出字段：{source_id}.{field_name}")
         if node["type"] == "knowledge_search":
             for source in _knowledge_query_sources(node["config"].get("query")):
                 if not source.startswith("node."):
@@ -697,11 +770,92 @@ def _agent_system_prompt(assistant: dict, config: dict) -> tuple[str, str]:
     return role, f"你是知行工作台工作流中的{role}。\n{instructions}\n只完成当前节点任务，不调用未授权的工具，不虚构外部数据。"[:6000]
 
 
-def _resolve_input_bindings(config: dict, safe_input: dict, outputs: dict[str, str]) -> dict | None:
+def _bounded_structured_value(value, depth=0):
+    """Bound model-produced JSON before persisting it in a workflow run."""
+
+    if depth > 6:
+        raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出层级过深")
+    if isinstance(value, dict):
+        if len(value) > 100:
+            raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出字段过多")
+        bounded = {}
+        for key, child in value.items():
+            if not isinstance(key, str) or len(key) > 100:
+                raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出字段名称无效")
+            bounded[key] = "[redacted]" if SENSITIVE.search(key) else _bounded_structured_value(child, depth + 1)
+        return bounded
+    if isinstance(value, list):
+        if len(value) > 100:
+            raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出数组过长")
+        return [_bounded_structured_value(child, depth + 1) for child in value]
+    if isinstance(value, str):
+        return value[:4_000]
+    if isinstance(value, float) and not math.isfinite(value):
+        raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出包含非有限数字")
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出包含不支持的值")
+
+
+def _structured_value_matches(value, field_type: str) -> bool:
+    if field_type == "text":
+        return isinstance(value, str)
+    if field_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if field_type == "boolean":
+        return isinstance(value, bool)
+    if field_type == "object":
+        return isinstance(value, dict)
+    if field_type == "array":
+        return isinstance(value, list)
+    return False
+
+
+def _parse_structured_agent_output(text: str, schema: dict | None) -> dict | None:
+    """Parse and validate a model response against the node's output contract."""
+
+    if not schema:
+        return None
+    candidate = text.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        candidate = fenced.group(1).strip()
+    if not candidate.startswith("{"):
+        start, end = candidate.find("{"), candidate.rfind("}")
+        if start >= 0 and end > start:
+            candidate = candidate[start : end + 1]
+    try:
+        parsed = json.loads(candidate)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体未返回符合要求的 JSON 对象") from error
+    if not isinstance(parsed, dict):
+        raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出必须是 JSON 对象")
+    fields = {field["name"]: field for field in schema.get("fields", [])}
+    missing = [name for name, field in fields.items() if field.get("required") and name not in parsed]
+    if missing:
+        raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出缺少必填字段：" + "、".join(missing))
+    if not schema.get("allow_extra"):
+        extras = sorted(set(parsed) - set(fields))
+        if extras:
+            raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出包含未声明字段：" + "、".join(extras[:10]))
+    for name, value in parsed.items():
+        field = fields.get(name)
+        if field and not _structured_value_matches(value, field["type"]):
+            raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", f"智能体输出字段 {name} 的类型不符合约定")
+    bounded = _bounded_structured_value(parsed)
+    if not isinstance(bounded, dict):
+        raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出格式无效")
+    if len(json.dumps(bounded, ensure_ascii=False, separators=(",", ":"))) > _MAX_AGENT_OUTPUT:
+        raise AppError(502, "WORKFLOW_AGENT_OUTPUT_INVALID", "智能体结构化输出超过大小限制")
+    return bounded
+
+
+def _resolve_input_bindings(config: dict, safe_input: dict, outputs: dict[str, str], structured_outputs: dict[str, dict] | None = None) -> dict | None:
     bindings = config.get("input_bindings") or []
     if not bindings:
         return None
     resolved = {}
+    structured_outputs = structured_outputs or {}
     for binding in bindings:
         source = binding["source"]
         if source == "input":
@@ -709,7 +863,8 @@ def _resolve_input_bindings(config: dict, safe_input: dict, outputs: dict[str, s
         elif source.startswith("input."):
             value = safe_input.get(source[6:])
         else:
-            value = outputs.get(source[5:-7])
+            source_id, field_name = _node_output_source(source) or (source[5:-7], None)
+            value = structured_outputs.get(source_id, {}).get(field_name) if field_name else outputs.get(source_id)
         resolved[binding["key"]] = value
     return resolved
 
@@ -1107,6 +1262,10 @@ def _agent_user_prompt(node: dict, safe_input: dict, outputs: dict[str, str], co
     upstream = {key: _upstream_output_preview(value) for key, value in outputs.items()}
     payload = {"input": safe_input, "upstream_outputs": upstream} if mapped_inputs is None else {"mapped_inputs": mapped_inputs}
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    schema = _output_schema(config)
+    if schema:
+        schema_text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        return f"节点任务：{task}\n以下是本节点被明确授权读取的工作流上下文，请基于它们完成任务。\n{serialized}\n本节点有严格的结构化输出约定：{schema_text}\n请只返回一个 JSON 对象，不要使用 Markdown 代码块或补充说明；字段类型和 required 约束必须严格遵守。"[:_MAX_AGENT_CONTEXT]
     return f"节点任务：{task}\n以下是本节点被明确授权读取的工作流上下文，请基于它们完成任务。\n{serialized}\n请直接返回本节点的最终结果。"[:_MAX_AGENT_CONTEXT]
 
 
@@ -1353,6 +1512,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
     try:
         mapped_inputs = _resolve_input_bindings(config, safe_input, {})
         text = await _invoke_agent_model(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config, mapped_inputs), config)
+        structured = _parse_structured_agent_output(text, _output_schema(config))
         trace.append({
             "sequence": 1,
             "node_id": node_id,
@@ -1365,6 +1525,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "reasoning_level": selection["reasoning_level"],
             "role": role,
             "input_bindings": _binding_trace(config),
+            **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}),
             "output_preview": text[:600],
         })
         output = {
@@ -1379,6 +1540,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "input": safe_input,
             "node_output": text,
             "agent_outputs": {node_id: text},
+            "agent_structured_outputs": {node_id: structured} if structured is not None else {},
             "permission_snapshot": permission_snapshot,
         }
         with service.db.transaction():
@@ -1410,6 +1572,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "node_id": node_id,
             "input": safe_input,
             "agent_outputs": {},
+            "agent_structured_outputs": {},
             "permission_snapshot": permission_snapshot,
         }
         with service.db.transaction():
@@ -1468,6 +1631,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
     }
     trace: list[dict] = []
     outputs: dict[str, str] = {}
+    agent_structured_outputs: dict[str, dict] = {}
     knowledge_outputs: dict[str, dict] = {}
     condition_outputs: dict[str, dict] = {}
     tool_outputs: dict[str, dict] = {}
@@ -1490,6 +1654,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
             outputs.update({str(key): str(value) for key, value in (prior_output.get("agent_outputs") or {}).items()})
             outputs.update({str(key): str(value) for key, value in (prior_output.get("knowledge_outputs") or {}).items() if isinstance(value, str)})
             outputs.update({str(key): json.dumps(value, ensure_ascii=False, separators=(",", ":")) for key, value in (prior_output.get("condition_outputs") or {}).items()})
+            agent_structured_outputs = {str(key): value for key, value in (prior_output.get("agent_structured_outputs") or {}).items() if isinstance(value, dict)}
             knowledge_outputs = prior_output.get("knowledge_outputs") or {}
             condition_outputs = prior_output.get("condition_outputs") or {}
             tool_outputs = prior_output.get("tool_outputs") or {}
@@ -1512,7 +1677,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
                 outputs[approved_node_id] = approved_preview
 
     def run_output(next_node_index: int | None = None) -> dict:
-        return {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "agent_outputs": {key: value for key, value in outputs.items() if node_map.get(key, {}).get("type") == "agent"}, "knowledge_outputs": knowledge_outputs, "condition_outputs": condition_outputs, "tool_outputs": tool_outputs, "tool_evidence": tool_evidence, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
+        return {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "agent_outputs": {key: value for key, value in outputs.items() if node_map.get(key, {}).get("type") == "agent"}, "agent_structured_outputs": agent_structured_outputs, "knowledge_outputs": knowledge_outputs, "condition_outputs": condition_outputs, "tool_outputs": tool_outputs, "tool_evidence": tool_evidence, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
 
     current_node = None
     try:
@@ -1578,10 +1743,13 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
                 continue
             current_node = node
             role, system_prompt = _agent_system_prompt(assistant, config)
-            mapped_inputs = _resolve_input_bindings(config, safe_input, outputs)
+            mapped_inputs = _resolve_input_bindings(config, safe_input, outputs, agent_structured_outputs)
             text = await _invoke_agent_model(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config)
+            structured = _parse_structured_agent_output(text, _output_schema(config))
             outputs[node_id] = text
-            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "input_bindings": _binding_trace(config), "output_preview": text[:600]})
+            if structured is not None:
+                agent_structured_outputs[node_id] = structured
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "input_bindings": _binding_trace(config), **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}), "output_preview": text[:600]})
             current_node = None
         output = run_output()
         with service.db.transaction():

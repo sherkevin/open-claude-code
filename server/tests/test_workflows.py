@@ -252,6 +252,98 @@ def test_model_mode_is_limited_to_agent_nodes():
     assert error.value.code == "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN"
 
 
+def test_model_agent_structured_output_can_feed_a_downstream_field(monkeypatch, client):
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-structured-token")
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"type": "text", "text": self.text}]}
+
+    class FakeClient:
+        calls = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, endpoint, json):
+            self.calls.append({"endpoint": endpoint, "json": json})
+            return FakeResponse('{"decision":"approve","score":0.92}' if len(self.calls) == 1 else "已根据决定生成说明")
+
+    monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
+    assistant = client.post("/api/v1/assistants", json={"name": "结构化输出助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "review", "type": "agent", "label": "审核", "config": {"mode": "model", "model_id": "legacy-model", "output_schema_json": '{"fields":[{"name":"decision","type":"text","required":true},{"name":"score","type":"number","required":true}]}' }},
+            {"id": "explain", "type": "agent", "label": "说明", "config": {"mode": "model", "model_id": "legacy-model", "input_bindings": [{"key": "decision", "source": "node.review.output.decision"}]}},
+        ],
+        "edges": [{"source": "review", "target": "explain", "label": "传递决定"}],
+    }
+    created = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "结构化流程", "graph": graph})
+    assert created.status_code == 201, created.text
+    workflow = created.json()
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {"topic": "合同"}})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["status"] == "succeeded"
+    assert run["output"]["agent_structured_outputs"]["review"] == {"decision": "approve", "score": 0.92}
+    assert run["trace"][0]["structured_output"] is True
+    assert run["trace"][0]["structured_fields"] == ["decision", "score"]
+    assert '"mapped_inputs":{"decision":"approve"}' in FakeClient.calls[1]["json"]["messages"][0]["content"]
+
+
+def test_workflow_rejects_invalid_agent_output_schema(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "输出结构边界助手"}).json()
+    graph = {"nodes": [{"id": "review", "type": "agent", "label": "审核", "config": {"mode": "model", "output_schema_json": '{"fields":[{"name":"score","type":"money"}]}'}}], "edges": []}
+    response = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "非法输出结构", "graph": graph})
+    assert response.status_code == 422 and response.json()["error"]["code"] == "WORKFLOW_AGENT_OUTPUT_SCHEMA_INVALID"
+
+
+def test_workflow_marks_invalid_agent_output_as_failed(monkeypatch, client):
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-invalid-structured-token")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"type": "text", "text": "这不是 JSON"}]}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, endpoint, json):
+            return FakeResponse()
+
+    monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
+    assistant = client.post("/api/v1/assistants", json={"name": "输出校验助手"}).json()
+    graph = {"nodes": [{"id": "review", "type": "agent", "label": "审核", "config": {"mode": "model", "model_id": "legacy-model", "output_schema_json": '{"fields":[{"name":"decision","type":"text","required":true}]}'}}], "edges": []}
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "输出校验流程", "graph": graph}).json()
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={})
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "WORKFLOW_AGENT_OUTPUT_INVALID"
+
+
 def test_live_mcp_read_node_calls_bound_readonly_tool_and_persists_evidence(monkeypatch, client):
     class FakeResult:
         isError = False
