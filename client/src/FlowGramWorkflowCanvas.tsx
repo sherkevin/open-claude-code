@@ -18,6 +18,7 @@ import type { ModelOption, WorkflowGraph, WorkflowNodeType } from './types';
 import { flowJSONToWorkflowGraph, workflowGraphHasCycle, workflowGraphToFlowJSON } from './workflowFlowgram';
 
 const NODE_TYPES: WorkflowNodeType[] = [
+  'input',
   'agent',
   'skill',
   'knowledge_search',
@@ -28,6 +29,7 @@ const NODE_TYPES: WorkflowNodeType[] = [
 ];
 
 const NODE_LABELS: Record<WorkflowNodeType, string> = {
+  input: '开始 / 输入',
   agent: '智能体节点',
   skill: '工作方法',
   knowledge_search: '知识检索',

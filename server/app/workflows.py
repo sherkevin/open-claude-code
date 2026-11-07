@@ -31,6 +31,7 @@ from .security import AppError, SENSITIVE
 
 
 _NODE_TYPES = {
+    "input",
     "agent",
     "skill",
     "knowledge_search",

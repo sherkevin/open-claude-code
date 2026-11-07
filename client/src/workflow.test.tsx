@@ -29,6 +29,11 @@ describe('low-code workflow canvas contracts', () => {
     expect(fields).toEqual([{ id: 'amount', type: 'number', label: '金额', required: true, options: undefined }]);
   });
 
+  it('exposes fields declared by the explicit start input node', () => {
+    const fields = workflowFormFields({ nodes: [{ id: 'start', type: 'input', label: '开始 / 输入', config: { form_fields: [{ id: 'topic', type: 'text', label: '主题', required: true }] } }], edges: [] });
+    expect(fields).toEqual([{ id: 'topic', type: 'text', label: '主题', required: true, options: undefined }]);
+  });
+
   it('validates manually configured skill input fields and artifact columns', () => {
     const skill = { id: 'form', type: 'skill' as const, label: '申请表', config: { form_fields_json: '[{\"id\":\"amount\",\"type\":\"number\",\"label\":\"金额\",\"required\":true}]' } };
     const artifact = { id: 'export', type: 'artifact' as const, label: '导出', config: { format: 'xlsx', columns: ['amount', 'date'] } };

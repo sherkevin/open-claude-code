@@ -56,6 +56,29 @@ def test_workflow_requires_publish_and_replays_a_pinned_synthetic_version(client
     assert fetched.json()["approvals"][0]["decision"] == "approve"
 
 
+def test_input_node_defines_the_runtime_form_contract(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "开始节点助手"}).json()
+    workflow_graph = {
+        "nodes": [
+            {"id": "start", "type": "input", "label": "开始 / 输入", "config": {"mode": "synthetic", "form_fields": [{"id": "topic", "type": "text", "label": "主题", "required": True}]}},
+            {"id": "plan", "type": "agent", "label": "整理主题", "config": {"mode": "synthetic"}},
+        ],
+        "edges": [{"source": "start", "target": "plan", "label": "提交"}],
+    }
+    created = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "开始输入", "graph": workflow_graph})
+    assert created.status_code == 201, created.text
+    workflow = created.json()
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+    missing = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={})
+    assert missing.status_code == 422 and missing.json()["error"]["code"] == "WORKFLOW_FORM_REQUIRED"
+    run = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {"topic": "质量审查"}})
+    assert run.status_code == 201, run.text
+    value = run.json()
+    assert value["status"] == "succeeded"
+    assert value["output"]["input"] == {"topic": "质量审查"}
+    assert [item["node_id"] for item in value["trace"]] == ["start", "plan"]
+
+
 def test_workflow_session_binding_rejects_a_different_assistant(client):
     assistant = client.post("/api/v1/assistants", json={"name": "绑定助手"}).json()
     other = client.post("/api/v1/assistants", json={"name": "另一个助手"}).json()

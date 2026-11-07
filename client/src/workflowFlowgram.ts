@@ -2,6 +2,7 @@ import type { WorkflowJSON, WorkflowNodeJSON } from '@flowgram.ai/free-layout-ed
 import type { WorkflowGraph, WorkflowNodeType } from './types';
 
 const WORKFLOW_NODE_TYPES: WorkflowNodeType[] = [
+  'input',
   'agent',
   'skill',
   'knowledge_search',

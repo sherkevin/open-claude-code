@@ -43,7 +43,7 @@ export interface Assistant extends ScopedResource {
   access: { all_members: boolean; user_ids: string[] }; connections: AssistantBinding[]; revision: number;
   knowledge_base_ids?: string[]; skill_ids?: string[]; web_search_enabled?: boolean; default_model_id?: string | null; default_reasoning_level?: string | null;
 }
-export type WorkflowNodeType = 'agent' | 'skill' | 'knowledge_search' | 'mcp_read' | 'condition' | 'approval' | 'artifact';
+export type WorkflowNodeType = 'input' | 'agent' | 'skill' | 'knowledge_search' | 'mcp_read' | 'condition' | 'approval' | 'artifact';
 export interface WorkflowNode { id: string; type: WorkflowNodeType; label: string; config: Record<string, unknown> }
 export interface WorkflowEdge { source: string; target: string; label: string }
 export interface WorkflowGraph { nodes: WorkflowNode[]; edges: WorkflowEdge[] }

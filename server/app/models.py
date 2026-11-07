@@ -168,6 +168,7 @@ class SubagentPlanRequest(InputModel):
 
 
 WorkflowNodeType = Literal[
+    "input",
     "agent",
     "skill",
     "knowledge_search",
