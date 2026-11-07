@@ -655,7 +655,7 @@ def test_model_workflow_runs_authorized_knowledge_node_and_passes_source_bound_c
 
         async def post(self, endpoint, json):
             self.calls.append({"endpoint": endpoint, "json": json})
-            return FakeResponse("规划完成。" if len(self.calls) == 1 else "依据已核验。")
+            return FakeResponse('{"topic":"设备验收"}' if len(self.calls) == 1 else "依据已核验。")
 
     monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
     service = client.app.state.service
@@ -692,8 +692,8 @@ def test_model_workflow_runs_authorized_knowledge_node_and_passes_source_bound_c
     monkeypatch.setattr(service.knowledge, "search", fake_search)
     graph = {
         "nodes": [
-            {"id": "plan", "type": "agent", "label": "先规划", "config": {"mode": "model", "model_id": "legacy-model"}},
-            {"id": "policy", "type": "knowledge_search", "label": "检索质量规则", "config": {"mode": "synthetic", "query": "请检索 {{input.topic}} 的质量规则", "top_k": 4, "retrieval_mode": "bm25", "context_chars": 300}},
+            {"id": "plan", "type": "agent", "label": "先规划", "config": {"mode": "model", "model_id": "legacy-model", "output_schema_json": '{"fields":[{"name":"topic","type":"text","required":true}]}' }},
+            {"id": "policy", "type": "knowledge_search", "label": "检索质量规则", "config": {"mode": "synthetic", "query": "请检索 {{node.plan.output.topic}} 的质量规则", "top_k": 4, "retrieval_mode": "bm25", "context_chars": 300}},
             {"id": "review", "type": "agent", "label": "依据核验", "config": {"mode": "model", "model_id": "legacy-model", "input_bindings": [{"key": "evidence", "source": "node.policy.output"}]}},
         ],
         "edges": [{"source": "plan", "target": "policy"}, {"source": "policy", "target": "review"}],
@@ -722,6 +722,25 @@ def test_workflow_rejects_knowledge_query_references_to_future_nodes(client):
     }
     response = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "后置知识变量", "graph": graph})
     assert response.status_code == 422 and response.json()["error"]["code"] == "WORKFLOW_KNOWLEDGE_QUERY_ORDER"
+
+
+def test_workflow_tool_arguments_can_read_structured_agent_fields(client):
+    from app.workflows import _tool_arguments
+
+    node = {"id": "read", "type": "mcp_read", "config": {"arguments_json": '{"query":"{{node.review.output.decision}}","payload":"结论：{{node.review.output.decision}}"}'} }
+    rendered = _tool_arguments(node, {}, {}, {"review": {"decision": "approve"}})
+    assert rendered == {"query": "approve", "payload": "结论：approve"}
+
+    assistant = client.post("/api/v1/assistants", json={"name": "工具字段边界助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "review", "type": "agent", "label": "审核", "config": {"mode": "model", "model_id": "legacy-model", "output_schema_json": '{"fields":[{"name":"decision","type":"text","required":true}]}' }},
+            {"id": "read", "type": "mcp_read", "label": "读取", "config": {"mode": "synthetic", "arguments_json": '{"query":"{{node.review.output.missing}}"}'}},
+        ],
+        "edges": [{"source": "review", "target": "read", "label": "读取"}],
+    }
+    response = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "非法工具字段", "graph": graph})
+    assert response.status_code == 422 and response.json()["error"]["code"] == "WORKFLOW_TOOL_ARGUMENTS_INVALID"
 
 
 def test_model_agent_node_debug_runs_draft_and_records_audited_trace(monkeypatch, client):

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowConditionIssue, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowConditionIssue, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowToolArgumentsIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -60,6 +60,14 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowKnowledgeIssue({ ...graph, nodes: [{ ...graph.nodes[0] }, { ...graph.nodes[1], config: { top_k: 21 } }], edges: graph.edges })).toContain('召回条数');
   });
 
+  it('validates knowledge queries that read structured agent fields', () => {
+    const plan = { id: 'plan', type: 'agent' as const, label: '计划', config: { mode: 'model', output_schema_json: '{"fields":[{"name":"topic","type":"text","required":true}]}' } };
+    const lookup = { id: 'lookup', type: 'knowledge_search' as const, label: '检索', config: { query: '请检索 {{node.plan.output.topic}} 的规则' } };
+    const graph = { nodes: [plan, lookup], edges: [{ source: 'plan', target: 'lookup', label: '依据' }] };
+    expect(workflowKnowledgeIssue(graph)).toBe('');
+    expect(workflowKnowledgeIssue({ ...graph, nodes: [plan, { ...lookup, config: { query: '{{node.plan.output.missing}}' } }] })).toContain('检索字段未在来源节点中声明');
+  });
+
   it('requires labeled exits for a condition branch', () => {
     const graph = {
       nodes: [{ id: 'gate', type: 'condition' as const, label: '判断', config: { field: 'amount', operator: 'gt', value: 5000 } }, { id: 'next', type: 'artifact' as const, label: '下一步', config: {} }, { id: 'other', type: 'artifact' as const, label: '另一步', config: {} }],
@@ -76,5 +84,14 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowConditionIssue(graph)).toBe('');
     expect(workflowConditionIssue({ ...graph, nodes: [review, { ...gate, config: { ...gate.config, value_source: 'node.review.output.decision' } }, graph.nodes[2]] })).toContain('判断字段未在来源节点中声明');
     expect(workflowConditionIssue({ ...graph, nodes: [review, { ...gate, config: { ...gate.config, value_source: 'node.missing.output.score' } }, graph.nodes[2]] })).toContain('来源节点不存在');
+  });
+
+  it('validates tool templates that read structured agent fields', () => {
+    const review = { id: 'review', type: 'agent' as const, label: '审核', config: { mode: 'model', output_schema_json: '{"fields":[{"name":"decision","type":"text","required":true}]}' } };
+    const read = { id: 'read', type: 'mcp_read' as const, label: '读取', config: { arguments_json: '{"query":"{{node.review.output.decision}}"}' } };
+    const graph = { nodes: [review, read], edges: [{ source: 'review', target: 'read', label: '读取' }] };
+    expect(workflowToolArgumentsIssue(graph)).toBe('');
+    expect(workflowToolArgumentsIssue({ ...graph, nodes: [review, { ...read, config: { arguments_json: '{"query":"{{node.review.output.missing}}"}' } }] })).toContain('工具字段未在来源节点中声明');
+    expect(workflowToolArgumentsIssue({ ...graph, nodes: [review, { ...read, config: { arguments_json: '{"query":"{{node.future.output.decision}}"}' } }] })).toContain('工具来源节点不存在');
   });
 });

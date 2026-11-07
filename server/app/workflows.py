@@ -46,7 +46,8 @@ _MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
 _REASONING_LEVEL = re.compile(r"^[A-Za-z0-9._-]{1,30}$")
 _NODE_OUTPUT_SOURCE = re.compile(r"^node\.([A-Za-z0-9_-]{1,64})\.output(?:\.([A-Za-z][A-Za-z0-9_-]{0,63}))?$")
 _BINDING_SOURCE = re.compile(r"^(?:input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?)$")
-_KNOWLEDGE_TEMPLATE = re.compile(r"\{\{\s*(input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output)\s*\}\}")
+_REFERENCE_SOURCE = r"(?:input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?)"
+_KNOWLEDGE_TEMPLATE = re.compile(r"\{\{\s*(" + _REFERENCE_SOURCE + r")\s*\}\}")
 _MAX_AGENT_CONTEXT = 12_000
 _MAX_AGENT_OUTPUT = 12_000
 _OUTPUT_TYPES = {"text", "number", "boolean", "object", "array"}
@@ -58,7 +59,7 @@ _MAX_TOOL_OUTPUT = 12_000
 _MAX_TOOL_ARGUMENTS = 4_000
 _CONDITION_OPERATORS = {"exists", "eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"}
 _MCP_TOOL_NAME = re.compile(r"^mcp__c([A-Za-z0-9_-]{1,100})__([A-Za-z0-9_.-]{1,100})$")
-_TOOL_TEMPLATE = re.compile(r"\{\{\s*(input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output)\s*\}\}")
+_TOOL_TEMPLATE = re.compile(r"\{\{\s*(" + _REFERENCE_SOURCE + r")\s*\}\}")
 
 
 _TEMPLATE_DEFINITIONS = {
@@ -374,9 +375,31 @@ def _validate_mcp_read_config(config: dict) -> None:
     if not isinstance(arguments, dict):
         raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数必须是 JSON 对象")
     list(_walk_values(arguments))
+    _tool_argument_sources(arguments)
     timeout = config.get("timeout_seconds", 30)
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 60:
         raise AppError(422, "WORKFLOW_TOOL_TIMEOUT_INVALID", "工具超时时间必须在 1 到 60 秒之间")
+
+
+def _tool_argument_sources(value, depth=0) -> list[str]:
+    if depth > 6:
+        raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数模板层级过深")
+    if isinstance(value, str):
+        matches = list(_TOOL_TEMPLATE.finditer(value))
+        if ("{{" in value or "}}" in value) and len(matches) != value.count("{{"):
+            raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数只能引用 input 或上游 node 输出")
+        return [match.group(1) for match in matches]
+    if isinstance(value, dict):
+        sources = []
+        for item in value.values():
+            sources.extend(_tool_argument_sources(item, depth + 1))
+        return sources
+    if isinstance(value, list):
+        sources = []
+        for item in value:
+            sources.extend(_tool_argument_sources(item, depth + 1))
+        return sources
+    return []
 
 
 def _agent_selection(service, assistant: dict, config: dict) -> dict:
@@ -516,15 +539,48 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
                 declared_fields = {item["name"] for item in (source_schema or {}).get("fields", [])}
                 if not source_schema or (field_name not in declared_fields and not source_schema.get("allow_extra")):
                     raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", f"条件分支值来源未声明可用的模型输出字段：{source_id}.{field_name}")
+        if node["type"] == "mcp_read":
+            try:
+                tool_arguments = json.loads(node["config"].get("arguments_json", "{}") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数必须是有效的 JSON 对象") from error
+            for source in _tool_argument_sources(tool_arguments):
+                if not source.startswith("node."):
+                    continue
+                parsed_source = _node_output_source(source)
+                if not parsed_source:
+                    raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数引用的来源格式无效")
+                source_id, field_name = parsed_source
+                if source_id not in node_map:
+                    raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", f"工具参数引用的来源节点不存在：{source_id}")
+                if source_id == node_id or order_index[source_id] >= order_index[node_id]:
+                    raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_ORDER", "工具参数只能引用已经完成的上游节点输出")
+                if field_name:
+                    source_node = node_map[source_id]
+                    source_config = source_node.get("config") or {}
+                    source_schema = _output_schema(source_config) if source_node.get("type") == "agent" and source_config.get("mode", "synthetic") == "model" else None
+                    declared_fields = {item["name"] for item in (source_schema or {}).get("fields", [])}
+                    if not source_schema or (field_name not in declared_fields and not source_schema.get("allow_extra")):
+                        raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", f"工具参数引用的字段未声明可用的模型输出：{source_id}.{field_name}")
         if node["type"] == "knowledge_search":
             for source in _knowledge_query_sources(node["config"].get("query")):
                 if not source.startswith("node."):
                     continue
-                source_id = source[5:-7]
+                parsed_source = _node_output_source(source)
+                if not parsed_source:
+                    raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_INVALID", "知识检索问题引用的来源格式无效")
+                source_id, field_name = parsed_source
                 if source_id not in node_map:
                     raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_INVALID", f"知识检索问题引用的来源节点不存在：{source_id}")
                 if source_id == node_id or order_index[source_id] >= order_index[node_id]:
                     raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_ORDER", "知识检索问题只能引用已经完成的上游节点输出")
+                if field_name:
+                    source_node = node_map[source_id]
+                    source_config = source_node.get("config") or {}
+                    source_schema = _output_schema(source_config) if source_node.get("type") == "agent" and source_config.get("mode", "synthetic") == "model" else None
+                    declared_fields = {item["name"] for item in (source_schema or {}).get("fields", [])}
+                    if not source_schema or (field_name not in declared_fields and not source_schema.get("allow_extra")):
+                        raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_INVALID", f"知识检索问题引用的字段未声明可用的模型输出：{source_id}.{field_name}")
 
     condition_edges: dict[str, list[dict]] = defaultdict(list)
     for edge in canonical_edges:
@@ -892,12 +948,10 @@ def _resolve_input_bindings(config: dict, safe_input: dict, outputs: dict[str, s
     return resolved
 
 
-def _tool_argument_value(source: str, safe_input: dict, outputs: dict[str, str]):
-    if source == "input":
-        return safe_input
-    if source.startswith("input."):
-        return safe_input.get(source[6:])
-    value = outputs.get(source[5:-7], "")
+def _tool_argument_value(source: str, safe_input: dict, outputs: dict[str, str], structured_outputs: dict[str, dict] | None = None):
+    value = _resolve_workflow_reference(source, safe_input, outputs, structured_outputs)
+    if value is None:
+        return ""
     if isinstance(value, str):
         try:
             return json.loads(value)
@@ -906,7 +960,7 @@ def _tool_argument_value(source: str, safe_input: dict, outputs: dict[str, str])
     return value
 
 
-def _render_tool_argument_value(value, safe_input: dict, outputs: dict[str, str], depth=0):
+def _render_tool_argument_value(value, safe_input: dict, outputs: dict[str, str], structured_outputs: dict[str, dict] | None = None, depth=0):
     if depth > 6:
         raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数模板层级过深")
     if isinstance(value, str):
@@ -914,22 +968,22 @@ def _render_tool_argument_value(value, safe_input: dict, outputs: dict[str, str]
         if not matches:
             return value
         if len(matches) == 1 and matches[0].span() == (0, len(value)):
-            return _tool_argument_value(matches[0].group(1), safe_input, outputs)
+            return _tool_argument_value(matches[0].group(1), safe_input, outputs, structured_outputs)
         rendered = value
         for match in reversed(matches):
-            replacement = _tool_argument_value(match.group(1), safe_input, outputs)
+            replacement = _tool_argument_value(match.group(1), safe_input, outputs, structured_outputs)
             if isinstance(replacement, (dict, list)):
                 replacement = json.dumps(replacement, ensure_ascii=False, separators=(",", ":"))
             rendered = rendered[:match.start()] + str(replacement if replacement is not None else "") + rendered[match.end():]
         return rendered
     if isinstance(value, dict):
-        return {key: _render_tool_argument_value(item, safe_input, outputs, depth + 1) for key, item in value.items()}
+        return {key: _render_tool_argument_value(item, safe_input, outputs, structured_outputs, depth + 1) for key, item in value.items()}
     if isinstance(value, list):
-        return [_render_tool_argument_value(item, safe_input, outputs, depth + 1) for item in value]
+        return [_render_tool_argument_value(item, safe_input, outputs, structured_outputs, depth + 1) for item in value]
     return value
 
 
-def _tool_arguments(node: dict, safe_input: dict, outputs: dict[str, str]) -> dict:
+def _tool_arguments(node: dict, safe_input: dict, outputs: dict[str, str], structured_outputs: dict[str, dict] | None = None) -> dict:
     config = node.get("config") or {}
     try:
         arguments = json.loads(config.get("arguments_json", "{}") or "{}")
@@ -937,7 +991,7 @@ def _tool_arguments(node: dict, safe_input: dict, outputs: dict[str, str]) -> di
         raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数模板不是有效 JSON") from error
     if not isinstance(arguments, dict):
         raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数必须是 JSON 对象")
-    rendered = _render_tool_argument_value(arguments, safe_input, outputs)
+    rendered = _render_tool_argument_value(arguments, safe_input, outputs, structured_outputs)
     list(_walk_values(rendered))
     return rendered
 
@@ -1044,14 +1098,14 @@ def _tool_sources(value, depth=0) -> list[dict]:
     return result
 
 
-async def _run_mcp_read(service, user: dict, conversation: dict | None, node: dict, tool_scope: dict, safe_input: dict, outputs: dict[str, str]) -> tuple[dict, str, list[dict]]:
+async def _run_mcp_read(service, user: dict, conversation: dict | None, node: dict, tool_scope: dict, safe_input: dict, outputs: dict[str, str], structured_outputs: dict[str, dict] | None = None) -> tuple[dict, str, list[dict]]:
     if not conversation:
         raise AppError(409, "WORKFLOW_TOOL_SESSION_REQUIRED", "实时工具节点必须绑定同一助手的运行会话")
     config = node.get("config") or {}
     scope = tool_scope.get(node["id"])
     if not scope:
         raise AppError(409, "WORKFLOW_TOOL_SCOPE_INVALID", "实时工具节点权限快照不存在")
-    arguments = _tool_arguments(node, safe_input, outputs)
+    arguments = _tool_arguments(node, safe_input, outputs, structured_outputs)
     if service.authorize_tool(conversation["id"], scope["tool_name"], arguments) is not True:
         raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "当前会话未自动批准此只读工具")
     connection = service.require_resource("connections", scope["connection_id"], user)
@@ -1134,15 +1188,12 @@ def _assistant_knowledge_scope(service, assistant: dict, user: dict) -> list[dic
     return scope
 
 
-def _knowledge_query_value(source: str, safe_input: dict, outputs: dict[str, str]):
-    if source == "input":
-        return safe_input
-    if source.startswith("input."):
-        return safe_input.get(source[6:])
-    return outputs.get(source[5:-7], "")
+def _knowledge_query_value(source: str, safe_input: dict, outputs: dict[str, str], structured_outputs: dict[str, dict] | None = None):
+    value = _resolve_workflow_reference(source, safe_input, outputs, structured_outputs)
+    return "" if value is None else value
 
 
-def _render_knowledge_query(node: dict, safe_input: dict, outputs: dict[str, str]) -> str:
+def _render_knowledge_query(node: dict, safe_input: dict, outputs: dict[str, str], structured_outputs: dict[str, dict] | None = None) -> str:
     config = node.get("config") or {}
     template = config.get("query")
     if not isinstance(template, str) or not template.strip():
@@ -1150,7 +1201,7 @@ def _render_knowledge_query(node: dict, safe_input: dict, outputs: dict[str, str
     _knowledge_query_sources(template)
 
     def replace(match):
-        value = _knowledge_query_value(match.group(1), safe_input, outputs)
+        value = _knowledge_query_value(match.group(1), safe_input, outputs, structured_outputs)
         if value is None:
             return ""
         if isinstance(value, (dict, list)):
@@ -1243,9 +1294,9 @@ def _serialize_knowledge_payload(payload: dict) -> tuple[dict, str]:
     return payload, serialized
 
 
-async def _run_knowledge_search(service, assistant: dict, user: dict, node: dict, safe_input: dict, outputs: dict[str, str], scope: list[dict]) -> tuple[dict, str]:
+async def _run_knowledge_search(service, assistant: dict, user: dict, node: dict, safe_input: dict, outputs: dict[str, str], scope: list[dict], structured_outputs: dict[str, dict] | None = None) -> tuple[dict, str]:
     config = node.get("config") or {}
-    query = _render_knowledge_query(node, safe_input, outputs)
+    query = _render_knowledge_query(node, safe_input, outputs, structured_outputs)
     top_k = config.get("top_k", 6)
     retrieval_mode = config.get("retrieval_mode", "hybrid")
     context_chars = config.get("context_chars", _MAX_KNOWLEDGE_CONTEXT)
@@ -1749,7 +1800,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
                     continue
                 if node["type"] == "knowledge_search":
                     current_node = node
-                    payload, serialized = await _run_knowledge_search(service, assistant, user, node, safe_input, outputs, knowledge_scope)
+                    payload, serialized = await _run_knowledge_search(service, assistant, user, node, safe_input, outputs, knowledge_scope, agent_structured_outputs)
                     outputs[node_id] = serialized
                     knowledge_outputs[node_id] = payload
                     trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": payload["status"], "external_call": False, "approval_required": False, "knowledge_retrieval": True, "query": payload["query"], "source_count": payload["source_count"], "retrieval_mode": payload["retrieval"].get("mode"), "output_preview": json.dumps({"query": payload["query"], "source_count": payload["source_count"]}, ensure_ascii=False, separators=(",", ":"))})
@@ -1757,7 +1808,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
                     continue
                 if node["type"] == "mcp_read" and config.get("mode", "synthetic") == "live":
                     current_node = node
-                    payload, serialized, sources = await _run_mcp_read(service, user, conversation, node, tool_scope, safe_input, outputs)
+                    payload, serialized, sources = await _run_mcp_read(service, user, conversation, node, tool_scope, safe_input, outputs, agent_structured_outputs)
                     outputs[node_id] = serialized
                     tool_outputs[node_id] = payload
                     tool_evidence[node_id] = sources
