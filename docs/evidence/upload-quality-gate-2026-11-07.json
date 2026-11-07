@@ -1,0 +1,193 @@
+{
+  "schema_version": "upload-quality-gate/v2",
+  "synthetic": true,
+  "fixture_id": "synthetic-industrial-v1",
+  "checks": [
+    {
+      "name": "quality-policy.md:ready",
+      "status": "passed",
+      "actual": "ready",
+      "expected": "ready"
+    },
+    {
+      "name": "quality-policy.md:sha256",
+      "status": "passed",
+      "actual": "6ab0f675d590531756ff8cd011d394150a2e764c28db3da5f91f91c9ac126634",
+      "expected": "6ab0f675d590531756ff8cd011d394150a2e764c28db3da5f91f91c9ac126634"
+    },
+    {
+      "name": "quality-policy.md:chunks",
+      "status": "passed",
+      "actual": 5,
+      "expected": ">0"
+    },
+    {
+      "name": "quality-batches.csv:ready",
+      "status": "passed",
+      "actual": "ready",
+      "expected": "ready"
+    },
+    {
+      "name": "quality-batches.csv:sha256",
+      "status": "passed",
+      "actual": "ab876702fb3885be57d144999b400c1f789d3f9867d0e103fbcd33552d5df5b7",
+      "expected": "ab876702fb3885be57d144999b400c1f789d3f9867d0e103fbcd33552d5df5b7"
+    },
+    {
+      "name": "quality-batches.csv:chunks",
+      "status": "passed",
+      "actual": 1,
+      "expected": ">0"
+    },
+    {
+      "name": "search:facts",
+      "status": "passed",
+      "actual": {
+        "4,700": true,
+        "4,537": true,
+        "96.53%": true,
+        "SUM(qualified_count)": true,
+        "Asia/Shanghai": true
+      },
+      "expected": {
+        "4,700": true,
+        "4,537": true,
+        "96.53%": true,
+        "SUM(qualified_count)": true,
+        "Asia/Shanghai": true
+      },
+      "note": "adjacent formula context is explicitly marked when added"
+    },
+    {
+      "name": "search:formula",
+      "status": "passed",
+      "actual": {
+        "SUM(qualified_count) / SUM(inspected_count)": true
+      },
+      "expected": {
+        "SUM(qualified_count) / SUM(inspected_count)": true
+      },
+      "note": "adjacent formula context is explicitly marked when added"
+    },
+    {
+      "name": "search:table",
+      "status": "passed",
+      "actual": {
+        "QA-SYN-1101": true,
+        "QA-SYN-1102": true,
+        "QA-SYN-1103": true,
+        "QA-SYN-1104": true
+      },
+      "expected": {
+        "QA-SYN-1101": true,
+        "QA-SYN-1102": true,
+        "QA-SYN-1103": true,
+        "QA-SYN-1104": true
+      },
+      "note": "adjacent formula context is explicitly marked when added"
+    },
+    {
+      "name": "graph:provenance",
+      "status": "passed",
+      "actual": {
+        "nodes": 32,
+        "edges": 28
+      },
+      "expected": "all nodes and edges source-linked"
+    },
+    {
+      "name": "graph:semantic_relations",
+      "status": "not_ready",
+      "actual": [
+        "co_occurs"
+      ],
+      "expected": "typed semantic relations",
+      "note": "共现图不冒充语义知识图谱"
+    }
+  ],
+  "queries": [
+    {
+      "name": "facts",
+      "query": "质量检验合格率",
+      "found": {
+        "4,700": true,
+        "4,537": true,
+        "96.53%": true,
+        "SUM(qualified_count)": true,
+        "Asia/Shanghai": true
+      },
+      "sources": [
+        "quality-policy.md",
+        "quality-policy.md",
+        "quality-policy.md",
+        "quality-policy.md",
+        "quality-policy.md"
+      ],
+      "evidence_types": [
+        null,
+        null,
+        null,
+        null,
+        "adjacent_source_context"
+      ]
+    },
+    {
+      "name": "formula",
+      "query": "加权合格率",
+      "found": {
+        "SUM(qualified_count) / SUM(inspected_count)": true
+      },
+      "sources": [
+        "quality-policy.md",
+        "quality-policy.md",
+        "quality-policy.md",
+        "quality-policy.md",
+        "quality-policy.md"
+      ],
+      "evidence_types": [
+        null,
+        null,
+        null,
+        "adjacent_source_context",
+        "adjacent_source_context"
+      ]
+    },
+    {
+      "name": "table",
+      "query": "QA-SYN-1103",
+      "found": {
+        "QA-SYN-1101": true,
+        "QA-SYN-1102": true,
+        "QA-SYN-1103": true,
+        "QA-SYN-1104": true
+      },
+      "sources": [
+        "quality-batches.csv",
+        "quality-policy.md",
+        "quality-policy.md",
+        "quality-policy.md"
+      ],
+      "evidence_types": [
+        null,
+        null,
+        null,
+        "adjacent_source_context"
+      ]
+    }
+  ],
+  "graph": {
+    "nodes": 32,
+    "edges": 28,
+    "relations": [
+      "co_occurs"
+    ],
+    "semantic_quality": "not_ready"
+  },
+  "status": "not_ready",
+  "quality_summary": {
+    "passed_checks": 10,
+    "failed_checks": 0,
+    "not_ready_checks": 1,
+    "release_ready": false
+  }
+}

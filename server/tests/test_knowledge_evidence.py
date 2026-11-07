@@ -88,6 +88,51 @@ def test_original_versions_retrieval_and_historical_citation(system):
     assert all(item["version"] == 1 for item in client.get(f"/api/v1/knowledge-documents/{first['id']}/chunks?version=1").json())
 
 
+def test_user_can_choose_bm25_or_hybrid_and_copy_bounded_rag_context(system, monkeypatch):
+    client, service, users = system
+    user = users["owner"]
+    kb = service.knowledge.save({"name": "Retrieval modes"}, user)
+    service.knowledge.upload(kb["id"], user, "bm25.md", "泵站阀门编号 P-101，维护周期为每周一次。".encode())
+    service.knowledge.upload(kb["id"], user, "other.md", "仓储盘点周期为每月一次。".encode())
+
+    # BM25 is a usable human-facing fallback even without an optional vector model.
+    def vector_unavailable(*args, **kwargs):
+        raise RuntimeError("vector model unavailable")
+    monkeypatch.setattr(service.knowledge.embeddings, "embed", vector_unavailable)
+    bm25 = service.knowledge.search([kb["id"]], user, "P-101", limit=2, mode="bm25", context_chars=64)
+    assert bm25["retrieval"]["mode"] == "bm25"
+    assert bm25["results"][0]["retrieval_mode"] == "bm25"
+    assert bm25["results"][0]["lexical_score"] > 0
+    assert len(bm25["context"]["text"]) <= 64
+    assert "P-101" in bm25["context"]["text"]
+
+    login(client, "owner")
+    response = client.post(f"/api/v1/knowledge-bases/{kb['id']}/search", json={"query": "P-101", "mode": "bm25", "context_chars": 48})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["retrieval"]["mode"] == "bm25"
+    assert payload["context"]["characters"] <= 48
+    assert payload["results"][0]["title"] == "bm25.md"
+
+
+def test_hybrid_search_keeps_adjacent_formula_for_quality_verification(system):
+    _, service, users = system
+    user = users["owner"]
+    kb = service.knowledge.save({"name": "Quality verification"}, user)
+    source = (
+        "# 质量统计口径\n\n"
+        "先汇总合格数和检验数，再计算加权合格率：\n\n"
+        "```text\n"
+        "yield_rate = SUM(qualified_count) / SUM(inspected_count)\n"
+        "```\n"
+    ).encode()
+    document = service.knowledge.upload(kb["id"], user, "quality.md", source)
+    result = service.knowledge.search([kb["id"]], user, "加权合格率", limit=5)
+    assert document["status"] == "ready"
+    assert any("SUM(qualified_count) / SUM(inspected_count)" in item["text"] for item in result["results"])
+    assert any(item.get("evidence_type") == "adjacent_source_context" for item in result["results"])
+
+
 def test_forged_cross_conversation_and_revoked_sources(system):
     _, service, users = system
     user = users["owner"]
@@ -176,6 +221,24 @@ def test_knowledge_graph_is_versioned_and_source_linked(system):
     assert all(item['source']['version'] == 2 for item in current['nodes'])
 
 
+def test_knowledge_graph_extracts_typed_entities_with_offsets(system):
+    _, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'Typed graph'}, user)
+    text = '设备 P-101 使用 ASTM A36 材料，焊接工艺压力=7 bar，合格率 96.5%。'
+    document = service.knowledge.upload(kb['id'], user, 'typed.md', text.encode())
+    graph = service.knowledge.graph(kb['id'], user)
+    by_kind = {item['kind']: item for item in graph['nodes']}
+    assert document['status'] == 'ready'
+    assert {'equipment', 'standard', 'process', 'metric'} <= set(by_kind)
+    # Entity evidence points to an extracted-page span, not an invented page.
+    for item in graph['nodes']:
+        assert item['source']['document_id'] == document['id']
+        assert item['source']['page'] == 1
+        assert 0 <= item['source']['start'] < item['source']['end'] <= len(text)
+    assert graph['multimodal']['entity_extraction'] == 'ocr_only'
+
+
 def test_image_upload_reports_local_ocr_requirement(system, monkeypatch):
     _, service, users = system
     user = users['owner']
@@ -185,6 +248,73 @@ def test_image_upload_reports_local_ocr_requirement(system, monkeypatch):
     monkeypatch.setattr(service.knowledge.parser, 'ocr_image', missing_ocr)
     image = service.knowledge.upload(kb['id'], user, 'nameplate.png', b'not-an-image')
     assert image['status'] == 'needs_ocr' and image['chunk_count'] == 0
+
+
+def test_image_asset_thumbnail_is_local_and_visual_index_is_truthful(system, monkeypatch):
+    client, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'Image assets'}, user)
+    from PIL import Image
+    image_bytes = io.BytesIO()
+    Image.new('RGB', (1200, 600), '#dbead4').save(image_bytes, format='PNG')
+
+    def missing_ocr(*args):
+        raise AppError(422, 'OCR_REQUIRED', 'OCR missing')
+
+    monkeypatch.setattr(service.knowledge.parser, 'ocr_image', missing_ocr)
+    document = service.knowledge.upload(kb['id'], user, 'line-layout.png', image_bytes.getvalue())
+    assert document['status'] == 'needs_ocr'
+    assert document['image']['width'] == 1200 and document['image']['height'] == 600
+    assert document['image']['thumbnail_width'] <= 640 and document['image']['thumbnail_height'] <= 480
+    assert document['image']['visual_index_status'] == 'needs_model'
+    assert document['image']['evidence_boundary']
+    login(client, 'owner')
+    metadata = client.get(f"/api/v1/knowledge-documents/{document['id']}/image").json()
+    assert metadata['entity_index_status'] == 'needs_model'
+    assert metadata['region_count'] == 4 and metadata['grid'] == {'rows': 2, 'columns': 2, 'max_regions': 16}
+    assert all(region['visual_index_status'] == 'needs_model' and region['entity_index_status'] == 'needs_model' for region in metadata['regions'])
+    regions = client.get(f"/api/v1/knowledge-documents/{document['id']}/regions").json()
+    assert regions['version'] == document['version'] and len(regions['regions']) == 4
+    first_region = regions['regions'][0]
+    assert first_region['x'] == 0 and first_region['y'] == 0
+    region_thumbnail = client.get(first_region['thumbnail_url'])
+    assert region_thumbnail.status_code == 200 and region_thumbnail.headers['content-type'].startswith('image/jpeg')
+    thumbnail = client.get(metadata['thumbnail_url'])
+    assert thumbnail.status_code == 200 and thumbnail.headers['content-type'].startswith('image/jpeg')
+
+    # Region identifiers are bound to immutable document versions; a region
+    # from v1 cannot be replayed against the current v2 endpoint.
+    service.knowledge.upload(kb['id'], user, 'line-layout.png', image_bytes.getvalue(), document['id'])
+    assert client.get(f"/api/v1/knowledge-documents/{document['id']}/regions/{first_region['id']}/thumbnail?version=2").status_code == 404
+
+    login(client, 'peer')
+    assert client.get(f"/api/v1/knowledge-documents/{document['id']}/regions").status_code == 404
+    assert client.get(first_region['thumbnail_url']).status_code == 404
+
+
+def test_image_retrieval_attaches_version_bound_media_evidence(system, monkeypatch):
+    client, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'Image retrieval'}, user)
+    from PIL import Image
+    image_bytes = io.BytesIO()
+    Image.new('RGB', (1200, 600), '#dbead4').save(image_bytes, format='PNG')
+    monkeypatch.setattr(service.knowledge.parser, 'ocr_image', lambda path: '设备铭牌 P-77 压力 8 bar')
+    document = service.knowledge.upload(kb['id'], user, 'nameplate.png', image_bytes.getvalue())
+    assert document['status'] == 'ready'
+
+    result = service.knowledge.search([kb['id']], user, 'P-77', mode='bm25')
+    hit = result['results'][0]
+    media = hit['media']
+    assert media['kind'] == 'image'
+    assert media['document_id'] == document['id'] and media['version'] == 1
+    assert media['sha256'] == document['sha256']
+    assert media['visual_index_status'] == 'needs_model'
+    assert len(media['regions']) == 4
+    assert media['evidence_boundary']
+    login(client, 'owner')
+    assert client.get(media['thumbnail_url']).status_code == 200
+    assert client.get(media['regions'][0]['thumbnail_url']).status_code == 200
 
 
 def test_data_provenance_preserves_actual_result_and_missing_fields(system):

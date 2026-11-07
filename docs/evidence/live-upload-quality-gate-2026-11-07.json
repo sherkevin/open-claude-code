@@ -1,0 +1,225 @@
+{
+  "schema_version": "live-upload-quality-gate/v1",
+  "synthetic": true,
+  "fixture_id": "synthetic-industrial-v1",
+  "started_at_utc": "2026-11-07T11:00:54.587746+00:00",
+  "checks": [
+    {
+      "name": "service_ready",
+      "status": "passed",
+      "actual": 200,
+      "expected": 200
+    },
+    {
+      "name": "login",
+      "status": "passed",
+      "actual": 200,
+      "expected": 200
+    },
+    {
+      "name": "kb_created",
+      "status": "passed",
+      "actual": 201,
+      "expected": 201
+    },
+    {
+      "name": "quality-policy.md:http",
+      "status": "passed",
+      "actual": 201,
+      "expected": 201
+    },
+    {
+      "name": "quality-policy.md:ready",
+      "status": "passed",
+      "actual": "ready",
+      "expected": "ready"
+    },
+    {
+      "name": "quality-policy.md:hash",
+      "status": "passed",
+      "actual": "6ab0f675d590531756ff8cd011d394150a2e764c28db3da5f91f91c9ac126634",
+      "expected": "6ab0f675d590531756ff8cd011d394150a2e764c28db3da5f91f91c9ac126634"
+    },
+    {
+      "name": "quality-policy.md:chunks",
+      "status": "passed",
+      "actual": 5,
+      "expected": ">0"
+    },
+    {
+      "name": "quality-batches.csv:http",
+      "status": "passed",
+      "actual": 201,
+      "expected": 201
+    },
+    {
+      "name": "quality-batches.csv:ready",
+      "status": "passed",
+      "actual": "ready",
+      "expected": "ready"
+    },
+    {
+      "name": "quality-batches.csv:hash",
+      "status": "passed",
+      "actual": "ab876702fb3885be57d144999b400c1f789d3f9867d0e103fbcd33552d5df5b7",
+      "expected": "ab876702fb3885be57d144999b400c1f789d3f9867d0e103fbcd33552d5df5b7"
+    },
+    {
+      "name": "quality-batches.csv:chunks",
+      "status": "passed",
+      "actual": 1,
+      "expected": ">0"
+    },
+    {
+      "name": "image:accepted",
+      "status": "passed",
+      "actual": 201,
+      "expected": 201
+    },
+    {
+      "name": "image:fail_closed_ocr",
+      "status": "passed",
+      "actual": "needs_ocr",
+      "expected": "needs_ocr"
+    },
+    {
+      "name": "search:facts",
+      "status": "passed",
+      "actual": {
+        "4,700": true,
+        "4,537": true,
+        "96.53%": true,
+        "SUM(qualified_count)": true,
+        "Asia/Shanghai": true
+      },
+      "expected": {
+        "4,700": true,
+        "4,537": true,
+        "96.53%": true,
+        "SUM(qualified_count)": true,
+        "Asia/Shanghai": true
+      },
+      "note": "相邻来源分块若补充会标记 adjacent_source_context"
+    },
+    {
+      "name": "search:formula",
+      "status": "passed",
+      "actual": {
+        "SUM(qualified_count) / SUM(inspected_count)": true
+      },
+      "expected": {
+        "SUM(qualified_count) / SUM(inspected_count)": true
+      },
+      "note": "相邻来源分块若补充会标记 adjacent_source_context"
+    },
+    {
+      "name": "search:table",
+      "status": "passed",
+      "actual": {
+        "QA-SYN-1101": true,
+        "QA-SYN-1102": true,
+        "QA-SYN-1103": true,
+        "QA-SYN-1104": true
+      },
+      "expected": {
+        "QA-SYN-1101": true,
+        "QA-SYN-1102": true,
+        "QA-SYN-1103": true,
+        "QA-SYN-1104": true
+      },
+      "note": "相邻来源分块若补充会标记 adjacent_source_context"
+    },
+    {
+      "name": "graph:provenance",
+      "status": "passed",
+      "actual": {
+        "nodes": 32,
+        "edges": 28
+      },
+      "expected": "all source-linked"
+    },
+    {
+      "name": "graph:semantic_quality",
+      "status": "not_ready",
+      "actual": [
+        "co_occurs"
+      ],
+      "expected": "typed semantic relation",
+      "note": "共现图不作为多模态语义图谱通过"
+    }
+  ],
+  "image": {
+    "status": "needs_ocr",
+    "error": "图片需要安装本地 OCR 组件后重新索引"
+  },
+  "queries": [
+    {
+      "name": "facts",
+      "query": "质量检验合格率",
+      "found": {
+        "4,700": true,
+        "4,537": true,
+        "96.53%": true,
+        "SUM(qualified_count)": true,
+        "Asia/Shanghai": true
+      },
+      "result_count": 5,
+      "evidence_types": [
+        null,
+        null,
+        null,
+        null,
+        "adjacent_source_context"
+      ]
+    },
+    {
+      "name": "formula",
+      "query": "加权合格率",
+      "found": {
+        "SUM(qualified_count) / SUM(inspected_count)": true
+      },
+      "result_count": 5,
+      "evidence_types": [
+        null,
+        null,
+        null,
+        "adjacent_source_context",
+        "adjacent_source_context"
+      ]
+    },
+    {
+      "name": "table",
+      "query": "QA-SYN-1103",
+      "found": {
+        "QA-SYN-1101": true,
+        "QA-SYN-1102": true,
+        "QA-SYN-1103": true,
+        "QA-SYN-1104": true
+      },
+      "result_count": 4,
+      "evidence_types": [
+        null,
+        null,
+        null,
+        "adjacent_source_context"
+      ]
+    }
+  ],
+  "graph": {
+    "nodes": 32,
+    "edges": 28,
+    "relations": [
+      "co_occurs"
+    ],
+    "semantic_quality": "not_ready"
+  },
+  "cleanup_status": 204,
+  "finished_at_utc": "2026-11-07T11:00:56.075131+00:00",
+  "status": "not_ready",
+  "summary": {
+    "passed": 17,
+    "failed": 0,
+    "not_ready": 1,
+    "release_ready": false
+  }
+}

@@ -25,8 +25,26 @@ from .security import AppError, safe_name
 MAX_PAGES = 200
 MAX_TEXT = 2_000_000
 MAX_CHUNKS = 5000
+MAX_IMAGE_REGIONS = 16
+MAX_IMAGE_REGION_ROWS = 4
+MAX_IMAGE_REGION_COLUMNS = 4
+IMAGE_REGION_THUMBNAIL = (320, 240)
+# Search responses can contain multiple hits from the same image. Keep media
+# evidence bounded while the client still has a useful visual preview.
+MAX_SEARCH_MEDIA_REGIONS = 4
 MODEL = "BAAI/bge-small-zh-v1.5"
 GRAPH_STOPWORDS = {"设备", "系统", "数据", "文件", "内容", "说明", "检查", "需要", "可以", "以及", "进行", "其中", "这个", "当前"}
+# These patterns intentionally stay deterministic and explainable.  They are
+# useful for graph navigation and entity-focused acceptance fixtures, but are
+# not a substitute for a trained named-entity or relation extraction model.
+GRAPH_ENTITY_PATTERNS = (
+    ("standard", re.compile(r"(?i)\b(?:GB(?:/T)?|ISO|IEC|ASTM|NIST|OSHA|CFR|SP|IR)\s*[-/]?\s*\d{2,5}(?:[-/]\d+)*(?:\s+Rev\.?\s*\d+)?")),
+    ("metric", re.compile(r"(?i)(?:合格率|良率|压力|温度|扭矩|厚度|流量|转速|yield_rate)\s*(?:[:=：为是]\s*)[-+]?\d+(?:\.\d+)?\s*(?:%|bar|kPa|MPa|℃|°C|mm|cm|Nm|rpm|件|小时|天)?")),
+    ("equipment", re.compile(r"(?i)(?:\b[A-Z]{1,5}[-_]?\d{1,5}\b|[\u3400-\u9fff]{1,12}(?:泵|阀|炉|机|线|站|罐|管|压机|机器人))")),
+    ("material", re.compile(r"(?:不锈钢|碳钢|铝合金|聚乙烯|聚氯乙烯|铜合金|钛合金|钢材|铝材)")),
+    ("process", re.compile(r"(?:焊接|铸造|锻造|车削|铣削|磨削|热处理|喷涂|装配|校准|机加工|检验)")),
+    ("organization", re.compile(r"(?i)\b(?:NIST|OSHA|Better\s+AI|华微世纪|华为)\b")),
+)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS knowledge_bases(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,
  owner_id TEXT NOT NULL,scope TEXT NOT NULL,enabled INTEGER NOT NULL,default_for_new_assistants INTEGER NOT NULL DEFAULT 0,
@@ -54,6 +72,52 @@ CREATE TABLE IF NOT EXISTS knowledge_graph_edges(id TEXT PRIMARY KEY,kb_id TEXT 
  created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS knowledge_graph_nodes_kb ON knowledge_graph_nodes(kb_id,document_id,version);
 CREATE INDEX IF NOT EXISTS knowledge_graph_edges_kb ON knowledge_graph_edges(kb_id,document_id,version);
+CREATE TABLE IF NOT EXISTS knowledge_image_assets(
+ document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
+ version INTEGER NOT NULL,
+ mime_type TEXT NOT NULL,
+ width INTEGER NOT NULL,
+ height INTEGER NOT NULL,
+ thumbnail_path TEXT,
+ thumbnail_width INTEGER NOT NULL DEFAULT 0,
+ thumbnail_height INTEGER NOT NULL DEFAULT 0,
+ bytes INTEGER NOT NULL DEFAULT 0,
+ metadata_json TEXT NOT NULL DEFAULT '{}',
+ ocr_status TEXT NOT NULL DEFAULT 'pending',
+ visual_index_status TEXT NOT NULL DEFAULT 'needs_model',
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(document_id,version));
+CREATE INDEX IF NOT EXISTS knowledge_image_assets_document ON knowledge_image_assets(document_id,version);
+CREATE TABLE IF NOT EXISTS knowledge_page_previews(
+ document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
+ version INTEGER NOT NULL,
+ page INTEGER NOT NULL,
+ thumbnail_path TEXT NOT NULL,
+ width INTEGER NOT NULL,
+ height INTEGER NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(document_id,version,page));
+CREATE INDEX IF NOT EXISTS knowledge_page_previews_document ON knowledge_page_previews(document_id,version,page);
+CREATE TABLE IF NOT EXISTS knowledge_image_regions(
+ id TEXT PRIMARY KEY,
+ document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
+ version INTEGER NOT NULL,
+ grid_row INTEGER NOT NULL,
+ grid_col INTEGER NOT NULL,
+ grid_rows INTEGER NOT NULL,
+ grid_cols INTEGER NOT NULL,
+ x INTEGER NOT NULL,
+ y INTEGER NOT NULL,
+ width INTEGER NOT NULL,
+ height INTEGER NOT NULL,
+ thumbnail_path TEXT NOT NULL,
+ thumbnail_width INTEGER NOT NULL,
+ thumbnail_height INTEGER NOT NULL,
+ visual_index_status TEXT NOT NULL DEFAULT 'needs_model',
+ entity_index_status TEXT NOT NULL DEFAULT 'needs_model',
+ created_at TEXT NOT NULL,
+ UNIQUE(document_id,version,grid_row,grid_col));
+CREATE INDEX IF NOT EXISTS knowledge_image_regions_document ON knowledge_image_regions(document_id,version,grid_row,grid_col);
 """
 
 
@@ -79,6 +143,11 @@ class SearchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=6, ge=1, le=20)
+    # Human-facing retrieval mode.  ``hybrid`` is the safe default used by
+    # assistant runs; users can explicitly compare lexical BM25 and local
+    # vector retrieval without changing the indexed data.
+    mode: Literal["hybrid", "bm25", "vector"] = "hybrid"
+    context_chars: int = Field(default=12000, ge=0, le=24000)
 
 
 def terms(text):
@@ -363,8 +432,10 @@ class KnowledgeService:
                 "index_status": {item["status"]: item["n"] for item in statuses}, "retrieval": self.retrieval_info()}
 
     def retrieval_info(self):
-        return {"mode": "hybrid", "lexical": "BM25", "vector_model": self.embeddings.name,
-                "semantic": self.embeddings.name != "local-lexical-v1", "execution": "server-local"}
+        return {"mode": "hybrid", "available_modes": ["hybrid", "bm25", "vector"],
+                "lexical": "BM25", "vector_model": self.embeddings.name,
+                "semantic": self.embeddings.name != "local-lexical-v1", "execution": "server-local",
+                "visual_embedding": {"status": "needs_model", "model": None, "scope": "page-or-region", "local_only": True}}
 
     def list(self, user):
         return [self.view(row, user) for row in self.db.all("SELECT * FROM knowledge_bases WHERE deleted=0 ORDER BY updated_at DESC") if self.service.resource_access(row, user)]
@@ -407,8 +478,26 @@ class KnowledgeService:
         return {**document, **row}
 
     def document_view(self, row):
-        return {key: row[key] for key in ("id", "kb_id", "name", "mime_type", "version", "sha256", "size", "status", "error", "page_count", "chunk_count", "embedding_model", "created_at")} | {
+        result = {key: row[key] for key in ("id", "kb_id", "name", "mime_type", "version", "sha256", "size", "status", "error", "page_count", "chunk_count", "embedding_model", "created_at")} | {
             "extraction": json.loads(row["extraction"]), "content_url": f"/api/v1/knowledge-documents/{row['id']}/content?version={row['version']}"}
+        asset = self.db.one("SELECT * FROM knowledge_image_assets WHERE document_id=? AND version=?", (row["id"], row["version"]))
+        if asset:
+            region_count = self.db.one("SELECT COUNT(*) AS n FROM knowledge_image_regions WHERE document_id=? AND version=?", (row["id"], row["version"]))["n"]
+            result["image"] = {
+                "width": asset["width"], "height": asset["height"], "bytes": asset["bytes"],
+                "thumbnail_width": asset["thumbnail_width"], "thumbnail_height": asset["thumbnail_height"],
+                "thumbnail_url": f"/api/v1/knowledge-documents/{row['id']}/thumbnail?version={row['version']}",
+                "region_count": region_count,
+                "regions_url": f"/api/v1/knowledge-documents/{row['id']}/regions?version={row['version']}",
+                "metadata": json.loads(asset["metadata_json"]),
+                "ocr_status": asset["ocr_status"],
+                "visual_index_status": asset["visual_index_status"],
+                "evidence_boundary": "仅登记尺寸、缩略图、网格区域和本地 OCR 状态；未启用视觉模型，不将像素内容冒充实体或语义检索。",
+            }
+        previews = self.db.all("SELECT page,width,height FROM knowledge_page_previews WHERE document_id=? AND version=? ORDER BY page LIMIT 12", (row["id"], row["version"]))
+        if previews:
+            result["page_previews"] = [{"page": item["page"], "width": item["width"], "height": item["height"], "thumbnail_url": f"/api/v1/knowledge-documents/{row['id']}/thumbnail?version={row['version']}&page={item['page']}"} for item in previews]
+        return result
 
     def documents(self, kb_id, user):
         self.require(kb_id, user)
@@ -448,9 +537,176 @@ class KnowledgeService:
                 else:
                     self.db.execute("INSERT INTO knowledge_documents VALUES(?,?,?,?,0,?)", (document_id, kb_id, name, version, stamp))
                 self.db.execute("INSERT INTO knowledge_versions(document_id,version,mime_type,sha256,size,path,status,created_at) VALUES(?,?,?,?,?,?,'processing',?)", (document_id, version, mime, digest, len(data), str(path), stamp))
+            if mime.startswith("image/"):
+                self._prepare_image_asset(document_id, version, path, mime, len(data))
+            elif mime == "application/pdf":
+                self._prepare_pdf_previews(document_id, version, path)
             self._index(document_id, version, path, name)
             self.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), kb_id))
             return self.document_view(self.version(document_id, version, user))
+
+    def _prepare_image_asset(self, document_id, version, path, mime_type, size):
+        """Create a bounded local thumbnail and metadata without a vision model.
+
+        This deliberately does not infer labels, objects, or claims from pixels.
+        Such fields remain unavailable until an approved local visual model exists.
+        """
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(path) as source:
+                source.load()
+                image = ImageOps.exif_transpose(source).convert("RGB")
+                width, height = image.size
+                if width < 1 or height < 1 or width > 20000 or height > 20000:
+                    raise ValueError("图片尺寸超出限制")
+                thumbnail = image.copy()
+                # Pillow 9 exposes the resampling constants at Image.LANCZOS;
+                # newer releases move them under Image.Resampling.
+                lanczos = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+                thumbnail.thumbnail((640, 480), lanczos)
+                thumbnail_path = path.with_name(f"{path.stem}.thumb.jpg")
+                thumbnail.save(thumbnail_path, format="JPEG", quality=78, optimize=True)
+                thumbnail_path.chmod(0o400)
+                metadata = {"format": source.format or mime_type.split("/", 1)[-1], "mode": source.mode, "orientation_normalized": True}
+                self.db.execute(
+                    "INSERT OR REPLACE INTO knowledge_image_assets(document_id,version,mime_type,width,height,thumbnail_path,thumbnail_width,thumbnail_height,bytes,metadata_json,ocr_status,visual_index_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'needs_model',?)",
+                    (document_id, version, mime_type, width, height, str(thumbnail_path), thumbnail.width, thumbnail.height, size, dump(metadata), "pending", now()),
+                )
+                self._prepare_image_regions(document_id, version, path, image)
+        except Exception as exc:
+            # Keep the upload/version so the regular parser reports the exact
+            # OCR or invalid-image state instead of making metadata mandatory.
+            self.db.execute("DELETE FROM knowledge_image_regions WHERE document_id=? AND version=?", (document_id, version))
+            self.db.execute(
+                "INSERT OR REPLACE INTO knowledge_image_assets(document_id,version,mime_type,width,height,bytes,metadata_json,ocr_status,visual_index_status,created_at) VALUES(?,?,?,?,?,?,'{}','pending','needs_model',?)",
+                (document_id, version, mime_type, 0, 0, size, now()),
+            )
+
+    def _prepare_image_regions(self, document_id, version, path, image):
+        """Persist a bounded deterministic grid of safe preview regions.
+
+        This is layout segmentation only.  A region has coordinates and a
+        compressed thumbnail, but no inferred label, object, embedding or
+        relationship.  Those fields stay ``needs_model`` until an approved
+        visual model is configured.
+        """
+        width, height = image.size
+        columns = max(1, min(MAX_IMAGE_REGION_COLUMNS, math.ceil(width / 640)))
+        rows = max(1, min(MAX_IMAGE_REGION_ROWS, math.ceil(height / 480)))
+        while rows * columns > MAX_IMAGE_REGIONS:
+            if columns >= rows and columns > 1:
+                columns -= 1
+            elif rows > 1:
+                rows -= 1
+            else:
+                break
+        self.db.execute("DELETE FROM knowledge_image_regions WHERE document_id=? AND version=?", (document_id, version))
+        from PIL import Image
+        lanczos = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+        for grid_row in range(rows):
+            y0, y1 = (height * grid_row) // rows, (height * (grid_row + 1)) // rows
+            for grid_col in range(columns):
+                x0, x1 = (width * grid_col) // columns, (width * (grid_col + 1)) // columns
+                region_width, region_height = x1 - x0, y1 - y0
+                if region_width < 1 or region_height < 1:
+                    continue
+                region = image.crop((x0, y0, x1, y1))
+                region.thumbnail(IMAGE_REGION_THUMBNAIL, lanczos)
+                target = path.with_name(f"{path.stem}.r{grid_row + 1}c{grid_col + 1}.thumb.jpg")
+                region.save(target, format="JPEG", quality=76, optimize=True)
+                target.chmod(0o400)
+                region_id = hashlib.sha256(f"{document_id}:{version}:{grid_row}:{grid_col}".encode()).hexdigest()[:32]
+                self.db.execute(
+                    "INSERT INTO knowledge_image_regions(id,document_id,version,grid_row,grid_col,grid_rows,grid_cols,x,y,width,height,thumbnail_path,thumbnail_width,thumbnail_height,visual_index_status,entity_index_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (region_id, document_id, version, grid_row, grid_col, rows, columns, x0, y0, region_width, region_height,
+                     str(target), region.width, region.height, "needs_model", "needs_model", now()),
+                )
+
+    def image_asset(self, document_id, version, user):
+        row = self.version(document_id, version, user)
+        asset = self.db.one("SELECT * FROM knowledge_image_assets WHERE document_id=? AND version=?", (document_id, row["version"]))
+        if not asset:
+            raise AppError(404, "NOT_FOUND", "此版本不是图片文件或尚未生成图片索引")
+        return row, asset
+
+    def _image_region_view(self, row):
+        """Expose only bounded, source-linked region metadata to clients."""
+        return {
+            "id": row["id"], "document_id": row["document_id"], "version": row["version"],
+            "row": row["grid_row"], "column": row["grid_col"], "rows": row["grid_rows"], "columns": row["grid_cols"],
+            "x": row["x"], "y": row["y"], "width": row["width"], "height": row["height"],
+            "thumbnail_width": row["thumbnail_width"], "thumbnail_height": row["thumbnail_height"],
+            "thumbnail_url": f"/api/v1/knowledge-documents/{row['document_id']}/regions/{row['id']}/thumbnail?version={row['version']}",
+            "visual_index_status": row["visual_index_status"],
+            "entity_index_status": row["entity_index_status"],
+            "evidence_boundary": "仅按原图坐标生成本地缩略图；未启用视觉模型，不推断对象、实体、文字或关系。",
+        }
+
+    def image_regions(self, document_id, version, user, limit=MAX_IMAGE_REGIONS):
+        """Return current or historical regions only after version ACL checks."""
+        row, asset = self.image_asset(document_id, version, user)
+        limit = max(1, min(MAX_IMAGE_REGIONS, int(limit)))
+        regions = self.db.all(
+            "SELECT * FROM knowledge_image_regions WHERE document_id=? AND version=? ORDER BY grid_row,grid_col LIMIT ?",
+            (document_id, row["version"], limit),
+        )
+        return {
+            "document_id": document_id, "version": row["version"], "name": row["name"],
+            "width": asset["width"], "height": asset["height"], "region_count": len(regions),
+            "grid": {
+                "rows": regions[0]["grid_rows"] if regions else 0,
+                "columns": regions[0]["grid_cols"] if regions else 0,
+                "max_regions": MAX_IMAGE_REGIONS,
+            },
+            "regions": [self._image_region_view(item) for item in regions],
+            "visual_embedding": "needs_model",
+            "entity_extraction": "needs_model",
+            "evidence_boundary": "区域来自有界网格裁剪，坐标和缩略图绑定到文件版本并经过访问控制；没有视觉模型时不产生像素实体或语义结论。",
+        }
+
+    def image_region_thumbnail(self, document_id, region_id, version, user):
+        row, _ = self.image_asset(document_id, version, user)
+        region = self.db.one(
+            "SELECT * FROM knowledge_image_regions WHERE id=? AND document_id=? AND version=?",
+            (region_id, document_id, row["version"]),
+        )
+        if not region:
+            raise AppError(404, "NOT_FOUND", "图片区域不存在或不属于请求的文件版本")
+        path = Path(region["thumbnail_path"])
+        if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()) or not path.is_file():
+            raise AppError(404, "NOT_FOUND", "图片区域缩略图不可用")
+        return path, row
+
+    def _prepare_pdf_previews(self, document_id, version, path):
+        """Render a bounded set of page thumbnails locally for visual review.
+
+        This is a preview artifact only. It does not create visual embeddings or
+        infer figures/entities from pixels.
+        """
+        try:
+            import pypdfium2 as pdfium
+            from PIL import Image
+            with pdfium.PdfDocument(path) as document:
+                for index in range(min(len(document), 12)):
+                    page = document[index]
+                    try:
+                        width, height = page.get_width(), page.get_height()
+                        scale = min(1.4, 640 / max(width, 1), 480 / max(height, 1))
+                        bitmap = page.render(scale=max(scale, 0.1))
+                        try:
+                            image = bitmap.to_pil().convert("RGB")
+                        finally:
+                            bitmap.close()
+                        target = path.with_name(f"{path.stem}.p{index + 1}.thumb.jpg")
+                        image.save(target, format="JPEG", quality=76, optimize=True)
+                        target.chmod(0o400)
+                        self.db.execute("INSERT OR REPLACE INTO knowledge_page_previews(document_id,version,page,thumbnail_path,width,height,created_at) VALUES(?,?,?,?,?,?,?)", (document_id, version, index + 1, str(target), image.width, image.height, now()))
+                    finally:
+                        page.close()
+        except Exception:
+            # PDF parsing/indexing reports its own status. Preview generation is
+            # optional and must not make an otherwise searchable PDF fail.
+            return
 
     def _index(self, document_id, version, path, name):
         try:
@@ -468,12 +724,23 @@ class KnowledgeService:
                     self.db.execute("INSERT INTO knowledge_chunks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (chunk["id"], document_id, version, chunk["page"], chunk["section"], chunk["paragraph"], chunk["start"], chunk["end"], chunk["text"], dump(terms(chunk["text"])), dump(vector), self.embeddings.name))
                 self._build_graph(document_id, version, chunks)
                 self.db.execute("UPDATE knowledge_versions SET status='ready',error=NULL,page_count=?,chunk_count=?,extraction=?,embedding_model=? WHERE document_id=? AND version=?", (len(pages), len(chunks), dump(sorted({page["extraction"] for page in pages})), self.embeddings.name, document_id, version))
+                if Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+                    self.db.execute("UPDATE knowledge_image_assets SET ocr_status='ready' WHERE document_id=? AND version=?", (document_id, version))
         except Exception as exc:
             message = exc.message if isinstance(exc, AppError) else "文档解析或索引失败，请检查格式后重试"
             self.db.execute("UPDATE knowledge_versions SET status=?,error=? WHERE document_id=? AND version=?", ("needs_ocr" if isinstance(exc, AppError) and exc.code == "OCR_REQUIRED" else "failed", message, document_id, version))
+            if Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+                self.db.execute("UPDATE knowledge_image_assets SET ocr_status=? WHERE document_id=? AND version=?", ("needs_ocr" if isinstance(exc, AppError) and exc.code == "OCR_REQUIRED" else "failed", document_id, version))
 
     def _build_graph(self, document_id, version, chunks):
-        """Build a deterministic, source-linked co-occurrence graph for a version."""
+        """Build a deterministic, source-linked graph with explainable entities.
+
+        Recognized entities carry a coarse ``kind`` (standard, equipment,
+        metric, material, process or organization) and a precise text offset.
+        Remaining terms are retained as ``term`` nodes for backwards
+        compatibility.  Edges intentionally remain co-occurrence edges until
+        an approved relation-extraction model is available.
+        """
         document = self.db.one("SELECT kb_id FROM knowledge_documents WHERE id=?", (document_id,))
         if not document:
             return
@@ -484,22 +751,48 @@ class KnowledgeService:
         nodes = {}
         edges = {}
         for chunk in chunks:
-            labels = []
-            for value in re.findall(r"[\u3400-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_-]{2,30}", chunk["text"]):
-                normalized = value.casefold().strip(" _-")
-                if len(normalized) < 2 or normalized in GRAPH_STOPWORDS or normalized in labels:
-                    continue
-                labels.append(normalized)
-                if len(labels) >= 8:
+            # Keep the first occurrence for each normalized entity in a chunk;
+            # its offset is what makes graph evidence auditable in the source.
+            entities = []
+            seen = set()
+            for kind, pattern in GRAPH_ENTITY_PATTERNS:
+                for match in pattern.finditer(chunk["text"]):
+                    value = match.group(0).strip(" _-")
+                    normalized = value.casefold().strip(" _-")
+                    if len(normalized) < 2 or normalized in GRAPH_STOPWORDS or normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    entities.append({"label": normalized, "kind": kind, "offset": match.start()})
+                    if len(entities) >= 8:
+                        break
+                if len(entities) >= 8:
                     break
-            if len(labels) < 1:
+            # A small lexical fallback keeps ordinary Chinese headings and
+            # identifiers discoverable when no typed pattern matched.
+            if len(entities) < 8:
+                for match in re.finditer(r"[\u3400-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_-]{2,30}", chunk["text"]):
+                    value = match.group(0)
+                    normalized = value.casefold().strip(" _-")
+                    if len(normalized) < 2 or normalized in GRAPH_STOPWORDS or normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    entities.append({"label": normalized, "kind": "term" if normalized.isascii() else "entity", "offset": match.start()})
+                    if len(entities) >= 8:
+                        break
+            if not entities:
                 continue
             source = (chunk["page"], chunk["paragraph"], chunk["start"], chunk["end"])
             node_ids = []
-            for normalized in labels:
+            for entity in entities:
+                normalized = entity["label"]
                 node_id = hashlib.sha256(f"{kb_id}:{document_id}:{version}:{normalized}".encode()).hexdigest()[:32]
                 node_ids.append(node_id)
-                nodes.setdefault(node_id, {"id": node_id, "label": normalized, "normalized": normalized, "kind": "term" if normalized.isascii() else "entity", "source": source})
+                # Point to the matched span while retaining the chunk bounds
+                # in the surrounding evidence record.  Offsets are relative
+                # to the original extracted page text.
+                start = chunk["start"] + entity["offset"]
+                end = start + len(normalized)
+                nodes.setdefault(node_id, {"id": node_id, "label": normalized, "normalized": normalized, "kind": entity["kind"], "source": (chunk["page"], chunk["paragraph"], start, end)})
             for left, right in zip(node_ids, node_ids[1:]):
                 source_id, target_id = sorted((left, right))
                 edge_id = hashlib.sha256(f"{document_id}:{version}:{source_id}:{target_id}:{chunk['id']}".encode()).hexdigest()[:32]
@@ -537,9 +830,35 @@ class KnowledgeService:
                 ORDER BY e.id LIMIT ?""", [*edge_values, limit * 3])
         def source(row):
             return {"document_id": row["document_id"], "version": row["version"], "page": row["source_page"], "paragraph": row["source_paragraph"], "start": row["source_start"], "end": row["source_end"]}
+        image_assets = self.db.all("""SELECT a.document_id,a.version,a.width,a.height,a.thumbnail_width,a.thumbnail_height,
+            a.ocr_status,a.visual_index_status,d.name FROM knowledge_image_assets a
+            JOIN knowledge_documents d ON d.id=a.document_id AND d.current_version=a.version AND d.deleted=0
+            JOIN knowledge_versions v ON v.document_id=a.document_id AND v.version=a.version
+            WHERE d.kb_id=? ORDER BY d.name LIMIT 64""", (kb_id,))
+        images = []
+        for item in image_assets:
+            region_rows = self.db.all(
+                "SELECT * FROM knowledge_image_regions WHERE document_id=? AND version=? ORDER BY grid_row,grid_col LIMIT ?",
+                (item["document_id"], item["version"], MAX_IMAGE_REGIONS),
+            )
+            images.append({
+                "document_id": item["document_id"], "version": item["version"], "name": item["name"],
+                "width": item["width"], "height": item["height"], "thumbnail_width": item["thumbnail_width"],
+                "thumbnail_height": item["thumbnail_height"], "ocr_status": item["ocr_status"],
+                "visual_index_status": item["visual_index_status"], "region_count": len(region_rows),
+                "regions_url": f"/api/v1/knowledge-documents/{item['document_id']}/regions?version={item['version']}",
+                "regions": [self._image_region_view(region) for region in region_rows],
+            })
         return {"nodes": [{"id": row["id"], "label": row["label"], "kind": row["kind"], "source": source(row)} for row in nodes],
                 "edges": [{"id": row["id"], "source": row["source_node_id"], "target": row["target_node_id"], "relation": row["relation"], "provenance": source(row)} for row in edges],
-                "versioned": True, "source": "local-extraction", "query": query or ""}
+                "versioned": True, "source": "local-extraction", "query": query or "",
+                "multimodal": {
+                    "images": images,
+                    "visual_embedding": "needs_model",
+                    "entity_extraction": "ocr_only",
+                    "region_segmentation": "bounded_grid",
+                    "evidence_boundary": "图谱节点和边来自文本、表格或本地 OCR；图片仅提供版本绑定的网格缩略图，像素尚未经过视觉模型，不推断对象或关系。",
+                }}
 
     def reindex(self, document_id, user):
         self.document(document_id, user, edit=True)
@@ -564,23 +883,28 @@ class KnowledgeService:
                 item["page"] = None
         return result
 
-    def _search(self, kb_ids, user, query, limit, run_id=None):
+    def _search(self, kb_ids, user, query, limit, run_id=None, mode="hybrid", context_chars=12000):
+        if mode not in {"hybrid", "bm25", "vector"}:
+            raise AppError(422, "INVALID_RETRIEVAL_MODE", "不支持的检索模式")
         kb_ids = list(dict.fromkeys(kb_ids))[:100]
         for kb_id in kb_ids:
             if not self.require(kb_id, user)["enabled"]:
                 raise AppError(403, "KNOWLEDGE_DISABLED", "知识库已停用")
         if not kb_ids:
-            return {"results": [], "retrieval": self.retrieval_info()}
+            return {"results": [], "retrieval": {**self.retrieval_info(), "mode": mode}, "context": {"text": "", "characters": 0, "truncated": False}}
         placeholders = ",".join("?" for _ in kb_ids)
         version_clause = "EXISTS(SELECT 1 FROM knowledge_run_documents rd WHERE rd.run_id=? AND rd.document_id=c.document_id AND rd.version=c.version)" if run_id else "d.current_version=c.version"
         values = ([run_id] if run_id else []) + kb_ids
         rows = self.db.all(f"SELECT c.*,d.name,d.kb_id,v.sha256,v.created_at AS imported_at,k.name AS knowledge_base FROM knowledge_chunks c JOIN knowledge_documents d ON d.id=c.document_id AND {version_clause} JOIN knowledge_versions v ON v.document_id=c.document_id AND v.version=c.version JOIN knowledge_bases k ON k.id=d.kb_id WHERE d.kb_id IN ({placeholders}) AND d.deleted=0 AND v.status='ready' LIMIT 50000", values)
         if not rows:
-            return {"results": [], "retrieval": self.retrieval_info()}
+            return {"results": [], "retrieval": {**self.retrieval_info(), "mode": mode}, "context": {"text": "", "characters": 0, "truncated": False}}
         counts, query_terms = [json.loads(row["terms"]) for row in rows], terms(query)
         average = sum(sum(count.values()) for count in counts) / len(counts) or 1
         document_frequency = {token: sum(token in count for count in counts) for token in query_terms}
-        vector = self.embeddings.embed([query], query=True)[0]
+        # Pure BM25 must remain usable even when an optional local embedding
+        # model is not installed. Hybrid/vector modes are the only paths that
+        # initialize the embedding model.
+        vector = None if mode == "bm25" else self.embeddings.embed([query], query=True)[0]
         ranked = []
         for row, count in zip(rows, counts):
             length = sum(count.values()) or 1
@@ -590,28 +914,141 @@ class KnowledgeService:
                 inverse = math.log(1 + (len(rows) - document_frequency[token] + .5) / (document_frequency[token] + .5))
                 score += inverse * frequency * 2.2 / (frequency + 1.2 * (.25 + .75 * length / average))
             dense = json.loads(row["vector"])
-            cosine = sum(a * b for a, b in zip(vector, dense)) if row["embedding_model"] == self.embeddings.name else 0
+            cosine = sum(a * b for a, b in zip(vector, dense)) if vector is not None and row["embedding_model"] == self.embeddings.name else 0
             ranked.append({**row, "lexical_score": score, "vector_score": cosine})
         lexical = sorted(ranked, key=lambda row: row["lexical_score"], reverse=True)
         dense = sorted(ranked, key=lambda row: row["vector_score"], reverse=True)
         scores = Counter()
-        for order, key in ((lexical, "lexical_score"), (dense, "vector_score")):
-            for index, row in enumerate(order):
-                if row[key] > (0 if key == "lexical_score" else .1):
-                    scores[row["id"]] += 1 / (60 + index + 1)
-        result = []
-        for row in sorted(ranked, key=lambda item: scores[item["id"]], reverse=True):
+        if mode == "bm25":
+            scores.update({row["id"]: row["lexical_score"] for row in lexical if row["lexical_score"] > 0})
+        elif mode == "vector":
+            scores.update({row["id"]: row["vector_score"] for row in dense if row["vector_score"] > .1})
+        else:
+            for order, key in ((lexical, "lexical_score"), (dense, "vector_score")):
+                for index, row in enumerate(order):
+                    if row[key] > (0 if key == "lexical_score" else .1):
+                        scores[row["id"]] += 1 / (60 + index + 1)
+        ordered = sorted(ranked, key=lambda item: scores[item["id"]], reverse=True)
+        selected = []
+        selected_ids = set()
+        for row in ordered:
             if not scores[row["id"]]:
                 continue
-            result.append({key: row[key] for key in ("document_id", "version", "page", "section", "paragraph", "start", "end", "text", "name", "kb_id", "knowledge_base", "sha256", "imported_at")} | {"title": row["name"], "excerpt": row["text"], "chunk_id": row["id"], "score": round(scores[row["id"]], 6), "page": row["page"] if Path(row["name"]).suffix.lower() == ".pdf" else None})
-            if len(result) >= limit:
+            selected.append((row, False))
+            selected_ids.add(row["id"])
+            if len(selected) >= limit:
                 break
-        return {"results": result, "retrieval": self.retrieval_info()}
 
-    def search(self, kb_ids, user, query, limit=6, run_id=None):
+        # A paragraph-level chunker can separate a formula, table heading, or
+        # definition from the sentence that introduces it.  The lightweight
+        # lexical fallback then ranks the sentence but gives the adjacent
+        # formula a score of zero, even though it is part of the same source
+        # section.  Fill unused result slots with immediate source neighbors so
+        # RAG receives the bounded local context needed to verify an answer.
+        # Neighbors are explicitly marked and never treated as a semantic hit.
+        if selected and len(selected) < limit:
+            by_source = {}
+            for candidate in ranked:
+                by_source.setdefault((candidate["document_id"], candidate["version"]), []).append(candidate)
+            positions = {}
+            for group in by_source.values():
+                group.sort(key=lambda item: (item["page"] or 0, item["start"] or 0, item["id"]))
+                for position, candidate in enumerate(group):
+                    positions[candidate["id"]] = (group, position)
+            for row, _ in list(selected):
+                group, position = positions.get(row["id"], ([], -1))
+                for neighbor in group[max(0, position - 1):position + 2]:
+                    if neighbor["id"] in selected_ids:
+                        continue
+                    selected.append((neighbor, True))
+                    selected_ids.add(neighbor["id"])
+                    if len(selected) >= limit:
+                        break
+                if len(selected) >= limit:
+                    break
+
+        result = []
+        for rank, (row, adjacent) in enumerate(selected, start=1):
+            item = {key: row[key] for key in ("document_id", "version", "page", "section", "paragraph", "start", "end", "text", "name", "kb_id", "knowledge_base", "sha256", "imported_at")} | {"title": row["name"], "excerpt": row["text"], "chunk_id": row["id"], "score": round(scores[row["id"]], 6), "rank": rank, "lexical_score": round(row["lexical_score"], 6), "vector_score": round(row["vector_score"], 6), "retrieval_mode": mode, "page": row["page"] if Path(row["name"]).suffix.lower() == ".pdf" else None}
+            if adjacent:
+                item["evidence_type"] = "adjacent_source_context"
+            # Text retrieval remains the ranking source. When the source also
+            # has a local image/page preview, attach it as bounded, immutable
+            # evidence rather than pretending pixels were semantically indexed.
+            media = self._search_media(row)
+            if media:
+                item["media"] = media
+            result.append(item)
+        # Return a bounded, copyable context preview for human inspection and
+        # downstream RAG prompts. It is assembled only from authorized hits.
+        context_parts, used = [], 0
+        for index, item in enumerate(result, start=1):
+            label = f"[{index}] {item['title']} v{item['version']}"
+            if item.get("page"):
+                label += f" 第{item['page']}页"
+            text = f"{label}\n{item['text']}"
+            if context_chars <= 0:
+                break
+            separator = "\n\n" if context_parts else ""
+            remaining = context_chars - used - len(separator)
+            if remaining <= 0:
+                break
+            if len(text) > remaining:
+                text = text[:remaining]
+            context_parts.append(text)
+            used += len(separator) + len(text)
+            if used >= context_chars:
+                break
+        context_text = "\n\n".join(context_parts)
+        return {"results": result, "retrieval": {**self.retrieval_info(), "mode": mode}, "context": {"text": context_text, "characters": len(context_text), "truncated": bool(result and len(context_text) >= context_chars and context_chars > 0)}}
+
+    def _search_media(self, row):
+        """Return source-bound visual evidence for a retrieved text chunk.
+
+        This deliberately exposes only thumbnails, coordinates, and model
+        readiness. No labels or relationships are inferred without an approved
+        visual model.
+        """
+        suffix = Path(row["name"]).suffix.lower()
+        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+            asset = self.db.one("SELECT * FROM knowledge_image_assets WHERE document_id=? AND version=?", (row["document_id"], row["version"]))
+            if not asset:
+                return None
+            regions = self.db.all(
+                "SELECT * FROM knowledge_image_regions WHERE document_id=? AND version=? ORDER BY grid_row,grid_col LIMIT ?",
+                (row["document_id"], row["version"], MAX_SEARCH_MEDIA_REGIONS),
+            )
+            return {
+                "kind": "image",
+                "document_id": row["document_id"], "version": row["version"], "sha256": row["sha256"],
+                "mime_type": asset["mime_type"], "width": asset["width"], "height": asset["height"],
+                "thumbnail_url": f"/api/v1/knowledge-documents/{row['document_id']}/thumbnail?version={row['version']}",
+                "regions": [self._image_region_view(region) for region in regions],
+                "ocr_status": asset["ocr_status"], "visual_index_status": asset["visual_index_status"],
+                "evidence_boundary": "图片预览和安全网格绑定到文件版本；未启用视觉模型，不推断像素实体或关系。",
+            }
+        if suffix == ".pdf":
+            preview = self.db.one(
+                "SELECT * FROM knowledge_page_previews WHERE document_id=? AND version=? AND page=?",
+                (row["document_id"], row["version"], row["page"]),
+            ) if row["page"] else None
+            return {
+                "kind": "page_preview",
+                "document_id": row["document_id"], "version": row["version"], "sha256": row["sha256"],
+                "page": row["page"],
+                "thumbnail_url": f"/api/v1/knowledge-documents/{row['document_id']}/thumbnail?version={row['version']}&page={row['page']}" if preview else None,
+                "width": preview["width"] if preview else None, "height": preview["height"] if preview else None,
+                "visual_index_status": "needs_model",
+                "evidence_boundary": "页面预览绑定到文件版本；未启用视觉模型，不推断像素实体或关系。",
+            }
+        return None
+
+    def search(self, kb_ids, user, query, limit=6, run_id=None, mode="hybrid", context_chars=12000):
         if not isinstance(query, str) or not query.strip() or len(query) > 2000:
             raise AppError(422, "INVALID_QUERY", "请输入有效的知识检索问题")
-        return self._search(kb_ids, user, query, max(1, min(int(limit), 20)), run_id)
+        if mode not in {"hybrid", "bm25", "vector"}:
+            raise AppError(422, "INVALID_RETRIEVAL_MODE", "不支持的检索模式")
+        return self._search(kb_ids, user, query, max(1, min(int(limit), 20)), run_id, mode, max(0, min(int(context_chars), 24000)))
 
     def snapshot_for_run(self, run_id, assistant, user):
         """Called inside prepare_run's transaction; no nested transaction here."""
@@ -651,7 +1088,7 @@ class KnowledgeService:
     async def search_for_run(self, user, assistant, run_id, query, limit=6):
         kb_ids = self._assistant_ids(user, assistant, run_id)
         self.snapshot_for_run(run_id, assistant, user)
-        result = await asyncio.to_thread(self.search, kb_ids, user, query, limit, run_id)
+        result = await asyncio.to_thread(self.search, kb_ids, user, query, limit, mode="hybrid", run_id=run_id)
         result["results"] = [self._register_chunk(run_id, item) for item in result["results"]]
         return result
 
@@ -737,10 +1174,50 @@ def create_knowledge_router(svc, authenticated):
         row = service.knowledge.version(document_id, version, user)
         path = service.knowledge.content_path(row)
         return FileResponse(path, media_type=row["mime_type"], filename=row["name"], content_disposition_type="inline" if row["mime_type"] == "application/pdf" else "attachment", headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"})
+    @router.get("/knowledge-documents/{document_id}/image")
+    def image_metadata(document_id: str, version: int | None = Query(default=None, ge=1), user=Depends(authenticated), service=Depends(svc)):
+        row, asset = service.knowledge.image_asset(document_id, version, user)
+        regions = service.knowledge.image_regions(document_id, row["version"], user)
+        return {
+            "document_id": document_id, "version": row["version"], "name": row["name"],
+            "mime_type": asset["mime_type"], "width": asset["width"], "height": asset["height"],
+            "bytes": asset["bytes"], "thumbnail_width": asset["thumbnail_width"],
+            "thumbnail_height": asset["thumbnail_height"],
+            "thumbnail_url": f"/api/v1/knowledge-documents/{document_id}/thumbnail?version={row['version']}",
+            "region_count": regions["region_count"], "regions_url": f"/api/v1/knowledge-documents/{document_id}/regions?version={row['version']}",
+            "grid": regions["grid"], "regions": regions["regions"],
+            "metadata": json.loads(asset["metadata_json"]), "ocr_status": asset["ocr_status"],
+            "visual_index_status": asset["visual_index_status"],
+            "entity_index_status": "needs_model",
+            "evidence_boundary": regions["evidence_boundary"],
+        }
+    @router.get("/knowledge-documents/{document_id}/regions")
+    def image_regions(document_id: str, version: int | None = Query(default=None, ge=1), limit: int = Query(default=MAX_IMAGE_REGIONS, ge=1, le=MAX_IMAGE_REGIONS), user=Depends(authenticated), service=Depends(svc)):
+        return service.knowledge.image_regions(document_id, version, user, limit)
+    @router.get("/knowledge-documents/{document_id}/thumbnail")
+    def thumbnail(document_id: str, version: int | None = Query(default=None, ge=1), page: int | None = Query(default=None, ge=1, le=200), user=Depends(authenticated), service=Depends(svc)):
+        row = service.knowledge.version(document_id, version, user)
+        thumbnail_path = None
+        if page is not None:
+            preview = service.db.one("SELECT thumbnail_path FROM knowledge_page_previews WHERE document_id=? AND version=? AND page=?", (document_id, row["version"], page))
+            thumbnail_path = preview["thumbnail_path"] if preview else None
+        else:
+            _, asset = service.knowledge.image_asset(document_id, version, user)
+            thumbnail_path = asset.get("thumbnail_path")
+        if not thumbnail_path:
+            raise AppError(404, "NOT_FOUND", "此版本尚未生成本地缩略图")
+        path = Path(thumbnail_path)
+        if path.is_symlink() or not path.resolve().is_relative_to(service.knowledge.root.resolve()) or not path.is_file():
+            raise AppError(404, "NOT_FOUND", "图片缩略图不可用")
+        return FileResponse(path, media_type="image/jpeg", filename=f"{Path(row['name']).stem}.thumb.jpg", headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"})
+    @router.get("/knowledge-documents/{document_id}/regions/{region_id}/thumbnail")
+    def image_region_thumbnail(document_id: str, region_id: str, version: int | None = Query(default=None, ge=1), user=Depends(authenticated), service=Depends(svc)):
+        path, row = service.knowledge.image_region_thumbnail(document_id, region_id, version, user)
+        return FileResponse(path, media_type="image/jpeg", filename=f"{Path(row['name']).stem}.{region_id}.thumb.jpg", headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"})
     @router.get("/knowledge-documents/{document_id}/chunks")
     def chunks(document_id: str, version: int | None = Query(default=None, ge=1), user=Depends(authenticated), service=Depends(svc)):
         return service.knowledge.chunks(document_id, user, version)
     @router.post("/knowledge-bases/{kb_id}/search")
     async def search(kb_id: str, data: SearchInput, user=Depends(authenticated), service=Depends(svc)):
-        return await asyncio.to_thread(service.knowledge.search, [kb_id], user, data.query, data.limit)
+        return await asyncio.to_thread(service.knowledge.search, [kb_id], user, data.query, data.limit, mode=data.mode, context_chars=data.context_chars)
     return router
