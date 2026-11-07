@@ -14,7 +14,7 @@ import {
 } from '@flowgram.ai/free-layout-editor';
 import '@flowgram.ai/free-layout-editor/index.css';
 import { Redo2, Undo2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
-import type { WorkflowGraph, WorkflowNodeType } from './types';
+import type { ModelOption, WorkflowGraph, WorkflowNodeType } from './types';
 import { flowJSONToWorkflowGraph, workflowGraphHasCycle, workflowGraphToFlowJSON } from './workflowFlowgram';
 
 const NODE_TYPES: WorkflowNodeType[] = [
@@ -44,7 +44,7 @@ const NODE_REGISTRIES: WorkflowNodeRegistry[] = NODE_TYPES.map(type => ({
   },
 }));
 
-function DefaultNodeForm({ editable }: { editable: boolean }) {
+function DefaultNodeForm({ editable, models, defaultModelId }: { editable: boolean; models: ModelOption[]; defaultModelId?: string | null }) {
   return (
     <div className="zhixing-flow-node-form">
       <Field<string> name="title">
@@ -65,7 +65,9 @@ function DefaultNodeForm({ editable }: { editable: boolean }) {
         {({ field }) => {
           const config = field.value || {};
           const mode = config.mode === 'model' ? '模型执行' : '合成执行';
-          const model = typeof config.model_id === 'string' && config.model_id ? ` · ${config.model_id}` : '';
+          const selectedModelId = typeof config.model_id === 'string' && config.model_id ? config.model_id : config.mode === 'model' ? defaultModelId : undefined;
+          const selectedModel = selectedModelId ? models.find(item => item.id === selectedModelId) : undefined;
+          const model = selectedModel ? ` · ${selectedModel.label}` : typeof config.model_id === 'string' && config.model_id ? ` · ${config.model_id}` : '';
           return <span className={`zhixing-flow-node-mode ${config.mode === 'model' ? 'zhixing-flow-node-model' : ''}`}>{mode}{model} · 可审计</span>;
         }}
       </Field>
@@ -76,10 +78,14 @@ function DefaultNodeForm({ editable }: { editable: boolean }) {
 function FlowNode({
   props,
   editable,
+  models,
+  defaultModelId,
   onSelectNode,
 }: {
   props: WorkflowNodeProps;
   editable: boolean;
+  models: ModelOption[];
+  defaultModelId?: string | null;
   onSelectNode: (nodeId: string) => void;
 }) {
   const { node, form, selected, activated } = useNodeRender();
@@ -101,7 +107,7 @@ function FlowNode({
         <span>{NODE_LABELS[type] || '业务节点'}</span>
         <span className="zhixing-flow-node-number">{String(node.id).slice(0, 6)}</span>
       </div>
-      {form?.render() || <DefaultNodeForm editable={editable} />}
+      {form?.render() || <DefaultNodeForm editable={editable} models={models} defaultModelId={defaultModelId} />}
     </WorkflowNodeRenderer>
   );
 }
@@ -147,12 +153,16 @@ function FlowGramToolbar({ editable }: { editable: boolean }) {
 export default function FlowGramWorkflowCanvas({
   graph,
   editable,
+  models,
+  defaultModelId,
   resetToken,
   onChange,
   onSelectNode,
 }: {
   graph: WorkflowGraph;
   editable: boolean;
+  models: ModelOption[];
+  defaultModelId?: string | null;
   resetToken: string | number;
   onChange: (graph: WorkflowGraph) => void;
   onSelectNode: (nodeId: string) => void;
@@ -176,12 +186,12 @@ export default function FlowGramWorkflowCanvas({
           defaultPorts: [{ type: 'input' }, { type: 'output' }],
         },
         formMeta: {
-          render: () => <DefaultNodeForm editable={editable} />,
+          render: () => <DefaultNodeForm editable={editable} models={models} defaultModelId={defaultModelId} />,
         },
       }),
       materials: {
         renderDefaultNode: (props: WorkflowNodeProps) => (
-          <FlowNode props={props} editable={editable} onSelectNode={onSelectNode} />
+          <FlowNode props={props} editable={editable} models={models} defaultModelId={defaultModelId} onSelectNode={onSelectNode} />
         ),
       },
       onContentChange: ctx => {
@@ -216,7 +226,7 @@ export default function FlowGramWorkflowCanvas({
         flowing: '#6d9560',
       },
     }),
-    [editable, initialData, onChange, onSelectNode],
+    [defaultModelId, editable, initialData, models, onChange, onSelectNode],
   );
 
   return (

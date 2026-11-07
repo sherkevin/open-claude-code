@@ -160,7 +160,7 @@ def test_model_agent_node_uses_assistant_catalog_and_records_execution(monkeypat
     assistant = client.post("/api/v1/assistants", json={"name": "模型流程助手", "instructions": "遵守审核规则"}).json()
     graph = {
         "nodes": [
-            {"id": "review", "type": "agent", "label": "审核申请", "config": {"mode": "model", "model_id": "legacy-model", "role": "财务审核员", "system_prompt": "核对金额并说明依据", "prompt": "判断输入是否合规"}},
+            {"id": "review", "type": "agent", "label": "审核申请", "config": {"mode": "model", "model_id": "legacy-model", "role": "财务审核员", "system_prompt": "核对金额并说明依据", "prompt": "判断输入是否合规", "temperature": 0.7, "max_tokens": 640}},
             {"id": "approval", "type": "approval", "label": "人工确认", "config": {}},
         ],
         "edges": [{"source": "review", "target": "approval", "label": "提交人工确认"}],
@@ -178,6 +178,8 @@ def test_model_agent_node_uses_assistant_catalog_and_records_execution(monkeypat
     assert run["trace"][0]["external_call"] is True
     assert run["trace"][0]["role"] == "财务审核员"
     assert FakeClient.calls[0]["json"]["model"] == "deepseek-v4.1-flash-1017"
+    assert FakeClient.calls[0]["json"]["temperature"] == 0.7
+    assert FakeClient.calls[0]["json"]["max_tokens"] == 640
     assert FakeClient.calls[0]["json"]["system"].startswith("你是知行工作台工作流中的财务审核员")
 
 
