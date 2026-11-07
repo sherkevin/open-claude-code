@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -119,6 +119,23 @@ describe('low-code workflow canvas contracts', () => {
       { key: 'system_prompt', before: '只看合同', after: '只看合同和制度' },
     ]);
     expect(workflowConfigKeyLabel('system_prompt')).toBe('系统提示词');
+  });
+
+  it('shows structured output type, required, description, and extra-field changes', () => {
+    const historical = { id: 'review', type: 'agent' as const, label: '审核', config: { output_schema_json: serializeWorkflowOutputSchema([{ name: 'decision', type: 'text' as const, required: true, description: '旧审批结论' }], false) } };
+    const current = { id: 'review', type: 'agent' as const, label: '审核', config: { output_schema_json: serializeWorkflowOutputSchema([{ name: 'decision', type: 'boolean' as const, required: false, description: '新审批结论' }, { name: 'score', type: 'number' as const, required: true, description: '置信度' }], true) } };
+    expect(workflowOutputSchemaComparison(current, historical)?.changes).toEqual([
+      { key: 'decision', before: 'text · 必填 · 旧审批结论', after: 'boolean · 可选 · 新审批结论' },
+      { key: 'score', before: '未声明', after: 'number · 必填 · 置信度' },
+      { key: 'allow_extra', before: '不允许', after: '允许' },
+    ]);
+    expect(workflowConfigKeyLabel('allow_extra')).toBe('额外字段');
+  });
+
+  it('gives bounded recovery guidance for failed workflow nodes', () => {
+    expect(workflowErrorRecoveryHint('WORKFLOW_AGENT_OUTPUT_INVALID')).toContain('输出字段');
+    expect(workflowErrorRecoveryHint('WORKFLOW_MODEL_UNAVAILABLE')).toContain('授权');
+    expect(workflowErrorRecoveryHint('UNKNOWN_WORKFLOW_ERROR')).toContain('节点配置');
   });
 
   it('inserts a new node between the selected step and its single successor', () => {
