@@ -13,6 +13,7 @@ import math
 import re
 from collections import defaultdict, deque
 from datetime import timedelta
+from time import perf_counter
 
 import httpx
 from fastapi import APIRouter, Depends, Query
@@ -1517,6 +1518,10 @@ async def _invoke_agent_model_with_retry(service, selection: dict, system_prompt
                 await asyncio.sleep(delay)
 
 
+def _model_duration_ms(started_at: float) -> int:
+    return max(0, int(round((perf_counter() - started_at) * 1000)))
+
+
 def _ensure_workflow_runtime_schema(service) -> None:
     with service.db.lock:
         service.db.conn.executescript(_WORKFLOW_RUNTIME_SCHEMA)
@@ -1615,9 +1620,14 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
     run_id, timestamp = uid(), now()
     role, system_prompt = _agent_system_prompt(assistant, config)
     trace: list[dict] = []
+    model_duration_ms: int | None = None
     try:
         mapped_inputs = _resolve_input_bindings(config, safe_input, {})
-        text, model_attempts = await _invoke_agent_model_with_retry(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config, mapped_inputs), config)
+        model_started_at = perf_counter()
+        try:
+            text, model_attempts = await _invoke_agent_model_with_retry(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config, mapped_inputs), config)
+        finally:
+            model_duration_ms = _model_duration_ms(model_started_at)
         structured = _parse_structured_agent_output(text, _output_schema(config))
         trace.append({
             "sequence": 1,
@@ -1632,6 +1642,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "role": role,
             "model_attempts": model_attempts,
             "model_retries": max(0, model_attempts - 1),
+            "duration_ms": model_duration_ms,
             "input_bindings": _binding_trace(config),
             **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}),
             "output_preview": text[:600],
@@ -1667,6 +1678,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "model_label": selection["model_label"],
             "reasoning_level": selection["reasoning_level"],
             "role": role,
+            **({"duration_ms": model_duration_ms} if model_duration_ms is not None else {}),
             "input_bindings": _binding_trace(config),
             "error_code": error.code,
         })
@@ -1789,12 +1801,14 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
         return {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "agent_outputs": {key: value for key, value in outputs.items() if node_map.get(key, {}).get("type") == "agent"}, "agent_structured_outputs": agent_structured_outputs, "knowledge_outputs": knowledge_outputs, "condition_outputs": condition_outputs, "tool_outputs": tool_outputs, "tool_evidence": tool_evidence, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
 
     current_node = None
+    model_duration_ms: int | None = None
     try:
         for index, node_id in enumerate(order, 1):
             if resume_run and index <= start_index:
                 continue
             node = node_map[node_id]
             config = node.get("config") or {}
+            model_duration_ms = None
             if not _node_reachable(node_id, incoming, active_edges):
                 outputs[node_id] = _skipped_node_output(node)
                 for edge in outgoing.get(node_id, []):
@@ -1853,12 +1867,16 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
             current_node = node
             role, system_prompt = _agent_system_prompt(assistant, config)
             mapped_inputs = _resolve_input_bindings(config, safe_input, outputs, agent_structured_outputs)
-            text, model_attempts = await _invoke_agent_model_with_retry(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config)
+            model_started_at = perf_counter()
+            try:
+                text, model_attempts = await _invoke_agent_model_with_retry(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config)
+            finally:
+                model_duration_ms = _model_duration_ms(model_started_at)
             structured = _parse_structured_agent_output(text, _output_schema(config))
             outputs[node_id] = text
             if structured is not None:
                 agent_structured_outputs[node_id] = structured
-            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "model_attempts": model_attempts, "model_retries": max(0, model_attempts - 1), "input_bindings": _binding_trace(config), **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}), "output_preview": text[:600]})
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "model_attempts": model_attempts, "model_retries": max(0, model_attempts - 1), "duration_ms": model_duration_ms, "input_bindings": _binding_trace(config), **({"structured_output": True, "structured_fields": sorted(structured)} if structured is not None else {}), "output_preview": text[:600]})
             current_node = None
         output = run_output()
         with service.db.transaction():
@@ -1870,7 +1888,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
     except AppError as error:
         if current_node:
             if current_node["id"] in selections:
-                trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
+                trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], **({"model_label": selections[current_node["id"]]["model_label"], "reasoning_level": selections[current_node["id"]]["reasoning_level"], "duration_ms": model_duration_ms} if model_duration_ms is not None else {}), "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
             else:
                 trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": current_node["type"] == "mcp_read", "approval_required": False, "knowledge_retrieval": current_node["type"] == "knowledge_search", "tool_call": current_node["type"] == "mcp_read", "tool_name": (current_node.get("config") or {}).get("tool_name") if current_node["type"] == "mcp_read" else None, "error_code": error.code})
         output = run_output()

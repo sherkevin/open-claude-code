@@ -347,6 +347,7 @@ def test_model_agent_retries_transient_provider_failure(monkeypatch, client):
     assert len(FakeClient.calls) == 2
     assert run["trace"][0]["model_attempts"] == 2
     assert run["trace"][0]["model_retries"] == 1
+    assert isinstance(run["trace"][0]["duration_ms"], int)
 
 
 def test_workflow_rejects_invalid_agent_retry_config():
@@ -902,6 +903,7 @@ def test_model_agent_node_debug_runs_draft_and_records_audited_trace(monkeypatch
     assert run["output"]["node_output"] == "草稿节点调试结果。"
     assert run["permission_snapshot"]["debug_node_id"] == "review"
     assert run["trace"][0]["model_label"]
+    assert isinstance(run["trace"][0]["duration_ms"], int)
     assert FakeClient.calls[0]["json"]["model"] == "deepseek-v4.1-flash-1017"
     fetched = client.get(f"/api/v1/workflow-runs/{run['id']}")
     assert fetched.status_code == 200 and fetched.json()["output"]["debug"] is True
