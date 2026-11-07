@@ -71,13 +71,15 @@ _TEMPLATE_DEFINITIONS = {
         "synthetic": True,
         "graph": {
             "nodes": [
-                {"id": "form", "type": "skill", "label": "填报申请表", "config": {"mode": "synthetic", "template_field": "申请事项", "form_fields": [{"id": "purpose", "type": "text", "label": "申请事项", "required": True}, {"id": "amount", "type": "number", "label": "申请金额", "required": True}, {"id": "date", "type": "date", "label": "申请日期", "required": True}]}},
+                {"id": "start", "type": "input", "label": "开始 / 输入", "config": {"mode": "synthetic", "form_fields": [{"id": "purpose", "type": "text", "label": "申请事项", "required": True}, {"id": "amount", "type": "number", "label": "申请金额", "required": True}, {"id": "date", "type": "date", "label": "申请日期", "required": True}]}},
+                {"id": "form", "type": "skill", "label": "整理申请信息", "config": {"mode": "synthetic", "template_field": "申请事项"}},
                 {"id": "policy", "type": "knowledge_search", "label": "检索财务政策", "config": {"mode": "synthetic", "knowledge_scope": "synthetic-finance"}},
                 {"id": "amount", "type": "condition", "label": "判断金额边界", "config": {"mode": "synthetic", "amount_limit": 5000, "currency": "CNY"}},
                 {"id": "approval", "type": "approval", "label": "部门负责人审批", "config": {"mode": "synthetic", "role": "department_owner"}},
                 {"id": "export", "type": "artifact", "label": "生成申请表", "config": {"mode": "synthetic", "format": "xlsx"}},
             ],
             "edges": [
+                {"source": "start", "target": "form", "label": "提交申请"},
                 {"source": "form", "target": "policy", "label": "补充依据"},
                 {"source": "policy", "target": "amount", "label": "核对规则"},
                 {"source": "amount", "target": "approval", "label": "提交审批"},
@@ -92,13 +94,15 @@ _TEMPLATE_DEFINITIONS = {
         "synthetic": True,
         "graph": {
             "nodes": [
-                {"id": "receipt", "type": "skill", "label": "填报报销单", "config": {"mode": "synthetic", "template_field": "报销事项", "form_fields": [{"id": "reason", "type": "text", "label": "报销事由", "required": True}, {"id": "amount", "type": "number", "label": "报销金额", "required": True}, {"id": "date", "type": "date", "label": "发生日期", "required": True}]}},
+                {"id": "start", "type": "input", "label": "开始 / 输入", "config": {"mode": "synthetic", "form_fields": [{"id": "reason", "type": "text", "label": "报销事由", "required": True}, {"id": "amount", "type": "number", "label": "报销金额", "required": True}, {"id": "date", "type": "date", "label": "发生日期", "required": True}]}},
+                {"id": "receipt", "type": "skill", "label": "整理报销信息", "config": {"mode": "synthetic", "template_field": "报销事项"}},
                 {"id": "policy", "type": "knowledge_search", "label": "检索费用政策", "config": {"mode": "synthetic", "knowledge_scope": "synthetic-finance"}},
                 {"id": "compliance", "type": "condition", "label": "检查合规条件", "config": {"mode": "synthetic", "required_fields": ["金额", "事由", "日期"]}},
                 {"id": "dual", "type": "approval", "label": "双人审批", "config": {"mode": "synthetic", "required_approvals": 2}},
                 {"id": "export", "type": "artifact", "label": "生成报销台账", "config": {"mode": "synthetic", "format": "xlsx"}},
             ],
             "edges": [
+                {"source": "start", "target": "receipt", "label": "提交报销单"},
                 {"source": "receipt", "target": "policy", "label": "查找依据"},
                 {"source": "policy", "target": "compliance", "label": "核对字段"},
                 {"source": "compliance", "target": "dual", "label": "进入审批"},

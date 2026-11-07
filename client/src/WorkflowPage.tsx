@@ -102,7 +102,12 @@ export function workflowArtifactIssue(graph: WorkflowGraph): string {
 }
 
 function cloneGraph(graph: WorkflowGraph): WorkflowGraph { return { nodes: graph.nodes.map(node => ({ ...node, config: { ...node.config } })), edges: graph.edges.map(edge => ({ ...edge })) }; }
-function graphFrom(workflow: Workflow): WorkflowGraph { return cloneGraph(workflow.versions.find(version => version.version === workflow.draft_version)?.graph || DEFAULT_WORKFLOW_GRAPH); }
+function graphFrom(workflow: Workflow): WorkflowGraph {
+  const graph = cloneGraph(workflow.versions.find(version => version.version === workflow.draft_version)?.graph || DEFAULT_WORKFLOW_GRAPH);
+  const order = topologicalOrder(graph);
+  const positions = new Map(order.map((id, index) => [id, index]));
+  return { ...graph, nodes: [...graph.nodes].sort((left, right) => (positions.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (positions.get(right.id) ?? Number.MAX_SAFE_INTEGER)) };
+}
 function nodeId(type: WorkflowNodeType, nodes: WorkflowNode[]) { const stem = type.replace('_', '-'); let index = 1; while (nodes.some(node => node.id === `${stem}-${index}`)) index += 1; return `${stem}-${index}`; }
 export function duplicateWorkflowNode(node: WorkflowNode, nodes: WorkflowNode[]): WorkflowNode {
   const config = { ...node.config };
@@ -396,7 +401,7 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
       const detail = await api<Workflow>(`/workflows/${encodeURIComponent(workflowId)}`);
       setSelected(detail); setWorkflows(list.map(item => item.id === detail.id ? { ...item, ...detail } : item));
       setName(detail.name); setDescription(detail.description); replaceGraph(graphFrom(detail));
-      const nextGraph = graphFrom(detail); const first = nextGraph.nodes[0]?.id || ''; setSelectedNode(first); setEdgeSource(first); setEdgeTarget(nextGraph.nodes[1]?.id || ''); setRunInput(Object.fromEntries(workflowFormFields(nextGraph).map(field => [field.id, field.type === 'number' ? '' : '']))); setRun(null); setSelectedTraceNodeId('');
+      const nextGraph = graphFrom(detail); const first = topologicalOrder(nextGraph)[0] || nextGraph.nodes[0]?.id || ''; setSelectedNode(first); setEdgeSource(first); setEdgeTarget(nextGraph.nodes.find(node => node.id !== first)?.id || ''); setRunInput(Object.fromEntries(workflowFormFields(nextGraph).map(field => [field.id, field.type === 'number' ? '' : '']))); setRun(null); setSelectedTraceNodeId('');
       setApprovalComment('');
     } catch (cause) { setError(errorText(cause)); }
   };

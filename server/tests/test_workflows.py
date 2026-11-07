@@ -146,7 +146,8 @@ def test_synthetic_finance_templates_are_listed_and_create_versioned_workflows(c
     payload = created.json()
     assert payload["template_id"] == "finance-reimbursement-v1" and payload["synthetic_template"] is True
     graph = payload["versions"][0]["graph"]
-    assert len(graph["nodes"]) == 5
+    assert len(graph["nodes"]) == 6
+    assert any(node["type"] == "input" for node in graph["nodes"])
     assert all(node["config"].get("mode") == "synthetic" for node in graph["nodes"])
     assert client.post(f"/api/v1/workflows/{payload['id']}/publish").status_code == 200
     missing = client.post(f"/api/v1/workflows/{payload['id']}/runs", json={})
@@ -154,7 +155,7 @@ def test_synthetic_finance_templates_are_listed_and_create_versioned_workflows(c
     run = client.post(f"/api/v1/workflows/{payload['id']}/runs", json={"input": {"reason": "客户拜访", "amount": 1200, "date": "2026-11-07"}}).json()
     assert run["synthetic"] is True and run["status"] == "awaiting_approval"
     resumed = client.post(f"/api/v1/workflow-runs/{run['id']}/approvals/{run['approval']['node_id']}/decision", json={"decision": "approve"}).json()
-    assert resumed["status"] == "succeeded" and resumed["output"]["completed_nodes"] == 5
+    assert resumed["status"] == "succeeded" and resumed["output"]["completed_nodes"] == 6
     assert resumed["output"]["artifacts"][0]["format"] == "xlsx" and resumed["output"]["artifacts"][0]["written"] is False
 
 
