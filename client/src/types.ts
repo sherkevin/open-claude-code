@@ -1,5 +1,15 @@
 export interface AppConfig { brand_name: string; upload_max_bytes: number; auth_types: string[]; model_label: string; default_model_id?: string; default_reasoning_level?: string; feishu_h5?: { enabled: boolean; app_id: string; path: string } }
 export interface ModelOption { id: string; label: string; available: boolean; unavailable_reason?: string; capabilities?: string[]; reasoning_levels: Array<{ id: string; label: string }>; default_reasoning_level: string; requires_new_conversation_on_switch?: boolean }
+export interface ProviderPreflight {
+  schema_version: string;
+  router: {
+    fitness: { target_model_id?: string | null; target_available?: boolean; provider_configured?: boolean; status?: string };
+    tab: { target_model_id?: string | null; target_available?: boolean; provider_configured?: boolean; status?: string };
+  };
+  roles?: Record<string, { status?: string; provider_configured?: boolean; feature_enabled?: boolean; call_enabled?: boolean }>;
+  provider_attempted: boolean;
+  evidence_boundary?: string;
+}
 export interface ModelRouteEvidence { schema_version: string; policy_version: string; decision_mode: string; input_digest: string; candidate_model_ids: string[]; target_model_id: string; target_status: string; selected_model_id?: string; fallback_reason?: string; provider_attempted?: boolean }
 export interface ModelRecommendation { model_id: string; model_label: string; reasoning_level: string; reason: string; applied: false; router: { model_id: string; mode: string; input_chars: number; candidate_count: number; max_output_chars: number; estimated_cost_usd: number | null; target_model_id?: string; target_available?: boolean; target_status?: string; target_error?: string; provider_configured?: boolean; provider_status?: string; provider_attempted?: boolean; rejection_reason?: string; evidence?: ModelRouteEvidence } }
 export interface ModelSelection { model_id: string; reasoning_level: string }

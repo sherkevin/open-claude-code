@@ -162,6 +162,34 @@ def test_condition_node_selects_only_the_matching_branch_in_a_synthetic_run(clie
     assert run["output"]["node_outputs"]["low"].startswith('{"status":"skipped"')
 
 
+def test_synthetic_condition_can_read_an_upstream_node_output(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "输出分支助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "plan", "type": "agent", "label": "准备结果", "config": {"mode": "synthetic"}},
+            {"id": "gate", "type": "condition", "label": "检查结果", "config": {"value_source": "node.plan.output", "operator": "contains", "value": "simulated", "true_label": "通过", "false_label": "不通过"}},
+            {"id": "pass", "type": "artifact", "label": "通过产物", "config": {}},
+            {"id": "fail", "type": "artifact", "label": "不通过产物", "config": {}},
+        ],
+        "edges": [
+            {"source": "plan", "target": "gate", "label": "检查"},
+            {"source": "gate", "target": "pass", "label": "通过"},
+            {"source": "gate", "target": "fail", "label": "不通过"},
+        ],
+    }
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "输出分支", "graph": graph}).json()
+    client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["output"]["condition_outputs"]["gate"]["actual"].startswith('{"status":"simulated"')
+    assert run["output"]["condition_outputs"]["gate"]["result"] is True
+    assert run["trace"][1]["selected_targets"] == ["pass"]
+    trace_by_node = {item["node_id"]: item for item in run["trace"]}
+    assert trace_by_node["pass"]["status"] == "simulated"
+    assert trace_by_node["fail"]["status"] == "skipped"
+
+
 def test_workflow_approval_rejection_is_terminal_and_audited(client):
     assistant = client.post("/api/v1/assistants", json={"name": "拒绝审批助手"}).json()
     workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "拒绝流程", "graph": graph()}).json()

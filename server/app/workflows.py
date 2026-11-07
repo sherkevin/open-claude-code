@@ -1989,7 +1989,11 @@ async def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, re
             trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "skipped", "external_call": False, "approval_required": False, "branch_skipped": True, "output_preview": outputs[node_id]})
             continue
         if node["type"] == "condition":
-            result = _condition_result(node, safe_input)
+            # Conditions in a synthetic or live-tool workflow can still read
+            # the serialized output of an already completed upstream node.
+            # Keep this path consistent with model workflows; otherwise a
+            # valid `node.<id>.output` reference silently evaluates to null.
+            result = _condition_result(node, safe_input, outputs)
             selected_edges = _condition_selected_edges(node, outgoing.get(node_id, []), bool(result["result"]))
             outputs[node_id] = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
             condition_outputs[node_id] = result
