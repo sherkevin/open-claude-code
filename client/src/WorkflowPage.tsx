@@ -407,7 +407,12 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
   const runDebugNodeId = typeof run?.output?.node_id === 'string' ? run.output.node_id : '';
   const pendingApproval = run?.approvals?.find(item => item.status === 'pending') || (run?.approval?.status === 'pending' ? run.approval : null);
   const runStatusLabel = run?.status === 'awaiting_approval' ? '等待人工审批' : run?.status === 'failed' ? '运行失败' : run?.execution_mode === 'tool' ? '实时工具运行成功' : run?.synthetic ? '合成运行成功' : '模型运行成功';
-  const providerConfigured = providerPreflight?.router.fitness.provider_configured === true;
+  // Fitness routing may intentionally point at a separately approved 1007
+  // target that is unavailable in a local catalog.  Workflow nodes still use
+  // the assistant catalog, so use the independently checked Tab route as a
+  // provider credential signal instead of showing a false warning when only
+  // the fitness target is missing.
+  const providerConfigured = providerPreflight?.router.fitness.provider_configured === true || providerPreflight?.router.tab.provider_configured === true;
   const updateActiveNodeConfig = (changes: Record<string, unknown>, refreshCanvas = false) => {
     if (!activeNode) return;
     const update = (value: WorkflowGraph) => ({ ...value, nodes: value.nodes.map(node => node.id === activeNode.id ? { ...node, config: { ...node.config, ...changes } } : node) });
