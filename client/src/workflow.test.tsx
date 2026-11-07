@@ -110,10 +110,17 @@ describe('low-code workflow canvas contracts', () => {
 
   it('extracts references from conditions, knowledge queries, and tool arguments', () => {
     const condition = { id: 'gate', type: 'condition' as const, label: '判断', config: { value_source: 'node.review.output.score' } };
+    const inputCondition = { id: 'input-gate', type: 'condition' as const, label: '输入判断', config: { field: 'amount', operator: 'gt', value: 5000 } };
+    const requiredCondition = { id: 'required-gate', type: 'condition' as const, label: '必填判断', config: { required_fields: ['金额', 'reason'] } };
     const knowledge = { id: 'lookup', type: 'knowledge_search' as const, label: '检索', config: { query: '请查 {{input.topic}}，再核对 {{node.review.output.decision}}' } };
     const tool = { id: 'read', type: 'mcp_read' as const, label: '读取', config: { arguments_json: '{"query":"{{input.topic}}","filters":{"decision":"{{node.review.output.decision}}"}}' } };
     expect(workflowTemplateReferences(knowledge.config.query)).toEqual(['input.topic', 'node.review.output.decision']);
     expect(workflowNodeReferences(condition)).toEqual([{ key: '判断值来源', source: 'node.review.output.score' }]);
+    expect(workflowNodeReferences(inputCondition)).toEqual([{ key: '判断字段', source: 'input.amount' }]);
+    expect(workflowNodeReferences(requiredCondition)).toEqual([
+      { key: '必填字段 · 金额', source: 'input.amount' },
+      { key: '必填字段 · reason', source: 'input.reason' },
+    ]);
     expect(workflowNodeReferences(knowledge)).toEqual([
       { key: '检索问题', source: 'input.topic' },
       { key: '检索问题', source: 'node.review.output.decision' },

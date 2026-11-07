@@ -205,6 +205,7 @@ export function workflowInputBindings(node: WorkflowNode | undefined): WorkflowI
 }
 const workflowReferenceSourcePattern = /^(?:input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?)$/;
 const workflowReferenceNodeSourcePattern = /^node\.([A-Za-z0-9_-]{1,64})\.output(?:\.([A-Za-z][A-Za-z0-9_-]{0,63}))?$/;
+const workflowInputFieldPattern = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const workflowReferenceTemplatePattern = /\{\{\s*(input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?)\s*\}\}/g;
 export interface WorkflowNodeReference { key: string; source: string }
 export function workflowTemplateReferences(value: string): string[] {
@@ -221,7 +222,18 @@ export function workflowNodeReferences(node: WorkflowNode | undefined): Workflow
   if (node.type === 'agent') return workflowInputBindings(node).map(binding => ({ key: binding.key, source: binding.source }));
   if (node.type === 'condition') {
     const source = typeof node.config.value_source === 'string' ? node.config.value_source.trim() : '';
-    return source && workflowReferenceSourcePattern.test(source) ? [{ key: '判断值来源', source }] : [];
+    if (source) return workflowReferenceSourcePattern.test(source) ? [{ key: '判断值来源', source }] : [];
+    const requiredFields = Array.isArray(node.config.required_fields) ? node.config.required_fields : [];
+    if (requiredFields.length) {
+      const aliases: Record<string, string> = { 金额: 'amount', 事由: 'reason', 日期: 'date' };
+      return requiredFields.flatMap(value => {
+        if (typeof value !== 'string') return [];
+        const field = aliases[value] || value;
+        return workflowInputFieldPattern.test(field) ? [{ key: `必填字段 · ${value}`, source: `input.${field}` }] : [];
+      });
+    }
+    const field = typeof node.config.field === 'string' ? node.config.field.trim() : (node.config.amount_limit !== undefined ? 'amount' : '');
+    return workflowInputFieldPattern.test(field) ? [{ key: '判断字段', source: `input.${field}` }] : [];
   }
   if (node.type === 'knowledge_search') {
     const query = typeof node.config.query === 'string' ? node.config.query : '';
