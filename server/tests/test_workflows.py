@@ -273,6 +273,102 @@ def test_model_agent_node_receives_a_previous_node_binding(monkeypatch, client):
     assert run["trace"][1]["input_bindings"] == [{"key": "prior", "source": "node.first.output"}]
 
 
+def test_model_workflow_runs_authorized_knowledge_node_and_passes_source_bound_context(monkeypatch, client):
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-knowledge-token")
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"type": "text", "text": self.text}]}
+
+    class FakeClient:
+        calls = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, endpoint, json):
+            self.calls.append({"endpoint": endpoint, "json": json})
+            return FakeResponse("规划完成。" if len(self.calls) == 1 else "依据已核验。")
+
+    monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
+    service = client.app.state.service
+    kb = client.post("/api/v1/knowledge-bases", json={"name": "工作流授权手册"}).json()
+    assistant = client.post("/api/v1/assistants", json={"name": "知识流程助手", "knowledge_base_ids": [kb["id"]]}).json()
+    search_calls = []
+
+    def fake_search(kb_ids, user, query, limit=6, run_id=None, mode="hybrid", context_chars=12000):
+        search_calls.append({"kb_ids": kb_ids, "query": query, "limit": limit, "run_id": run_id, "mode": mode, "context_chars": context_chars})
+        return {
+            "results": [{
+                "document_id": "doc-policy",
+                "version": 3,
+                "name": "quality-policy.md",
+                "title": "quality-policy.md",
+                "kb_id": kb["id"],
+                "knowledge_base": "工作流授权手册",
+                "sha256": "a" * 64,
+                "page": None,
+                "section": "质量边界",
+                "chunk_id": "chunk-policy",
+                "score": 0.91,
+                "rank": 1,
+                "retrieval_mode": mode,
+                "evidence_type": "source_chunk",
+                "excerpt": "授权规则：金额超过 5000 元必须人工复核。",
+                "text": "授权规则：金额超过 5000 元必须人工复核。",
+                "content_url": "/api/v1/knowledge-documents/doc-policy/content?version=3",
+            }],
+            "retrieval": {"mode": mode, "engine": "fake-local"},
+            "context": {"text": "[1] quality-policy.md v3\\n授权规则：金额超过 5000 元必须人工复核。", "characters": 35, "truncated": False},
+        }
+
+    monkeypatch.setattr(service.knowledge, "search", fake_search)
+    graph = {
+        "nodes": [
+            {"id": "plan", "type": "agent", "label": "先规划", "config": {"mode": "model", "model_id": "legacy-model"}},
+            {"id": "policy", "type": "knowledge_search", "label": "检索质量规则", "config": {"mode": "synthetic", "query": "请检索 {{input.topic}} 的质量规则", "top_k": 4, "retrieval_mode": "bm25", "context_chars": 300}},
+            {"id": "review", "type": "agent", "label": "依据核验", "config": {"mode": "model", "model_id": "legacy-model", "input_bindings": [{"key": "evidence", "source": "node.policy.output"}]}},
+        ],
+        "edges": [{"source": "plan", "target": "policy"}, {"source": "policy", "target": "review"}],
+    }
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "授权知识流程", "graph": graph}).json()
+    client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {"topic": "设备验收"}})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert search_calls == [{"kb_ids": [kb["id"]], "query": "请检索 设备验收 的质量规则", "limit": 4, "run_id": None, "mode": "bm25", "context_chars": 300}]
+    assert run["output"]["knowledge_outputs"]["policy"]["source_count"] == 1
+    assert run["trace"][1]["knowledge_retrieval"] is True and run["trace"][1]["source_count"] == 1
+    assert run["permission_snapshot"]["knowledge_bases"][0]["id"] == kb["id"]
+    assert run["permission_snapshot"]["knowledge_bases"][0]["revision"] == kb["revision"]
+    assert "授权规则" in FakeClient.calls[1]["json"]["messages"][0]["content"]
+
+
+def test_workflow_rejects_knowledge_query_references_to_future_nodes(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "知识变量边界助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "lookup", "type": "knowledge_search", "label": "检索", "config": {"query": "{{node.review.output}}"}},
+            {"id": "review", "type": "agent", "label": "核验", "config": {"mode": "synthetic"}},
+        ],
+        "edges": [{"source": "lookup", "target": "review"}],
+    }
+    response = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "后置知识变量", "graph": graph})
+    assert response.status_code == 422 and response.json()["error"]["code"] == "WORKFLOW_KNOWLEDGE_QUERY_ORDER"
+
+
 def test_model_agent_node_debug_runs_draft_and_records_audited_trace(monkeypatch, client):
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-debug-token")
 

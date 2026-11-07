@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, parseWorkflowInputBindings, topologicalOrder, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, parseWorkflowInputBindings, topologicalOrder, workflowFormFields, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -35,5 +35,18 @@ describe('low-code workflow canvas contracts', () => {
     expect(parseWorkflowInputBindings(workflowInputBindingsText(node))).toEqual(node.config.input_bindings);
     expect(workflowInputBindingsIssue({ nodes: [node, { id: 'plan', type: 'agent', label: '计划', config: {} }], edges: [{ source: 'plan', target: 'review', label: '结论' }] })).toBe('');
     expect(workflowInputBindingsIssue({ nodes: [{ ...node, config: { input_bindings: [{ key: 'amount', source: 'node.missing.output' }] } }], edges: [] })).toContain('来源节点不存在');
+  });
+
+  it('validates knowledge query templates and bounded retrieval controls', () => {
+    const graph = {
+      nodes: [
+        { id: 'plan', type: 'agent' as const, label: '计划', config: {} },
+        { id: 'lookup', type: 'knowledge_search' as const, label: '检索', config: { query: '请查找 {{node.plan.output}}', top_k: 4, retrieval_mode: 'bm25', context_chars: 9000 } },
+      ],
+      edges: [{ source: 'plan', target: 'lookup', label: '依据' }],
+    };
+    expect(workflowKnowledgeIssue(graph)).toBe('');
+    expect(workflowKnowledgeIssue({ ...graph, nodes: [{ ...graph.nodes[0] }, { ...graph.nodes[1], config: { query: '{{node.future.output}}' } }], edges: graph.edges })).toContain('来源节点不存在');
+    expect(workflowKnowledgeIssue({ ...graph, nodes: [{ ...graph.nodes[0] }, { ...graph.nodes[1], config: { top_k: 21 } }], edges: graph.edges })).toContain('召回条数');
   });
 });

@@ -6,6 +6,7 @@ bounded, permission-pinned and recorded in the workflow run trace.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -42,8 +43,11 @@ _FIELD_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
 _REASONING_LEVEL = re.compile(r"^[A-Za-z0-9._-]{1,30}$")
 _BINDING_SOURCE = re.compile(r"^(?:input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output)$")
+_KNOWLEDGE_TEMPLATE = re.compile(r"\{\{\s*(input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output)\s*\}\}")
 _MAX_AGENT_CONTEXT = 12_000
 _MAX_AGENT_OUTPUT = 12_000
+_MAX_KNOWLEDGE_QUERY = 2_000
+_MAX_KNOWLEDGE_CONTEXT = 12_000
 
 
 _TEMPLATE_DEFINITIONS = {
@@ -195,6 +199,34 @@ def _validate_agent_config(config: dict, node_type: str) -> None:
         seen.add(key)
 
 
+def _knowledge_query_sources(query: str | None) -> list[str]:
+    """Return only the bounded input/output references allowed in a query template."""
+
+    if query is None or (isinstance(query, str) and not query.strip()):
+        return []
+    if not isinstance(query, str) or len(query) > _MAX_KNOWLEDGE_QUERY:
+        raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_INVALID", "知识检索问题必须是有效的文本模板")
+    sources = _KNOWLEDGE_TEMPLATE.findall(query)
+    # Do not silently leave a Jinja-like expression in a prompt.  The workflow
+    # contract supports only the two explicit, read-only reference forms above.
+    if ("{{" in query or "}}" in query) and len(sources) != query.count("{{"):
+        raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_INVALID", "知识检索问题只能引用 input 或上游 node 输出")
+    return list(sources)
+
+
+def _validate_knowledge_config(config: dict) -> None:
+    _knowledge_query_sources(config.get("query"))
+    top_k = config.get("top_k", 6)
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 20:
+        raise AppError(422, "WORKFLOW_KNOWLEDGE_CONFIG_INVALID", "知识检索召回条数必须在 1 到 20 之间")
+    retrieval_mode = config.get("retrieval_mode", "hybrid")
+    if retrieval_mode not in {"hybrid", "bm25", "vector"}:
+        raise AppError(422, "WORKFLOW_KNOWLEDGE_CONFIG_INVALID", "知识检索模式只能是 hybrid、bm25 或 vector")
+    context_chars = config.get("context_chars", _MAX_KNOWLEDGE_CONTEXT)
+    if isinstance(context_chars, bool) or not isinstance(context_chars, int) or not 0 <= context_chars <= _MAX_KNOWLEDGE_CONTEXT:
+        raise AppError(422, "WORKFLOW_KNOWLEDGE_CONFIG_INVALID", "知识检索上下文长度超出限制")
+
+
 def _agent_selection(service, assistant: dict, config: dict) -> dict:
     """Resolve a node's public model selection and pin its provider digest."""
 
@@ -241,6 +273,8 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
             raise AppError(422, "WORKFLOW_CONFIG_INVALID", "节点配置必须是对象")
         list(_walk_values(config))
         _validate_form_fields(config)
+        if node_type == "knowledge_search":
+            _validate_knowledge_config(config)
         mode = config.get("mode")
         if mode is not None and mode not in {"synthetic", "model"}:
             raise AppError(422, "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN", "当前工作流只允许 synthetic 或 model 执行模式")
@@ -297,6 +331,15 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
                 raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", f"变量来源节点不存在：{source_id}")
             if source_id == node_id or order_index[source_id] >= order_index[node_id]:
                 raise AppError(422, "WORKFLOW_AGENT_BINDING_ORDER", "变量只能引用已经完成的上游节点输出")
+        if node["type"] == "knowledge_search":
+            for source in _knowledge_query_sources(node["config"].get("query")):
+                if not source.startswith("node."):
+                    continue
+                source_id = source[5:-7]
+                if source_id not in node_map:
+                    raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_INVALID", f"知识检索问题引用的来源节点不存在：{source_id}")
+                if source_id == node_id or order_index[source_id] >= order_index[node_id]:
+                    raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_ORDER", "知识检索问题只能引用已经完成的上游节点输出")
 
     canonical = {"nodes": [node_map[node_id] for node_id in sorted(node_map)], "edges": sorted(canonical_edges, key=lambda item: (item["source"], item["target"], item["label"]))}
     serialized = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -568,9 +611,189 @@ def _resolve_input_bindings(config: dict, safe_input: dict, outputs: dict[str, s
     return resolved
 
 
+def _assistant_knowledge_scope(service, assistant: dict, user: dict) -> list[dict]:
+    """Resolve the assistant's current, user-authorized knowledge bindings.
+
+    A workflow graph never chooses arbitrary knowledge-base identifiers.  The
+    assistant binding is the capability boundary, and the revision is carried
+    into the run permission snapshot so a later audit can see what was used.
+    """
+
+    raw_ids = assistant.get("knowledge_base_ids", [])
+    if isinstance(raw_ids, str):
+        try:
+            raw_ids = json.loads(raw_ids or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise AppError(409, "WORKFLOW_KNOWLEDGE_SCOPE_INVALID", "助手的知识库绑定配置无法读取") from error
+    if not isinstance(raw_ids, list):
+        raise AppError(409, "WORKFLOW_KNOWLEDGE_SCOPE_INVALID", "助手的知识库绑定配置无效")
+    scope = []
+    seen = set()
+    for kb_id in raw_ids[:100]:
+        if not isinstance(kb_id, str) or not kb_id or kb_id in seen:
+            continue
+        # require() enforces the same resource and team/private access rules
+        # as the normal knowledge tool.  Never trust a graph-supplied scope.
+        kb = service.knowledge.require(kb_id, user)
+        scope.append({
+            "id": kb["id"],
+            "revision": kb["revision"],
+            "scope": kb["scope"],
+            "enabled": bool(kb["enabled"]),
+        })
+        seen.add(kb_id)
+    return scope
+
+
+def _knowledge_query_value(source: str, safe_input: dict, outputs: dict[str, str]):
+    if source == "input":
+        return safe_input
+    if source.startswith("input."):
+        return safe_input.get(source[6:])
+    return outputs.get(source[5:-7], "")
+
+
+def _render_knowledge_query(node: dict, safe_input: dict, outputs: dict[str, str]) -> str:
+    config = node.get("config") or {}
+    template = config.get("query")
+    if not isinstance(template, str) or not template.strip():
+        template = node.get("label") or "检索与当前节点相关的已授权知识"
+    _knowledge_query_sources(template)
+
+    def replace(match):
+        value = _knowledge_query_value(match.group(1), safe_input, outputs)
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return str(value)[:4000]
+
+    query = _KNOWLEDGE_TEMPLATE.sub(replace, template).strip()
+    if not query:
+        raise AppError(422, "WORKFLOW_KNOWLEDGE_QUERY_INVALID", "知识检索问题渲染后不能为空")
+    return query[:_MAX_KNOWLEDGE_QUERY]
+
+
+def _knowledge_source_view(item: dict) -> dict:
+    """Keep source-bound retrieval evidence useful without persisting raw rows."""
+
+    if not isinstance(item, dict):
+        return {"title": "", "excerpt": ""}
+    source = {
+        "document_id": item.get("document_id"),
+        "version": item.get("version"),
+        "title": str(item.get("title") or item.get("name") or "")[:200],
+        "knowledge_base_id": item.get("kb_id"),
+        "knowledge_base": str(item.get("knowledge_base") or "")[:160],
+        "page": item.get("page"),
+        "section": str(item.get("section") or "")[:200],
+        "chunk_id": item.get("chunk_id"),
+        "sha256": item.get("sha256"),
+        "rank": item.get("rank"),
+        "score": item.get("score"),
+        "retrieval_mode": item.get("retrieval_mode"),
+        "evidence_type": item.get("evidence_type", "source_chunk"),
+        "content_url": item.get("content_url"),
+        "source_id": item.get("source_id"),
+        "source_url": item.get("source_url"),
+        "citation": item.get("citation"),
+        "excerpt": str(item.get("excerpt") or item.get("text") or "")[:1200],
+    }
+    media = item.get("media")
+    if isinstance(media, dict):
+        media_view = {key: media.get(key) for key in ("kind", "document_id", "version", "sha256", "mime_type", "width", "height", "thumbnail_url", "ocr_status", "visual_index_status", "evidence_boundary") if media.get(key) is not None}
+        regions = media.get("regions")
+        if isinstance(regions, list):
+            media_view["regions"] = regions[:4]
+        if media_view:
+            source["media"] = media_view
+    return {key: value for key, value in source.items() if value is not None}
+
+
+def _knowledge_result_payload(result: dict, query: str, retrieval_mode: str, context_chars: int, scope: list[dict]) -> dict:
+    if not isinstance(result, dict):
+        result = {}
+    context_value = result.get("context") or {}
+    if isinstance(context_value, dict):
+        context_text = context_value.get("text") or ""
+    else:
+        context_text = str(context_value)
+    context_text = str(context_text)[:context_chars]
+    raw_results = result.get("results") if isinstance(result.get("results"), list) else []
+    authorized_ids = {item["id"] for item in scope if item.get("enabled")}
+    sources = [_knowledge_source_view(item) for item in raw_results if isinstance(item, dict) and item.get("kb_id") in authorized_ids][:20]
+    retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
+    retrieval = {key: value for key, value in retrieval.items() if isinstance(key, str) and len(key) <= 80 and isinstance(value, (str, int, float, bool, type(None)))}
+    retrieval.setdefault("mode", retrieval_mode)
+    retrieval["authorization"] = "assistant_knowledge_bindings"
+    return {
+        "kind": "knowledge_search",
+        "status": "completed" if sources else "empty",
+        "query": query,
+        "context": context_text,
+        "sources": sources,
+        "source_count": len(sources),
+        "retrieval": retrieval,
+        "knowledge_base_ids": [item["id"] for item in scope if item.get("enabled")],
+    }
+
+
+def _serialize_knowledge_payload(payload: dict) -> tuple[dict, str]:
+    """Bound structured retrieval output without cutting JSON in the middle."""
+
+    for source in payload.get("sources", []):
+        source["excerpt"] = str(source.get("excerpt") or "")[:600]
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) > _MAX_AGENT_OUTPUT:
+        payload["context"] = str(payload.get("context") or "")[:6_000]
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    while len(serialized) > _MAX_AGENT_OUTPUT and payload.get("sources"):
+        payload["sources"].pop()
+        payload["source_count"] = len(payload["sources"])
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return payload, serialized
+
+
+async def _run_knowledge_search(service, assistant: dict, user: dict, node: dict, safe_input: dict, outputs: dict[str, str], scope: list[dict]) -> tuple[dict, str]:
+    config = node.get("config") or {}
+    query = _render_knowledge_query(node, safe_input, outputs)
+    top_k = config.get("top_k", 6)
+    retrieval_mode = config.get("retrieval_mode", "hybrid")
+    context_chars = config.get("context_chars", _MAX_KNOWLEDGE_CONTEXT)
+    enabled_ids = [item["id"] for item in scope if item.get("enabled")]
+    try:
+        if enabled_ids:
+            result = await asyncio.to_thread(
+                service.knowledge.search,
+                enabled_ids,
+                user,
+                query,
+                top_k,
+                None,
+                retrieval_mode,
+                context_chars,
+            )
+        else:
+            result = {"results": [], "retrieval": {"mode": retrieval_mode}, "context": {"text": "", "characters": 0, "truncated": False}}
+    except AppError:
+        raise
+    except Exception as error:
+        raise AppError(502, "WORKFLOW_KNOWLEDGE_FAILED", "工作流知识检索暂时失败，请稍后重试") from error
+    payload = _knowledge_result_payload(result, query, retrieval_mode, context_chars, scope)
+    return _serialize_knowledge_payload(payload)
+
+
+def _upstream_output_preview(value: str) -> str:
+    """Prefer the beginning of structured retrieval output, where context lives."""
+
+    if isinstance(value, str) and value.startswith('{"kind":"knowledge_search"'):
+        return value[:8_000]
+    return value[-4_000:]
+
+
 def _agent_user_prompt(node: dict, safe_input: dict, outputs: dict[str, str], config: dict, mapped_inputs: dict | None = None) -> str:
     task = (config.get("prompt") or node.get("label") or "完成当前节点任务").strip()
-    upstream = {key: value[-4000:] for key, value in outputs.items()}
+    upstream = {key: _upstream_output_preview(value) for key, value in outputs.items()}
     payload = {"input": safe_input, "upstream_outputs": upstream} if mapped_inputs is None else {"mapped_inputs": mapped_inputs}
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"节点任务：{task}\n以下是本节点被明确授权读取的工作流上下文，请基于它们完成任务。\n{serialized}\n请直接返回本节点的最终结果。"[:_MAX_AGENT_CONTEXT]
@@ -765,8 +988,10 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
     artifact_index = {preview["node_id"]: index for index, preview in enumerate(artifact_previews)}
     model_nodes = [node for node in graph["nodes"] if node["type"] == "agent" and (node.get("config") or {}).get("mode", "synthetic") == "model"]
     selections = {node["id"]: _agent_selection(service, assistant, node.get("config") or {}) for node in model_nodes}
+    knowledge_nodes = [node for node in graph["nodes"] if node["type"] == "knowledge_search"]
+    knowledge_scope = _assistant_knowledge_scope(service, assistant, user) if knowledge_nodes else []
     public_models = [{key: selection[key] for key in ("model_id", "model_label", "reasoning_level")} for selection in selections.values()]
-    permission_payload = {"assistant_id": assistant["id"], "assistant_revision": assistant["revision"], "workflow_revision": row["revision"], "conversation_id": conversation["id"] if conversation else None, "user_id": user["id"], "models": public_models}
+    permission_payload = {"assistant_id": assistant["id"], "assistant_revision": assistant["revision"], "workflow_revision": row["revision"], "conversation_id": conversation["id"] if conversation else None, "user_id": user["id"], "models": public_models, "knowledge_bases": knowledge_scope}
     permission_digest = hashlib.sha256(json.dumps(permission_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     permission_snapshot = {
         "schema_version": 2,
@@ -781,9 +1006,12 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
         "user_id": user["id"],
         "user_role": user.get("role"),
         "models": [{"node_id": node["id"], **{key: selections[node["id"]][key] for key in ("model_id", "model_label", "reasoning_level")}} for node in model_nodes],
+        "knowledge_bases": knowledge_scope,
+        "knowledge_evidence": "source_bound_workflow_retrieval",
     }
     trace: list[dict] = []
     outputs: dict[str, str] = {}
+    knowledge_outputs: dict[str, dict] = {}
     run_id, timestamp = uid(), now()
     current_node = None
     try:
@@ -791,6 +1019,14 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
             node = node_map[node_id]
             config = node.get("config") or {}
             if node_id not in selections:
+                if node["type"] == "knowledge_search":
+                    current_node = node
+                    payload, serialized = await _run_knowledge_search(service, assistant, user, node, safe_input, outputs, knowledge_scope)
+                    outputs[node_id] = serialized
+                    knowledge_outputs[node_id] = payload
+                    trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": payload["status"], "external_call": False, "approval_required": False, "knowledge_retrieval": True, "query": payload["query"], "source_count": payload["source_count"], "retrieval_mode": payload["retrieval"].get("mode"), "output_preview": json.dumps({"query": payload["query"], "source_count": payload["source_count"]}, ensure_ascii=False, separators=(",", ":"))})
+                    current_node = None
+                    continue
                 outputs[node_id] = _simulated_node_output(node)
                 trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "simulated", "external_call": False, "approval_required": node["type"] == "approval", "output_preview": outputs[node_id], **({"artifact_preview": artifact_index[node_id]} if node_id in artifact_index else {})})
                 continue
@@ -800,14 +1036,18 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
             text = await _invoke_agent_model(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config)
             outputs[node_id] = text
             trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "input_bindings": _binding_trace(config), "output_preview": text[:600]})
-        output = {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "agent_outputs": outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
+            current_node = None
+        output = {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "agent_outputs": outputs, "knowledge_outputs": knowledge_outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
         with service.db.transaction():
             _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="succeeded", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp)
         return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": False, "execution_mode": "model", "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
     except AppError as error:
         if current_node:
-            trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
-        output = {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "agent_outputs": outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
+            if current_node["id"] in selections:
+                trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
+            else:
+                trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": False, "approval_required": False, "knowledge_retrieval": current_node["type"] == "knowledge_search", "error_code": error.code})
+        output = {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "agent_outputs": outputs, "knowledge_outputs": knowledge_outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
         with service.db.transaction():
             _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="failed", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp, error=error.message)
         raise
