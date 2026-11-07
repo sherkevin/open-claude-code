@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputReferenceBinding, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunReferenceValue, workflowRunSummary, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -98,15 +98,27 @@ describe('low-code workflow canvas contracts', () => {
   });
 
   it('compares a node rerun while masking sensitive input changes', () => {
-    const before = { output: { input: { topic: '合同', api_token: 'old-secret' } }, trace: [{ node_id: 'review', status: 'completed', model_label: '旧模型', model_attempts: 1, model_retries: 0, duration_ms: 120, output_preview: '旧结论' }] } as never;
-    const after = { output: { input: { topic: '制度', api_token: 'new-secret' } }, trace: [{ node_id: 'review', status: 'completed', model_label: '新模型', model_attempts: 2, model_retries: 1, duration_ms: 180, output_preview: '新结论' }] } as never;
+    const before = { output: { input: { topic: '合同', api_token: 'old-secret' }, agent_structured_outputs: { review: { decision: 'reject', score: 0.4 } } }, trace: [{ node_id: 'review', status: 'completed', role: '旧审核员', model_label: '旧模型', model_attempts: 1, model_retries: 0, duration_ms: 120, output_preview: '旧结论' }] } as never;
+    const after = { output: { input: { topic: '制度', api_token: 'new-secret' }, agent_structured_outputs: { review: { decision: 'approve', score: 0.92 } } }, trace: [{ node_id: 'review', status: 'completed', role: '新审核员', model_label: '新模型', model_attempts: 2, model_retries: 1, duration_ms: 180, output_preview: '新结论' }] } as never;
     expect(workflowRunNodeComparison(before, after, 'review')).toMatchObject({
       input_changes: [{ key: 'api_token', before: '[已隐藏]', after: '[已隐藏]' }, { key: 'topic', before: '合同', after: '制度' }],
+      structured_changes: [{ key: 'decision', before: 'reject', after: 'approve' }, { key: 'score', before: '0.4', after: '0.92' }],
       output_before: '旧结论', output_after: '新结论', output_changed: true,
       duration_delta_ms: 60, attempts_delta: 1, retries_delta: 1,
-      model_before: '旧模型', model_after: '新模型',
+      model_before: '旧模型', model_after: '新模型', role_before: '旧审核员', role_after: '新审核员',
     });
     expect(workflowRunNodeComparison(before, after, 'missing')).toBeNull();
+  });
+
+  it('summarizes configuration changes between a historical version and the draft', () => {
+    const historical = { nodes: [{ id: 'review', type: 'agent' as const, label: '审核', config: { mode: 'model', model_id: 'old-model', role: '审核员', system_prompt: '只看合同', arguments_json: '{"token":"old-secret"}' } }], edges: [] };
+    const current = { nodes: [{ id: 'review', type: 'agent' as const, label: '审核', config: { mode: 'model', model_id: 'new-model', role: '复核员', system_prompt: '只看合同和制度', arguments_json: '{"token":"new-secret"}' } }], edges: [] };
+    expect(workflowNodeConfigComparison(current, historical, 'review')?.changes).toEqual([
+      { key: 'model_id', before: 'old-model', after: 'new-model' },
+      { key: 'role', before: '审核员', after: '复核员' },
+      { key: 'system_prompt', before: '只看合同', after: '只看合同和制度' },
+    ]);
+    expect(workflowConfigKeyLabel('system_prompt')).toBe('系统提示词');
   });
 
   it('inserts a new node between the selected step and its single successor', () => {
