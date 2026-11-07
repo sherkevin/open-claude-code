@@ -11,6 +11,12 @@ describe('synthetic benchmark evidence page', () => {
     expect(html).toContain('待测');
     expect(html).toContain('客户现有助手');
     expect(html).toContain('仅使用 synthetic-industrial-v1');
+    expect(html).toContain('最简单 Agent（客户现有助手的消融替身）');
+    expect(html).toContain('上下文记忆能力（越高越好）');
+    expect(html).toContain('模型响应速度（真实模型待测）');
+    expect(html).toContain('knowledge_retrieval');
+    expect(html).toContain('图片语义任务未测');
+    expect(html).toContain('需要获批视觉模型和脱敏图片样例');
   });
 
   it('uses an honest empty state when no validated report is supplied', () => {
@@ -29,7 +35,7 @@ describe('synthetic benchmark evidence page', () => {
 
   it('exports only the validated synthetic report payload', () => {
     const output = serializeBenchmarkReport(syntheticStage0Benchmark);
-    expect(JSON.parse(output)).toMatchObject({ synthetic: true, fixture_id: 'synthetic-industrial-v1', task_count: 4 });
+    expect(JSON.parse(output)).toMatchObject({ synthetic: true, fixture_id: 'synthetic-industrial-v1', fixture_version: '1.1.0', task_count: 4, passed_tasks: 3 });
     expect(output).toContain('not_measured');
     expect(output).not.toContain('customer-secret');
   });

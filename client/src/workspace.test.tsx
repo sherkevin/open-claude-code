@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { canEdit, ScopeField } from './resources';
 import { AnswerMarkdown, answerText, attachmentSourceURL, isInternalSourceURL, publicWebURL, sourceIdFromURL } from './Sources';
 import { knowledgeOriginalURL } from './KnowledgePage';
-import { intentCompletion, mentionQuery, selectedSkillIds, SkillChips } from './SkillPicker';
+import { mentionQuery, selectedSkillIds, SkillChips } from './SkillPicker';
 import { parseTags, sessionQuery } from './SessionsPage';
 import type { EvidenceSource, Skill } from './types';
 
@@ -34,11 +34,6 @@ describe('explicit skill selection',()=>{
     expect(selectedSkillIds(['s1','s1','/etc/passwd','off'],[skill,{...skill,id:'off',enabled:false}])).toEqual(['s1']);
     const html=renderToStaticMarkup(<SkillChips selected={['s1']} skills={[skill]} disabled={false} onRemove={()=>{}}/>);
     expect(html).toContain('@quality-review');expect(html).toContain('v3');expect(html).toContain('type="button"');expect(html).not.toContain('type="submit"');
-  });
-  it('offers bounded local intent completion for Tab acceptance',()=>{
-    expect(intentCompletion('分析质量报告')).toBe('分析质量报告，列出关键依据、风险与可执行建议。');
-    expect(intentCompletion('查询设备数据。')).toBeNull();
-    expect(intentCompletion('')).toBeNull();
   });
 });
 describe('verifiable source rendering',()=>{

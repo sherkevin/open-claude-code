@@ -1,5 +1,14 @@
 export const API_BASE = '/api/v1';
 
+// Plain HTTP pages opened through an EasyConnect IP are not secure contexts,
+// so older browsers may not expose crypto.randomUUID there. Keep idempotency
+// requests usable without weakening the server-side authorization checks.
+export const clientRequestId = () => {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === 'function') return randomUUID.call(globalThis.crypto);
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+};
+
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code: string) { super(message); this.name = 'ApiError'; }
 }

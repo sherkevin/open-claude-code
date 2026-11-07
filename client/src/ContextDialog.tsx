@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Gauge, Minimize2, RefreshCw } from 'lucide-react';
-import { api, ApiError, errorText, post, timeText } from './api';
+import { api, ApiError, clientRequestId, errorText, post, timeText } from './api';
 import { Button, ErrorNotice, Field, Loader, Modal } from './components';
 import type { Message, ModelOption, NativeContext, Run } from './types';
 import { compactionStatusLabel } from './display';
@@ -36,7 +36,7 @@ export default function ContextDialog({ conversationId, models, busy, run, onClo
   const compact = async () => {
     if (busy || compacting || refreshing) return;
     const trimmed = instructions.trim();
-    if (!request.current || request.current.instructions !== trimmed) request.current = { instructions: trimmed, id: crypto.randomUUID() };
+    if (!request.current || request.current.instructions !== trimmed) request.current = { instructions: trimmed, id: clientRequestId() };
     setError(''); setCompacting(true);
     try { const result = await post<{ message: Message; run_id: string }>(`${endpoint}/compact`, { client_request_id: request.current.id, ...(trimmed ? { instructions: trimmed } : {}) }); if (mounted.current) onCompact(result); }
     catch (e) { if (mounted.current) handleError(e); } finally { if (mounted.current) setCompacting(false); }
