@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -85,6 +85,21 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowOutputReferenceBinding(graph, 'explain', 'review', 'decision', [{ key: 'decision', source: 'input.topic' }])).toEqual({ key: 'decision_2', source: 'node.review.output.decision' });
     expect(workflowOutputReferenceBinding(graph, 'review', 'explain', 'decision')).toBeNull();
     expect(workflowOutputReferenceBinding(graph, 'explain', 'review', '字段')).toBeNull();
+  });
+
+  it('finds downstream nodes that consume a structured output field', () => {
+    const graph = {
+      nodes: [
+        { id: 'review', type: 'agent' as const, label: '审核', config: {} },
+        { id: 'explain', type: 'agent' as const, label: '说明', config: { input_bindings: [{ key: 'decision', source: 'node.review.output.decision' }, { key: 'full', source: 'node.review.output' }] } },
+        { id: 'archive', type: 'agent' as const, label: '归档', config: { input_bindings: [{ key: 'result', source: 'node.review.output.decision' }] } },
+      ],
+      edges: [{ source: 'review', target: 'explain', label: '结果' }, { source: 'review', target: 'archive', label: '归档' }],
+    };
+    expect(workflowDownstreamReferences(graph, 'review', 'decision')).toEqual([
+      { node_id: 'explain', node_label: '说明', key: 'decision', source: 'node.review.output.decision' },
+      { node_id: 'archive', node_label: '归档', key: 'result', source: 'node.review.output.decision' },
+    ]);
   });
 
   it('resolves run input and structured output references for trace previews', () => {
