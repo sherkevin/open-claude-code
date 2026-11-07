@@ -14,7 +14,7 @@ import {
 } from '@flowgram.ai/free-layout-editor';
 import '@flowgram.ai/free-layout-editor/index.css';
 import { Redo2, Undo2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
-import type { ModelOption, WorkflowGraph, WorkflowNodeType } from './types';
+import type { ModelOption, WorkflowCanvasReferenceHighlight, WorkflowGraph, WorkflowNodeType } from './types';
 import { flowJSONToWorkflowGraph, workflowGraphHasCycle, workflowGraphToFlowJSON } from './workflowFlowgram';
 
 const NODE_TYPES: WorkflowNodeType[] = [
@@ -103,6 +103,7 @@ function FlowNode({
   models,
   defaultModelId,
   runTrace,
+  referenceHighlight,
   onSelectNode,
 }: {
   props: WorkflowNodeProps;
@@ -110,6 +111,7 @@ function FlowNode({
   models: ModelOption[];
   defaultModelId?: string | null;
   runTrace: Record<string, WorkflowCanvasRunTrace>;
+  referenceHighlight?: WorkflowCanvasReferenceHighlight | null;
   onSelectNode: (nodeId: string) => void;
 }) {
   const { node, form, selected, activated } = useNodeRender();
@@ -117,6 +119,7 @@ function FlowNode({
   const meta = node.getNodeMeta<FlowNodeMeta>();
   const runState = runTrace[String(node.id)];
   const runStatusClass = runState ? runTraceStatusClass(runState.status) : '';
+  const referenceState = referenceHighlight?.sourceNodeId === String(node.id) ? 'source' : referenceHighlight?.targetNodeId === String(node.id) ? 'target' : '';
 
   useEffect(() => {
     if (selected || activated) onSelectNode(String(node.id));
@@ -125,7 +128,7 @@ function FlowNode({
   return (
     <WorkflowNodeRenderer
       node={props.node}
-      className={`zhixing-flow-node zhixing-flow-node-${type.replaceAll('_', '-')} ${runState ? `zhixing-flow-node-run-${runStatusClass}` : ''}`}
+      className={`zhixing-flow-node zhixing-flow-node-${type.replaceAll('_', '-')} ${runState ? `zhixing-flow-node-run-${runStatusClass}` : ''} ${referenceState ? `zhixing-flow-node-reference-${referenceState}` : ''}`}
       style={meta.wrapperStyle}
     >
       <div className="zhixing-flow-node-head">
@@ -183,6 +186,7 @@ export default function FlowGramWorkflowCanvas({
   models,
   defaultModelId,
   runTrace,
+  referenceHighlight,
   resetToken,
   onChange,
   onSelectNode,
@@ -192,6 +196,7 @@ export default function FlowGramWorkflowCanvas({
   models: ModelOption[];
   defaultModelId?: string | null;
   runTrace: Record<string, WorkflowCanvasRunTrace>;
+  referenceHighlight?: WorkflowCanvasReferenceHighlight | null;
   resetToken: string | number;
   onChange: (graph: WorkflowGraph) => void;
   onSelectNode: (nodeId: string) => void;
@@ -220,7 +225,7 @@ export default function FlowGramWorkflowCanvas({
       }),
       materials: {
         renderDefaultNode: (props: WorkflowNodeProps) => (
-          <FlowNode props={props} editable={editable} models={models} defaultModelId={defaultModelId} runTrace={runTrace} onSelectNode={onSelectNode} />
+          <FlowNode props={props} editable={editable} models={models} defaultModelId={defaultModelId} runTrace={runTrace} referenceHighlight={referenceHighlight} onSelectNode={onSelectNode} />
         ),
       },
       onContentChange: ctx => {
@@ -254,8 +259,16 @@ export default function FlowGramWorkflowCanvas({
         error: '#be7b68',
         flowing: '#6d9560',
       },
+      setLineClassName: (_ctx, line) => {
+        const source = String(line.from?.id || line.info.from || '');
+        const target = String(line.to?.id || line.info.to || '');
+        const edgeKey = `${source}->${target}`;
+        if (referenceHighlight?.edgeKeys.includes(edgeKey)) return 'zhixing-flow-line-reference';
+        if (referenceHighlight && (source === referenceHighlight.sourceNodeId || target === referenceHighlight.targetNodeId)) return 'zhixing-flow-line-related';
+        return undefined;
+      },
     }),
-    [defaultModelId, editable, initialData, models, onChange, onSelectNode, runTrace],
+    [defaultModelId, editable, initialData, models, onChange, onSelectNode, referenceHighlight, runTrace],
   );
 
   return (
