@@ -41,6 +41,7 @@ _MAX_JSON = 16_000
 _FIELD_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
 _REASONING_LEVEL = re.compile(r"^[A-Za-z0-9._-]{1,30}$")
+_BINDING_SOURCE = re.compile(r"^(?:input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output)$")
 _MAX_AGENT_CONTEXT = 12_000
 _MAX_AGENT_OUTPUT = 12_000
 
@@ -177,6 +178,21 @@ def _validate_agent_config(config: dict, node_type: str) -> None:
     max_tokens = config.get("max_tokens")
     if max_tokens is not None and (isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 32 <= max_tokens <= 4096):
         raise AppError(422, "WORKFLOW_AGENT_PARAMETER_INVALID", "输出长度必须在 32 到 4096 之间")
+    bindings = config.get("input_bindings", [])
+    if bindings is None:
+        return
+    if not isinstance(bindings, list) or len(bindings) > 20:
+        raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", "智能体输入变量最多配置 20 项")
+    seen = set()
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", "智能体输入变量格式无效")
+        key, source = binding.get("key"), binding.get("source")
+        if not isinstance(key, str) or not _FIELD_ID.fullmatch(key) or key in seen:
+            raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", "智能体输入变量名称必须唯一且使用英文标识")
+        if not isinstance(source, str) or not _BINDING_SOURCE.fullmatch(source):
+            raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", "变量来源必须是 input、input.字段或 node.节点.output")
+        seen.add(key)
 
 
 def _agent_selection(service, assistant: dict, config: dict) -> dict:
@@ -269,6 +285,18 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
                 queue.append(target)
     if len(order) != len(node_map):
         raise AppError(422, "WORKFLOW_GRAPH_CYCLE", "工作流不能包含循环依赖")
+
+    order_index = {node_id: index for index, node_id in enumerate(order)}
+    for node_id, node in node_map.items():
+        for binding in (node["config"].get("input_bindings") or []):
+            source = binding.get("source", "")
+            if not source.startswith("node."):
+                continue
+            source_id = source[5:-7]
+            if source_id not in node_map:
+                raise AppError(422, "WORKFLOW_AGENT_BINDING_INVALID", f"变量来源节点不存在：{source_id}")
+            if source_id == node_id or order_index[source_id] >= order_index[node_id]:
+                raise AppError(422, "WORKFLOW_AGENT_BINDING_ORDER", "变量只能引用已经完成的上游节点输出")
 
     canonical = {"nodes": [node_map[node_id] for node_id in sorted(node_map)], "edges": sorted(canonical_edges, key=lambda item: (item["source"], item["target"], item["label"]))}
     serialized = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -513,17 +541,45 @@ def _completion_text(body) -> str:
     return ""
 
 
+def _binding_trace(config: dict) -> list[dict[str, str]]:
+    return [{"key": item["key"], "source": item["source"]} for item in (config.get("input_bindings") or [])]
+
+
 def _agent_system_prompt(assistant: dict, config: dict) -> tuple[str, str]:
     role = (config.get("role") or "工作流智能体").strip()
     instructions = (config.get("system_prompt") or assistant.get("instructions") or "请根据输入完成本节点任务，并明确区分事实、推断和待确认信息。").strip()
     return role, f"你是知行工作台工作流中的{role}。\n{instructions}\n只完成当前节点任务，不调用未授权的工具，不虚构外部数据。"[:6000]
 
 
-def _agent_user_prompt(node: dict, safe_input: dict, outputs: dict[str, str], config: dict) -> str:
+def _resolve_input_bindings(config: dict, safe_input: dict, outputs: dict[str, str]) -> dict | None:
+    bindings = config.get("input_bindings") or []
+    if not bindings:
+        return None
+    resolved = {}
+    for binding in bindings:
+        source = binding["source"]
+        if source == "input":
+            value = safe_input
+        elif source.startswith("input."):
+            value = safe_input.get(source[6:])
+        else:
+            value = outputs.get(source[5:-7])
+        resolved[binding["key"]] = value
+    return resolved
+
+
+def _agent_user_prompt(node: dict, safe_input: dict, outputs: dict[str, str], config: dict, mapped_inputs: dict | None = None) -> str:
     task = (config.get("prompt") or node.get("label") or "完成当前节点任务").strip()
     upstream = {key: value[-4000:] for key, value in outputs.items()}
-    payload = json.dumps({"input": safe_input, "upstream_outputs": upstream}, ensure_ascii=False, separators=(",", ":"))
-    return f"节点任务：{task}\n以下是本次工作流输入和上游节点结果，请基于它们完成任务。\n{payload}\n请直接返回本节点的最终结果。"[:_MAX_AGENT_CONTEXT]
+    payload = {"input": safe_input, "upstream_outputs": upstream} if mapped_inputs is None else {"mapped_inputs": mapped_inputs}
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"节点任务：{task}\n以下是本节点被明确授权读取的工作流上下文，请基于它们完成任务。\n{serialized}\n请直接返回本节点的最终结果。"[:_MAX_AGENT_CONTEXT]
+
+
+def _simulated_node_output(node: dict) -> str:
+    """Expose an explicit bounded marker when a non-model node has no runtime yet."""
+
+    return json.dumps({"status": "simulated", "node_id": node["id"], "node_type": node["type"]}, ensure_ascii=False, separators=(",", ":"))
 
 
 async def _invoke_agent_model(service, selection: dict, system_prompt: str, user_prompt: str, config: dict) -> str:
@@ -623,7 +679,8 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
     role, system_prompt = _agent_system_prompt(assistant, config)
     trace: list[dict] = []
     try:
-        text = await _invoke_agent_model(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config), config)
+        mapped_inputs = _resolve_input_bindings(config, safe_input, {})
+        text = await _invoke_agent_model(service, selection, system_prompt, _agent_user_prompt(node, safe_input, {}, config, mapped_inputs), config)
         trace.append({
             "sequence": 1,
             "node_id": node_id,
@@ -635,6 +692,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "model_label": selection["model_label"],
             "reasoning_level": selection["reasoning_level"],
             "role": role,
+            "input_bindings": _binding_trace(config),
             "output_preview": text[:600],
         })
         output = {
@@ -666,6 +724,7 @@ async def debug_node(service, workflow_id: str, node_id: str, body: WorkflowNode
             "model_label": selection["model_label"],
             "reasoning_level": selection["reasoning_level"],
             "role": role,
+            "input_bindings": _binding_trace(config),
             "error_code": error.code,
         })
         output = {
@@ -732,20 +791,22 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user):
             node = node_map[node_id]
             config = node.get("config") or {}
             if node_id not in selections:
-                trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "simulated", "external_call": False, "approval_required": node["type"] == "approval", **({"artifact_preview": artifact_index[node_id]} if node_id in artifact_index else {})})
+                outputs[node_id] = _simulated_node_output(node)
+                trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "simulated", "external_call": False, "approval_required": node["type"] == "approval", "output_preview": outputs[node_id], **({"artifact_preview": artifact_index[node_id]} if node_id in artifact_index else {})})
                 continue
             current_node = node
             role, system_prompt = _agent_system_prompt(assistant, config)
-            text = await _invoke_agent_model(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config), config)
+            mapped_inputs = _resolve_input_bindings(config, safe_input, outputs)
+            text = await _invoke_agent_model(service, selections[node_id], system_prompt, _agent_user_prompt(node, safe_input, outputs, config, mapped_inputs), config)
             outputs[node_id] = text
-            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "output_preview": text[:600]})
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "model_id": selections[node_id]["model_id"], "model_label": selections[node_id]["model_label"], "reasoning_level": selections[node_id]["reasoning_level"], "role": role, "input_bindings": _binding_trace(config), "output_preview": text[:600]})
         output = {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "agent_outputs": outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
         with service.db.transaction():
             _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="succeeded", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp)
         return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": False, "execution_mode": "model", "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
     except AppError as error:
         if current_node:
-            trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], "error_code": error.code})
+            trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
         output = {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "agent_outputs": outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot}
         with service.db.transaction():
             _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="failed", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp, error=error.message)

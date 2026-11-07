@@ -160,7 +160,7 @@ def test_model_agent_node_uses_assistant_catalog_and_records_execution(monkeypat
     assistant = client.post("/api/v1/assistants", json={"name": "模型流程助手", "instructions": "遵守审核规则"}).json()
     graph = {
         "nodes": [
-            {"id": "review", "type": "agent", "label": "审核申请", "config": {"mode": "model", "model_id": "legacy-model", "role": "财务审核员", "system_prompt": "核对金额并说明依据", "prompt": "判断输入是否合规", "temperature": 0.7, "max_tokens": 640}},
+            {"id": "review", "type": "agent", "label": "审核申请", "config": {"mode": "model", "model_id": "legacy-model", "role": "财务审核员", "system_prompt": "核对金额并说明依据", "prompt": "判断输入是否合规", "input_bindings": [{"key": "amount", "source": "input.amount"}], "temperature": 0.7, "max_tokens": 640}},
             {"id": "approval", "type": "approval", "label": "人工确认", "config": {}},
         ],
         "edges": [{"source": "review", "target": "approval", "label": "提交人工确认"}],
@@ -181,6 +181,8 @@ def test_model_agent_node_uses_assistant_catalog_and_records_execution(monkeypat
     assert FakeClient.calls[0]["json"]["temperature"] == 0.7
     assert FakeClient.calls[0]["json"]["max_tokens"] == 640
     assert FakeClient.calls[0]["json"]["system"].startswith("你是知行工作台工作流中的财务审核员")
+    assert '"mapped_inputs":{"amount":1200}' in FakeClient.calls[0]["json"]["messages"][0]["content"]
+    assert run["trace"][0]["input_bindings"] == [{"key": "amount", "source": "input.amount"}]
 
 
 def test_model_mode_is_limited_to_agent_nodes():
@@ -190,6 +192,85 @@ def test_model_mode_is_limited_to_agent_nodes():
     with pytest.raises(AppError) as error:
         validate_graph(payload)
     assert error.value.code == "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN"
+
+
+def test_workflow_rejects_invalid_or_downstream_agent_input_bindings(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "变量边界助手"}).json()
+    invalid = {
+        "nodes": [{"id": "review", "type": "agent", "label": "审核", "config": {"mode": "model", "input_bindings": [{"key": "金额", "source": "input.amount"}]}}],
+        "edges": [],
+    }
+    response = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "非法变量", "graph": invalid})
+    assert response.status_code == 422 and response.json()["error"]["code"] == "WORKFLOW_AGENT_BINDING_INVALID"
+
+    downstream = {
+        "nodes": [
+            {"id": "first", "type": "agent", "label": "第一步", "config": {"mode": "model"}},
+            {"id": "second", "type": "agent", "label": "第二步", "config": {"mode": "model", "input_bindings": [{"key": "prior", "source": "node.first.output"}]}},
+        ],
+        "edges": [{"source": "first", "target": "second"}],
+    }
+    valid = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "合法变量", "graph": downstream})
+    assert valid.status_code == 201, valid.text
+
+    future_reference = {
+        "nodes": [
+            {"id": "first", "type": "agent", "label": "第一步", "config": {"mode": "model", "input_bindings": [{"key": "prior", "source": "node.second.output"}]}},
+            {"id": "second", "type": "agent", "label": "第二步", "config": {"mode": "model"}},
+        ],
+        "edges": [{"source": "first", "target": "second"}],
+    }
+    reversed = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "后置变量", "graph": future_reference})
+    assert reversed.status_code == 422 and reversed.json()["error"]["code"] == "WORKFLOW_AGENT_BINDING_ORDER"
+
+
+def test_model_agent_node_receives_a_previous_node_binding(monkeypatch, client):
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-binding-token")
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content": [{"type": "text", "text": self.text}]}
+
+    class FakeClient:
+        calls = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, endpoint, json):
+            self.calls.append({"endpoint": endpoint, "json": json})
+            return FakeResponse("第一节点结论。" if len(self.calls) == 1 else "第二节点已核验。")
+
+    monkeypatch.setattr("app.workflows.httpx.AsyncClient", FakeClient)
+    assistant = client.post("/api/v1/assistants", json={"name": "变量运行助手"}).json()
+    graph = {
+        "nodes": [
+            {"id": "first", "type": "agent", "label": "先判断", "config": {"mode": "model", "model_id": "legacy-model"}},
+            {"id": "second", "type": "agent", "label": "再核验", "config": {"mode": "model", "model_id": "legacy-model", "input_bindings": [{"key": "prior", "source": "node.first.output"}]}},
+        ],
+        "edges": [{"source": "first", "target": "second", "label": "传递结论"}],
+    }
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "变量运行", "graph": graph}).json()
+    client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"input": {"amount": 1200}})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["output"]["agent_outputs"]["second"] == "第二节点已核验。"
+    second_prompt = FakeClient.calls[1]["json"]["messages"][0]["content"]
+    assert '"mapped_inputs":{"prior":"第一节点结论。"}' in second_prompt
+    assert run["trace"][1]["input_bindings"] == [{"key": "prior", "source": "node.first.output"}]
 
 
 def test_model_agent_node_debug_runs_draft_and_records_audited_trace(monkeypatch, client):

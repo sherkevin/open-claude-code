@@ -68,7 +68,8 @@ function DefaultNodeForm({ editable, models, defaultModelId }: { editable: boole
           const selectedModelId = typeof config.model_id === 'string' && config.model_id ? config.model_id : config.mode === 'model' ? defaultModelId : undefined;
           const selectedModel = selectedModelId ? models.find(item => item.id === selectedModelId) : undefined;
           const model = selectedModel ? ` · ${selectedModel.label}` : typeof config.model_id === 'string' && config.model_id ? ` · ${config.model_id}` : '';
-          return <span className={`zhixing-flow-node-mode ${config.mode === 'model' ? 'zhixing-flow-node-model' : ''}`}>{mode}{model} · 可审计</span>;
+          const bindings = Array.isArray(config.input_bindings) ? config.input_bindings.length : 0;
+          return <span className={`zhixing-flow-node-mode ${config.mode === 'model' ? 'zhixing-flow-node-model' : ''}`}>{mode}{model}{bindings ? ` · ${bindings} 个输入变量` : ''} · 可审计</span>;
         }}
       </Field>
     </div>
