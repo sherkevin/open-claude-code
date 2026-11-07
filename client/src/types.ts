@@ -48,6 +48,7 @@ export interface WorkflowNode { id: string; type: WorkflowNodeType; label: strin
 export interface WorkflowEdge { source: string; target: string; label: string }
 export interface WorkflowGraph { nodes: WorkflowNode[]; edges: WorkflowEdge[] }
 export interface WorkflowCanvasReferenceHighlight { sourceNodeId: string; targetNodeId: string; edgeKeys: string[] }
+export interface WorkflowCanvasNodeDiagnostic { errorCount: number; warningCount: number; message?: string }
 export interface WorkflowVersion { version: number; status: string; graph_hash: string; created_by: string; created_at: string; published_at: string | null; graph?: WorkflowGraph }
 export interface Workflow { id: string; assistant_id: string; name: string; description: string; scope: 'private' | 'team'; owner_id: string | null; revision: number; draft_version: number; published_version: number | null; created_at: string; updated_at: string; status: 'draft' | 'published'; versions: WorkflowVersion[]; synthetic_only: boolean; execution_modes?: string[]; model_execution_enabled?: boolean }
 export interface WorkflowTemplate { template_id: string; name: string; description: string; synthetic: true; graph: WorkflowGraph }

@@ -14,7 +14,7 @@ import {
 } from '@flowgram.ai/free-layout-editor';
 import '@flowgram.ai/free-layout-editor/index.css';
 import { Redo2, Undo2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
-import type { ModelOption, WorkflowCanvasReferenceHighlight, WorkflowGraph, WorkflowNodeType } from './types';
+import type { ModelOption, WorkflowCanvasNodeDiagnostic, WorkflowCanvasReferenceHighlight, WorkflowGraph, WorkflowNodeType } from './types';
 import { flowJSONToWorkflowGraph, workflowGraphHasCycle, workflowGraphToFlowJSON } from './workflowFlowgram';
 
 const NODE_TYPES: WorkflowNodeType[] = [
@@ -104,6 +104,7 @@ function FlowNode({
   defaultModelId,
   runTrace,
   referenceHighlight,
+  referenceDiagnostics,
   onSelectNode,
 }: {
   props: WorkflowNodeProps;
@@ -112,6 +113,7 @@ function FlowNode({
   defaultModelId?: string | null;
   runTrace: Record<string, WorkflowCanvasRunTrace>;
   referenceHighlight?: WorkflowCanvasReferenceHighlight | null;
+  referenceDiagnostics: Record<string, WorkflowCanvasNodeDiagnostic>;
   onSelectNode: (nodeId: string) => void;
 }) {
   const { node, form, selected, activated } = useNodeRender();
@@ -120,6 +122,9 @@ function FlowNode({
   const runState = runTrace[String(node.id)];
   const runStatusClass = runState ? runTraceStatusClass(runState.status) : '';
   const referenceState = referenceHighlight?.sourceNodeId === String(node.id) ? 'source' : referenceHighlight?.targetNodeId === String(node.id) ? 'target' : '';
+  const diagnostic = referenceDiagnostics[String(node.id)];
+  const diagnosticKind = diagnostic?.errorCount ? 'error' : diagnostic?.warningCount ? 'warning' : '';
+  const diagnosticLabel = diagnostic ? [diagnostic.errorCount ? `错误 ${diagnostic.errorCount}` : '', diagnostic.warningCount ? `提醒 ${diagnostic.warningCount}` : ''].filter(Boolean).join(' · ') : '';
 
   useEffect(() => {
     if (selected || activated) onSelectNode(String(node.id));
@@ -128,13 +133,14 @@ function FlowNode({
   return (
     <WorkflowNodeRenderer
       node={props.node}
-      className={`zhixing-flow-node zhixing-flow-node-${type.replaceAll('_', '-')} ${runState ? `zhixing-flow-node-run-${runStatusClass}` : ''} ${referenceState ? `zhixing-flow-node-reference-${referenceState}` : ''}`}
+      className={`zhixing-flow-node zhixing-flow-node-${type.replaceAll('_', '-')} ${runState ? `zhixing-flow-node-run-${runStatusClass}` : ''} ${referenceState ? `zhixing-flow-node-reference-${referenceState}` : ''} ${diagnosticKind ? `zhixing-flow-node-diagnostic-${diagnosticKind}` : ''}`}
       style={meta.wrapperStyle}
     >
       <div className="zhixing-flow-node-head">
         <span className="zhixing-flow-node-dot" />
         <span>{NODE_LABELS[type] || '业务节点'}</span>
         <span className="zhixing-flow-node-number">{String(node.id).slice(0, 6)}</span>
+        {diagnostic && <span className={`zhixing-flow-node-diagnostic zhixing-flow-node-diagnostic-${diagnosticKind}`} title={diagnostic.message || diagnosticLabel}>{diagnosticLabel}</span>}
         {runState && <span className="zhixing-flow-node-run-state" title={runState.error_code || runTraceStatusLabel(runState.status)}><span className={`zhixing-flow-node-run-state-dot zhixing-flow-node-run-state-${runStatusClass}`} />{runTraceStatusLabel(runState.status)}</span>}
       </div>
       {form?.render() || <DefaultNodeForm editable={editable} models={models} defaultModelId={defaultModelId} />}
@@ -187,6 +193,7 @@ export default function FlowGramWorkflowCanvas({
   defaultModelId,
   runTrace,
   referenceHighlight,
+  referenceDiagnostics,
   resetToken,
   onChange,
   onSelectNode,
@@ -197,6 +204,7 @@ export default function FlowGramWorkflowCanvas({
   defaultModelId?: string | null;
   runTrace: Record<string, WorkflowCanvasRunTrace>;
   referenceHighlight?: WorkflowCanvasReferenceHighlight | null;
+  referenceDiagnostics: Record<string, WorkflowCanvasNodeDiagnostic>;
   resetToken: string | number;
   onChange: (graph: WorkflowGraph) => void;
   onSelectNode: (nodeId: string) => void;
@@ -225,7 +233,7 @@ export default function FlowGramWorkflowCanvas({
       }),
       materials: {
         renderDefaultNode: (props: WorkflowNodeProps) => (
-          <FlowNode props={props} editable={editable} models={models} defaultModelId={defaultModelId} runTrace={runTrace} referenceHighlight={referenceHighlight} onSelectNode={onSelectNode} />
+          <FlowNode props={props} editable={editable} models={models} defaultModelId={defaultModelId} runTrace={runTrace} referenceHighlight={referenceHighlight} referenceDiagnostics={referenceDiagnostics} onSelectNode={onSelectNode} />
         ),
       },
       onContentChange: ctx => {
@@ -268,7 +276,7 @@ export default function FlowGramWorkflowCanvas({
         return undefined;
       },
     }),
-    [defaultModelId, editable, initialData, models, onChange, onSelectNode, referenceHighlight, runTrace],
+    [defaultModelId, editable, initialData, models, onChange, onSelectNode, referenceDiagnostics, referenceHighlight, runTrace],
   );
 
   return (
