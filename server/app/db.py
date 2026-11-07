@@ -160,6 +160,13 @@ CREATE TABLE IF NOT EXISTS skills(id TEXT PRIMARY KEY,name TEXT NOT NULL,descrip
 CREATE TABLE IF NOT EXISTS skill_versions(skill_id TEXT NOT NULL,revision INTEGER NOT NULL,snapshot TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(skill_id,revision));
 CREATE INDEX IF NOT EXISTS skills_owner ON skills(owner_id,scope);
 CREATE TABLE IF NOT EXISTS conversation_memory_scopes(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),revision INTEGER NOT NULL DEFAULT 0,digest TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,origin TEXT NOT NULL DEFAULT 'empty');
+CREATE TABLE IF NOT EXISTS workflows(id TEXT PRIMARY KEY,assistant_id TEXT NOT NULL REFERENCES assistants(id),name TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',owner_id TEXT,scope TEXT NOT NULL DEFAULT 'private',revision INTEGER NOT NULL DEFAULT 1,draft_version INTEGER NOT NULL DEFAULT 1,published_version INTEGER,deleted INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS workflows_assistant ON workflows(assistant_id,deleted,updated_at);
+CREATE TABLE IF NOT EXISTS workflow_versions(workflow_id TEXT NOT NULL REFERENCES workflows(id),version INTEGER NOT NULL,status TEXT NOT NULL,graph TEXT NOT NULL,graph_hash TEXT NOT NULL,created_by TEXT NOT NULL,created_at TEXT NOT NULL,published_at TEXT,PRIMARY KEY(workflow_id,version));
+CREATE INDEX IF NOT EXISTS workflow_versions_status ON workflow_versions(workflow_id,status,version);
+CREATE TABLE IF NOT EXISTS workflow_runs(id TEXT PRIMARY KEY,workflow_id TEXT NOT NULL REFERENCES workflows(id),conversation_id TEXT REFERENCES conversations(id),version INTEGER NOT NULL,graph_hash TEXT NOT NULL,permission_digest TEXT NOT NULL,permission_snapshot_json TEXT NOT NULL DEFAULT '{}',user_id TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL,input_json TEXT NOT NULL DEFAULT '{}',output_json TEXT NOT NULL DEFAULT '{}',trace_json TEXT NOT NULL DEFAULT '[]',error TEXT,created_at TEXT NOT NULL,completed_at TEXT);
+CREATE INDEX IF NOT EXISTS workflow_runs_owner ON workflow_runs(user_id,created_at);
+CREATE INDEX IF NOT EXISTS workflow_runs_workflow ON workflow_runs(workflow_id,created_at);
 """)
         # Missing rows belong to conversations predating session-isolated memory.
         # New conversations create their explicit empty scope in the same

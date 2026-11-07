@@ -105,6 +105,8 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
     app.include_router(create_memory_router(svc, authenticated))
     from .context import create_context_router
     app.include_router(create_context_router(svc, authenticated))
+    from .workflows import create_workflow_router
+    app.include_router(create_workflow_router(svc, authenticated))
 
     prefix = "/api/v1"
 

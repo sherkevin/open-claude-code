@@ -165,3 +165,61 @@ class SubagentPlanRequest(InputModel):
 
     mode: Literal["synthetic"] = "synthetic"
     tasks: list[str | dict] = Field(min_length=1, max_length=4)
+
+
+WorkflowNodeType = Literal[
+    "agent",
+    "skill",
+    "knowledge_search",
+    "mcp_read",
+    "condition",
+    "approval",
+    "artifact",
+]
+
+
+class WorkflowNode(InputModel):
+    """A safe, declarative node used by the workflow editor."""
+
+    id: str = Field(min_length=1, max_length=64)
+    type: WorkflowNodeType
+    label: str = Field(default="", max_length=120)
+    config: dict[str, object] = Field(default_factory=dict, max_length=30)
+
+
+class WorkflowEdge(InputModel):
+    source: str = Field(min_length=1, max_length=64)
+    target: str = Field(min_length=1, max_length=64)
+    label: str = Field(default="", max_length=120)
+
+
+class WorkflowGraph(InputModel):
+    nodes: list[WorkflowNode] = Field(min_length=1, max_length=64)
+    edges: list[WorkflowEdge] = Field(default_factory=list, max_length=128)
+
+
+class WorkflowCreate(InputModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    graph: WorkflowGraph
+
+
+class WorkflowTemplateCreate(InputModel):
+    template_id: str = Field(min_length=1, max_length=80)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class WorkflowDraftPatch(InputModel):
+    expected_revision: int | None = Field(default=None, ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+    graph: WorkflowGraph
+
+
+class WorkflowRollback(InputModel):
+    version: int = Field(ge=1)
+
+
+class WorkflowRunRequest(InputModel):
+    input: dict[str, object] = Field(default_factory=dict, max_length=30)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
