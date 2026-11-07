@@ -61,7 +61,14 @@ function DefaultNodeForm({ editable }: { editable: boolean }) {
       <Field<string> name="nodeType">
         {({ field }) => <span className="zhixing-flow-node-type">{field.value || '业务节点'}</span>}
       </Field>
-      <span className="zhixing-flow-node-mode">合成执行 · 可审计</span>
+      <Field<Record<string, unknown>> name="config">
+        {({ field }) => {
+          const config = field.value || {};
+          const mode = config.mode === 'model' ? '模型执行' : '合成执行';
+          const model = typeof config.model_id === 'string' && config.model_id ? ` · ${config.model_id}` : '';
+          return <span className={`zhixing-flow-node-mode ${config.mode === 'model' ? 'zhixing-flow-node-model' : ''}`}>{mode}{model} · 可审计</span>;
+        }}
+      </Field>
     </div>
   );
 }
