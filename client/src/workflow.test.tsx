@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, graphHasCycle, graphHasIsolatedNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowArtifactIssue, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowToolArgumentsIssue } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, nodeOutputSchemaText, parseWorkflowInputBindings, topologicalOrder, workflowArtifactIssue, workflowConditionIssue, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowOutputSchemaIssue, workflowToolArgumentsIssue } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -32,6 +32,18 @@ describe('low-code workflow canvas contracts', () => {
   it('exposes fields declared by the explicit start input node', () => {
     const fields = workflowFormFields({ nodes: [{ id: 'start', type: 'input', label: '开始 / 输入', config: { form_fields: [{ id: 'topic', type: 'text', label: '主题', required: true }] } }], edges: [] });
     expect(fields).toEqual([{ id: 'topic', type: 'text', label: '主题', required: true, options: undefined }]);
+  });
+
+  it('duplicates a node without sharing config or copying edges', () => {
+    const source = { id: 'review', type: 'agent' as const, label: '审核', config: { mode: 'model', role: '审核员', system_prompt: '严谨核验', __ui: { position: { x: 10, y: 20 } } } };
+    const copy = duplicateWorkflowNode(source, [source]);
+    expect(copy.id).toBe('agent-1');
+    expect(copy.label).toBe('审核 副本');
+    expect(copy.config.role).toBe('审核员');
+    expect(copy.config.system_prompt).toBe('严谨核验');
+    expect(copy.config.__ui).toEqual({ position: { x: 58, y: 68 } });
+    expect(source.config.__ui).toEqual({ position: { x: 10, y: 20 } });
+    expect(copy).not.toBe(source);
   });
 
   it('validates manually configured skill input fields and artifact columns', () => {
