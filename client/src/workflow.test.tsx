@@ -100,6 +100,9 @@ describe('low-code workflow canvas contracts', () => {
       { node_id: 'explain', node_label: '说明', key: 'decision', source: 'node.review.output.decision' },
       { node_id: 'archive', node_label: '归档', key: 'result', source: 'node.review.output.decision' },
     ]);
+    expect(workflowDownstreamReferences(graph, 'review')).toEqual([
+      { node_id: 'explain', node_label: '说明', key: 'full', source: 'node.review.output' },
+    ]);
   });
 
   it('resolves run input and structured output references for trace previews', () => {
