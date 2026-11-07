@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict, deque
+from datetime import timedelta
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -48,7 +49,11 @@ _MAX_AGENT_CONTEXT = 12_000
 _MAX_AGENT_OUTPUT = 12_000
 _MAX_KNOWLEDGE_QUERY = 2_000
 _MAX_KNOWLEDGE_CONTEXT = 12_000
+_MAX_TOOL_OUTPUT = 12_000
+_MAX_TOOL_ARGUMENTS = 4_000
 _CONDITION_OPERATORS = {"exists", "eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"}
+_MCP_TOOL_NAME = re.compile(r"^mcp__c([A-Za-z0-9_-]{1,100})__([A-Za-z0-9_.-]{1,100})$")
+_TOOL_TEMPLATE = re.compile(r"\{\{\s*(input(?:\.[A-Za-z][A-Za-z0-9_-]{0,63})?|node\.[A-Za-z0-9_-]{1,64}\.output)\s*\}\}")
 
 
 _TEMPLATE_DEFINITIONS = {
@@ -112,6 +117,18 @@ CREATE TABLE IF NOT EXISTS workflow_approvals(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS workflow_approvals_run_node ON workflow_approvals(workflow_run_id,node_id);
 CREATE INDEX IF NOT EXISTS workflow_approvals_pending ON workflow_approvals(status,created_at);
+CREATE TABLE IF NOT EXISTS workflow_tool_evidence(
+    id TEXT PRIMARY KEY,
+    workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+    node_id TEXT NOT NULL,
+    connection_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workflow_tool_evidence_run ON workflow_tool_evidence(workflow_run_id,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_tool_evidence_digest ON workflow_tool_evidence(workflow_run_id,node_id,digest);
 """
 
 
@@ -263,6 +280,39 @@ def _validate_condition_config(config: dict) -> None:
             raise AppError(422, "WORKFLOW_CONDITION_CONFIG_INVALID", "条件分支标签配置无效")
 
 
+def _parse_mcp_tool_name(tool_name: str) -> tuple[str, str]:
+    match = _MCP_TOOL_NAME.fullmatch(tool_name)
+    if not match:
+        raise AppError(422, "WORKFLOW_TOOL_NAME_INVALID", "只读工具必须使用已绑定的 MCP 工具名称")
+    return match.group(1), match.group(2)
+
+
+def _validate_mcp_read_config(config: dict) -> None:
+    mode = config.get("mode", "synthetic")
+    if mode not in {"synthetic", "live"}:
+        raise AppError(422, "WORKFLOW_TOOL_MODE_INVALID", "只读工具节点只能使用合成或实时调用模式")
+    tool_name = config.get("tool_name")
+    if tool_name is not None:
+        if not isinstance(tool_name, str) or len(tool_name) > 220:
+            raise AppError(422, "WORKFLOW_TOOL_NAME_INVALID", "只读工具名称无效")
+        _parse_mcp_tool_name(tool_name)
+    if mode == "live" and not tool_name:
+        raise AppError(422, "WORKFLOW_TOOL_NAME_REQUIRED", "实时只读工具必须选择已授权的 MCP 工具")
+    arguments_json = config.get("arguments_json", "{}")
+    if not isinstance(arguments_json, str) or len(arguments_json) > _MAX_TOOL_ARGUMENTS:
+        raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数模板过长")
+    try:
+        arguments = json.loads(arguments_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数必须是有效的 JSON 对象") from error
+    if not isinstance(arguments, dict):
+        raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数必须是 JSON 对象")
+    list(_walk_values(arguments))
+    timeout = config.get("timeout_seconds", 30)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 60:
+        raise AppError(422, "WORKFLOW_TOOL_TIMEOUT_INVALID", "工具超时时间必须在 1 到 60 秒之间")
+
+
 def _agent_selection(service, assistant: dict, config: dict) -> dict:
     """Resolve a node's public model selection and pin its provider digest."""
 
@@ -314,10 +364,14 @@ def validate_graph(graph: WorkflowGraph | dict) -> tuple[dict, str, list[str]]:
         if node_type == "condition":
             _validate_condition_config(config)
         mode = config.get("mode")
-        if mode is not None and mode not in {"synthetic", "model"}:
-            raise AppError(422, "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN", "当前工作流只允许 synthetic 或 model 执行模式")
-        if node_type == "agent" or mode == "model":
+        if mode is not None and mode not in {"synthetic", "model", "live"}:
+            raise AppError(422, "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN", "当前工作流只允许 synthetic、model 或 live 执行模式")
+        if node_type == "mcp_read":
+            _validate_mcp_read_config(config)
+        elif node_type == "agent" or mode == "model":
             _validate_agent_config(config, node_type)
+        elif mode == "live":
+            raise AppError(422, "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN", "只有只读工具节点可以使用 live 执行模式")
         node_map[node_id] = {
             "id": node_id,
             "type": node_type,
@@ -658,6 +712,214 @@ def _resolve_input_bindings(config: dict, safe_input: dict, outputs: dict[str, s
             value = outputs.get(source[5:-7])
         resolved[binding["key"]] = value
     return resolved
+
+
+def _tool_argument_value(source: str, safe_input: dict, outputs: dict[str, str]):
+    if source == "input":
+        return safe_input
+    if source.startswith("input."):
+        return safe_input.get(source[6:])
+    value = outputs.get(source[5:-7], "")
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return value
+    return value
+
+
+def _render_tool_argument_value(value, safe_input: dict, outputs: dict[str, str], depth=0):
+    if depth > 6:
+        raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数模板层级过深")
+    if isinstance(value, str):
+        matches = list(_TOOL_TEMPLATE.finditer(value))
+        if not matches:
+            return value
+        if len(matches) == 1 and matches[0].span() == (0, len(value)):
+            return _tool_argument_value(matches[0].group(1), safe_input, outputs)
+        rendered = value
+        for match in reversed(matches):
+            replacement = _tool_argument_value(match.group(1), safe_input, outputs)
+            if isinstance(replacement, (dict, list)):
+                replacement = json.dumps(replacement, ensure_ascii=False, separators=(",", ":"))
+            rendered = rendered[:match.start()] + str(replacement if replacement is not None else "") + rendered[match.end():]
+        return rendered
+    if isinstance(value, dict):
+        return {key: _render_tool_argument_value(item, safe_input, outputs, depth + 1) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_render_tool_argument_value(item, safe_input, outputs, depth + 1) for item in value]
+    return value
+
+
+def _tool_arguments(node: dict, safe_input: dict, outputs: dict[str, str]) -> dict:
+    config = node.get("config") or {}
+    try:
+        arguments = json.loads(config.get("arguments_json", "{}") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数模板不是有效 JSON") from error
+    if not isinstance(arguments, dict):
+        raise AppError(422, "WORKFLOW_TOOL_ARGUMENTS_INVALID", "工具参数必须是 JSON 对象")
+    rendered = _render_tool_argument_value(arguments, safe_input, outputs)
+    list(_walk_values(rendered))
+    return rendered
+
+
+def _workflow_tool_scope(service, assistant: dict, user: dict, conversation: dict | None, nodes: list[dict]) -> dict[str, dict]:
+    live_nodes = [node for node in nodes if node.get("type") == "mcp_read" and (node.get("config") or {}).get("mode", "synthetic") == "live"]
+    if not live_nodes:
+        return {}
+    if not conversation:
+        raise AppError(409, "WORKFLOW_TOOL_SESSION_REQUIRED", "实时工具节点必须绑定同一助手的运行会话")
+    raw_bindings = assistant.get("connections", [])
+    if isinstance(raw_bindings, str):
+        try:
+            raw_bindings = json.loads(raw_bindings or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise AppError(409, "WORKFLOW_TOOL_SCOPE_INVALID", "助手的工具绑定配置无法读取") from error
+    bindings = {item.get("connection_id"): item for item in raw_bindings if isinstance(item, dict) and item.get("connection_id")}
+    scope = {}
+    for node in live_nodes:
+        tool_name = (node.get("config") or {}).get("tool_name")
+        connection_id, server_tool = _parse_mcp_tool_name(tool_name)
+        connection = service.require_resource("connections", connection_id, user)
+        binding = bindings.get(connection_id)
+        if not binding or server_tool not in binding.get("allowed_tools", []):
+            raise AppError(403, "TOOL_DENIED", "只读工具不在助手的授权工具清单中")
+        if server_tool not in binding.get("auto_approved_tools", []):
+            raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "工作流实时只读工具必须在助手中标记为自动批准")
+        # authorize_tool applies the conversation's pinned capability snapshot
+        # when one exists, so a workflow cannot widen an already-running chat.
+        if service.authorize_tool(conversation["id"], tool_name, {}) is not True:
+            raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "当前会话未自动批准此只读工具")
+        try:
+            discovered = json.loads(connection.get("tools") or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise AppError(409, "WORKFLOW_TOOL_UNAVAILABLE", "连接工具清单无法读取，请重新测试连接") from error
+        if not any(isinstance(item, dict) and item.get("name") == server_tool for item in discovered):
+            raise AppError(409, "WORKFLOW_TOOL_UNAVAILABLE", "只读工具已不在连接的最新工具清单中，请重新测试连接")
+        scope[node["id"]] = {
+            "node_id": node["id"],
+            "tool_name": tool_name,
+            "server_tool": server_tool,
+            "connection_id": connection_id,
+            "connection_revision": connection["revision"],
+        }
+    return scope
+
+
+def _bounded_tool_value(value, depth=0):
+    if depth > 6:
+        return "[truncated]"
+    if isinstance(value, dict):
+        result = {}
+        for key, item in list(value.items())[:100]:
+            if SENSITIVE.search(str(key)):
+                continue
+            result[str(key)[:100]] = _bounded_tool_value(item, depth + 1)
+        return result
+    if isinstance(value, list):
+        return [_bounded_tool_value(item, depth + 1) for item in value[:200]]
+    if isinstance(value, str):
+        return value[:12000]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:200]
+
+
+def _tool_result_body(result) -> dict:
+    try:
+        body = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+    except (TypeError, ValueError):
+        body = {"content": str(result)}
+    bounded = _bounded_tool_value(body)
+    return bounded if isinstance(bounded, dict) else {"content": bounded}
+
+
+def _tool_sources(value, depth=0) -> list[dict]:
+    if depth > 5:
+        return []
+    found = []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        return _tool_sources(parsed, depth + 1)
+    if isinstance(value, dict):
+        sources = value.get("sources")
+        if isinstance(sources, list):
+            found.extend(item for item in sources[:30] if isinstance(item, dict))
+        for key in ("structuredContent", "content", "data", "result"):
+            if key in value:
+                found.extend(_tool_sources(value[key], depth + 1))
+    elif isinstance(value, list):
+        for item in value[:40]:
+            found.extend(_tool_sources(item, depth + 1))
+    result, seen = [], set()
+    for item in found[:30]:
+        cleaned = _bounded_tool_value(item)
+        digest = hashlib.sha256(json.dumps(cleaned, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        if digest in seen:
+            continue
+        seen.add(digest)
+        result.append({"digest": digest, "title": str(item.get("title") or item.get("name") or "业务数据")[:200], "excerpt": str(item.get("excerpt") or item.get("text") or "")[:2000], "locator": _bounded_tool_value(item.get("locator") if isinstance(item.get("locator"), dict) else {})})
+    return result
+
+
+async def _run_mcp_read(service, user: dict, conversation: dict | None, node: dict, tool_scope: dict, safe_input: dict, outputs: dict[str, str]) -> tuple[dict, str, list[dict]]:
+    if not conversation:
+        raise AppError(409, "WORKFLOW_TOOL_SESSION_REQUIRED", "实时工具节点必须绑定同一助手的运行会话")
+    config = node.get("config") or {}
+    scope = tool_scope.get(node["id"])
+    if not scope:
+        raise AppError(409, "WORKFLOW_TOOL_SCOPE_INVALID", "实时工具节点权限快照不存在")
+    arguments = _tool_arguments(node, safe_input, outputs)
+    if service.authorize_tool(conversation["id"], scope["tool_name"], arguments) is not True:
+        raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "当前会话未自动批准此只读工具")
+    connection = service.require_resource("connections", scope["connection_id"], user)
+    if connection["revision"] != scope["connection_revision"] or not connection["enabled"]:
+        raise AppError(409, "WORKFLOW_TOOL_CONFIG_CHANGED", "工具连接配置已改变，请重新运行工作流")
+    from .security import validate_mcp_url
+    validate_mcp_url(connection["url"], service.settings.mcp_hosts)
+    headers = {}
+    credential = service.secrets.decrypt(connection.get("secret"))
+    if credential:
+        headers["Authorization"] = f"Bearer {credential}"
+    timeout = max(1.0, min(60.0, float(config.get("timeout_seconds", 30))))
+    try:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+        async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)), follow_redirects=False, trust_env=False) as http:
+            async with streamable_http_client(connection["url"], http_client=http) as streams:
+                async with ClientSession(streams[0], streams[1]) as session:
+                    await session.initialize()
+                    result = await session.call_tool(scope["server_tool"], arguments=arguments, read_timeout_seconds=timedelta(seconds=timeout))
+    except AppError:
+        raise
+    except Exception as error:
+        raise AppError(502, "WORKFLOW_TOOL_FAILED", "实时只读工具暂时无法连接，请检查连接或稍后重试") from error
+    if getattr(result, "isError", False):
+        raise AppError(502, "WORKFLOW_TOOL_FAILED", "实时只读工具返回了错误")
+    body = _tool_result_body(result)
+    sources = _tool_sources(body)
+    payload = {"kind": "mcp_read", "status": "completed", "tool_name": scope["tool_name"], "connection_id": scope["connection_id"], "result": body, "evidence": sources}
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized.encode("utf-8")) > _MAX_TOOL_OUTPUT:
+        payload = {
+            "kind": "mcp_read",
+            "status": "completed",
+            "tool_name": scope["tool_name"],
+            "connection_id": scope["connection_id"],
+            "result_preview": json.dumps(body, ensure_ascii=False, separators=(",", ":"))[:5_000],
+            "evidence": sources[:5],
+            "truncated": True,
+        }
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized.encode("utf-8")) > _MAX_TOOL_OUTPUT:
+            payload["result_preview"] = payload["result_preview"][:2_500]
+            payload["evidence"] = sources[:2]
+            serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return payload, serialized, sources
 
 
 def _assistant_knowledge_scope(service, assistant: dict, user: dict) -> list[dict]:
@@ -1003,6 +1265,7 @@ def _insert_workflow_run(service, *, run_id: str, workflow_id: str, conversation
         "INSERT INTO workflow_runs(id,workflow_id,conversation_id,version,graph_hash,permission_digest,permission_snapshot_json,user_id,status,input_json,output_json,trace_json,error,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (run_id, workflow_id, conversation_id, version, graph_hash, permission_digest, dump(permission_snapshot), user_id, status, dump(safe_input), dump(output), dump(trace), error, timestamp, now() if completed else None),
     )
+    _persist_workflow_tool_evidence(service, run_id, output)
 
 
 def _update_workflow_run(service, run_id: str, *, status: str, output: dict, trace: list[dict], error: str | None = None, completed: bool = True) -> None:
@@ -1010,6 +1273,20 @@ def _update_workflow_run(service, run_id: str, *, status: str, output: dict, tra
         "UPDATE workflow_runs SET status=?,output_json=?,trace_json=?,error=?,completed_at=? WHERE id=?",
         (status, dump(output), dump(trace), error, now() if completed else None, run_id),
     )
+    _persist_workflow_tool_evidence(service, run_id, output)
+
+
+def _persist_workflow_tool_evidence(service, run_id: str, output: dict) -> None:
+    if not service.db.one("SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_tool_evidence'"):
+        return
+    for node_id, payload in (output.get("tool_outputs") or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+        body = {"node_id": node_id, "tool_name": payload.get("tool_name"), "connection_id": payload.get("connection_id"), "evidence": evidence[:30]}
+        serialized = dump(body)
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        service.db.execute("INSERT OR IGNORE INTO workflow_tool_evidence(id,workflow_run_id,node_id,connection_id,tool_name,payload_json,digest,created_at) VALUES(?,?,?,?,?,?,?,?)", (uid(), run_id, node_id, str(payload.get("connection_id") or ""), str(payload.get("tool_name") or "")[:220], serialized, digest, now()))
 
 
 def _workflow_approval_view(row: dict) -> dict:
@@ -1162,8 +1439,13 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
     selections = {node["id"]: _agent_selection(service, assistant, node.get("config") or {}) for node in model_nodes}
     knowledge_nodes = [node for node in graph["nodes"] if node["type"] == "knowledge_search"]
     knowledge_scope = _assistant_knowledge_scope(service, assistant, user) if knowledge_nodes else []
+    tool_nodes = [node for node in graph["nodes"] if node["type"] == "mcp_read"]
+    tool_scope = _workflow_tool_scope(service, assistant, user, conversation, tool_nodes)
+    if tool_scope:
+        _ensure_workflow_runtime_schema(service)
     public_models = [{key: selection[key] for key in ("model_id", "model_label", "reasoning_level")} for selection in selections.values()]
-    permission_payload = {"assistant_id": assistant["id"], "assistant_revision": assistant["revision"], "workflow_revision": row["revision"], "conversation_id": conversation["id"] if conversation else None, "user_id": user["id"], "models": public_models, "knowledge_bases": knowledge_scope}
+    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision")} for item in tool_scope.values()]
+    permission_payload = {"assistant_id": assistant["id"], "assistant_revision": assistant["revision"], "workflow_revision": row["revision"], "conversation_id": conversation["id"] if conversation else None, "user_id": user["id"], "models": public_models, "knowledge_bases": knowledge_scope, "tools": public_tools, "mode": "model"}
     permission_digest = hashlib.sha256(json.dumps(permission_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     permission_snapshot = {
         "schema_version": 2,
@@ -1180,11 +1462,16 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
         "models": [{"node_id": node["id"], **{key: selections[node["id"]][key] for key in ("model_id", "model_label", "reasoning_level")}} for node in model_nodes],
         "knowledge_bases": knowledge_scope,
         "knowledge_evidence": "source_bound_workflow_retrieval",
+        "tools": public_tools,
+        "tool_mode": "live" if tool_scope else "none",
+        "tool_evidence": "workflow_bound_structured_results",
     }
     trace: list[dict] = []
     outputs: dict[str, str] = {}
     knowledge_outputs: dict[str, dict] = {}
     condition_outputs: dict[str, dict] = {}
+    tool_outputs: dict[str, dict] = {}
+    tool_evidence: dict[str, list[dict]] = {}
     outgoing, incoming, all_edges = _graph_edges(graph)
     active_edges = set(all_edges)
     start_index = 0
@@ -1205,6 +1492,8 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
             outputs.update({str(key): json.dumps(value, ensure_ascii=False, separators=(",", ":")) for key, value in (prior_output.get("condition_outputs") or {}).items()})
             knowledge_outputs = prior_output.get("knowledge_outputs") or {}
             condition_outputs = prior_output.get("condition_outputs") or {}
+            tool_outputs = prior_output.get("tool_outputs") or {}
+            tool_evidence = prior_output.get("tool_evidence") or {}
             start_index = int(prior_output.get("next_node_index", 0))
             active_edges = {tuple(edge) for edge in (prior_output.get("active_edges") or [list(edge) for edge in all_edges]) if isinstance(edge, list) and len(edge) == 2}
         except (TypeError, ValueError, json.JSONDecodeError) as error:
@@ -1223,7 +1512,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
                 outputs[approved_node_id] = approved_preview
 
     def run_output(next_node_index: int | None = None) -> dict:
-        return {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "agent_outputs": {key: value for key, value in outputs.items() if node_map.get(key, {}).get("type") == "agent"}, "knowledge_outputs": knowledge_outputs, "condition_outputs": condition_outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
+        return {"synthetic": False, "execution_mode": "model", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "agent_outputs": {key: value for key, value in outputs.items() if node_map.get(key, {}).get("type") == "agent"}, "knowledge_outputs": knowledge_outputs, "condition_outputs": condition_outputs, "tool_outputs": tool_outputs, "tool_evidence": tool_evidence, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
 
     current_node = None
     try:
@@ -1275,6 +1564,15 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
                     trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": payload["status"], "external_call": False, "approval_required": False, "knowledge_retrieval": True, "query": payload["query"], "source_count": payload["source_count"], "retrieval_mode": payload["retrieval"].get("mode"), "output_preview": json.dumps({"query": payload["query"], "source_count": payload["source_count"]}, ensure_ascii=False, separators=(",", ":"))})
                     current_node = None
                     continue
+                if node["type"] == "mcp_read" and config.get("mode", "synthetic") == "live":
+                    current_node = node
+                    payload, serialized, sources = await _run_mcp_read(service, user, conversation, node, tool_scope, safe_input, outputs)
+                    outputs[node_id] = serialized
+                    tool_outputs[node_id] = payload
+                    tool_evidence[node_id] = sources
+                    trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "tool_call": True, "tool_name": payload["tool_name"], "connection_id": payload["connection_id"], "evidence_count": len(sources), "output_preview": serialized[:600]})
+                    current_node = None
+                    continue
                 outputs[node_id] = _simulated_node_output(node)
                 trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "simulated", "external_call": False, "approval_required": node["type"] == "approval", "output_preview": outputs[node_id], **({"artifact_preview": artifact_index[node_id]} if node_id in artifact_index else {})})
                 continue
@@ -1297,7 +1595,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
             if current_node["id"] in selections:
                 trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": True, "approval_required": False, "model_id": selections[current_node["id"]]["model_id"], "input_bindings": _binding_trace(current_node.get("config") or {}), "error_code": error.code})
             else:
-                trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": False, "approval_required": False, "knowledge_retrieval": current_node["type"] == "knowledge_search", "error_code": error.code})
+                trace.append({"sequence": len(trace) + 1, "node_id": current_node["id"], "node_type": current_node["type"], "status": "failed", "external_call": current_node["type"] == "mcp_read", "approval_required": False, "knowledge_retrieval": current_node["type"] == "knowledge_search", "tool_call": current_node["type"] == "mcp_read", "tool_name": (current_node.get("config") or {}).get("tool_name") if current_node["type"] == "mcp_read" else None, "error_code": error.code})
         output = run_output()
         with service.db.transaction():
             if resume_run:
@@ -1315,10 +1613,10 @@ async def run_workflow(service, workflow_id, body: WorkflowRunRequest, user):
     graph = json.loads(version["graph"])
     if any(node.get("type") == "agent" and (node.get("config") or {}).get("mode", "synthetic") == "model" for node in graph.get("nodes", [])):
         return await run_model(service, workflow_id, body, user)
-    return run_synthetic(service, workflow_id, body, user)
+    return await run_synthetic(service, workflow_id, body, user)
 
 
-def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_run: dict | None = None, approved_node_id: str | None = None):
+async def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_run: dict | None = None, approved_node_id: str | None = None):
     row = _readable(service, workflow_id, user)
     conversation = _bind_conversation(service, row, body.conversation_id, user)
     if row["published_version"] is None:
@@ -1335,17 +1633,24 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_r
     artifact_previews = _artifact_previews(graph, safe_input)
     artifact_index = {preview["node_id"]: index for index, preview in enumerate(artifact_previews)}
     assistant = service.require("assistants", row["assistant_id"])
+    tool_nodes = [node for node in graph["nodes"] if node["type"] == "mcp_read"]
+    tool_scope = _workflow_tool_scope(service, assistant, user, conversation, tool_nodes)
+    if tool_scope:
+        _ensure_workflow_runtime_schema(service)
+    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision")} for item in tool_scope.values()]
     permission_payload = {
         "assistant_id": assistant["id"],
         "assistant_revision": assistant["revision"],
         "workflow_revision": row["revision"],
         "conversation_id": conversation["id"] if conversation else None,
         "user_id": user["id"],
+        "tools": public_tools,
+        "mode": "tool" if tool_scope else "synthetic",
     }
     permission_digest = hashlib.sha256(json.dumps(permission_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     permission_snapshot = {
         "schema_version": 1,
-        "mode": "synthetic",
+        "mode": "tool" if tool_scope else "synthetic",
         "assistant_id": assistant["id"],
         "assistant_revision": assistant["revision"],
         "assistant_scope": assistant.get("scope", "private"),
@@ -1355,10 +1660,14 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_r
         "conversation_id": conversation["id"] if conversation else None,
         "user_id": user["id"],
         "user_role": user.get("role"),
+        "tools": public_tools,
+        "tool_evidence": "workflow_bound_structured_results",
     }
     trace: list[dict] = []
     outputs: dict[str, str] = {}
     condition_outputs: dict[str, dict] = {}
+    tool_outputs: dict[str, dict] = {}
+    tool_evidence: dict[str, list[dict]] = {}
     outgoing, incoming, all_edges = _graph_edges(graph)
     active_edges = set(all_edges)
     start_index = 0
@@ -1375,6 +1684,8 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_r
             trace = json.loads(resume_run.get("trace_json") or "[]")
             outputs = {str(key): str(value) for key, value in (prior_output.get("node_outputs") or {}).items()}
             condition_outputs = prior_output.get("condition_outputs") or {}
+            tool_outputs = prior_output.get("tool_outputs") or {}
+            tool_evidence = prior_output.get("tool_evidence") or {}
             start_index = int(prior_output.get("next_node_index", 0))
             active_edges = {tuple(edge) for edge in (prior_output.get("active_edges") or [list(edge) for edge in all_edges]) if isinstance(edge, list) and len(edge) == 2}
         except (TypeError, ValueError, json.JSONDecodeError) as error:
@@ -1393,7 +1704,7 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_r
                 outputs[approved_node_id] = approved_preview
 
     def run_output(next_node_index: int | None = None) -> dict:
-        return {"synthetic": True, "execution_mode": "synthetic", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "condition_outputs": condition_outputs, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
+        return {"synthetic": not bool(tool_scope), "execution_mode": "tool" if tool_scope else "synthetic", "workflow_id": workflow_id, "version": version["version"], "graph_hash": graph_hash, "completed_nodes": len(trace), "input": safe_input, "node_outputs": outputs, "condition_outputs": condition_outputs, "tool_outputs": tool_outputs, "tool_evidence": tool_evidence, "artifacts": artifact_previews, "permission_snapshot": permission_snapshot, "active_edges": [list(edge) for edge in sorted(active_edges)], **({"next_node_index": next_node_index} if next_node_index is not None else {})}
 
     for index, node_id in enumerate(order, 1):
         if resume_run and index <= start_index:
@@ -1415,6 +1726,13 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_r
                     active_edges.discard((edge["source"], edge["target"]))
             trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": False, "approval_required": False, "condition_result": bool(result["result"]), "condition_operator": result.get("operator"), "selected_targets": [edge["target"] for edge in outgoing.get(node_id, []) if (edge["source"], edge["target"]) in selected_edges], "output_preview": outputs[node_id][:600]})
             continue
+        if node["type"] == "mcp_read" and (node.get("config") or {}).get("mode", "synthetic") == "live":
+            payload, serialized, sources = await _run_mcp_read(service, user, conversation, node, tool_scope, safe_input, outputs)
+            outputs[node_id] = serialized
+            tool_outputs[node_id] = payload
+            tool_evidence[node_id] = sources
+            trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "completed", "external_call": True, "approval_required": False, "tool_call": True, "tool_name": payload["tool_name"], "connection_id": payload["connection_id"], "evidence_count": len(sources), "output_preview": serialized[:600]})
+            continue
         if node["type"] == "approval":
             outputs[node_id] = json.dumps({"kind": "workflow_approval", "status": "pending", "node_id": node_id}, ensure_ascii=False, separators=(",", ":"))
             trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "awaiting_approval", "external_call": False, "approval_required": True, "approval_role": (node.get("config") or {}).get("role"), "output_preview": outputs[node_id]})
@@ -1428,7 +1746,7 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_r
                     _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="awaiting_approval", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp, completed=False)
                 service.db.execute("INSERT INTO workflow_approvals(id,workflow_run_id,workflow_id,node_id,user_id,status,decision,comment,created_at,decided_at,decided_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (approval_id, run_id, workflow_id, node_id, user["id"], "pending", None, "", timestamp, None, None))
             approval = {"id": approval_id, "workflow_run_id": run_id, "workflow_id": workflow_id, "node_id": node_id, "status": "pending", "decision": None, "comment": "", "created_at": timestamp, "decided_at": None, "decided_by": None}
-            return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "awaiting_approval", "synthetic": True, "execution_mode": "synthetic", "approval": approval, "approvals": [approval], "output": output, "trace": trace, "created_at": timestamp, "completed_at": None}
+            return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "awaiting_approval", "synthetic": not bool(tool_scope), "execution_mode": "tool" if tool_scope else "synthetic", "approval": approval, "approvals": [approval], "output": output, "trace": trace, "created_at": timestamp, "completed_at": None}
         outputs[node_id] = _simulated_node_output(node)
         trace.append({"sequence": index, "node_id": node_id, "node_type": node["type"], "status": "simulated", "external_call": False, "approval_required": False, "output_preview": outputs[node_id], **({"artifact_preview": artifact_index[node_id]} if node_id in artifact_index else {})})
     output = run_output()
@@ -1437,7 +1755,7 @@ def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, resume_r
             _update_workflow_run(service, run_id, status="succeeded", output=output, trace=trace, completed=True)
         else:
             _insert_workflow_run(service, run_id=run_id, workflow_id=workflow_id, conversation_id=conversation["id"] if conversation else None, version=version["version"], graph_hash=graph_hash, permission_digest=permission_digest, permission_snapshot=permission_snapshot, user_id=user["id"], status="succeeded", safe_input=safe_input, output=output, trace=trace, timestamp=timestamp)
-    return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": True, "execution_mode": "synthetic", "approvals": _workflow_approvals(service, run_id), "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
+    return {"id": run_id, "workflow_id": workflow_id, "conversation_id": conversation["id"] if conversation else None, "version": version["version"], "graph_hash": graph_hash, "permission_digest": permission_digest, "permission_snapshot": permission_snapshot, "status": "succeeded", "synthetic": not bool(tool_scope), "execution_mode": "tool" if tool_scope else "synthetic", "approvals": _workflow_approvals(service, run_id), "output": output, "trace": trace, "created_at": timestamp, "completed_at": now()}
 
 
 def run_view(service, row, user):
@@ -1447,6 +1765,14 @@ def run_view(service, row, user):
         _readable(service, row["workflow_id"], user)
     output = json.loads(row["output_json"])
     approvals = _workflow_approvals(service, row["id"])
+    evidence_rows = service.db.all("SELECT node_id,connection_id,tool_name,payload_json,digest,created_at FROM workflow_tool_evidence WHERE workflow_run_id=? ORDER BY created_at,id", (row["id"],)) if service.db.one("SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_tool_evidence'") else []
+    tool_evidence_records = []
+    for item in evidence_rows:
+        try:
+            payload = json.loads(item["payload_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        tool_evidence_records.append({"node_id": item["node_id"], "connection_id": item["connection_id"], "tool_name": item["tool_name"], "evidence": payload.get("evidence", []), "digest": item["digest"], "created_at": item["created_at"]})
     return {
         "id": row["id"],
         "workflow_id": row["workflow_id"],
@@ -1459,6 +1785,7 @@ def run_view(service, row, user):
         "synthetic": bool(output.get("synthetic", False)),
         "execution_mode": output.get("execution_mode", "synthetic"),
         "output": output,
+        "tool_evidence_records": tool_evidence_records,
         "trace": json.loads(row["trace_json"]),
         "approvals": approvals,
         **({"approval": next((item for item in approvals if item["status"] == "pending"), None)} if any(item["status"] == "pending" for item in approvals) else {}),
@@ -1538,7 +1865,7 @@ async def decide_workflow_approval(service, run_id: str, node_id: str, body: dic
         if output.get("execution_mode") == "model":
             resumed = await run_model(service, run_row["workflow_id"], resume_body, user, resume_run=run_row, approved_node_id=node_id)
         else:
-            resumed = run_synthetic(service, run_row["workflow_id"], resume_body, user, resume_run=run_row, approved_node_id=node_id)
+            resumed = await run_synthetic(service, run_row["workflow_id"], resume_body, user, resume_run=run_row, approved_node_id=node_id)
     except Exception as error:
         _record_approval_resume_failure(service, run_id, approval_row["id"], node_id, decided_at, user, error)
         raise

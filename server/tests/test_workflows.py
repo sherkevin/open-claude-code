@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.security import AppError
@@ -248,6 +250,85 @@ def test_model_mode_is_limited_to_agent_nodes():
     with pytest.raises(AppError) as error:
         validate_graph(payload)
     assert error.value.code == "WORKFLOW_EXTERNAL_EXECUTION_FORBIDDEN"
+
+
+def test_live_mcp_read_node_calls_bound_readonly_tool_and_persists_evidence(monkeypatch, client):
+    class FakeResult:
+        isError = False
+
+        def model_dump(self, mode="json"):
+            return {
+                "structuredContent": {"rows": [{"id": "R-7", "status": "ready"}], "sources": [{"title": "质量台账", "excerpt": "R-7 已完成复核", "locator": {"database": "qa", "table": "records", "fields": ["id", "status"], "queried_at": "2026-11-08T00:00:00Z"}}]},
+                "content": [{"type": "text", "text": "R-7 已完成复核"}],
+                "isError": False,
+            }
+
+    class FakeSession:
+        calls = []
+
+        def __init__(self, *streams):
+            self.streams = streams
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, name, arguments=None, read_timeout_seconds=None):
+            self.calls.append({"name": name, "arguments": arguments})
+            return FakeResult()
+
+    class FakeStreams:
+        async def __aenter__(self):
+            return (object(), object(), lambda: None)
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("mcp.ClientSession", FakeSession)
+    monkeypatch.setattr("mcp.client.streamable_http.streamable_http_client", lambda *args, **kwargs: FakeStreams())
+    connection = client.post("/api/v1/connections", json={"name": "质量 MCP", "url": "http://localhost:8932/mcp"}).json()
+    service = client.app.state.service
+    service.db.execute("UPDATE connections SET status='connected',tools=? WHERE id=?", (json.dumps([{"name": "read_records"}]), connection["id"]))
+    assistant = client.post("/api/v1/assistants", json={"name": "工具流程助手", "connections": [{"connection_id": connection["id"], "allowed_tools": ["read_records"], "auto_approved_tools": ["read_records"]}]}).json()
+    conversation = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"], "title": "工具运行会话"}).json()
+    tool_name = f"mcp__c{connection['id']}__read_records"
+    graph = {
+        "nodes": [
+            {"id": "read", "type": "mcp_read", "label": "读取质量记录", "config": {"mode": "live", "tool_name": tool_name, "arguments_json": '{"query":"{{input.topic}}"}'}},
+            {"id": "approval", "type": "approval", "label": "人工确认", "config": {}},
+        ],
+        "edges": [{"source": "read", "target": "approval", "label": "提交确认"}],
+    }
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "实时工具流程", "graph": graph}).json()
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={"conversation_id": conversation["id"], "input": {"topic": "设备验收"}})
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["status"] == "awaiting_approval" and run["execution_mode"] == "tool" and run["synthetic"] is False
+    assert run["trace"][0]["tool_call"] is True and run["trace"][0]["evidence_count"] == 1
+    assert run["output"]["tool_outputs"]["read"]["result"]["structuredContent"]["rows"][0]["id"] == "R-7"
+    assert run["output"]["tool_evidence"]["read"][0]["title"] == "质量台账"
+    assert FakeSession.calls == [{"name": "read_records", "arguments": {"query": "设备验收"}}]
+    evidence = service.db.one("SELECT * FROM workflow_tool_evidence WHERE workflow_run_id=?", (run["id"],))
+    assert evidence and evidence["node_id"] == "read"
+    resumed = client.post(f"/api/v1/workflow-runs/{run['id']}/approvals/{run['approval']['node_id']}/decision", json={"decision": "approve"})
+    assert resumed.status_code == 200 and resumed.json()["status"] == "succeeded" and resumed.json()["execution_mode"] == "tool"
+    assert service.db.one("SELECT COUNT(*) n FROM workflow_tool_evidence WHERE workflow_run_id=?", (run["id"],))["n"] == 1
+    assert FakeSession.calls == [{"name": "read_records", "arguments": {"query": "设备验收"}}]
+
+
+def test_live_mcp_read_requires_a_bound_session_and_auto_approval(client):
+    assistant = client.post("/api/v1/assistants", json={"name": "工具会话边界"}).json()
+    graph = {"nodes": [{"id": "read", "type": "mcp_read", "label": "实时读取", "config": {"mode": "live", "tool_name": "mcp__cfixture__read", "arguments_json": "{}"}}], "edges": []}
+    workflow = client.post(f"/api/v1/assistants/{assistant['id']}/workflows", json={"name": "实时边界", "graph": graph}).json()
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+    response = client.post(f"/api/v1/workflows/{workflow['id']}/runs", json={})
+    assert response.status_code == 409 and response.json()["error"]["code"] == "WORKFLOW_TOOL_SESSION_REQUIRED"
 
 
 def test_model_workflow_resumes_after_approval_without_repeating_completed_nodes(monkeypatch, client):
