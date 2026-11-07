@@ -775,8 +775,8 @@ export default function WorkflowPage({ assistantId, editable, resetEpoch = 0, on
 
   const activeNode = graph.nodes.find(node => node.id === selectedNode) || graph.nodes[0];
   const activeNodeFields = activeNode ? workflowFormFields({ nodes: [activeNode], edges: [] }) : [];
-  const activeModelId = nodeConfigText(activeNode, 'model_id', assistant?.default_model_id || '');
-  const activeModel = models.find(model => model.id === activeModelId);
+  const activeModelId = nodeConfigText(activeNode, 'model_id');
+  const activeModel = models.find(model => model.id === (activeModelId || assistant?.default_model_id || ''));
   const availableMcpTools = connections.flatMap(connection => {
     const binding = assistant?.connections.find(item => item.connection_id === connection.id);
     if (!binding) return [];
