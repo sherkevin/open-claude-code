@@ -24,8 +24,11 @@ function workflowNodeType(value: unknown): WorkflowNodeType {
 
 function positionFor(index: number): { x: number; y: number } {
   return {
-    x: 64 + (index % 3) * 300,
-    y: 64 + Math.floor(index / 3) * 190,
+    // Keep the initial graph readable in the split canvas + inspector layout.
+    // Users can still drag nodes freely and the deliberate position is stored
+    // in __ui after the first canvas edit.
+    x: 48 + (index % 3) * 230,
+    y: 48 + Math.floor(index / 3) * 160,
   };
 }
 
