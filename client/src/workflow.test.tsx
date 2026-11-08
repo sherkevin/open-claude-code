@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceDiagnosticField, workflowReferenceDiagnostics, workflowReferenceEdgeKeys, workflowReferenceRelations, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowModelIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceDiagnosticField, workflowReferenceDiagnostics, workflowReferenceEdgeKeys, workflowReferenceRelations, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -22,6 +22,14 @@ describe('low-code workflow canvas contracts', () => {
   it('keeps the visual contract explicitly synthetic', () => {
     expect(DEFAULT_WORKFLOW_GRAPH.nodes.every(node => node.config.mode === 'synthetic' || node.type === 'approval')).toBe(true);
     expect(DEFAULT_WORKFLOW_GRAPH.nodes.map(node => node.type)).toEqual(['input', 'agent', 'knowledge_search', 'approval']);
+  });
+
+  it('blocks model nodes whose catalog selection is unavailable or unsupported', () => {
+    const graph = { nodes: [{ id: 'review', type: 'agent' as const, label: '审核', config: { mode: 'model', model_id: 'deepseek-v4.1-flash', reasoning_level: 'high' } }], edges: [] };
+    const available = [{ id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', available: true, reasoning_levels: [{ id: 'default', label: '默认' }, { id: 'high', label: '高' }], default_reasoning_level: 'default' }];
+    expect(workflowModelIssue(graph, available)).toBe('');
+    expect(workflowModelIssue(graph, [{ ...available[0], available: false, unavailable_reason: '线路未开通' }])).toContain('线路未开通');
+    expect(workflowModelIssue(graph, [{ ...available[0], reasoning_levels: [{ id: 'default', label: '默认' }] }])).toContain('推理级别不受');
   });
 
   it('exposes declared template fields without accepting arbitrary secret inputs', () => {
