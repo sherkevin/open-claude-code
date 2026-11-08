@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowModelIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceDiagnosticField, workflowReferenceDiagnostics, workflowReferenceEdgeKeys, workflowReferenceRelations, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
+import { DEFAULT_WORKFLOW_GRAPH, changeWorkflowNodeType, duplicateWorkflowNode, graphHasCycle, graphHasIsolatedNode, insertWorkflowNode, nodeOutputSchemaText, parseWorkflowInputBindings, serializeWorkflowOutputSchema, topologicalOrder, workflowArtifactIssue, workflowBindingSourceOptions, workflowConditionIssue, workflowConfigKeyLabel, workflowDownstreamReferences, workflowErrorRecoveryHint, workflowFormFields, workflowFormIssue, workflowInputBindingsIssue, workflowInputBindingsText, workflowKnowledgeIssue, workflowModelIssue, workflowNodeConfigComparison, workflowNodeReferences, workflowOutputReferenceBinding, workflowOutputSchemaComparison, workflowOutputSchemaIssue, workflowOutputSchemaDraft, workflowReferenceDiagnosticField, workflowReferenceDiagnostics, workflowReferenceEdgeKeys, workflowReferenceRelations, workflowRunHistoryLabel, workflowRunInput, workflowRunNodeComparison, workflowRunNodeContext, workflowRunReferenceValue, workflowRunSourceNodeId, workflowRunSummary, workflowRunTraceExecutionLabel, workflowRunTraceStatusClass, workflowRunTraceStatusLabel, workflowTemplateReferences, workflowToolArgumentsIssue, workflowValuePreview } from './WorkflowPage';
 
 describe('low-code workflow canvas contracts', () => {
   it('keeps the default business flow acyclic and ordered', () => {
@@ -30,6 +30,12 @@ describe('low-code workflow canvas contracts', () => {
     expect(workflowModelIssue(graph, available)).toBe('');
     expect(workflowModelIssue(graph, [{ ...available[0], available: false, unavailable_reason: '线路未开通' }])).toContain('线路未开通');
     expect(workflowModelIssue(graph, [{ ...available[0], reasoning_levels: [{ id: 'default', label: '默认' }] }])).toContain('推理级别不受');
+  });
+
+  it('labels the execution boundary recorded by a run trace', () => {
+    expect(workflowRunTraceExecutionLabel({ external_call: true })).toBe('真实模型调用');
+    expect(workflowRunTraceExecutionLabel({ tool_call: true })).toBe('实时只读工具');
+    expect(workflowRunTraceExecutionLabel({ external_call: false, tool_call: false })).toBe('合成执行');
   });
 
   it('exposes declared template fields without accepting arbitrary secret inputs', () => {
