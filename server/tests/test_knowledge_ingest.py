@@ -462,8 +462,12 @@ def test_api_exposes_ingestion_stage_cancel_and_reindex(tmp_path, monkeypatch):
         slow_document = slow.json()
         assert started.wait(8)
         cancelled = client.post(f"/api/v1/knowledge-documents/{slow_document['id']}/cancel").json()
-        assert cancelled["status"] == "cancelled"
-        assert cancelled["ingestion"]["status"] == "cancelled"
+        # Cancellation is cooperative: the endpoint records the request and
+        # the worker acknowledges it between pages.
+        assert cancelled["ingestion"]["cancel_requested"] is True
+        _wait_for(lambda: client.get(
+            f"/api/v1/knowledge-documents/{slow_document['id']}/ingestion"
+        ).json()["job"]["status"] == "cancelled")
 
         service.knowledge.parser.parse = original_parse
         reopened = client.post(f"/api/v1/knowledge-documents/{slow_document['id']}/reindex").json()

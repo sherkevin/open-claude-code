@@ -738,10 +738,14 @@ class KnowledgeService:
                 for chunk, vector in zip(chunks, vectors):
                     self.db.execute("INSERT INTO knowledge_chunks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (chunk["id"], document_id, version, chunk["page"], chunk["section"], chunk["paragraph"], chunk["start"], chunk["end"], chunk["text"], dump(terms(chunk["text"])), dump(vector), self.embeddings.name))
                 self._build_graph(document_id, version, chunks)
-                self.db.execute(
-                    "UPDATE knowledge_versions SET status='ready',error=NULL,error_code=NULL,page_count=?,chunk_count=?,extraction=?,embedding_model=? WHERE document_id=? AND version=?",
+                updated = self.db.execute(
+                    "UPDATE knowledge_versions SET status='ready',error=NULL,error_code=NULL,page_count=?,chunk_count=?,extraction=?,embedding_model=? WHERE document_id=? AND version=? AND status='processing'",
                     (len(pages), len(chunks), dump(sorted({page["extraction"] for page in pages})), self.embeddings.name, document_id, version),
                 )
+                if updated.rowcount != 1:
+                    # A delete or cancel won the race after the last checkpoint.
+                    # Raise inside the transaction so no chunk is committed.
+                    raise IngestionCancelled()
                 if is_image:
                     self.db.execute("UPDATE knowledge_image_assets SET ocr_status='ready' WHERE document_id=? AND version=?", (document_id, version))
             self._set_stage(job_id, "done", f"{len(pages)} 页 / {len(chunks)} 个片段")
