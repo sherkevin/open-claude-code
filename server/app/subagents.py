@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import math
+import shutil
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -156,15 +157,6 @@ class SubagentOrchestrator:
         if depth > self.max_depth:
             raise AppError(422, "SUBAGENT_DEPTH_LIMIT", "子任务嵌套层级超过限制")
         normalized = self._normalize_tasks(tasks)
-        existing = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY created_at", (parent_run_id,))
-        if existing:
-            # Idempotent plan creation is safe only when the requested shape is
-            # identical; never create a second fan-out for the same parent.
-            requested = [_task_digest(item) for item in normalized]
-            if [row["task_digest"] for row in existing] != requested:
-                raise AppError(409, "SUBAGENT_PLAN_EXISTS", "父任务已有不同的子任务计划")
-            return self.plan_view(parent_run_id)
-
         timestamp = now()
         capability = {
             "mode": "synthetic",
@@ -175,35 +167,61 @@ class SubagentOrchestrator:
             "parent_history": False,
             "parent_memory": False,
         }
+        child_root = self.service.settings.data_dir / "workspaces" / parent["conversation_id"] / "subagents"
         rows = []
-        for item in normalized:
-            child_id = uid()
-            rows.append((
-                child_id,
-                parent_run_id,
-                parent.get("root_run_id") or parent_run_id,
-                parent["user_id"],
-                parent["conversation_id"],
-                depth,
-                "synthetic_readonly",
-                "queued",
-                None,
-                _task_digest(item),
-                dump(capability),
-                f"subagent-workspace-{child_id}",
-                f"subagent-memory-{child_id}",
-                0.0,
-                dump({}),
-                timestamp,
-                None,
-                None,
-                None,
-                None,
-            ))
-        self.service.db.executemany(
-            "INSERT INTO subagent_children(child_id,parent_run_id,root_run_id,user_id,conversation_id,depth,role,status,stop_reason,task_digest,capability_snapshot,workspace_id,memory_scope_id,reserved_budget,observed_usage,created_at,started_at,completed_at,cancelled_at,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            rows,
-        )
+        created_roots = []
+        # Check and insert under one write transaction so two concurrent
+        # submissions cannot create a duplicate fan-out for one parent.
+        with self.service.db.transaction():
+            existing = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY created_at", (parent_run_id,))
+            if existing:
+                # Idempotent plan creation is safe only when the requested
+                # shape is identical; never create a second fan-out.
+                requested = [_task_digest(item) for item in normalized]
+                if [row["task_digest"] for row in existing] != requested:
+                    raise AppError(409, "SUBAGENT_PLAN_EXISTS", "父任务已有不同的子任务计划")
+                return self.plan_view(parent_run_id)
+            try:
+                for item in normalized:
+                    child_id = uid()
+                    child_directory = child_root / child_id
+                    workspace_directory = child_directory / "workspace"
+                    memory_directory = child_directory / "memory"
+                    workspace_directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+                    memory_directory.mkdir(parents=False, exist_ok=False, mode=0o700)
+                    workspace_directory.chmod(0o700)
+                    memory_directory.chmod(0o700)
+                    created_roots.append(child_directory)
+                    rows.append((
+                        child_id,
+                        parent_run_id,
+                        parent.get("root_run_id") or parent_run_id,
+                        parent["user_id"],
+                        parent["conversation_id"],
+                        depth,
+                        "synthetic_readonly",
+                        "queued",
+                        None,
+                        _task_digest(item),
+                        dump(capability),
+                        f"subagents/{child_id}/workspace",
+                        f"subagents/{child_id}/memory",
+                        0.0,
+                        dump({}),
+                        timestamp,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ))
+                self.service.db.executemany(
+                    "INSERT INTO subagent_children(child_id,parent_run_id,root_run_id,user_id,conversation_id,depth,role,status,stop_reason,task_digest,capability_snapshot,workspace_id,memory_scope_id,reserved_budget,observed_usage,created_at,started_at,completed_at,cancelled_at,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    rows,
+                )
+            except BaseException:
+                for directory in created_roots:
+                    shutil.rmtree(directory, ignore_errors=True)
+                raise
         self.remember_inputs(parent_run_id, normalized)
         self._emit(parent_run_id, "subagent.plan.created", {
             "plan_id": parent_run_id,
@@ -248,6 +266,7 @@ class SubagentOrchestrator:
             "capability_snapshot": json.loads(row["capability_snapshot"]),
             "workspace_id": row["workspace_id"],
             "memory_scope_id": row["memory_scope_id"],
+            "isolation": "dedicated_workspace_and_memory",
             "reserved_budget": row["reserved_budget"],
             "observed_usage": json.loads(row["observed_usage"] or "{}"),
             "created_at": row["created_at"],

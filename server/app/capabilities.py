@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .db import dump
+from .file_tools import build_file_tools
 from .security import AppError
 from .web_tools import WebTools
 
@@ -59,4 +60,17 @@ def create_workspace_tools(runtime):
             return await invoke("web_read", arguments, lambda active, current_user, run_id:
                 web.read_for_run(current_user, active, run_id, arguments["url"], query=arguments.get("query", "")))
         tools.extend([search_web, read_web])
+
+    def sdk_tool(definition):
+        annotations = ToolAnnotations(
+            readOnlyHint=definition.read_only,
+            destructiveHint=False,
+        )
+
+        async def handler(arguments):
+            return await definition.handler(arguments)
+
+        return tool(definition.name, definition.description, definition.input_schema, annotations=annotations)(handler)
+
+    tools.extend(sdk_tool(definition) for definition in build_file_tools(runtime))
     return create_sdk_mcp_server("workspace", "0.4.0", tools=tools) if tools else None

@@ -167,6 +167,60 @@ CREATE INDEX IF NOT EXISTS workflow_versions_status ON workflow_versions(workflo
 CREATE TABLE IF NOT EXISTS workflow_runs(id TEXT PRIMARY KEY,workflow_id TEXT NOT NULL REFERENCES workflows(id),conversation_id TEXT REFERENCES conversations(id),version INTEGER NOT NULL,graph_hash TEXT NOT NULL,permission_digest TEXT NOT NULL,permission_snapshot_json TEXT NOT NULL DEFAULT '{}',user_id TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL,input_json TEXT NOT NULL DEFAULT '{}',output_json TEXT NOT NULL DEFAULT '{}',trace_json TEXT NOT NULL DEFAULT '[]',error TEXT,created_at TEXT NOT NULL,completed_at TEXT);
 CREATE INDEX IF NOT EXISTS workflow_runs_owner ON workflow_runs(user_id,created_at);
 CREATE INDEX IF NOT EXISTS workflow_runs_workflow ON workflow_runs(workflow_id,created_at);
+CREATE TABLE IF NOT EXISTS workspace_file_versions(
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    path TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL REFERENCES users(id),
+    PRIMARY KEY(conversation_id,path)
+);
+CREATE INDEX IF NOT EXISTS workspace_file_versions_conversation
+    ON workspace_file_versions(conversation_id,deleted,path);
+CREATE TABLE IF NOT EXISTS workspace_file_version_history(
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    path TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    PRIMARY KEY(conversation_id,path,revision)
+);
+CREATE TABLE IF NOT EXISTS plugin_registry(
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    license TEXT NOT NULL,
+    package_sha256 TEXT NOT NULL,
+    declared_permissions TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    review_note TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    approved_by TEXT REFERENCES users(id),
+    approved_at TEXT,
+    revoked_by TEXT REFERENCES users(id),
+    revoked_at TEXT,
+    UNIQUE(name,version,package_sha256)
+);
+CREATE INDEX IF NOT EXISTS plugin_registry_status ON plugin_registry(status,updated_at);
+CREATE TABLE IF NOT EXISTS plugin_registry_events(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin_id TEXT NOT NULL REFERENCES plugin_registry(id),
+    action TEXT NOT NULL,
+    actor_id TEXT NOT NULL REFERENCES users(id),
+    details TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS plugin_registry_events_plugin ON plugin_registry_events(plugin_id,id);
 """)
         # Missing rows belong to conversations predating session-isolated memory.
         # New conversations create their explicit empty scope in the same

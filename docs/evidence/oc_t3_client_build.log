@@ -1,0 +1,17 @@
+vite v6.1.0 building for production...
+transforming...
+✓ 3115 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                    0.56 kB │ gzip:   0.43 kB
+dist/assets/FlowGramWorkflowCanvas-Dzj7Xr_O.css    2.47 kB │ gzip:   0.68 kB
+dist/assets/index-E_xfPXns.css                   164.57 kB │ gzip:  31.11 kB
+dist/assets/index-Cw8QBewR.js                    608.37 kB │ gzip: 192.02 kB
+dist/assets/FlowGramWorkflowCanvas-C0bV_21b.js   782.55 kB │ gzip: 239.02 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 11.43s
+EXIT_CODE=0

@@ -564,6 +564,14 @@ class Service:
                 return True
         if tool_name in {"mcp__workspace__web_search", "mcp__workspace__web_read"} and assistant.get("web_search_enabled") and (not snapshot or snapshot.get("web_search_enabled")):
             return True
+        if tool_name in {"mcp__workspace__file_read", "mcp__workspace__file_search", "mcp__workspace__file_write"}:
+            # The workbench is conversation-private. Paths that escape it are
+            # rejected before any approval prompt; only writes need approval.
+            from .file_tools import WorkspaceFiles
+            files = WorkspaceFiles(self, conversation_id, user["id"])
+            if tool_name in {"mcp__workspace__file_read", "mcp__workspace__file_write"}:
+                files.validate_path(arguments.get("path"))
+            return tool_name != "mcp__workspace__file_write"
         for binding in json.loads(assistant["connections"]):
             connection = self.require_resource("connections", binding["connection_id"], user)
             prefix = f"mcp__c{connection['id']}__"

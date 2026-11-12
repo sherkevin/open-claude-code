@@ -1,0 +1,28 @@
+
+ RUN  v3.0.5 /media/data3/dengkw/projects/open-claude-code/.claude/worktrees/oc-t3-file-subagent-plugin/client
+
+ ✓ src/display.test.ts (2 tests) 11ms
+ ✓ src/workflowFlowgram.test.ts (3 tests) 12ms
+ ✓ src/api.test.ts (2 tests) 10ms
+ ✓ src/feishu.test.ts (2 tests) 13ms
+ ✓ src/stream.test.ts (7 tests) 21ms
+ ✓ src/memory.test.ts (5 tests) 89ms
+ ✓ src/integration.test.ts (4 tests) 17ms
+ ✓ src/approvals.test.tsx (1 test) 6ms
+ ✓ src/plugins.test.tsx (3 tests) 6ms
+ ✓ src/knowledgeSearch.test.ts (4 tests) 8ms
+ ✓ src/context.test.ts (3 tests) 8ms
+ ✓ src/components.test.tsx (3 tests) 20ms
+ ✓ src/workflow.test.tsx (38 tests) 42ms
+ ✓ src/benchmark.test.tsx (4 tests) 53ms
+ ✓ src/models.test.tsx (10 tests) 72ms
+ ✓ src/assistantConfiguration.test.tsx (9 tests) 111ms
+ ✓ src/runMetrics.test.tsx (2 tests) 23ms
+ ✓ src/workspace.test.tsx (10 tests) 89ms
+
+ Test Files  18 passed (18)
+      Tests  112 passed (112)
+   Start at  13:16:14
+   Duration  2.18s (transform 2.93s, setup 0ms, collect 16.14s, tests 611ms, environment 7ms, prepare 3.36s)
+
+EXIT_CODE=0
