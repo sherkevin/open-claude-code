@@ -18,6 +18,7 @@ from .security import AppError, SecretStore, password_hash, redact, tool_risk_pr
 from .subagents import SubagentOrchestrator
 from .model_approval import ModelApprovalService
 from .high_risk_approval import HighRiskApprovalService
+from .answer_cache import AnswerCacheService
 
 
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
@@ -106,6 +107,10 @@ class Service:
         self.subagents = SubagentOrchestrator(self)
         self.model_approval = ModelApprovalService(self)
         self.high_risk_approval = HighRiskApprovalService(self)
+        # Reusable answers are isolated by user, assistant, knowledge version,
+        # model version and prompt; approval outcomes and side-effect tool
+        # results are refused by the cache itself.
+        self.answer_cache = AnswerCacheService(self)
 
     def model_approval_policy(self, assistant_id: str) -> dict:
         return self.model_approval.policy_view(assistant_id)
@@ -118,6 +123,41 @@ class Service:
 
     def save_high_risk_approval_policy(self, assistant_id: str, data: dict, user: dict) -> dict:
         return self.high_risk_approval.save_policy(assistant_id, data, user)
+
+    def _answer_cache_validator(self, user_id: str, assistant_id: str):
+        """Return a hit-time check of the principal's current grants."""
+
+        def validate(entry: dict) -> bool:
+            user = self.db.one("SELECT * FROM users WHERE id=?", (user_id,))
+            if not user or not user["enabled"]:
+                return False
+            assistant = self.db.one("SELECT * FROM assistants WHERE id=? AND deleted=0", (assistant_id,))
+            if not assistant or not assistant["enabled"] or not resource_access(assistant, user):
+                return False
+            try:
+                bases = json.loads(entry.get("knowledge_bases") or "[]")
+            except ValueError:
+                return False
+            for base_id in bases:
+                row = self.db.one("SELECT * FROM knowledge_bases WHERE id=? AND deleted=0", (base_id,))
+                if not row or not row["enabled"] or not self.resource_access(row, user):
+                    return False
+            return True
+
+        return validate
+
+    def cached_answer(self, user_id: str, assistant_id: str, prompt: str, **kwargs):
+        """Look up a reusable answer after rechecking current authorization."""
+        return self.answer_cache.lookup(
+            user_id=user_id,
+            assistant_id=assistant_id,
+            prompt=prompt,
+            validate=self._answer_cache_validator(user_id, assistant_id),
+            **kwargs,
+        )
+
+    def remember_answer(self, user_id: str, assistant_id: str, prompt: str, answer: str, **kwargs):
+        return self.answer_cache.put(user_id=user_id, assistant_id=assistant_id, prompt=prompt, answer=answer, **kwargs)
 
     def _migrate_model_selections(self):
         with self.db.transaction():
@@ -250,6 +290,9 @@ class Service:
             self.db.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash(data["password"]), item_id))
         if "password" in data or data.get("enabled") is False or "role" in data:
             self.db.execute("DELETE FROM sessions WHERE user_id=?", (item_id,))
+            # A disabled or downgraded account must not keep reading answers
+            # cached under its previous grants.
+            self.answer_cache.invalidate_user(item_id)
         return user_view(self.require("users", item_id))
 
     def save_connection(self, data, item_id=None, user=None):
@@ -368,6 +411,9 @@ class Service:
         else:
             item_id = uid()
             self.db.execute("INSERT INTO assistants(id,name,description,instructions,enabled,access,connections,scope,owner_id,knowledge_base_ids,skill_ids,web_search_enabled,default_model_id,default_reasoning_level) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, *values))
+        # An assistant revision can change its knowledge bases, web access or
+        # tool grants. Previously cached answers must not survive that update.
+        self.answer_cache.invalidate_assistant(item_id)
         # Return exactly the authorized version written by this request. A
         # global reread could expose a subsequent editor's now-private version.
         written = dict(zip(("name", "description", "instructions", "enabled", "access", "connections", "scope", "owner_id", "knowledge_base_ids", "skill_ids", "web_search_enabled", "default_model_id", "default_reasoning_level"), values))

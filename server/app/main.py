@@ -258,6 +258,7 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
     def assistant_delete(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
         service.require_resource("assistants", item_id, user, edit=True)
         service.db.execute("UPDATE assistants SET deleted=1,enabled=0,revision=revision+1 WHERE id=?", (item_id,))
+        service.answer_cache.invalidate_assistant(item_id)
         return Response(status_code=204)
 
     @app.get(prefix + "/conversations")

@@ -1,8 +1,8 @@
 """Assistant-bound tools hosted in the existing native execution session."""
 from __future__ import annotations
 
-from .db import dump
 from .file_tools import build_file_tools
+from .safety import guarded_blocks
 from .security import AppError
 from .web_tools import WebTools
 
@@ -31,7 +31,7 @@ def create_workspace_tools(runtime):
             runtime.check_tool(f"mcp__workspace__{name}", arguments)
             active, current_user, run_id = context()
             result = await callback(active, current_user, run_id)
-            return {"content": [{"type": "text", "text": dump(result)}]}
+            return {"content": guarded_blocks(name, result)}
         except AppError as exc:
             return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
         except Exception:

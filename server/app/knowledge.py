@@ -457,11 +457,13 @@ class KnowledgeService:
         else:
             kb_id = uid()
             self.db.execute("INSERT INTO knowledge_bases VALUES(?,?,?,?,?,?,?,1,0,?,?)", (kb_id, values["name"].strip(), values["description"], user["id"], values["scope"], int(values["enabled"]), int(values["default_for_new_assistants"]), stamp, stamp))
+        self.service.answer_cache.invalidate_knowledge(kb_id)
         return self.view(self.require(kb_id, user), user)
 
     def delete(self, kb_id, user):
         self.require(kb_id, user, edit=True)
         self.db.execute("UPDATE knowledge_bases SET deleted=1,enabled=0,revision=revision+1,updated_at=? WHERE id=?", (now(), kb_id))
+        self.service.answer_cache.invalidate_knowledge(kb_id)
 
     def document(self, document_id, user, edit=False):
         row = self.db.one("SELECT * FROM knowledge_documents WHERE id=? AND deleted=0", (document_id,))
@@ -543,6 +545,7 @@ class KnowledgeService:
                 self._prepare_pdf_previews(document_id, version, path)
             self._index(document_id, version, path, name)
             self.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), kb_id))
+            self.service.answer_cache.invalidate_knowledge(kb_id)
             return self.document_view(self.version(document_id, version, user))
 
     def _prepare_image_asset(self, document_id, version, path, mime_type, size):
@@ -867,6 +870,7 @@ class KnowledgeService:
             self.db.execute("UPDATE knowledge_versions SET status='processing',error=NULL WHERE document_id=? AND version=?", (document_id, row["version"]))
             self._index(document_id, row["version"], self.content_path(row), row["name"])
             self.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), row["kb_id"]))
+            self.service.answer_cache.invalidate_knowledge(row["kb_id"])
         return self.document_view(self.version(document_id, None, user))
 
     def content_path(self, row):
@@ -1169,6 +1173,7 @@ def create_knowledge_router(svc, authenticated):
         row = service.knowledge.document(document_id, user, edit=True)
         service.db.execute("UPDATE knowledge_documents SET deleted=1 WHERE id=?", (document_id,))
         service.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), row["kb_id"]))
+        service.answer_cache.invalidate_knowledge(row["kb_id"])
     @router.get("/knowledge-documents/{document_id}/content")
     def content(document_id: str, version: int | None = Query(default=None, ge=1), user=Depends(authenticated), service=Depends(svc)):
         row = service.knowledge.version(document_id, version, user)

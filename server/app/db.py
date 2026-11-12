@@ -97,6 +97,28 @@ CREATE TABLE IF NOT EXISTS approval_votes(
     PRIMARY KEY(approval_id,voter_id)
 );
 CREATE INDEX IF NOT EXISTS approval_votes_approval ON approval_votes(approval_id,decided_at);
+-- Reusable model answers only.  Approval outcomes and side-effect tool results
+-- are never written here; each row is bound to the user, assistant, knowledge
+-- version, model version and normalized prompt that produced it.
+CREATE TABLE IF NOT EXISTS answer_cache(
+    id TEXT PRIMARY KEY,
+    cache_key TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    assistant_id TEXT NOT NULL REFERENCES assistants(id),
+    conversation_id TEXT,
+    prompt_digest TEXT NOT NULL,
+    knowledge_version TEXT NOT NULL DEFAULT '',
+    knowledge_bases TEXT NOT NULL DEFAULT '[]',
+    model_version TEXT NOT NULL DEFAULT '',
+    answer TEXT NOT NULL,
+    citations TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_hit_at TEXT
+);
+CREATE INDEX IF NOT EXISTS answer_cache_user ON answer_cache(user_id,expires_at);
+CREATE INDEX IF NOT EXISTS answer_cache_assistant ON answer_cache(assistant_id,expires_at);
+CREATE INDEX IF NOT EXISTS answer_cache_expiry ON answer_cache(expires_at);
 """
 
 

@@ -89,6 +89,18 @@ def tool_risk_profile(tool_name: str) -> dict[str, object]:
             "approval_policy": "user_confirmation",
             "impact": "修改当前会话工作区或记忆，执行前需要用户明确确认",
         }
+    if tool_name == "mcp__workspace__generate_xlsx":
+        return {
+            "risk_level": "medium",
+            "approval_policy": "user_confirmation",
+            "impact": "在当前会话产物目录生成可下载的 Excel 文件",
+        }
+    if tool_name == "mcp__workspace__generate_image":
+        return {
+            "risk_level": "high",
+            "approval_policy": "deny_by_default",
+            "impact": "图片生成依赖单独授权的模型适配器，未验收时默认拒绝",
+        }
     if tool_name.startswith("mcp__"):
         return {
             "risk_level": "high",

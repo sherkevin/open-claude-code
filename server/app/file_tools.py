@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import dump, now
+from .safety import guarded_blocks
 from .security import AppError, workspace_path
 
 
@@ -253,7 +254,10 @@ def build_file_tools(runtime) -> list[FileToolDefinition]:
             current_user = service.require("users", conversation["user_id"])
             service.usable_assistant(conversation["assistant_id"], current_user)
             files = WorkspaceFiles(service, runtime.conversation_id, current_user["id"])
-            return {"content": [{"type": "text", "text": dump(callback(files, arguments))}]}
+            result = callback(files, arguments)
+            # Reader results are untrusted document content. Writer results
+            # only contain file metadata and pass through unchanged.
+            return {"content": guarded_blocks(name, result) if name != "file_write" else [{"type": "text", "text": dump(result)}]}
         except AppError as exc:
             return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
         except Exception:
