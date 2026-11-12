@@ -18,7 +18,7 @@ from .config import Settings
 from .db import dump, now, uid
 from .models import *
 from .middleware import BodyLimitMiddleware
-from .runtime import RunManager, SDKRuntime
+from .runtime import RunManager
 from .security import AppError, password_hash, password_matches, safe_name, token_hash
 from .service import Service, TERMINAL, user_view, connection_view, assistant_view, conversation_view, message_view, file_view, approval_view
 
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 COOKIE = "zhixing_session"
 
 
-def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> FastAPI:
+def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAPI:
     settings = settings or Settings()
 
     @asynccontextmanager
@@ -36,6 +36,7 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
         service.manager = manager
         manager.recover()
         app.state.login_attempts = {}
+        app.state.feishu_h5_attempts = {}
         app.state.dummy_password_hash = password_hash(secrets.token_urlsafe(32))
         yield
         await manager.close()
@@ -97,6 +98,8 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
     app.include_router(create_import_router(svc, authenticated))
     from .skills import create_skill_router
     app.include_router(create_skill_router(svc, authenticated))
+    from .plugins import create_plugin_router
+    app.include_router(create_plugin_router(svc, admin))
     from .knowledge import create_knowledge_router
     from .evidence import create_evidence_router
     app.include_router(create_knowledge_router(svc, authenticated))
@@ -105,12 +108,32 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
     app.include_router(create_memory_router(svc, authenticated))
     from .context import create_context_router
     app.include_router(create_context_router(svc, authenticated))
+    from .feishu import create_feishu_router
+    app.include_router(create_feishu_router(svc))
+    from .feishu_h5 import create_feishu_h5_router
+    app.include_router(create_feishu_h5_router(svc))
+    from .benchmark import create_benchmark_router
+    app.include_router(create_benchmark_router(svc, admin))
+    from .artifacts import create_artifact_router
+    app.include_router(create_artifact_router(svc, authenticated))
+    from .workflows import create_workflow_router
+    app.include_router(create_workflow_router(svc, authenticated))
 
     prefix = "/api/v1"
 
     @app.get(prefix + "/config")
     def config():
-        return {"brand_name": settings.brand_name, "upload_max_bytes": settings.upload_max_bytes, "auth_types": ["none", "bearer"], **app.state.service.catalog.defaults}
+        return {
+            "brand_name": settings.brand_name,
+            "upload_max_bytes": settings.upload_max_bytes,
+            "auth_types": ["none", "bearer"],
+            "feishu_h5": {
+                "enabled": settings.feishu_h5_ready,
+                "app_id": settings.feishu_h5_app_id if settings.feishu_h5_ready else "",
+                "path": "/feishu",
+            },
+            **app.state.service.catalog.defaults,
+        }
 
     @app.get(prefix + "/models")
     def models(user=Depends(authenticated), service: Service = Depends(svc)):
@@ -121,6 +144,34 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
         """Return an advisory model recommendation without changing a session."""
         from .model_recommendation import provider_router
         return await provider_router(service, data.task_summary, data.candidate_model_ids)
+
+    @app.get(prefix + "/models/router-status")
+    def model_router_status(user=Depends(authenticated), service: Service = Depends(svc)):
+        """Return fail-closed router readiness without making a provider call."""
+        from .model_recommendation import router_preflight
+        return router_preflight(service)
+
+    @app.get(prefix + "/models/provider-preflight")
+    def model_provider_preflight(user=Depends(authenticated), service: Service = Depends(svc)):
+        """Report independent chat, Tab and knowledge-role readiness.
+
+        This is metadata-only. It never probes TokenHub or exposes private
+        provider settings; role-specific inference remains disabled until an
+        explicit adapter is configured and tested.
+        """
+        from .model_capabilities import provider_preflight
+        return provider_preflight(service)
+
+    @app.post(prefix + "/models/complete")
+    async def complete_model_text(data: ModelCompletionRequest, user=Depends(authenticated), service: Service = Depends(svc)):
+        """Return a real, bounded model completion for an explicit Tab press.
+
+        The endpoint is deliberately opt-in and never falls back to a hard-
+        coded phrase. If the authorized router route is unavailable, the
+        response carries an evidence gap and a null suggestion.
+        """
+        from .model_recommendation import provider_completion
+        return await provider_completion(service, data.text)
 
     @app.get(prefix + "/health/live")
     def live():
@@ -279,7 +330,17 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
 
     @app.post(prefix + "/conversations/{item_id}/messages", status_code=202)
     async def message_send(item_id: str, data: SendMessage, user=Depends(authenticated), service: Service = Depends(svc)):
-        result, created = service.prepare_run(item_id, data.model_dump(), user)
+        payload = data.model_dump()
+        conversation = service.require("conversations", item_id, user)
+        route_enabled = payload.get("auto_route") if payload.get("auto_route") is not None else bool(conversation.get("auto_model_routing"))
+        duplicate = service.db.one("SELECT id FROM runs WHERE conversation_id=? AND client_request_id=?", (item_id, payload["client_request_id"]))
+        if not duplicate and route_enabled and not payload.get("model_id") and payload.get("text", "").strip() and not conversation.get("active_run_id"):
+            # Provider-backed fitness routing is asynchronous at the API edge;
+            # prepare_run consumes the bounded result and records its evidence.
+            from .model_recommendation import provider_router
+            candidates = [item["id"] for item in service.catalog.public() if item["available"]]
+            payload["_route_recommendation"] = await provider_router(service, payload.get("text", ""), candidates)
+        result, created = service.prepare_run(item_id, payload, user)
         if created:
             service.manager.submit(result["run_id"])
         return result
@@ -377,9 +438,26 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
                 visible.append(approval_view(row))
         return visible
 
+    @app.get(prefix + "/approvals/{item_id}/memory-content")
+    def memory_approval_content(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        from .harness_memory import validate_memory_approval
+
+        row = service.require("approvals", item_id, user)
+        return validate_memory_approval(service, row, user)
+
     @app.post(prefix + "/approvals/{item_id}/decision")
     async def decide(item_id: str, data: ApprovalDecision, user=Depends(authenticated), service: Service = Depends(svc)):
         row = service.require("approvals", item_id)
+        from .harness_memory import MEMORY_WRITE, validate_memory_approval
+
+        if row["tool_name"] == MEMORY_WRITE:
+            row = service.require("approvals", item_id, user)
+            if row.get("approval_mode") == "dual":
+                raise AppError(403, "MEMORY_PRIVATE_REVIEW_UNAVAILABLE", "当前策略不支持私有记忆的跨用户正文审批")
+            if data.decision == "allow":
+                content = validate_memory_approval(service, row, user)
+                if not data.memory_content_digest or not secrets.compare_digest(data.memory_content_digest, content["content_digest"]):
+                    raise AppError(409, "MEMORY_REVIEW_REQUIRED", "请先打开完整记忆正文并确认本次写入内容")
         if row.get("approval_mode") == "dual":
             result = service.high_risk_approval.record_vote(row, user, data.decision)
             # Only the final vote wakes the waiting runtime.  The immutable
@@ -440,6 +518,17 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
         row = service.require("files", item_id, user)
         preview = row["mime_type"] in {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain"}
         return FileResponse(row["path"], media_type=row["mime_type"] if preview else "application/octet-stream", filename=row["name"], content_disposition_type="inline" if preview else "attachment", headers={"Content-Security-Policy": "sandbox; default-src 'none'"})
+
+    @app.get(prefix + "/files/{item_id}/xlsx-preview")
+    def file_xlsx_preview(item_id: str, rows: int = Query(default=200, ge=1, le=200), sheets: int = Query(default=10, ge=1, le=10), user=Depends(authenticated), service: Service = Depends(svc)):
+        from pathlib import Path
+
+        from .artifacts import xlsx_preview
+
+        row = service.require("files", item_id, user)
+        if not row["name"].lower().endswith(".xlsx") and row["mime_type"] != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            raise AppError(422, "XLSX_PREVIEW_UNSUPPORTED", "这个文件不是 Excel 工作簿")
+        return xlsx_preview(Path(row["path"]), max_rows=rows, max_sheets=sheets)
 
     @app.get(prefix + "/usage")
     def usage(user=Depends(authenticated), service: Service = Depends(svc)):

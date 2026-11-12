@@ -123,6 +123,31 @@ class ModelRecommendationRequest(InputModel):
     candidate_model_ids: list[str] | None = Field(default=None, max_length=20)
 
 
+class ModelCompletionRequest(InputModel):
+    """A short draft sent to the opt-in router for real Tab completion."""
+    text: str = Field(min_length=1, max_length=500)
+
+
+class XlsxSheet(InputModel):
+    """Bounded table input for a user-visible local Excel export."""
+    name: str = Field(default="Sheet 1", min_length=1, max_length=80)
+    columns: list[str] = Field(default_factory=list, max_length=50)
+    rows: list[list[str | int | float | bool | None] | dict[str, str | int | float | bool | None]] = Field(default_factory=list, max_length=5000)
+
+
+class XlsxArtifactRequest(InputModel):
+    filename: str = Field(default="导出.xlsx", min_length=1, max_length=180)
+    sheets: list[XlsxSheet] = Field(min_length=1, max_length=10)
+
+
+class ImageGenerationRequest(InputModel):
+    """Bounded prompt contract for the separately authorized image route."""
+    prompt: str = Field(min_length=1, max_length=2000)
+    model_id: str | None = Field(default=None, min_length=1, max_length=100)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
+    size: str | None = Field(default=None, pattern=r"^[1-9][0-9]{2,4}x[1-9][0-9]{2,4}$")
+
+
 class SendMessage(InputModel):
     client_request_id: str = Field(min_length=8, max_length=100)
     text: str = Field(default="", max_length=50000)
@@ -136,6 +161,7 @@ class SendMessage(InputModel):
 
 class ApprovalDecision(InputModel):
     decision: Literal["allow", "deny"]
+    memory_content_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ModelApprovalPolicy(InputModel):
@@ -165,3 +191,82 @@ class SubagentPlanRequest(InputModel):
 
     mode: Literal["synthetic"] = "synthetic"
     tasks: list[str | dict] = Field(min_length=1, max_length=4)
+
+
+WorkflowNodeType = Literal[
+    "input",
+    "agent",
+    "skill",
+    "knowledge_search",
+    "mcp_read",
+    "condition",
+    "approval",
+    "artifact",
+]
+
+
+class WorkflowNode(InputModel):
+    """A safe, declarative node used by the first local workflow slice."""
+
+    id: str = Field(min_length=1, max_length=64)
+    type: WorkflowNodeType
+    label: str = Field(default="", max_length=120)
+    config: dict[str, object] = Field(default_factory=dict, max_length=30)
+
+
+class WorkflowEdge(InputModel):
+    source: str = Field(min_length=1, max_length=64)
+    target: str = Field(min_length=1, max_length=64)
+    label: str = Field(default="", max_length=120)
+
+
+class WorkflowGraph(InputModel):
+    nodes: list[WorkflowNode] = Field(min_length=1, max_length=64)
+    edges: list[WorkflowEdge] = Field(default_factory=list, max_length=128)
+
+
+class WorkflowCreate(InputModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    graph: WorkflowGraph
+
+
+class WorkflowTemplateCreate(InputModel):
+    template_id: str = Field(min_length=1, max_length=80)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class WorkflowDraftPatch(InputModel):
+    expected_revision: int | None = Field(default=None, ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+    graph: WorkflowGraph
+
+
+class WorkflowRollback(InputModel):
+    version: int = Field(ge=1)
+
+
+class WorkflowRunRequest(InputModel):
+    input: dict[str, object] = Field(default_factory=dict, max_length=30)
+    # Optional session binding for the synthetic execution contract.  A
+    # bound conversation must belong to the workflow's assistant and the
+    # authenticated user; no provider or customer runtime is invoked.
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class WorkflowNodeDebugRequest(InputModel):
+    """Bounded input for testing one draft agent node before publishing."""
+
+    input: dict[str, object] = Field(default_factory=dict, max_length=30)
+
+
+class WorkflowChatRunRequest(InputModel):
+    """Start a published workflow from a chat conversation.
+
+    The conversation is the authority for the assistant binding, so the
+    payload contains only an idempotency key and the declared form input.
+    """
+
+    client_request_id: str = Field(min_length=8, max_length=100)
+    input: dict[str, object] = Field(default_factory=dict, max_length=30)

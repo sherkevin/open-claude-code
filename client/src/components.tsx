@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
-import { AlertCircle, Check, Download, FileText, LoaderCircle, X } from 'lucide-react';
+import { AlertCircle, Check, Download, FileText, LoaderCircle, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import { api, errorText, fileURL, sizeText } from './api';
 import type { StoredFile } from './types';
+import XlsxPreview from './XlsxPreview';
 
 export function Button({ children, className = '', busy, variant = 'primary', type = 'button', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean; variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
   return <button {...props} type={type} disabled={props.disabled || busy} className={`button ${variant} ${className}`}>{busy && <LoaderCircle size={16} className="spin" />}{children}</button>;
@@ -47,10 +48,12 @@ export function FileChip({ file, onRemove, onPreview }: { file: StoredFile; onRe
   return <div className="file-chip"><button type="button" onClick={onPreview} className="file-chip-main" title={file.name}><FileText size={17}/><span>{file.name}<small>{sizeText(file.size)}</small></span></button>{onRemove ? <button type="button" onClick={onRemove} className="icon-button" aria-label={`移除 ${file.name}`}><X size={14}/></button> : <a className="icon-button" aria-label={`下载 ${file.name}`} href={fileURL(file.id)} download={file.name}><Download size={14}/></a>}</div>;
 }
 export function FilePreview({ file, onClose }: { file: StoredFile; onClose: () => void }) {
-  const [text, setText] = useState(''); const [error, setError] = useState(''); const [url, setURL] = useState('');
+  const [text, setText] = useState(''); const [error, setError] = useState(''); const [url, setURL] = useState(''); const [zoom, setZoom] = useState(1);
   const image = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'].includes(file.mime_type);
+  const xlsx = file.name.toLowerCase().endsWith('.xlsx') || file.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   const plain = file.mime_type.startsWith('text/plain') || ['text/csv', 'application/json', 'text/markdown'].includes(file.mime_type);
   const pdf = file.mime_type === 'application/pdf';
+  useEffect(() => { setZoom(1); }, [file.id]);
   useEffect(() => {
     const controller = new AbortController(); let objectURL = '';
     if (!(image || plain || pdf)) return;
@@ -63,7 +66,8 @@ export function FilePreview({ file, onClose }: { file: StoredFile; onClose: () =
     }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); });
     return () => { controller.abort(); if (objectURL) URL.revokeObjectURL(objectURL); };
   }, [file.id, file.size, image, plain, pdf]);
-  return <Modal title={file.name} description={`${file.mime_type} · ${sizeText(file.size)}`} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{image && url ? <img src={url} alt={file.name} className="image-preview"/> : pdf && url ? <iframe title={file.name} src={url} className="pdf-preview" sandbox="allow-same-origin"/> : plain && !error ? <pre className="text-preview">{text || '正在读取…'}</pre> : !(image || plain || pdf) ? <EmptyState icon={<FileText/>} title="下载后查看此附件" description="这个文件类型暂不提供在线预览。"/> : !error ? <Loader/> : null}</div><footer className="modal-footer"><a className="button primary" href={fileURL(file.id)} download={file.name}><Download size={16}/>下载原文件</a></footer></Modal>;
+  const changeZoom = (factor: number) => setZoom(value => Math.min(4, Math.max(0.25, Math.round(value * factor * 100) / 100)));
+  return <Modal title={file.name} description={`${file.mime_type} · ${sizeText(file.size)}`} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{xlsx ? <XlsxPreview file={file}/> : image && url ? <div className="image-preview-wrap"><div className="image-zoom-controls" role="group" aria-label="图片缩放"><button type="button" className="icon-button" title="缩小" aria-label="缩小" disabled={zoom <= 0.25} onClick={() => changeZoom(0.5)}><Minus size={15}/></button><span>{Math.round(zoom * 100)}%</span><button type="button" className="icon-button" title="放大" aria-label="放大" disabled={zoom >= 4} onClick={() => changeZoom(2)}><Plus size={15}/></button><button type="button" className="icon-button" title="恢复原始大小" aria-label="恢复原始大小" onClick={() => setZoom(1)}><RotateCcw size={15}/></button></div><div className="image-preview-scroll"><img src={url} alt={file.name} className="image-preview" style={{ transform: `scale(${zoom})` }}/></div></div> : pdf && url ? <iframe title={file.name} src={url} className="pdf-preview" sandbox="allow-same-origin"/> : plain && !error ? <pre className="text-preview">{text || '正在读取…'}</pre> : !(image || plain || pdf) ? <EmptyState icon={<FileText/>} title="下载后查看此附件" description="这个文件类型暂不提供在线预览。"/> : !error ? <Loader/> : null}</div><footer className="modal-footer"><a className="button primary" href={fileURL(file.id)} download={file.name}><Download size={16}/>下载原文件</a></footer></Modal>;
 }
 export function Attachment({ id, onPreview }: { id: string; onPreview: (file: StoredFile) => void }) {
   const [file, setFile] = useState<StoredFile | null>(null); const [error, setError] = useState(false);
