@@ -188,6 +188,18 @@ def create_plugin_router(service_dependency, admin):
     def register(body: PluginRegister, user=Depends(admin), service=Depends(service_dependency)):
         return register_plugin(service, body, user)
 
+    @router.get("/discovery")
+    def discovery(
+        harness_version: str = "0.2.1",
+        user=Depends(admin),
+        service=Depends(service_dependency),
+    ):
+        from .plugin_catalog import DiscoveryPolicy, discover_plugins, persist_discovery_audit
+
+        result = discover_plugins(DiscoveryPolicy(harness_version=harness_version))
+        persist_discovery_audit(service, result, user["id"])
+        return result.to_dict()
+
     @router.get("/{item_id}")
     def get(item_id: str, user=Depends(admin), service=Depends(service_dependency)):
         return plugin_view(service.require("plugin_registry", item_id))

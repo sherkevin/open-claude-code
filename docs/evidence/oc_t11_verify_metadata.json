@@ -1,0 +1,118 @@
+{
+  "mode": "offline",
+  "network_used": false,
+  "third_party_code_executed": false,
+  "harness_version": "0.2.1",
+  "catalog_size": 2,
+  "plugins": [
+    {
+      "name": "dshmarket",
+      "version": "1.73.18",
+      "commit": "7f32bb6c8566053916c5ba646263c132ac8d703c",
+      "license": "MIT",
+      "license_extra_terms": [],
+      "source_url": "https://github.com/dsh-market/dsh-market",
+      "distribution_url": "https://github.com/dsh-market/dsh-market/releases/download/v1.73.18/dshmarket-1.73.18.tgz",
+      "package_sha256": "a41997fcb10e1e72360f18abecf6a92346dc43c272054e3bd0b7996c61616c85",
+      "integrity": {
+        "pinned_sha256": "a41997fcb10e1e72360f18abecf6a92346dc43c272054e3bd0b7996c61616c85",
+        "scope": "pinned_review_record",
+        "artifact_path": null,
+        "artifact_sha256": null,
+        "artifact_present": false,
+        "match": null
+      },
+      "permissions": {
+        "declared": [
+          "web.read",
+          "workspace.files.write",
+          "process.execute"
+        ],
+        "discovery": [
+          "web.read"
+        ],
+        "granted": [
+          "web.read"
+        ],
+        "denied": []
+      },
+      "capabilities": [
+        "plugin.catalog.read",
+        "plugin.install.manual_review_only",
+        "plugin.update.manual_review_only"
+      ],
+      "harness": {
+        "requested": "0.2.1",
+        "min": "0.1.0-rc.6",
+        "max_tested": null,
+        "enforcement": "block",
+        "compatible": true,
+        "compatibility": "compatible",
+        "warning": null
+      },
+      "node_min_version": null,
+      "review_status": "offline_verified",
+      "install_state": "not_installed",
+      "execution_state": "not_executed",
+      "status": "verified",
+      "reasons": []
+    },
+    {
+      "name": "billion-context",
+      "version": "0.1.213",
+      "commit": "133f3525c628c4b959bb79ece82af6df82e131a3",
+      "license": "MIT",
+      "license_extra_terms": [
+        "Product surfaces must visibly credit billion-context and link to https://github.com/ranxianglei/billion-context"
+      ],
+      "source_url": "https://github.com/ranxianglei/billion-context",
+      "distribution_url": "https://registry.npmjs.org/billion-context/-/billion-context-0.1.213.tgz",
+      "package_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+      "integrity": {
+        "pinned_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+        "scope": "pinned_review_record",
+        "artifact_path": null,
+        "artifact_sha256": null,
+        "artifact_present": false,
+        "match": null
+      },
+      "permissions": {
+        "declared": [
+          "workspace.files.read",
+          "workspace.files.write",
+          "web.read",
+          "memory.read"
+        ],
+        "discovery": [
+          "workspace.files.read",
+          "web.read"
+        ],
+        "granted": [
+          "web.read",
+          "workspace.files.read"
+        ],
+        "denied": []
+      },
+      "capabilities": [
+        "context.compression.candidate",
+        "context.compression.usage_report"
+      ],
+      "harness": {
+        "requested": "0.2.1",
+        "min": null,
+        "max_tested": "0.2.0-rc.2",
+        "enforcement": "advisory",
+        "compatible": true,
+        "compatibility": "advisory",
+        "warning": "高于已验证版本 DSH 0.2.0-rc.2，需要回归"
+      },
+      "node_min_version": "20",
+      "review_status": "offline_verified",
+      "install_state": "not_installed",
+      "execution_state": "not_executed",
+      "status": "verified",
+      "reasons": []
+    }
+  ],
+  "ok": true
+}

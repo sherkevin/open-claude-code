@@ -221,6 +221,16 @@ CREATE TABLE IF NOT EXISTS plugin_registry_events(
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS plugin_registry_events_plugin ON plugin_registry_events(plugin_id,id);
+CREATE TABLE IF NOT EXISTS plugin_catalog_events(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin_name TEXT,
+    action TEXT NOT NULL,
+    reason TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    actor_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS plugin_catalog_events_created ON plugin_catalog_events(created_at,id);
 """)
         # Missing rows belong to conversations predating session-isolated memory.
         # New conversations create their explicit empty scope in the same
