@@ -32,12 +32,14 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
     @asynccontextmanager
     async def lifespan(app):
         service = app.state.service = Service(settings)
+        service.knowledge.start_worker()
         manager = app.state.manager = RunManager(service, runtime_factory)
         service.manager = manager
         manager.recover()
         app.state.login_attempts = {}
         app.state.dummy_password_hash = password_hash(secrets.token_urlsafe(32))
         yield
+        service.knowledge.stop_worker()
         await manager.close()
         service.db.close()
 

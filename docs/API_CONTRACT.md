@@ -236,19 +236,23 @@ Messages accept up to5 unique `skill_ids`. The server validates assistant bindin
 | --- | --- | --- |
 | GET/POST | /knowledge-bases | KnowledgeBase[] / create collection |
 | GET/PATCH/DELETE | /knowledge-bases/{id} | Authorized read, update or soft delete |
-| GET/POST | /knowledge-bases/{id}/documents | Latest document versions / multipart `file` upload |
-| POST | /knowledge-bases/{id}/documents/{document_id}/versions | Multipart new immutable version |
+| GET/POST | /knowledge-bases/{id}/documents | Latest document versions / multipart `file` upload; add `?background=true` to return the queued job immediately |
+| POST | /knowledge-bases/{id}/documents/{document_id}/versions | Multipart new immutable version; accepts `?background=true` |
 | GET | /knowledge-documents/{id}/versions | Authorized document version array |
 | GET | /knowledge-documents/{id}/chunks?version=N | Authorized extracted chunks for the selected version |
 | GET | /knowledge-documents/{id}/content?version=N | Authorized original bytes with correct MIME |
-| POST | /knowledge-documents/{id}/reindex | Rebuild current version index; returns document status |
-| DELETE | /knowledge-documents/{id} | Soft delete file and remove access from retrieval/source views |
+| GET | /knowledge-documents/{id}/ingestion?version=N | Current ingestion job, stage, attempts, events and limits |
+| POST | /knowledge-documents/{id}/reindex | Rebuild current version index; returns document status, accepts `?background=true` |
+| POST | /knowledge-documents/{id}/cancel | Request cancellation of the queued/running ingestion job |
+| DELETE | /knowledge-documents/{id} | Soft delete file, cancel its ingestion jobs and remove access from retrieval/source views |
 | POST | /knowledge-bases/{id}/search | `{query,limit?}` → `{results,retrieval}` |
 | GET | /knowledge-bases/{id}/graph?q=&limit= | Current ready document-version graph with source-linked nodes and edges; authorized knowledge-base access is rechecked |
 
-KnowledgeBase fields include `id,name,description,scope,owner_id,can_edit,enabled,revision,default_for_new_assistants,document_count,index_status,retrieval`. Only administrators may mark an enabled team knowledge base as a default. `index_status` is a count map by status, not a fabricated completion percentage.
+KnowledgeBase fields include `id,name,description,scope,owner_id,can_edit,enabled,revision,default_for_new_assistants,document_count,index_status,retrieval,ingestion`. `ingestion` reports the enforced bounds (`max_bytes,max_pages,max_text_characters,max_chunks,max_attempts,retry_delay_seconds,chunk_characters,chunk_window_characters`) and that over-limit input is rejected rather than silently truncated. Only administrators may mark an enabled team knowledge base as a default. `index_status` is a count map by status, not a fabricated completion percentage.
 
-Document metadata includes `id,kb_id,name,mime_type,version,sha256,size,status,error,page_count,chunk_count,embedding_model,extraction,created_at,content_url`. Status is `processing`, `ready`, `needs_ocr`, or `failed`. A failed or empty extraction is not ready. Originals and prior versions are retained separately; uploads keep the document format. File sizes follow deployment upload limits; the parser also bounds PDF pages and extracted text. Physical page numbers apply only to PDFs. Text/DOCX content uses sections, paragraph indices and extraction offsets.
+Document metadata includes `id,kb_id,name,mime_type,version,sha256,size,status,error,error_code,page_count,chunk_count,embedding_model,extraction,created_at,content_url,last_ready_version,ingestion`. The current version status is `processing`, `ready`, `needs_ocr`, or `failed`; a prior `last_ready_version` can remain retrievable while a new version is still processing or failed. A failed or empty extraction is not ready. Originals and prior versions are retained separately; uploads keep the document format. Physical page numbers apply only to PDFs. Text/DOCX content uses sections, paragraph indices and extraction offsets.
+
+`ingestion` is the job record: `job_id,status,stage,stage_label,attempts,max_attempts,retryable,error_code,error_message,can_cancel,can_retry,cancel_requested,available_at,created_at,updated_at,finished_at,events`. Job status is `queued`, `running`, `succeeded`, `failed` or `cancelled`; stages are `queued`, `prepare`, `parse`, `ocr`, `chunk`, `embed`, `graph`, `retry_wait` and `done`, with a timestamped event list. Transient environment failures (`PARSER_UNAVAILABLE`, `EMBEDDING_UNAVAILABLE`, `INDEX_UNAVAILABLE`) retry with bounded exponential backoff up to `max_attempts`; deterministic failures (`DOCUMENT_TOO_LARGE`, `INVALID_DOCUMENT`, `EMPTY_DOCUMENT`, `OCR_REQUIRED`, unsupported type) fail once. Cancellation is cooperative between stages and PDF pages. A process restart requeues an interrupted lease while attempt budget remains, otherwise exposes a terminal failure with `can_retry=true`.
 
 Search result fields include `document_id,version,name,title,text,excerpt,page,section,paragraph,start,end,chunk_id,score` and knowledge-base metadata. Retrieval reports `mode`, `lexical`, `vector_model`, `semantic` and `execution`. BM25 combines with the configured local vector method; `local-lexical-v1` is explicitly nonsemantic. Run admission pins visible document versions; retrieval and source reopening also recheck current authorization. The application supplies native targeted-read and retrieval tools through the same guarded runtime. See [knowledge implementation and deployment](KNOWLEDGE_AND_SOURCES.md).
 

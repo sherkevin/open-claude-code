@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import io
 import json
 import math
 import os
 import re
 import threading
+import time
 import zipfile
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 from xml.etree import ElementTree
@@ -32,7 +35,39 @@ IMAGE_REGION_THUMBNAIL = (320, 240)
 # Search responses can contain multiple hits from the same image. Keep media
 # evidence bounded while the client still has a useful visual preview.
 MAX_SEARCH_MEDIA_REGIONS = 4
+# Unified ingestion is bounded in both work and retries. Deterministic
+# problems (bad format, empty text, over-limit input) fail once; transient
+# environment failures are retried a small, fixed number of times.
+INGEST_MAX_ATTEMPTS = 3
+INGEST_RETRY_DELAY = 0.25
+INGEST_LEASE_SECONDS = 30
+INGEST_EVENT_LIMIT = 40
+RETRYABLE_INGEST_CODES = {"PARSER_UNAVAILABLE", "EMBEDDING_UNAVAILABLE", "INDEX_UNAVAILABLE"}
+IMAGE_FILE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+INGEST_STAGE_LABELS = {
+    "queued": "排队等待",
+    "prepare": "准备解析",
+    "parse": "解析文本",
+    "ocr": "光学字符识别",
+    "chunk": "结构化分块",
+    "embed": "建立词法与向量索引",
+    "graph": "生成图谱候选",
+    "retry_wait": "等待自动重试",
+    "done": "索引完成",
+    "failed": "索引失败",
+    "cancelled": "索引已取消",
+}
 MODEL = "BAAI/bge-small-zh-v1.5"
+
+
+class IngestionCancelled(Exception):
+    """Raised between bounded stages when a user cancels an active job."""
+
+
+def _stamp_after(seconds: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=max(0.0, seconds))).isoformat()
+
+
 GRAPH_STOPWORDS = {"设备", "系统", "数据", "文件", "内容", "说明", "检查", "需要", "可以", "以及", "进行", "其中", "这个", "当前"}
 # These patterns intentionally stay deterministic and explainable.  They are
 # useful for graph navigation and entity-focused acceptance fixtures, but are
@@ -118,6 +153,28 @@ CREATE TABLE IF NOT EXISTS knowledge_image_regions(
  created_at TEXT NOT NULL,
  UNIQUE(document_id,version,grid_row,grid_col));
 CREATE INDEX IF NOT EXISTS knowledge_image_regions_document ON knowledge_image_regions(document_id,version,grid_row,grid_col);
+CREATE TABLE IF NOT EXISTS knowledge_ingest_jobs(
+ job_id TEXT PRIMARY KEY,
+ document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
+ version INTEGER NOT NULL,
+ kb_id TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'queued',
+ stage TEXT NOT NULL DEFAULT 'queued',
+ runner TEXT NOT NULL DEFAULT 'worker',
+ attempts INTEGER NOT NULL DEFAULT 0,
+ max_attempts INTEGER NOT NULL DEFAULT 3,
+ error_code TEXT,
+ error_message TEXT,
+ events TEXT NOT NULL DEFAULT '[]',
+ cancel_requested INTEGER NOT NULL DEFAULT 0,
+ lease_owner TEXT,
+ lease_expires_at TEXT,
+ available_at TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ finished_at TEXT);
+CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_document ON knowledge_ingest_jobs(document_id,version,created_at);
+CREATE INDEX IF NOT EXISTS knowledge_ingest_jobs_status ON knowledge_ingest_jobs(status,available_at);
 """
 
 
@@ -203,9 +260,18 @@ class DocumentParser:
     def __init__(self):
         self.ocr = None
         self.lock = threading.Lock()
+        # The ingestion job installs a bounded stage callback for the duration
+        # of one parse. It only reports coarse stages, never document text.
+        self.stage_callback = None
+
+    def _notify_stage(self, stage, detail=""):
+        callback = self.stage_callback
+        if callback:
+            callback(stage, detail)
 
     def ocr_image(self, path):
         """Run optional local OCR for raster uploads without network access."""
+        self._notify_stage("ocr", "图片本地 OCR")
         try:
             import numpy as np
             from PIL import Image
@@ -298,6 +364,7 @@ class DocumentParser:
             return pages
 
     def ocr_page(self, page):
+        self._notify_stage("ocr", "扫描页本地 OCR")
         try:
             import numpy as np
             from rapidocr_onnxruntime import RapidOCR
@@ -316,9 +383,19 @@ class DocumentParser:
             result, _ = self.ocr(pixels)
             return "\n".join(item[1] for item in (result or []) if float(item[2]) >= 0.35)
 
-    def parse(self, path, name):
+    def parse(self, path, name, check_cancel=None):
         suffix = Path(name).suffix.lower()
         pages = []
+
+        def checkpoint():
+            if check_cancel:
+                check_cancel()
+
+        def invalid(exc):
+            if isinstance(exc, AppError):
+                raise exc
+            raise AppError(422, "INVALID_DOCUMENT", "文件无法解析，请检查格式是否损坏") from exc
+
         if suffix == ".pdf":
             try:
                 import pypdfium2 as pdfium
@@ -327,6 +404,7 @@ class DocumentParser:
                         raise AppError(413, "DOCUMENT_TOO_LARGE", f"单个知识文档最多支持 {MAX_PAGES} 页")
                     total = 0
                     for index in range(len(document)):
+                        checkpoint()
                         page = document[index]
                         try:
                             textpage = page.get_textpage()
@@ -346,35 +424,59 @@ class DocumentParser:
                         pages.append({"page": index + 1, "text": text, "extraction": extraction})
             except ImportError as exc:
                 raise AppError(503, "PARSER_UNAVAILABLE", "PDF 解析组件尚未安装") from exc
+            except AppError:
+                raise
+            except Exception as exc:
+                invalid(exc)
         elif suffix == ".docx":
-            with zipfile.ZipFile(path) as archive:
-                entries = archive.infolist()
-                if len(entries) > 10000 or sum(item.file_size for item in entries) > 100 * 1024 * 1024:
-                    raise AppError(413, "DOCUMENT_TOO_LARGE", "文档解压大小超过处理上限")
-                info = archive.getinfo("word/document.xml")
-                if info.file_size > 20 * 1024 * 1024:
-                    raise AppError(413, "DOCUMENT_TOO_LARGE", "文档内容超过处理上限")
-                xml = archive.read(info)
-                if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
-                    raise AppError(422, "INVALID_DOCUMENT", "文档 XML 结构不受支持")
-                root = ElementTree.fromstring(xml)
-                ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-                text = "\n\n".join("".join(p.itertext()) for p in root.findall(".//w:p", ns))
-                pages = [{"page": 1, "text": text, "extraction": "docx-paragraphs"}]
+            checkpoint()
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    entries = archive.infolist()
+                    if len(entries) > 10000 or sum(item.file_size for item in entries) > 100 * 1024 * 1024:
+                        raise AppError(413, "DOCUMENT_TOO_LARGE", "文档解压大小超过处理上限")
+                    info = archive.getinfo("word/document.xml")
+                    if info.file_size > 20 * 1024 * 1024:
+                        raise AppError(413, "DOCUMENT_TOO_LARGE", "文档内容超过处理上限")
+                    xml = archive.read(info)
+                    if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
+                        raise AppError(422, "INVALID_DOCUMENT", "文档 XML 结构不受支持")
+                    root = ElementTree.fromstring(xml)
+                    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+                    text = "\n\n".join("".join(p.itertext()) for p in root.findall(".//w:p", ns))
+                    pages = [{"page": 1, "text": text, "extraction": "docx-paragraphs"}]
+            except AppError:
+                raise
+            except Exception as exc:
+                invalid(exc)
         elif suffix == ".xlsx":
-            pages = self.parse_xlsx(path)
+            checkpoint()
+            try:
+                pages = self.parse_xlsx(path)
+            except AppError:
+                raise
+            except Exception as exc:
+                invalid(exc)
         elif suffix in {".txt", ".md", ".csv", ".json"}:
-            raw = path.read_bytes()
-            encoding = "utf-16" if raw[:2] in {b"\xff\xfe", b"\xfe\xff"} else "utf-8-sig"
-            text = raw.decode(encoding)
+            checkpoint()
+            try:
+                raw = path.read_bytes()
+                encoding = "utf-16" if raw[:2] in {b"\xff\xfe", b"\xfe\xff"} else "utf-8-sig"
+                text = raw.decode(encoding)
+            except AppError:
+                raise
+            except Exception as exc:
+                invalid(exc)
             if "\x00" in text:
                 raise AppError(422, "INVALID_DOCUMENT", "文件内容不是可读取的文本")
             pages = [{"page": 1, "text": text, "extraction": "text"}]
         elif suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+            checkpoint()
             text = self.ocr_image(path)
             pages = [{"page": 1, "text": text, "extraction": "local-ocr"}]
         else:
             raise AppError(415, "DOCUMENT_TYPE_UNSUPPORTED", "支持 PDF、DOCX、XLSX、Markdown、TXT、CSV、JSON 和常见图片文件")
+        checkpoint()
         if sum(len(page["text"]) for page in pages) > MAX_TEXT:
             raise AppError(413, "DOCUMENT_TOO_LARGE", "文档文本超过处理上限")
         if not any(page["text"].strip() for page in pages):
@@ -409,13 +511,343 @@ class KnowledgeService:
         self.service, self.db = service, service.db
         with self.db.lock:
             self.db.conn.executescript(SCHEMA)
+            version_columns = {row["name"] for row in self.db.conn.execute("PRAGMA table_info(knowledge_versions)")}
+            if "error_code" not in version_columns:
+                self.db.conn.execute("ALTER TABLE knowledge_versions ADD COLUMN error_code TEXT")
+            job_columns = {row["name"] for row in self.db.conn.execute("PRAGMA table_info(knowledge_ingest_jobs)")}
+            if "runner" not in job_columns:
+                self.db.conn.execute("ALTER TABLE knowledge_ingest_jobs ADD COLUMN runner TEXT NOT NULL DEFAULT 'worker'")
         self.root = service.settings.data_dir / "knowledge"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.parser = DocumentParser()
         self.embeddings = LocalEmbeddings(self.root)
         self.index_lock = threading.RLock()
-        # A crashed parse must not stay apparently in progress forever.
-        self.db.execute("UPDATE knowledge_versions SET status='failed',error='上次索引中断，请重新索引' WHERE status='processing'")
+        self.retry_limit = max(1, int(os.getenv("AGENT_KNOWLEDGE_INGEST_MAX_ATTEMPTS", str(INGEST_MAX_ATTEMPTS))))
+        self.retry_delay = max(0.0, float(os.getenv("AGENT_KNOWLEDGE_INGEST_RETRY_SECONDS", str(INGEST_RETRY_DELAY))))
+        self.lease_seconds = max(1.0, float(os.getenv("AGENT_KNOWLEDGE_INGEST_LEASE_SECONDS", str(INGEST_LEASE_SECONDS))))
+        self.worker_owner = f"{os.getpid()}:{uid()}"
+        self._worker = None
+        self._worker_stop = threading.Event()
+        self._worker_wakeup = threading.Event()
+        # A crashed process must not leave apparently running jobs forever.
+        # Requeue an interrupted job while budget remains; otherwise expose an
+        # explicit terminal failure for the user to retry manually.
+        self.recover()
+
+    def _latest_job(self, document_id, version):
+        return self.db.one(
+            "SELECT * FROM knowledge_ingest_jobs WHERE document_id=? AND version=? ORDER BY rowid DESC LIMIT 1",
+            (document_id, version),
+        )
+
+    def _active_job(self, document_id, version):
+        return self.db.one(
+            "SELECT * FROM knowledge_ingest_jobs WHERE document_id=? AND version=? AND status IN ('queued','running') ORDER BY rowid DESC LIMIT 1",
+            (document_id, version),
+        )
+
+    def _append_job_event(self, job_id, kind, detail=""):
+        row = self.db.one("SELECT events FROM knowledge_ingest_jobs WHERE job_id=?", (job_id,))
+        if not row:
+            return
+        try:
+            events = json.loads(row["events"] or "[]")
+        except json.JSONDecodeError:
+            events = []
+        events.append({"at": now(), "kind": kind, "detail": str(detail or "")[:300]})
+        self.db.execute(
+            "UPDATE knowledge_ingest_jobs SET events=?, updated_at=? WHERE job_id=?",
+            (dump(events[-INGEST_EVENT_LIMIT:]), now(), job_id),
+        )
+
+    def _set_stage(self, job_id, stage, detail=""):
+        self.db.execute(
+            "UPDATE knowledge_ingest_jobs SET stage=?, updated_at=? WHERE job_id=?",
+            (stage, now(), job_id),
+        )
+        self._append_job_event(job_id, f"stage:{stage}", detail)
+
+    def _check_cancel(self, job_id):
+        row = self.db.one("SELECT status,cancel_requested FROM knowledge_ingest_jobs WHERE job_id=?", (job_id,))
+        if not row or row["status"] != "running" or row["cancel_requested"]:
+            raise IngestionCancelled()
+        # A live worker renews its lease between pages/stages so a long OCR or
+        # index pass is never mistaken for a crashed process by another start.
+        self.db.execute(
+            "UPDATE knowledge_ingest_jobs SET lease_expires_at=?,updated_at=? WHERE job_id=? AND status='running'",
+            (_stamp_after(self.lease_seconds), now(), job_id),
+        )
+
+    def recover(self):
+        """Resume queued jobs and reclaim leases left by an interrupted process."""
+        stamp = now()
+        with self.db.lock, self.db.transaction():
+            for row in self.db.all("SELECT * FROM knowledge_ingest_jobs WHERE status='running'"):
+                if row["lease_expires_at"] and row["lease_expires_at"] >= stamp:
+                    continue
+                if row["cancel_requested"]:
+                    self._finish_job(row["job_id"], "cancelled", "CANCELLED", "本次索引已取消", "cancelled")
+                    continue
+                if row["attempts"] >= row["max_attempts"]:
+                    self._finish_job(
+                        row["job_id"], "failed", "LEASE_EXPIRED",
+                        "上次索引中断且自动重试次数已用尽，请手动重新解析", "failed",
+                    )
+                    continue
+                self.db.execute(
+                    "UPDATE knowledge_ingest_jobs SET status='queued',stage='queued',runner='worker',lease_owner=NULL,lease_expires_at=NULL,available_at=?,updated_at=? WHERE job_id=?",
+                    (stamp, stamp, row["job_id"]),
+                )
+                self._append_job_event(row["job_id"], "requeued", "检测到中断的索引任务，已重新排队")
+                self.db.execute(
+                    "UPDATE knowledge_versions SET status='processing',error=NULL,error_code=NULL WHERE document_id=? AND version=?",
+                    (row["document_id"], row["version"]),
+                )
+            # Versions created by older releases (or jobs lost before being
+            # persisted) are adopted instead of being silently abandoned.
+            orphans = self.db.all(
+                """SELECT v.document_id,v.version,d.kb_id FROM knowledge_versions v
+                   JOIN knowledge_documents d ON d.id=v.document_id AND d.deleted=0
+                   WHERE v.status IN ('processing','queued')
+                     AND NOT EXISTS(SELECT 1 FROM knowledge_ingest_jobs j
+                                    WHERE j.document_id=v.document_id AND j.version=v.version
+                                      AND j.status IN ('queued','running'))""",
+            )
+            for row in orphans:
+                job_id = uid()
+                self.db.execute(
+                    "INSERT INTO knowledge_ingest_jobs(job_id,document_id,version,kb_id,status,stage,attempts,max_attempts,created_at,updated_at) VALUES(?,?,?,?, 'queued','queued',0,?,?,?)",
+                    (job_id, row["document_id"], row["version"], row["kb_id"], self.retry_limit, stamp, stamp),
+                )
+                self._append_job_event(job_id, "adopted", "启动时接管未完成的索引版本")
+
+    def _create_job(self, document_id, version, kb_id, inline):
+        stamp = now()
+        job_id = uid()
+        if self._active_job(document_id, version):
+            raise AppError(409, "INGESTION_BUSY", "此版本正在索引，请等待完成或先取消")
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO knowledge_ingest_jobs(job_id,document_id,version,kb_id,status,stage,runner,attempts,max_attempts,lease_owner,lease_expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (job_id, document_id, version, kb_id, "running" if inline else "queued",
+                 "queued", "inline" if inline else "worker", 1 if inline else 0, self.retry_limit,
+                 self.worker_owner if inline else None,
+                 _stamp_after(self.lease_seconds) if inline else None, stamp, stamp),
+            )
+            self.db.execute(
+                "UPDATE knowledge_versions SET status='processing',error=NULL,error_code=NULL WHERE document_id=? AND version=?",
+                (document_id, version),
+            )
+        self._append_job_event(job_id, "created", "同步执行" if inline else "后台排队")
+        return job_id
+
+    def _claim_job(self, job_id=None):
+        stamp = now()
+        with self.db.lock, self.db.transaction():
+            if job_id:
+                row = self.db.one("SELECT * FROM knowledge_ingest_jobs WHERE job_id=? AND status='queued' AND cancel_requested=0", (job_id,))
+            else:
+                row = self.db.one(
+                    "SELECT * FROM knowledge_ingest_jobs WHERE status='queued' AND runner<>'inline' AND cancel_requested=0 AND (available_at IS NULL OR available_at<=?) ORDER BY created_at,rowid LIMIT 1",
+                    (stamp,),
+                )
+            if not row:
+                return None
+            self.db.execute(
+                "UPDATE knowledge_ingest_jobs SET status='running',attempts=attempts+1,stage='prepare',lease_owner=?,lease_expires_at=?,available_at=NULL,updated_at=? WHERE job_id=? AND status='queued'",
+                (self.worker_owner, _stamp_after(self.lease_seconds), stamp, row["job_id"]),
+            )
+            return self.db.one("SELECT * FROM knowledge_ingest_jobs WHERE job_id=?", (row["job_id"],))
+
+    def _finish_job(self, job_id, status, code, message, version_status):
+        stamp = now()
+        self.db.execute(
+            "UPDATE knowledge_ingest_jobs SET status=?,stage=?,error_code=?,error_message=?,lease_owner=NULL,lease_expires_at=NULL,available_at=NULL,updated_at=?,finished_at=? WHERE job_id=?",
+            (status, "done" if status == "succeeded" else status, code, message, stamp, stamp, job_id),
+        )
+        self._append_job_event(job_id, status, message)
+        row = self.db.one("SELECT document_id,version,kb_id FROM knowledge_ingest_jobs WHERE job_id=?", (job_id,))
+        if row:
+            self.db.execute(
+                "UPDATE knowledge_versions SET status=?,error=?,error_code=? WHERE document_id=? AND version=?",
+                (version_status, None if status == "succeeded" else message, None if status == "succeeded" else code,
+                 row["document_id"], row["version"]),
+            )
+            document = self.db.one("SELECT name FROM knowledge_documents WHERE id=?", (row["document_id"],))
+            if document and Path(document["name"]).suffix.lower() in IMAGE_FILE_SUFFIXES:
+                image_status = "ready" if status == "succeeded" else ("needs_ocr" if code == "OCR_REQUIRED" else status)
+                self.db.execute(
+                    "UPDATE knowledge_image_assets SET ocr_status=? WHERE document_id=? AND version=?",
+                    (image_status, row["document_id"], row["version"]),
+                )
+            self.db.execute(
+                "UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?",
+                (stamp, row["kb_id"]),
+            )
+
+    def _classify_failure(self, exc):
+        if isinstance(exc, AppError):
+            return exc.code, exc.message, exc.code in RETRYABLE_INGEST_CODES
+        return "INGESTION_FAILED", "文档解析或索引失败，请检查格式后重试", True
+
+    def _run_stages(self, job):
+        document_id, version, job_id = job["document_id"], job["version"], job["job_id"]
+        row = self.db.one(
+            "SELECT v.*,d.kb_id,d.name FROM knowledge_versions v JOIN knowledge_documents d ON d.id=v.document_id WHERE v.document_id=? AND v.version=?",
+            (document_id, version),
+        )
+        if not row:
+            raise AppError(404, "NOT_FOUND", "知识文件版本不存在")
+        path, name = self.content_path(row), row["name"]
+        suffix = Path(name).suffix.lower()
+        self.parser.stage_callback = lambda stage, detail="": self._set_stage(job_id, stage, detail)
+        try:
+            self._set_stage(job_id, "prepare", "生成本地预览证据")
+            self._check_cancel(job_id)
+            if row["mime_type"].startswith("image/"):
+                self._prepare_image_asset(document_id, version, path, row["mime_type"], row["size"])
+            elif row["mime_type"] == "application/pdf":
+                self._prepare_pdf_previews(document_id, version, path)
+            self._set_stage(job_id, "parse", "解析原文并保留页码")
+            try:
+                accepts_cancel = "check_cancel" in inspect.signature(self.parser.parse).parameters
+            except (TypeError, ValueError):
+                accepts_cancel = False
+            pages = (
+                self.parser.parse(path, name, check_cancel=lambda: self._check_cancel(job_id))
+                if accepts_cancel else self.parser.parse(path, name)
+            )
+            self._check_cancel(job_id)
+            self._set_stage(job_id, "chunk", "按段落分块并保留字符偏移")
+            chunks = chunk_pages(pages)
+            if len(chunks) > MAX_CHUNKS:
+                raise AppError(413, "DOCUMENT_TOO_LARGE", f"单个知识文档最多生成 {MAX_CHUNKS} 个文本片段")
+            is_image = suffix in IMAGE_FILE_SUFFIXES
+            if not chunks and not is_image:
+                raise AppError(422, "EMPTY_DOCUMENT", "未找到可检索的文本片段")
+            self._check_cancel(job_id)
+            self._set_stage(job_id, "embed", "建立 BM25 词项与本地向量")
+            vectors = self.embeddings.embed([chunk["text"] for chunk in chunks]) if chunks else []
+            self._check_cancel(job_id)
+            self._set_stage(job_id, "graph", "写入页码、片段和图谱候选")
+            with self.db.transaction():
+                self.db.execute("DELETE FROM knowledge_pages WHERE document_id=? AND version=?", (document_id, version))
+                self.db.execute("DELETE FROM knowledge_chunks WHERE document_id=? AND version=?", (document_id, version))
+                for page in pages:
+                    self.db.execute("INSERT INTO knowledge_pages VALUES(?,?,?,?,?)", (document_id, version, page["page"], page["text"], page["extraction"]))
+                for chunk, vector in zip(chunks, vectors):
+                    self.db.execute("INSERT INTO knowledge_chunks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (chunk["id"], document_id, version, chunk["page"], chunk["section"], chunk["paragraph"], chunk["start"], chunk["end"], chunk["text"], dump(terms(chunk["text"])), dump(vector), self.embeddings.name))
+                self._build_graph(document_id, version, chunks)
+                self.db.execute(
+                    "UPDATE knowledge_versions SET status='ready',error=NULL,error_code=NULL,page_count=?,chunk_count=?,extraction=?,embedding_model=? WHERE document_id=? AND version=?",
+                    (len(pages), len(chunks), dump(sorted({page["extraction"] for page in pages})), self.embeddings.name, document_id, version),
+                )
+                if is_image:
+                    self.db.execute("UPDATE knowledge_image_assets SET ocr_status='ready' WHERE document_id=? AND version=?", (document_id, version))
+            self._set_stage(job_id, "done", f"{len(pages)} 页 / {len(chunks)} 个片段")
+        finally:
+            self.parser.stage_callback = None
+
+    def _execute_job(self, job, inline):
+        job_id, attempt = job["job_id"], job["attempts"]
+        try:
+            self._run_stages(job)
+            self._finish_job(job_id, "succeeded", None, None, "ready")
+        except IngestionCancelled:
+            self._finish_job(job_id, "cancelled", "CANCELLED", "本次索引已取消，可重新解析", "cancelled")
+            return
+        except Exception as exc:
+            code, message, retryable = self._classify_failure(exc)
+            max_attempts = job["max_attempts"] or self.retry_limit
+            if retryable and attempt < max_attempts:
+                delay = self.retry_delay * (2 ** max(0, attempt - 1))
+                self.db.execute(
+                    "UPDATE knowledge_ingest_jobs SET status='queued',stage='retry_wait',error_code=?,error_message=?,lease_owner=NULL,lease_expires_at=NULL,available_at=?,updated_at=? WHERE job_id=?",
+                    (code, message, _stamp_after(delay), now(), job_id),
+                )
+                self._append_job_event(job_id, "retry_scheduled", f"{code}：第 {attempt + 1}/{max_attempts} 次尝试将在 {delay:.2f} 秒后进行")
+                if inline:
+                    if delay:
+                        time.sleep(delay)
+                    claimed = self._claim_job(job_id)
+                    if claimed:
+                        self._execute_job(claimed, inline=True)
+                return
+            version_status = "needs_ocr" if code == "OCR_REQUIRED" else "failed"
+            self._finish_job(job_id, "failed", code, message, version_status)
+
+    def process_pending(self, limit=50):
+        """Process queued jobs in the caller's thread; useful for recovery tests."""
+        processed = 0
+        while processed < max(1, limit):
+            job = self._claim_job()
+            if not job:
+                break
+            with self.index_lock:
+                self._execute_job(job, inline=False)
+            processed += 1
+        return processed
+
+    def start_worker(self):
+        if self._worker and self._worker.is_alive():
+            return
+        self.recover()
+        self._worker_stop.clear()
+        self._worker = threading.Thread(target=self._worker_loop, name="knowledge-ingest", daemon=True)
+        self._worker.start()
+
+    def stop_worker(self):
+        self._worker_stop.set()
+        self._worker_wakeup.set()
+        worker = self._worker
+        if worker and worker.is_alive():
+            worker.join(timeout=5)
+        self._worker = None
+
+    def _worker_loop(self):
+        while not self._worker_stop.is_set():
+            job = self._claim_job()
+            if not job:
+                self._worker_wakeup.wait(0.5)
+                self._worker_wakeup.clear()
+                continue
+            with self.index_lock:
+                self._execute_job(job, inline=False)
+
+    def _job_view(self, row):
+        if not row:
+            return None
+        try:
+            events = json.loads(row["events"] or "[]")
+        except json.JSONDecodeError:
+            events = []
+        return {
+            "job_id": row["job_id"], "status": row["status"], "stage": row["stage"],
+            "stage_label": INGEST_STAGE_LABELS.get(row["stage"], row["stage"]),
+            "attempts": row["attempts"], "max_attempts": row["max_attempts"],
+            "retryable": row["error_code"] in RETRYABLE_INGEST_CODES or (
+                row["status"] == "failed" and row["error_code"] == "INGESTION_FAILED"
+            ),
+            "error_code": row["error_code"], "error_message": row["error_message"],
+            "can_cancel": row["status"] in {"queued", "running"},
+            "can_retry": row["status"] in {"failed", "cancelled"},
+            "cancel_requested": bool(row["cancel_requested"]),
+            "available_at": row["available_at"], "created_at": row["created_at"],
+            "updated_at": row["updated_at"], "finished_at": row["finished_at"],
+            "events": events[-20:],
+        }
+
+    def ingestion_view(self, document_id, version, user):
+        row = self.version(document_id, version, user)
+        return {"document_id": document_id, "version": row["version"],
+                "limits": self.ingestion_limits(), "job": self._job_view(self._latest_job(document_id, row["version"]))}
+
+    def ingestion_limits(self):
+        return {"max_bytes": self.service.settings.upload_max_bytes, "max_pages": MAX_PAGES,
+                "max_text_characters": MAX_TEXT, "max_chunks": MAX_CHUNKS,
+                "max_attempts": self.retry_limit, "retry_delay_seconds": self.retry_delay,
+                "chunk_characters": 900, "chunk_window_characters": 1100,
+                "behavior": "超出单文件、页数、文本或片段上限时明确拒绝，不静默截断。"}
 
     def require(self, kb_id, user, edit=False):
         row = self.db.one("SELECT * FROM knowledge_bases WHERE id=? AND deleted=0", (kb_id,))
@@ -429,7 +861,8 @@ class KnowledgeService:
         statuses = self.db.all("SELECT v.status,COUNT(*) n FROM knowledge_documents d JOIN knowledge_versions v ON v.document_id=d.id AND v.version=d.current_version WHERE d.kb_id=? AND d.deleted=0 GROUP BY v.status", (row["id"],))
         return {**row, "enabled": bool(row["enabled"]), "default_for_new_assistants": bool(row["default_for_new_assistants"]),
                 "can_edit": self.service.resource_editable(row, user), "document_count": count,
-                "index_status": {item["status"]: item["n"] for item in statuses}, "retrieval": self.retrieval_info()}
+                "index_status": {item["status"]: item["n"] for item in statuses}, "retrieval": self.retrieval_info(),
+                "ingestion": self.ingestion_limits()}
 
     def retrieval_info(self):
         return {"mode": "hybrid", "available_modes": ["hybrid", "bm25", "vector"],
@@ -479,7 +912,12 @@ class KnowledgeService:
 
     def document_view(self, row):
         result = {key: row[key] for key in ("id", "kb_id", "name", "mime_type", "version", "sha256", "size", "status", "error", "page_count", "chunk_count", "embedding_model", "created_at")} | {
-            "extraction": json.loads(row["extraction"]), "content_url": f"/api/v1/knowledge-documents/{row['id']}/content?version={row['version']}"}
+            "extraction": json.loads(row["extraction"]), "error_code": row.get("error_code"),
+            "content_url": f"/api/v1/knowledge-documents/{row['id']}/content?version={row['version']}"}
+        job = self._latest_job(row["id"], row["version"])
+        result["ingestion"] = self._job_view(job)
+        ready = self.db.one("SELECT MAX(version) AS v FROM knowledge_versions WHERE document_id=? AND status='ready'", (row["id"],))
+        result["last_ready_version"] = ready["v"] if ready and ready["v"] is not None else None
         asset = self.db.one("SELECT * FROM knowledge_image_assets WHERE document_id=? AND version=?", (row["id"], row["version"]))
         if asset:
             region_count = self.db.one("SELECT COUNT(*) AS n FROM knowledge_image_regions WHERE document_id=? AND version=?", (row["id"], row["version"]))["n"]
@@ -507,7 +945,7 @@ class KnowledgeService:
         document = self.document(document_id, user)
         return [self.document_view({**document, **row}) for row in self.db.all("SELECT * FROM knowledge_versions WHERE document_id=? ORDER BY version DESC", (document_id,))]
 
-    def upload(self, kb_id, user, name, data, document_id=None):
+    def upload(self, kb_id, user, name, data, document_id=None, wait=True):
         self.require(kb_id, user, edit=True)
         name = safe_name(name)
         suffix = Path(name).suffix.lower()
@@ -537,13 +975,17 @@ class KnowledgeService:
                 else:
                     self.db.execute("INSERT INTO knowledge_documents VALUES(?,?,?,?,0,?)", (document_id, kb_id, name, version, stamp))
                 self.db.execute("INSERT INTO knowledge_versions(document_id,version,mime_type,sha256,size,path,status,created_at) VALUES(?,?,?,?,?,?,'processing',?)", (document_id, version, mime, digest, len(data), str(path), stamp))
-            if mime.startswith("image/"):
-                self._prepare_image_asset(document_id, version, path, mime, len(data))
-            elif mime == "application/pdf":
-                self._prepare_pdf_previews(document_id, version, path)
-            self._index(document_id, version, path, name)
+            job_id = self._create_job(document_id, version, kb_id, inline=wait)
             self.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), kb_id))
-            return self.document_view(self.version(document_id, version, user))
+        if wait:
+            job = self.db.one("SELECT * FROM knowledge_ingest_jobs WHERE job_id=?", (job_id,))
+            with self.index_lock:
+                self._execute_job(job, inline=True)
+        else:
+            # The application lifespan owns a single background worker. Direct
+            # service callers can use process_pending() for deterministic work.
+            self._worker_wakeup.set()
+        return self.document_view(self.version(document_id, version, user))
 
     def _prepare_image_asset(self, document_id, version, path, mime_type, size):
         """Create a bounded local thumbnail and metadata without a vision model.
@@ -708,30 +1150,6 @@ class KnowledgeService:
             # optional and must not make an otherwise searchable PDF fail.
             return
 
-    def _index(self, document_id, version, path, name):
-        try:
-            pages = self.parser.parse(path, name)
-            chunks = chunk_pages(pages)
-            if not chunks:
-                raise AppError(422, "EMPTY_DOCUMENT", "未找到可检索的文本片段")
-            vectors = self.embeddings.embed([chunk["text"] for chunk in chunks])
-            with self.db.transaction():
-                self.db.execute("DELETE FROM knowledge_pages WHERE document_id=? AND version=?", (document_id, version))
-                self.db.execute("DELETE FROM knowledge_chunks WHERE document_id=? AND version=?", (document_id, version))
-                for page in pages:
-                    self.db.execute("INSERT INTO knowledge_pages VALUES(?,?,?,?,?)", (document_id, version, page["page"], page["text"], page["extraction"]))
-                for chunk, vector in zip(chunks, vectors):
-                    self.db.execute("INSERT INTO knowledge_chunks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (chunk["id"], document_id, version, chunk["page"], chunk["section"], chunk["paragraph"], chunk["start"], chunk["end"], chunk["text"], dump(terms(chunk["text"])), dump(vector), self.embeddings.name))
-                self._build_graph(document_id, version, chunks)
-                self.db.execute("UPDATE knowledge_versions SET status='ready',error=NULL,page_count=?,chunk_count=?,extraction=?,embedding_model=? WHERE document_id=? AND version=?", (len(pages), len(chunks), dump(sorted({page["extraction"] for page in pages})), self.embeddings.name, document_id, version))
-                if Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
-                    self.db.execute("UPDATE knowledge_image_assets SET ocr_status='ready' WHERE document_id=? AND version=?", (document_id, version))
-        except Exception as exc:
-            message = exc.message if isinstance(exc, AppError) else "文档解析或索引失败，请检查格式后重试"
-            self.db.execute("UPDATE knowledge_versions SET status=?,error=? WHERE document_id=? AND version=?", ("needs_ocr" if isinstance(exc, AppError) and exc.code == "OCR_REQUIRED" else "failed", message, document_id, version))
-            if Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
-                self.db.execute("UPDATE knowledge_image_assets SET ocr_status=? WHERE document_id=? AND version=?", ("needs_ocr" if isinstance(exc, AppError) and exc.code == "OCR_REQUIRED" else "failed", document_id, version))
-
     def _build_graph(self, document_id, version, chunks):
         """Build a deterministic, source-linked graph with explainable entities.
 
@@ -860,14 +1278,43 @@ class KnowledgeService:
                     "evidence_boundary": "图谱节点和边来自文本、表格或本地 OCR；图片仅提供版本绑定的网格缩略图，像素尚未经过视觉模型，不推断对象或关系。",
                 }}
 
-    def reindex(self, document_id, user):
+    def reindex(self, document_id, user, wait=True):
         self.document(document_id, user, edit=True)
         row = self.version(document_id, None, user)
         with self.index_lock:
-            self.db.execute("UPDATE knowledge_versions SET status='processing',error=NULL WHERE document_id=? AND version=?", (document_id, row["version"]))
-            self._index(document_id, row["version"], self.content_path(row), row["name"])
-            self.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), row["kb_id"]))
+            self.content_path(row)
+            job_id = self._create_job(document_id, row["version"], row["kb_id"], inline=wait)
+        if wait:
+            job = self.db.one("SELECT * FROM knowledge_ingest_jobs WHERE job_id=?", (job_id,))
+            with self.index_lock:
+                self._execute_job(job, inline=True)
+        else:
+            self._worker_wakeup.set()
         return self.document_view(self.version(document_id, None, user))
+
+    def cancel(self, document_id, user):
+        self.document(document_id, user, edit=True)
+        row = self.version(document_id, None, user)
+        job = self._active_job(document_id, row["version"])
+        if job:
+            self.db.execute(
+                "UPDATE knowledge_ingest_jobs SET cancel_requested=1,updated_at=? WHERE job_id=?",
+                (now(), job["job_id"]),
+            )
+            self._append_job_event(job["job_id"], "cancel_requested", "用户请求取消本次索引")
+            if job["status"] == "queued":
+                self._finish_job(job["job_id"], "cancelled", "CANCELLED", "本次索引已取消，可重新解析", "cancelled")
+            else:
+                self._worker_wakeup.set()
+        return self.document_view(self.version(document_id, None, user))
+
+    def cancel_jobs_for_document(self, document_id):
+        with self.db.transaction():
+            for job in self.db.all(
+                "SELECT job_id FROM knowledge_ingest_jobs WHERE document_id=? AND status IN ('queued','running')",
+                (document_id,),
+            ):
+                self._finish_job(job["job_id"], "cancelled", "DELETED", "文件已删除", "cancelled")
 
     def content_path(self, row):
         path = Path(row["path"])
@@ -1148,25 +1595,32 @@ def create_knowledge_router(svc, authenticated):
     @router.get("/knowledge-bases/{kb_id}/graph")
     def graph(kb_id: str, q: str | None = Query(default=None, max_length=80), limit: int = Query(default=120, ge=1, le=200), user=Depends(authenticated), service=Depends(svc)):
         return service.knowledge.graph(kb_id, user, q, limit)
-    async def ingest(kb_id, file, user, service, document_id=None):
+    async def ingest(kb_id, file, user, service, document_id=None, background=False):
         service.knowledge.require(kb_id, user, edit=True)
         data = await file.read(service.settings.upload_max_bytes + 1)
-        return await asyncio.to_thread(service.knowledge.upload, kb_id, user, file.filename or "document.txt", data, document_id)
+        return await asyncio.to_thread(service.knowledge.upload, kb_id, user, file.filename or "document.txt", data, document_id, not background)
     @router.post("/knowledge-bases/{kb_id}/documents", status_code=201)
-    async def upload(kb_id: str, file: UploadFile = File(...), user=Depends(authenticated), service=Depends(svc)):
-        return await ingest(kb_id, file, user, service)
+    async def upload(kb_id: str, background: bool = Query(default=False), file: UploadFile = File(...), user=Depends(authenticated), service=Depends(svc)):
+        return await ingest(kb_id, file, user, service, background=background)
     @router.post("/knowledge-bases/{kb_id}/documents/{document_id}/versions", status_code=201)
-    async def upload_version(kb_id: str, document_id: str, file: UploadFile = File(...), user=Depends(authenticated), service=Depends(svc)):
-        return await ingest(kb_id, file, user, service, document_id)
+    async def upload_version(kb_id: str, document_id: str, background: bool = Query(default=False), file: UploadFile = File(...), user=Depends(authenticated), service=Depends(svc)):
+        return await ingest(kb_id, file, user, service, document_id, background=background)
     @router.get("/knowledge-documents/{document_id}/versions")
     def versions(document_id: str, user=Depends(authenticated), service=Depends(svc)):
         return service.knowledge.versions(document_id, user)
+    @router.get("/knowledge-documents/{document_id}/ingestion")
+    def ingestion(document_id: str, version: int | None = Query(default=None, ge=1), user=Depends(authenticated), service=Depends(svc)):
+        return service.knowledge.ingestion_view(document_id, version, user)
     @router.post("/knowledge-documents/{document_id}/reindex")
-    async def reindex(document_id: str, user=Depends(authenticated), service=Depends(svc)):
-        return await asyncio.to_thread(service.knowledge.reindex, document_id, user)
+    async def reindex(document_id: str, background: bool = Query(default=False), user=Depends(authenticated), service=Depends(svc)):
+        return await asyncio.to_thread(service.knowledge.reindex, document_id, user, not background)
+    @router.post("/knowledge-documents/{document_id}/cancel")
+    def cancel(document_id: str, user=Depends(authenticated), service=Depends(svc)):
+        return service.knowledge.cancel(document_id, user)
     @router.delete("/knowledge-documents/{document_id}", status_code=204)
     def delete_document(document_id: str, user=Depends(authenticated), service=Depends(svc)):
         row = service.knowledge.document(document_id, user, edit=True)
+        service.knowledge.cancel_jobs_for_document(document_id)
         service.db.execute("UPDATE knowledge_documents SET deleted=1 WHERE id=?", (document_id,))
         service.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), row["kb_id"]))
     @router.get("/knowledge-documents/{document_id}/content")
