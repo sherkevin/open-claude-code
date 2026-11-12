@@ -547,18 +547,21 @@ class KnowledgeService:
         )
 
     def _append_job_event(self, job_id, kind, detail=""):
-        row = self.db.one("SELECT events FROM knowledge_ingest_jobs WHERE job_id=?", (job_id,))
-        if not row:
-            return
-        try:
-            events = json.loads(row["events"] or "[]")
-        except json.JSONDecodeError:
-            events = []
-        events.append({"at": now(), "kind": kind, "detail": str(detail or "")[:300]})
-        self.db.execute(
-            "UPDATE knowledge_ingest_jobs SET events=?, updated_at=? WHERE job_id=?",
-            (dump(events[-INGEST_EVENT_LIMIT:]), now(), job_id),
-        )
+        # Read-modify-write the bounded event list under the shared database
+        # lock so a cancel request and a stage update cannot drop each other.
+        with self.db.lock:
+            row = self.db.one("SELECT events FROM knowledge_ingest_jobs WHERE job_id=?", (job_id,))
+            if not row:
+                return
+            try:
+                events = json.loads(row["events"] or "[]")
+            except json.JSONDecodeError:
+                events = []
+            events.append({"at": now(), "kind": kind, "detail": str(detail or "")[:300]})
+            self.db.execute(
+                "UPDATE knowledge_ingest_jobs SET events=?, updated_at=? WHERE job_id=?",
+                (dump(events[-INGEST_EVENT_LIMIT:]), now(), job_id),
+            )
 
     def _set_stage(self, job_id, stage, detail=""):
         self.db.execute(

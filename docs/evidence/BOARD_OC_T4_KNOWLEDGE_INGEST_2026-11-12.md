@@ -130,7 +130,7 @@ cd server
 /media/data3/dengkw/projects/open-claude-code/.venv/bin/python -m pytest -q tests/test_knowledge_ingest.py -p no:cacheprovider
 ```
 
-结果：`22 passed, 1 warning in 96.31s`，退出码 0。唯一 warning 是 TestClient 提示 `httpx2` 弃用，不影响测试；此前同 worktree 空载运行 21 项记录为 50.59 秒。测试使用模块级临时目录和合成夹具，运行结束后不残留线上数据。
+结果：`22 passed, 1 warning in 224.81s`，退出码 0（机器同时有其它任务时耗时波动；此前同一套测试为 98.46 秒）。唯一 warning 是 TestClient 提示 `httpx2` 弃用，不影响测试；同 worktree 空载运行 21 项记录为 50.59 秒。测试使用模块级临时目录和合成夹具，运行结束后不残留线上数据。
 
 ### 产品内示例
 
@@ -149,7 +149,7 @@ cd client
 ./node_modules/.bin/tsc -b
 ```
 
-结果：8 项测试通过，类型检查退出码 0。worktree 内 `node_modules` 从主检出目录复制，不提交。
+结果：知识状态专项 8 项测试通过，全套 17 个文件 113 项测试通过，类型检查退出码 0。worktree 内 `node_modules` 从主检出目录复制，不提交。
 
 ## 已知限制和未覆盖的外部证据
 
