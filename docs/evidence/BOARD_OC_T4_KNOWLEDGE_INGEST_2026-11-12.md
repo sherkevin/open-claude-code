@@ -164,7 +164,7 @@ cd client
 - RapidOCR 和 BGE-M3 语义向量未在本次隔离验收中启用：图片 OCR 使用确定性测试替身，向量为 `local-lexical-v1` 词法回退，检索元数据明确 `semantic=false`。
 - 未启用视觉模型；不宣称图片像素的实体或语义关系，图片只登记尺寸、缩略图、安全网格区域和 OCR 状态。
 - 图谱只验证有来源定位的候选节点/边和版本一致性，不声明语义关系质量合格。
-- 旧回归文件 `server/tests/test_knowledge_evidence.py` 完整重跑为 46 passed / 1 failed；唯一失败是基线就存在的 `ASTM A36` 图谱标准实体正则问题，详见“回归”小节，不是本次摄取改动引入。
+- 旧回归文件 `server/tests/test_knowledge_evidence.py` 首轮完整执行 46 passed / 1 failed；唯一失败是基线就存在的 `ASTM A36` 图谱标准实体正则问题。最终提交上的第二次完整回归因机器负载过高被 1800 秒执行器超时终止（终止前 9 项通过、无新失败），详见“回归”小节。
 
 ## 回归
 
@@ -175,13 +175,15 @@ cd server
 /media/data3/dengkw/projects/open-claude-code/.venv/bin/python -m pytest tests/test_knowledge_evidence.py -p no:cacheprovider -v
 ```
 
-结果：`46 passed, 1 failed in 551.46s`。唯一失败为 `test_knowledge_graph_extracts_typed_entities_with_offsets`，它期望文本 `ASTM A36` 被识别为 `standard` 类型节点。该失败与本任务改动无关：
+结果（首轮完整执行）：`46 passed, 1 failed in 551.46s`。唯一失败为 `test_knowledge_graph_extracts_typed_entities_with_offsets`，它期望文本 `ASTM A36` 被识别为 `standard` 类型节点。该失败与本任务改动无关：
 
 - 本任务 diff 没有修改 `GRAPH_ENTITY_PATTERNS` 或 `_build_graph`；
 - 基线提交 `38c0a04` 的标准实体正则要求 `ASTM` 后直接跟 2–5 位数字，`ASTM A36` 的字母 `A` 使正则无法匹配；用基线同一正则对 `ASTM A36` 测试得到空匹配；
 - 该测试单独运行也稳定失败（16.27 秒），不是并发或顺序导致的偶发失败。
 
 为避免改动其他颜色组正在处理的图谱实体提取逻辑，本任务没有顺手修改该正则，只在此如实记录；建议由图谱/视觉任务或 L2 统一修复。除这一项外，授权、原文版本与历史引用、BM25/混合检索、公式相邻来源、跨会话伪造来源、OCR 图片状态、来源撤销、SDK/MCP 结果归一化等 46 项全部通过。
+
+需要说明的测试时序：首轮完整回归在本实现主体完成、但最后几项防御性修正（片段上限校验、租约续期、最终发布竞态保护、事件列表加锁）写入之前启动，Python 进程加载的是当时版本；这些修正随后由 C1 的 22 项测试和针对成功路径的 10 项定向测试覆盖。之后在最终提交 `e54057e` 上再次启动完整回归，但机器负载升到 load average 82，进程长时间处于不可中断磁盘等待，运行 1800 秒后被执行器超时终止（`EXIT:124`），终止前已通过 9 项、没有出现新的失败。因此报告中不把第二次运行伪造成“完整通过”。
 
 此外，在实现过程中先单独通过了前 5 项兼容性测试（5 passed, 79.84s），用于快速排除摄取流程改动对既有检索和来源行为的影响。
 
