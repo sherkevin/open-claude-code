@@ -23,6 +23,9 @@ from .security import AppError, redact, tool_risk_profile, workspace_path
 
 
 REVIEWER_MODE = "synthetic"
+# A model "allow" below this confidence is treated as an uncertain result and
+# denied.  Denials are unaffected: a low-confidence deny stays a deny.
+MIN_ALLOW_CONFIDENCE = 0.8
 MAX_REASON_CHARS = 2000
 MAX_RESULT_CHARS = 4000
 AMOUNT_KEYS = ("amount", "amount_usd", "total", "total_amount", "price", "value")
@@ -227,6 +230,10 @@ class ModelApprovalService:
         """Revalidate the exact grant and policy snapshot immediately before execution."""
         if review.decision != "allow":
             return False
+        # Defense in depth: an allow must carry at least the minimum confidence,
+        # even if a review object was constructed outside ``review``.
+        if review.confidence is None or review.confidence < MIN_ALLOW_CONFIDENCE:
+            return False
         conversation = self.service.require("conversations", run["conversation_id"])
         policy = self.policy(conversation["assistant_id"])
         if not policy or not policy["enabled"] or policy["revision"] != review.policy_revision or self._policy_digest(policy) != review.policy_digest:
@@ -310,12 +317,29 @@ class ModelApprovalService:
         uncertain = raw.get("uncertain")
         if type(confidence) not in (int, float) or not math.isfinite(float(confidence)) or not 0 <= float(confidence) <= 1 or type(uncertain) is not bool or uncertain:
             return self._denied(policy, "模型代审结果不确定，已安全拒绝", operation, scope, amount, argument_digest, result={"status": "uncertain"})
+        confidence_value = float(confidence)
+        if decision == "allow" and confidence_value < MIN_ALLOW_CONFIDENCE:
+            # A low-confidence allow is not a grant.  Fail closed and keep the
+            # threshold in the audit result so the decision is explainable.
+            return self._denied(
+                policy,
+                "模型代审置信度低于最小阈值，已安全拒绝",
+                operation,
+                scope,
+                amount,
+                argument_digest,
+                result={
+                    "status": "low_confidence",
+                    "confidence": confidence_value,
+                    "min_confidence": MIN_ALLOW_CONFIDENCE,
+                },
+            )
         reason = _safe_text(raw.get("reason")) or ("模型代审允许" if decision == "allow" else "模型代审拒绝")
-        result = {"status": "reviewed", "decision": decision, "reason": reason, "confidence": float(confidence), "uncertain": uncertain}
+        result = {"status": "reviewed", "decision": decision, "reason": reason, "confidence": confidence_value, "uncertain": uncertain}
         encoded = dump(result)
         if len(encoded) > MAX_RESULT_CHARS:
             result = {"status": "reviewed", "decision": decision, "reason": reason}
-        return ModelReview(decision, policy["model_id"], policy["assistant_id"], policy["revision"], self._policy_digest(policy), reason, result, operation, scope, amount, argument_digest, float(confidence), uncertain)
+        return ModelReview(decision, policy["model_id"], policy["assistant_id"], policy["revision"], self._policy_digest(policy), reason, result, operation, scope, amount, argument_digest, confidence_value, uncertain)
 
     def audit_payload(self, review: ModelReview) -> dict[str, Any]:
         return {

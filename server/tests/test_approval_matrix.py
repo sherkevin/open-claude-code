@@ -243,6 +243,44 @@ def test_model_review_never_decides_high_risk(matrix_app):
     assert service.high_risk_approval.is_high_risk("mcp__danger__delete", {"operation": "delete"}) is True
 
 
+@pytest.mark.parametrize("confidence", [0.01, 0.79])
+def test_model_review_rejects_low_confidence_allow(matrix_app, confidence):
+    client, service, _admin1, _admin2, _member, assistant, conversation = matrix_app
+    _relogin(client, "admin")
+    _model_policy(client, assistant["id"])
+
+    async def low_confidence(_request):
+        return {"decision": "allow", "reason": "低置信度放行", "confidence": confidence, "uncertain": False}
+
+    service.model_approval.reviewer = low_confidence
+    run_row = {"id": "synthetic-low-confidence", "conversation_id": conversation["id"]}
+    arguments = {"operation": "read", "data_scope": "workspace"}
+    review = asyncio.run(service.model_approval.review(run_row, "Read", arguments))
+    # No low-confidence allow may become a grant, and verify() must not rescue it.
+    assert review is not None and review.decision == "deny"
+    assert review.result["status"] == "low_confidence"
+    assert review.result["confidence"] == confidence
+    assert review.result["min_confidence"] == 0.8
+    assert service.model_approval.verify(review, run_row, "Read", arguments) is False
+
+
+def test_model_review_accepts_allow_at_minimum_confidence(matrix_app):
+    client, service, _admin1, _admin2, _member, assistant, conversation = matrix_app
+    _relogin(client, "admin")
+    _model_policy(client, assistant["id"])
+
+    async def threshold(_request):
+        return {"decision": "allow", "reason": "达到阈值", "confidence": 0.8, "uncertain": False}
+
+    service.model_approval.reviewer = threshold
+    run_row = {"id": "synthetic-threshold", "conversation_id": conversation["id"]}
+    arguments = {"operation": "read", "data_scope": "workspace"}
+    review = asyncio.run(service.model_approval.review(run_row, "Read", arguments))
+    assert review is not None and review.decision == "allow"
+    assert review.result["status"] == "reviewed"
+    assert service.model_approval.verify(review, run_row, "Read", arguments) is True
+
+
 def test_high_risk_requires_two_distinct_admins_and_requester_cannot_self_approve(matrix_app):
     client, service, admin1, admin2, member, assistant, conversation = matrix_app
     _relogin(client, "admin")
