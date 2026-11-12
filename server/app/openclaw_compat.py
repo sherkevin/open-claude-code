@@ -19,13 +19,14 @@ import asyncio
 import hashlib
 import inspect
 import json
+import os
 import re
 import secrets
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Literal, Mapping, Protocol
 
 from fastapi import FastAPI, Request
@@ -44,8 +45,8 @@ from .openai_compat import (
     NormalizedTool,
 )
 
-COMPAT_VERSION = "openclaw-compat/2026-11-12.1"
-AGENT_HARNESS_V2_CONTRACT_VERSION = "zhixing-openclaw-agent-harness-v2/2026-11-12.1"
+COMPAT_VERSION = "openclaw-compat/2026-11-12.2"
+AGENT_HARNESS_V2_CONTRACT_VERSION = "zhixing-openclaw-agent-harness-v2/2026-11-12.2"
 CANDIDATE_OPENCLAW_VERSION = "v2026.11.3"
 TOKEN_PREFIX = "zxoc_"
 MAX_BODY_BYTES = 1_048_576
@@ -54,6 +55,7 @@ MAX_IDEMPOTENCY_KEY_CHARS = 200
 MAX_TOTAL_TEXT_CHARS = 200_000
 MAX_METADATA_KEYS = 20
 DEFAULT_EXECUTOR_TIMEOUT_SECONDS = 60.0
+DEFAULT_LEASE_SECONDS = 120.0
 RESPONSE_TTL_SECONDS = 24 * 60 * 60
 
 _ALIAS = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}$")
@@ -66,6 +68,11 @@ _RESERVED_SESSION_PREFIXES = (
     "openclaw-admin",
     "openclaw-operator",
 )
+# Server-derived end-user sessions use ``user:<digest>``.  Callers may not
+# write into that namespace: otherwise one tenant principal could guess
+# another end-user's alias and continue that session by passing the derived
+# key explicitly.
+_RESERVED_SESSION_NAMESPACES = ("user:",)
 
 AGENT_HARNESS_V2_CONTRACT: dict[str, Any] = {
     # The OpenClaw release page showed v2026.11.3 when the design was written.
@@ -76,17 +83,31 @@ AGENT_HARNESS_V2_CONTRACT: dict[str, Any] = {
     "contract_version": AGENT_HARNESS_V2_CONTRACT_VERSION,
     "locked_openclaw_version": CANDIDATE_OPENCLAW_VERSION,
     "lock_state": "candidate_pending_customer_version_confirmation",
+    "slice_scope": "synthetic_first_slice_no_real_harness_executor_or_mcp_transport",
     "harness_kind": "single_turn_executor_with_native_session_and_events",
+    # ``supported`` is strictly what this slice implements.  The aspirational
+    # contract surface lives in ``target_only`` so evidence and clients cannot
+    # mistake a target capability for a delivered one.
     "supported": (
         "turn.execute",
         "turn.cancel",
         "session.continue",
-        "context.summary",
-        "memory.read",
-        "memory.propose_write",
         "tool.call",
         "tool.cancel",
         "approval.request",
+    ),
+    "capability_scope": {
+        "turn.execute": "facade_protocol_boundary_with_injected_executor",
+        "turn.cancel": "in_process_active_run_cancel_only",
+        "session.continue": "binding_only_no_history_replay",
+        "tool.call": "synthetic_connector_boundary_no_real_mcp_transport",
+        "tool.cancel": "synthetic_connector_active_call_cancel",
+        "approval.request": "synthetic_connector_local_approval_not_wired_to_facade_or_events",
+    },
+    "target_only": (
+        "context.summary",
+        "memory.read",
+        "memory.propose_write",
         "approval.resume",
         "event.run.stage",
         "event.tool",
@@ -131,6 +152,24 @@ AGENT_HARNESS_V2_CONTRACT: dict[str, Any] = {
         "tool_policy_digest",
         "event_stream_id",
     ),
+    # Per-field delivery status against ExecutionRequest/ExecutionContext.
+    # ``request_digest`` is database idempotency metadata, not a context digest
+    # handed to the executor, so ``context_digest`` is explicitly not delivered.
+    "turn_field_status": {
+        "turn_id": "delivered_to_executor",
+        "session_id": "delivered_to_executor",
+        "agent_id": "delivered_to_executor",
+        "context_digest": "not_delivered_request_digest_is_database_idempotency_only",
+        "messages": "delivered_to_executor",
+        "tool_policy_digest": "not_delivered_tools_list_passed_without_digest",
+        "event_stream_id": "not_delivered_buffered_sse_has_no_persistent_stream_id",
+    },
+    "turn_fields_not_yet_delivered": (
+        "context_digest",
+        "tool_policy_digest",
+        "event_stream_id",
+    ),
+    "recovery_model": "owner_instance_plus_lease_expiry_heartbeat",
     "terminal_states": ("completed", "cancelled", "failed", "interrupted"),
 }
 
@@ -237,7 +276,8 @@ def _valid_session_key(value: Any) -> str:
     if not isinstance(value, str) or not _SESSION_KEY.fullmatch(value) or len(value) > MAX_SESSION_KEY_CHARS:
         raise OpenClawError(400, "INVALID_SESSION_KEY", "x-openclaw-session-key 格式无效")
     lowered = value.lower()
-    if any(lowered.startswith(prefix) for prefix in _RESERVED_SESSION_PREFIXES):
+    if (any(lowered.startswith(prefix) for prefix in _RESERVED_SESSION_PREFIXES)
+            or any(lowered.startswith(namespace) for namespace in _RESERVED_SESSION_NAMESPACES)):
         raise OpenClawError(400, "RESERVED_SESSION_KEY", "该会话命名空间由服务端保留")
     return value
 
@@ -474,6 +514,8 @@ CREATE TABLE IF NOT EXISTS openclaw_turns(
     response_json TEXT,
     sse_json TEXT,
     error_json TEXT,
+    owner_instance TEXT,
+    lease_expires_at TEXT,
     created_at TEXT NOT NULL,
     completed_at TEXT,
     UNIQUE(tenant_id, principal_id, idempotency_key)
@@ -529,6 +571,18 @@ def _audit_detail(detail: Mapping[str, Any] | None) -> str:
         return "{}"
 
 
+def _lease_deadline(seconds: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _ensure_columns(db, table: str, columns: Mapping[str, str]) -> None:
+    """Add lease columns to databases created by the first OC-T12 slice."""
+    existing = {row["name"] for row in db.all(f"PRAGMA table_info({table})")}
+    for name, ddl in columns.items():
+        if name not in existing:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 class OpenClawTenantStore:
     """Tenant tokens and session bindings in the product database.
 
@@ -541,6 +595,12 @@ class OpenClawTenantStore:
         self.db = db
         with self.db.lock:
             self.db.conn.executescript(_SCHEMA)
+        _ensure_columns(self.db, "openclaw_turns",
+                        {"owner_instance": "TEXT", "lease_expires_at": "TEXT"})
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS openclaw_turns_lease "
+            "ON openclaw_turns(status,lease_expires_at)"
+        )
 
     def _audit(self, *, tenant_id: str | None, principal_id: str | None, action: str, outcome: str,
                detail: Mapping[str, Any] | None = None, session_id: str | None = None,
@@ -1213,13 +1273,18 @@ class OpenClawFacade:
     """Protocol facade, identity mapping, idempotency and audit boundary."""
 
     def __init__(self, service, executor: OpenClawExecutor | None = None, *,
-                 executor_timeout_seconds: float = DEFAULT_EXECUTOR_TIMEOUT_SECONDS):
+                 executor_timeout_seconds: float = DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
+                 lease_seconds: float = DEFAULT_LEASE_SECONDS):
         if not isinstance(executor_timeout_seconds, (int, float)) or not 0 < executor_timeout_seconds <= 600:
             raise ValueError("executor_timeout_seconds must be between 0 and 600")
+        if not isinstance(lease_seconds, (int, float)) or not 0 < lease_seconds <= 3600:
+            raise ValueError("lease_seconds must be between 0 and 3600")
         self.service = service
         self.store = OpenClawTenantStore(service.db)
         self.executor = executor or UnavailableExecutor()
         self.executor_timeout_seconds = float(executor_timeout_seconds)
+        self.lease_seconds = float(lease_seconds)
+        self.instance_id = f"pid:{os.getpid()}:{uid()}"
         self._active: dict[str, ActiveRun] = {}
         self._lock = threading.Lock()
         self._session_lock = threading.Lock()
@@ -1236,15 +1301,35 @@ class OpenClawFacade:
         )
 
     def recover_interrupted(self) -> int:
-        rows = self.service.db.all("SELECT * FROM openclaw_turns WHERE status='running'")
+        """Recover only turns whose owner stopped renewing its lease.
+
+        Constructing a second facade must not mark another live instance's
+        turns failed.  Each running turn records ``owner_instance`` and a
+        heartbeat-renewed ``lease_expires_at``; only rows whose lease is
+        missing (pre-repair data) or expired are recovered.
+        """
+        now_iso = _now_iso()
+        rows = self.service.db.all(
+            "SELECT * FROM openclaw_turns WHERE status='running' "
+            "AND (lease_expires_at IS NULL OR lease_expires_at<=?)",
+            (now_iso,),
+        )
+        recovered = 0
         for row in rows:
-            self.service.db.execute(
-                "UPDATE openclaw_turns SET status='failed',http_status=503,error_json=?,completed_at=? WHERE id=? AND status='running'",
-                (dump({"code": "INTERRUPTED", "message": "兼容侧车重启，未完成的执行已终止"}), _now_iso(), row["id"]),
-            )
+            changed = self.service.db.execute(
+                "UPDATE openclaw_turns SET status='failed',http_status=503,error_json=?,"
+                "lease_expires_at=NULL,completed_at=? WHERE id=? AND status='running' "
+                "AND (lease_expires_at IS NULL OR lease_expires_at<=?)",
+                (dump({"code": "INTERRUPTED", "message": "兼容侧车实例租约过期，未完成的执行已终止"}),
+                 _now_iso(), row["id"], now_iso),
+            ).rowcount
+            if not changed:
+                continue
+            recovered += 1
             self._audit(None, "turn.interrupted", "failed", session_id=row["session_id"], run_id=row["run_id"],
-                        detail={"turn_id": row["id"]})
-        return len(rows)
+                        detail={"turn_id": row["id"], "owner_instance": row.get("owner_instance"),
+                                "lease_expired": True})
+        return recovered
 
     def audit_events(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
         if tenant_id is None:
@@ -1311,6 +1396,35 @@ class OpenClawFacade:
         row["id"] = row["session_id"]
         return row
 
+    def _enforce_user_binding(self, row: Mapping[str, Any], user_alias: str | None) -> None:
+        """Reject continuing a session under a different ``user`` alias.
+
+        Explicit session keys are tenant-principal scoped.  On first use with a
+        ``user`` the binding is stamped with that alias digest (so an explicit
+        key cannot later be used to reach that end-user's session from another
+        alias), and every later request must present the same alias.
+        """
+        if user_alias is None:
+            return
+        digest = _sha256(user_alias)
+        stored = row.get("user_digest")
+        if stored is None:
+            changed = self.service.db.execute(
+                "UPDATE openclaw_sessions SET user_digest=?,updated_at=? "
+                "WHERE id=? AND user_digest IS NULL",
+                (digest, _now_iso(), row["id"]),
+            ).rowcount
+            if changed:
+                return
+            refreshed = self.service.db.one(
+                "SELECT user_digest FROM openclaw_sessions WHERE id=?", (row["id"],)
+            )
+            if not refreshed:
+                raise OpenClawError(404, "SESSION_NOT_FOUND", "会话不存在或无权继续")
+            stored = refreshed["user_digest"]
+        if stored != digest:
+            raise OpenClawError(409, "SESSION_CONFLICT", "会话已绑定其他 user，不能跨用户继续")
+
     def _get_or_create_session(self, principal: TenantPrincipal, agent_id: str, assistant_id: str,
                                session_key: str, user_alias: str | None) -> SessionBinding:
         with self._session_lock:
@@ -1319,6 +1433,7 @@ class OpenClawFacade:
                 (principal.tenant_id, principal.principal_id, agent_id, session_key),
             )
             if row:
+                self._enforce_user_binding(row, user_alias)
                 return self._binding(row)
             user = self.service.db.one("SELECT * FROM users WHERE id=? AND enabled=1", (principal.user_id,))
             if not user:
@@ -1350,6 +1465,7 @@ class OpenClawFacade:
                     (principal.tenant_id, principal.principal_id, agent_id, session_key),
                 )
                 if row:
+                    self._enforce_user_binding(row, user_alias)
                     return self._binding(row)
                 raise
             self._audit(principal, "session.created", "allowed", session_id=session_id,
@@ -1368,11 +1484,13 @@ class OpenClawFacade:
                 raise OpenClawError(400, "SESSION_CONFLICT", "previous_response_id 与显式会话不一致")
             if session_key_header is not None and _valid_session_key(session_key_header) != row["session_key"]:
                 raise OpenClawError(400, "SESSION_CONFLICT", "previous_response_id 与显式会话键不一致")
+            self._enforce_user_binding(row, request.user_alias)
             return self._binding(row)
         if session_id_header is not None:
             row = self._session_row_by_id(principal, session_id_header, agent_id)
             if session_key_header is not None and _valid_session_key(session_key_header) != row["session_key"]:
                 raise OpenClawError(400, "SESSION_CONFLICT", "会话标识与会话键不一致")
+            self._enforce_user_binding(row, request.user_alias)
             return self._binding(row)
         if session_key_header is not None:
             return self._get_or_create_session(principal, agent_id, assistant_id,
@@ -1428,9 +1546,10 @@ class OpenClawFacade:
         turn_id, run_id = uid(), uid()
         try:
             self.service.db.execute(
-                "INSERT INTO openclaw_turns(id,tenant_id,principal_id,session_id,conversation_id,run_id,protocol,model_alias,idempotency_key,request_digest,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO openclaw_turns(id,tenant_id,principal_id,session_id,conversation_id,run_id,protocol,model_alias,idempotency_key,request_digest,status,owner_instance,lease_expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (turn_id, principal.tenant_id, principal.principal_id, session.id, session.conversation_id, run_id,
-                 protocol, request.model_alias, idem, digest, "running", _now_iso()),
+                 protocol, request.model_alias, idem, digest, "running", self.instance_id,
+                 _lease_deadline(self.lease_seconds), _now_iso()),
             )
         except Exception as error:
             # Concurrent identical retries lose the unique insert race.
@@ -1459,6 +1578,7 @@ class OpenClawFacade:
         )
         context = ExecutionContext(principal.tenant_id, principal.principal_id, session.id,
                                    session.conversation_id, agent_id, request.model_alias, run_id, turn_id)
+        heartbeat = asyncio.create_task(self._heartbeat_turn(turn_id))
         try:
             result = await self._run_executor(execution, context, active)
             result = _coerce_result(result)
@@ -1495,8 +1615,21 @@ class OpenClawFacade:
                         detail={"turn_id": turn_id, "code": mapped.code})
             raise mapped from None
         finally:
+            heartbeat.cancel()
+            await _discard(heartbeat)
             with self._lock:
                 self._active.pop(run_id, None)
+
+    async def _heartbeat_turn(self, turn_id: str) -> None:
+        """Renew the turn lease so another instance never recovers a live turn."""
+        interval = max(self.lease_seconds / 3.0, 0.01)
+        while True:
+            await asyncio.sleep(interval)
+            self.service.db.execute(
+                "UPDATE openclaw_turns SET lease_expires_at=? "
+                "WHERE id=? AND status='running'",
+                (_lease_deadline(self.lease_seconds), turn_id),
+            )
 
     async def _run_executor(self, request: ExecutionRequest, context: ExecutionContext,
                             active: ActiveRun) -> Any:
@@ -1544,7 +1677,7 @@ class OpenClawFacade:
     def _complete_turn(self, turn_id: str, body: dict[str, Any], events: tuple[dict[str, Any], ...],
                        stream: bool) -> None:
         self.service.db.execute(
-            "UPDATE openclaw_turns SET status='succeeded',http_status=200,response_json=?,sse_json=?,stream=?,completed_at=? WHERE id=?",
+            "UPDATE openclaw_turns SET status='succeeded',http_status=200,response_json=?,sse_json=?,stream=?,lease_expires_at=NULL,completed_at=? WHERE id=?",
             (dump(body), dump(list(events)), 1 if stream else 0, _now_iso(), turn_id),
         )
         row = self.service.db.one(
@@ -1562,7 +1695,7 @@ class OpenClawFacade:
 
     def _fail_turn(self, turn_id: str, status: str, http_status: int, code: str, message: str) -> None:
         self.service.db.execute(
-            "UPDATE openclaw_turns SET status=?,http_status=?,error_json=?,completed_at=? WHERE id=?",
+            "UPDATE openclaw_turns SET status=?,http_status=?,error_json=?,lease_expires_at=NULL,completed_at=? WHERE id=?",
             (status, http_status, dump({"code": code, "message": message}), _now_iso(), turn_id),
         )
 

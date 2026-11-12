@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ MAX_SERVERS = 64
 MAX_ARGUMENT_DEPTH = 6
 MAX_OUTPUT_CHARS = 20_000
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
+DEFAULT_LEASE_SECONDS = 120.0
 APPROVAL_TTL_SECONDS = 300
 
 RISK_LOW = "low"
@@ -58,7 +60,18 @@ MEDIUM_RISK_MARKERS = (
     "post", "patch", "put", "set", "append", "move", "rename", "submit",
     "modify", "edit", "save", "import", "sync",
 )
+# A tool may run without approval only when the server declares it read-only
+# *and* its name contains one of these explicit read verbs.  The name check is
+# an allowlist, not a denylist: an unknown name stays high risk even when the
+# server sets ``readOnlyHint``.
+READ_ONLY_MARKERS = (
+    "read", "list", "get", "search", "query", "fetch", "lookup",
+    "describe", "inspect", "view", "show", "find", "count", "status",
+    "health", "ping", "retrieve",
+)
 _TOOL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_TOKEN_SPLIT = re.compile(r"[^A-Za-z0-9]+")
+_CAMEL_SPLIT = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS openclaw_connector_servers(
@@ -97,6 +110,8 @@ CREATE TABLE IF NOT EXISTS openclaw_connector_calls(
     error_json TEXT,
     output_digest TEXT,
     output_bytes INTEGER,
+    owner_instance TEXT,
+    lease_expires_at TEXT,
     created_at TEXT NOT NULL,
     completed_at TEXT
 );
@@ -127,8 +142,20 @@ def _now_iso() -> str:
     return now()
 
 
-def _until(seconds: int) -> str:
+def _until(seconds: float) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _lease_deadline(seconds: float) -> str:
+    return _until(seconds)
+
+
+def _ensure_columns(db, table: str, columns: Mapping[str, str]) -> None:
+    """Add lease columns to databases created by the first OC-T12 slice."""
+    existing = {row["name"] for row in db.all(f"PRAGMA table_info({table})")}
+    for name, ddl in columns.items():
+        if name not in existing:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 def _detail(detail: Mapping[str, Any] | None) -> str:
@@ -214,22 +241,45 @@ class ActiveCall:
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+def _name_tokens(name: str) -> tuple[str, ...]:
+    """Split snake_case, kebab-case and camelCase names into lowercase words."""
+    tokens: list[str] = []
+    for part in _TOKEN_SPLIT.split(name):
+        tokens.extend(piece for piece in _CAMEL_SPLIT.split(part) if piece)
+    return tuple(piece.lower() for piece in tokens)
+
+
+def _contains_marker(tokens: tuple[str, ...], marker: str) -> bool:
+    sequence = tuple(piece.lower() for piece in _TOKEN_SPLIT.split(marker) if piece)
+    if not sequence or len(sequence) > len(tokens):
+        return False
+    return any(tokens[index:index + len(sequence)] == sequence
+               for index in range(len(tokens) - len(sequence) + 1))
+
+
+def _contains_any(tokens: tuple[str, ...], markers: tuple[str, ...]) -> bool:
+    return any(_contains_marker(tokens, marker) for marker in markers)
+
+
 def _classify(name: str, read_only: bool, destructive: bool) -> tuple[str, str]:
     """Return ``(risk, grant)`` for one whitelisted MCP tool.
 
-    ``grant`` is ``auto``, ``approval`` or ``denied``.  Unknown tools are high
-    risk and denied; the safe default never widens because a name was not
-    recognized.
+    ``grant`` is ``auto``, ``approval`` or ``denied``.  Hints are treated as
+    evidence, not authority: destructive/high-risk and recognized write
+    semantics are checked *before* ``readOnlyHint`` so a server cannot
+    self-declare a write tool as read-only and skip approval.  ``auto``
+    requires both the hint and an explicit read verb; an unknown name stays
+    high risk and denied even when it carries ``readOnlyHint``.
     """
-    lowered = name.lower()
+    tokens = _name_tokens(name)
     if destructive:
         return RISK_HIGH, "denied"
-    if any(marker in lowered for marker in HIGH_RISK_MARKERS):
+    if _contains_any(tokens, HIGH_RISK_MARKERS):
         return RISK_HIGH, "denied"
-    if read_only:
-        return RISK_LOW, "auto"
-    if any(marker in lowered for marker in MEDIUM_RISK_MARKERS):
+    if _contains_any(tokens, MEDIUM_RISK_MARKERS):
         return RISK_MEDIUM, "approval"
+    if _contains_any(tokens, READ_ONLY_MARKERS):
+        return (RISK_LOW, "auto") if read_only else (RISK_MEDIUM, "approval")
     return RISK_HIGH, "denied"
 
 
@@ -343,14 +393,25 @@ class ConnectorRegistry:
     """Per-tenant tool whitelist, approval, call, cancel and revocation state."""
 
     def __init__(self, db, executor: ToolExecutor | None = None, *,
-                 timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS):
+                 timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+                 lease_seconds: float = DEFAULT_LEASE_SECONDS):
         if not isinstance(timeout_seconds, (int, float)) or not 0 < timeout_seconds <= 300:
             raise ValueError("timeout_seconds must be between 0 and 300")
+        if not isinstance(lease_seconds, (int, float)) or not 0 < lease_seconds <= 3600:
+            raise ValueError("lease_seconds must be between 0 and 3600")
         self.db = db
         with self.db.lock:
             self.db.conn.executescript(_SCHEMA)
+        _ensure_columns(self.db, "openclaw_connector_calls",
+                        {"owner_instance": "TEXT", "lease_expires_at": "TEXT"})
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS openclaw_connector_calls_lease "
+            "ON openclaw_connector_calls(status,lease_expires_at)"
+        )
         self.executor = executor or UnavailableToolExecutor()
         self.timeout_seconds = float(timeout_seconds)
+        self.lease_seconds = float(lease_seconds)
+        self.instance_id = f"pid:{os.getpid()}:{uid()}"
         self._active: dict[str, ActiveCall] = {}
         self._lock = threading.Lock()
         self.recover_interrupted()
@@ -365,17 +426,37 @@ class ConnectorRegistry:
         )
 
     def recover_interrupted(self) -> int:
-        rows = self.db.all("SELECT * FROM openclaw_connector_calls WHERE status='running'")
+        """Recover only calls whose owner stopped renewing its lease.
+
+        A second registry/facade may start next to a live instance.  Marking
+        every ``running`` row failed would corrupt the other instance's active
+        calls, so ownership is tracked per instance and each active call
+        renews ``lease_expires_at``.  Rows without a lease predate this repair
+        and are recovered conservatively.
+        """
+        now_iso = _now_iso()
+        rows = self.db.all(
+            "SELECT * FROM openclaw_connector_calls WHERE status='running' "
+            "AND (lease_expires_at IS NULL OR lease_expires_at<=?)",
+            (now_iso,),
+        )
+        recovered = 0
         for row in rows:
-            self.db.execute(
-                "UPDATE openclaw_connector_calls SET status='failed',http_status=503,error_json=?,completed_at=? WHERE request_id=? AND status='running'",
-                (dump({"code": "INTERRUPTED", "message": "连接器重启，未完成的工具调用已终止"}),
-                 _now_iso(), row["request_id"]),
-            )
+            changed = self.db.execute(
+                "UPDATE openclaw_connector_calls SET status='failed',http_status=503,error_json=?,"
+                "lease_expires_at=NULL,completed_at=? WHERE request_id=? AND status='running' "
+                "AND (lease_expires_at IS NULL OR lease_expires_at<=?)",
+                (dump({"code": "INTERRUPTED", "message": "连接器实例租约过期，未完成的工具调用已终止"}),
+                 _now_iso(), row["request_id"], now_iso),
+            ).rowcount
+            if not changed:
+                continue
+            recovered += 1
             identity = ConnectorIdentity(row["tenant_id"], row["principal_id"])
             self._audit(identity, "tool.interrupted", "failed", request_id=row["request_id"],
-                        tool_name=row["tool_name"])
-        return len(rows)
+                        tool_name=row["tool_name"],
+                        detail={"owner_instance": row.get("owner_instance"), "lease_expired": True})
+        return recovered
 
     def audit_events(self, identity: ConnectorIdentity) -> list[dict[str, Any]]:
         rows = self.db.all(
@@ -609,8 +690,9 @@ class ConnectorRegistry:
             raise ConnectorError(409, "TOOL_CALL_EXISTS", "工具调用编号已存在")
         started = _now_iso()
         self.db.execute(
-            "INSERT INTO openclaw_connector_calls(request_id,tenant_id,principal_id,tool_name,status,created_at) VALUES(?,?,?,?,?,?)",
-            (request_id, identity.tenant_id, identity.principal_id, tool.name, "running", started),
+            "INSERT INTO openclaw_connector_calls(request_id,tenant_id,principal_id,tool_name,status,owner_instance,lease_expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (request_id, identity.tenant_id, identity.principal_id, tool.name, "running",
+             self.instance_id, _lease_deadline(self.lease_seconds), started),
         )
         active = ActiveCall(request_id, identity, tool.name)
         with self._lock:
@@ -630,6 +712,7 @@ class ConnectorRegistry:
                     self._active.pop(request_id, None)
                 raise ConnectorError(409, "APPROVAL_USED", "审批已使用，不能重复调用")
         started_at = datetime.now(timezone.utc)
+        heartbeat = asyncio.create_task(self._heartbeat_call(request_id))
         try:
             result = await self._run_executor(server, tool, arguments, active, request_id, float(timeout_seconds))
             text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, separators=(",", ":"))
@@ -662,8 +745,21 @@ class ConnectorRegistry:
                         request_id=request_id, detail={"code": "TOOL_EXECUTION_FAILED"})
             raise ConnectorError(502, "TOOL_EXECUTION_FAILED", "工具执行失败") from None
         finally:
+            heartbeat.cancel()
+            await _discard(heartbeat)
             with self._lock:
                 self._active.pop(request_id, None)
+
+    async def _heartbeat_call(self, request_id: str) -> None:
+        """Renew the call lease so another instance never recovers a live call."""
+        interval = max(self.lease_seconds / 3.0, 0.01)
+        while True:
+            await asyncio.sleep(interval)
+            self.db.execute(
+                "UPDATE openclaw_connector_calls SET lease_expires_at=? "
+                "WHERE request_id=? AND status='running'",
+                (_lease_deadline(self.lease_seconds), request_id),
+            )
 
     async def _run_executor(self, server, tool: DeclaredTool, arguments, active: ActiveCall,
                             request_id: str, timeout: float) -> Any:
@@ -695,7 +791,7 @@ class ConnectorRegistry:
                      output_digest: str | None, output_bytes: int | None) -> None:
         error_json = dump({"code": code, "message": "工具调用未完成"}) if code else None
         self.db.execute(
-            "UPDATE openclaw_connector_calls SET status=?,http_status=?,error_json=?,output_digest=?,output_bytes=?,completed_at=? WHERE request_id=? AND status='running'",
+            "UPDATE openclaw_connector_calls SET status=?,http_status=?,error_json=?,output_digest=?,output_bytes=?,lease_expires_at=NULL,completed_at=? WHERE request_id=? AND status='running'",
             (status, http_status, error_json, output_digest, output_bytes, _now_iso(), request_id),
         )
 

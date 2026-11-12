@@ -7,6 +7,7 @@ server or paid model is used.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -760,3 +761,255 @@ def test_audit_and_persistence_do_not_store_prompts_or_credentials(env):
     assert prompt not in json.dumps({key: turn[key] for key in ("request_digest", "idempotency_key", "error_json")},
                                      ensure_ascii=False)
     assert len(turn["request_digest"]) == 64
+
+
+# ------------------------------------------- session namespace and user binding
+def test_user_namespace_is_reserved_and_sessions_are_user_bound(env):
+    client = env.client
+    derived = "user:" + hashlib.sha256(b"alice").hexdigest()[:40]
+    for key in (derived, "user:anything", "User:mixed", "USER:upper"):
+        response = chat(client, env.token_a, text="hijack", user=None,
+                        headers={"x-openclaw-session-key": key})
+        assert response.status_code == 400, key
+        assert error_code(response) == "RESERVED_SESSION_KEY"
+
+    alice = chat(client, env.token_a, text="one", user="alice")
+    assert alice.status_code == 200, alice.text
+    guess = chat(client, env.token_a, text="hijack", user=None,
+                 headers={"x-openclaw-session-key": derived})
+    assert guess.status_code == 400
+    assert error_code(guess) == "RESERVED_SESSION_KEY"
+
+    explicit = chat(client, env.token_a, text="one", user="alice",
+                    headers={"x-openclaw-session-key": "ops-shared"})
+    assert explicit.status_code == 200, explicit.text
+    session_id = explicit.headers["x-openclaw-session-id"]
+    again = chat(client, env.token_a, text="two", user="alice",
+                 headers={"x-openclaw-session-key": "ops-shared"})
+    assert again.status_code == 200
+    assert again.headers["x-openclaw-session-id"] == session_id
+    row = env.service.db.one("SELECT * FROM openclaw_sessions WHERE id=?", (session_id,))
+    assert row["session_key"] == "ops-shared"
+    assert row["user_digest"] == hashlib.sha256(b"alice").hexdigest()
+
+    for headers in ({"x-openclaw-session-key": "ops-shared"},
+                    {"x-openclaw-session-id": session_id}):
+        hijack = chat(client, env.token_a, text="hijack", user="bob", headers=headers)
+        assert hijack.status_code == 409, headers
+        assert error_code(hijack) == "SESSION_CONFLICT"
+
+    remembered = responses(client, env.token_a, text="remember", user="alice")
+    assert remembered.status_code == 200, remembered.text
+    response_id = remembered.json()["id"]
+    hijack = responses(client, env.token_a, text="hijack", user="bob",
+                       previous_response_id=response_id)
+    assert hijack.status_code == 409
+    assert error_code(hijack) == "SESSION_CONFLICT"
+    same = responses(client, env.token_a, text="continue", user="alice",
+                     previous_response_id=response_id)
+    assert same.status_code == 200
+    assert same.headers["x-openclaw-session-id"] == remembered.headers["x-openclaw-session-id"]
+
+
+# ------------------------------- multi-instance lease / ownership (F3 rework)
+def test_second_facade_startup_does_not_recover_another_instances_live_turn(env):
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class BlockingExecutor:
+            async def execute(self, request, context, cancelled):
+                started.set()
+                await release.wait()
+                return NormalizedResult(text="done")
+
+        first = OpenClawFacade(env.service, executor=BlockingExecutor(),
+                               executor_timeout_seconds=5, lease_seconds=60)
+        principal = first.store.authenticate(auth(env.token_a))
+        payload = {"model": "openclaw/default",
+                   "messages": [{"role": "user", "content": "lease"}], "user": "lease-user"}
+        headers = {**auth(env.token_a), "Idempotency-Key": "lease-live"}
+        task = asyncio.create_task(first.execute(principal, "chat.completions", payload, headers))
+        await asyncio.wait_for(started.wait(), 2)
+        run_id = next(iter(first._active))
+        row = env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_id,))
+        assert row["status"] == "running"
+        assert row["owner_instance"] == first.instance_id
+        assert row["lease_expires_at"]
+
+        second = OpenClawFacade(env.service, executor=ScriptedExecutor(),
+                                executor_timeout_seconds=5, lease_seconds=60)
+        row = env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_id,))
+        assert row["status"] == "running"
+        assert not any(event["action"] == "turn.interrupted" for event in second.audit_events())
+
+        second_principal = second.store.authenticate(auth(env.token_a))
+        with pytest.raises(OpenClawError) as exc:
+            await second.execute(second_principal, "chat.completions", payload, headers)
+        assert (exc.value.status, exc.value.code) == (409, "REQUEST_IN_PROGRESS")
+
+        release.set()
+        outcome = await asyncio.wait_for(task, 2)
+        assert outcome.body["choices"][0]["message"]["content"] == "done"
+        row = env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_id,))
+        assert row["status"] == "succeeded"
+        assert row["lease_expires_at"] is None
+
+    asyncio.run(scenario())
+
+
+def test_expired_lease_recovery_and_live_heartbeat(env):
+    client = env.client
+    seed = chat(client, env.token_a, text="seed", user="lease-recovery")
+    assert seed.status_code == 200
+    session = env.service.db.one("SELECT * FROM openclaw_sessions WHERE id=?",
+                                 (seed.headers["x-openclaw-session-id"],))
+    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    leases = {"expired": past, "live": future, "legacy": None}
+    run_ids: dict[str, str] = {}
+    for label, lease in leases.items():
+        turn_id, run_id = uid(), uid()
+        run_ids[label] = run_id
+        env.service.db.execute(
+            "INSERT INTO openclaw_turns(id,tenant_id,principal_id,session_id,conversation_id,run_id,"
+            "protocol,model_alias,request_digest,status,owner_instance,lease_expires_at,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (turn_id, session["tenant_id"], session["principal_id"], session["id"],
+             session["conversation_id"], run_id, "chat.completions", "openclaw/default",
+             "0" * 64, "running", f"{label}-instance", lease, now()),
+        )
+
+    facade = OpenClawFacade(env.service, executor=ScriptedExecutor(), lease_seconds=60)
+    for label in ("expired", "legacy"):
+        row = env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_ids[label],))
+        assert row["status"] == "failed", label
+        assert row["http_status"] == 503
+        assert json.loads(row["error_json"])["code"] == "INTERRUPTED"
+        assert row["lease_expires_at"] is None
+    live = env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_ids["live"],))
+    assert live["status"] == "running"
+    assert live["lease_expires_at"] == future
+    interrupted = [event for event in facade.audit_events() if event["action"] == "turn.interrupted"]
+    assert len(interrupted) == 2
+    assert all(event["detail"]["lease_expired"] is True for event in interrupted)
+
+    async def heartbeat_case():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class BlockingExecutor:
+            async def execute(self, request, context, cancelled):
+                started.set()
+                await release.wait()
+                return NormalizedResult(text="done")
+
+        active = OpenClawFacade(env.service, executor=BlockingExecutor(),
+                                executor_timeout_seconds=5, lease_seconds=0.3)
+        principal = active.store.authenticate(auth(env.token_a))
+        payload = {"model": "openclaw/default",
+                   "messages": [{"role": "user", "content": "heartbeat"}],
+                   "user": "heartbeat-user"}
+        task = asyncio.create_task(active.execute(principal, "chat.completions", payload,
+                                                  auth(env.token_a)))
+        await asyncio.wait_for(started.wait(), 2)
+        run_id = next(iter(active._active))
+        before = env.service.db.one("SELECT lease_expires_at FROM openclaw_turns WHERE run_id=?",
+                                    (run_id,))["lease_expires_at"]
+        await asyncio.sleep(0.7)
+        after = env.service.db.one("SELECT lease_expires_at FROM openclaw_turns WHERE run_id=?",
+                                   (run_id,))["lease_expires_at"]
+        assert after > before
+
+        second = OpenClawFacade(env.service, executor=ScriptedExecutor(), lease_seconds=60)
+        row = env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_id,))
+        assert row["status"] == "running"
+        assert not any(event["action"] == "turn.interrupted"
+                       for event in second.audit_events() if event["run_id"] == run_id)
+
+        release.set()
+        await asyncio.wait_for(task, 2)
+        row = env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_id,))
+        assert row["status"] == "succeeded"
+        assert row["lease_expires_at"] is None
+
+    asyncio.run(heartbeat_case())
+
+
+# -------------------------------- contract boundary versus delivered fields (F4)
+def test_harness_manifest_separates_supported_from_target_only(env):
+    manifest = harness_contract_manifest()
+    supported = set(manifest["supported"])
+    target = set(manifest["target_only"])
+    assert supported.isdisjoint(target)
+    for capability in ("context.summary", "memory.read", "memory.propose_write", "approval.resume",
+                       "event.run.stage", "event.tool", "event.approval", "event.message",
+                       "event.usage", "event.run.completed"):
+        assert capability in target
+        assert capability not in supported
+    assert set(manifest["capability_scope"]) == supported
+    assert manifest["slice_scope"] == "synthetic_first_slice_no_real_harness_executor_or_mcp_transport"
+    assert manifest["recovery_model"] == "owner_instance_plus_lease_expiry_heartbeat"
+
+    assert set(manifest["turn_field_status"]) == set(manifest["required_turn_fields"])
+    not_delivered = {name for name, status in manifest["turn_field_status"].items()
+                     if status.startswith("not_delivered")}
+    assert not_delivered == set(manifest["turn_fields_not_yet_delivered"])
+    assert not_delivered == {"context_digest", "tool_policy_digest", "event_stream_id"}
+    for name in ("turn_id", "session_id", "agent_id", "messages"):
+        assert manifest["turn_field_status"][name] == "delivered_to_executor"
+
+    response = chat(env.client, env.token_a, text="fields", user="field-user")
+    assert response.status_code == 200
+    request, context = env.executor.calls[-1]
+    for field_name in not_delivered:
+        assert field_name not in request.__dataclass_fields__
+        assert field_name not in context.__dataclass_fields__
+    assert context.turn_id == request.request_id
+    assert context.session_id == response.headers["x-openclaw-session-id"]
+    assert context.agent_id == "default"
+    assert request.messages[-1].text == "fields"
+
+
+# ------------------------- size, retention and binding-only continuation (F5)
+def test_request_size_retention_and_binding_only_continuation(env):
+    client = env.client
+    long_text = chat(client, env.token_a, text="x" * 100_001, user="size-user")
+    assert long_text.status_code == 413
+    assert error_code(long_text) == "REQUEST_TOO_LARGE"
+
+    huge = client.post("/v1/chat/completions",
+                       headers={**auth(env.token_a), "Content-Type": "application/json"},
+                       content=json.dumps({"model": "openclaw/default", "messages": [
+                           {"role": "user", "content": "x" * 1_100_000}]}).encode())
+    assert huge.status_code == 413
+    assert error_code(huge) == "UPLOAD_TOO_LARGE"
+
+    first = responses(client, env.token_a, text="retained", user="retention-user")
+    assert first.status_code == 200
+    response_id = first.json()["id"]
+    turn = env.service.db.one("SELECT id FROM openclaw_turns WHERE run_id=?",
+                              (first.headers["x-openclaw-run-id"],))
+    session_id = first.headers["x-openclaw-session-id"]
+    env.service.db.execute(
+        "UPDATE openclaw_responses SET created_at=? WHERE response_id=?",
+        ((datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(), response_id),
+    )
+    expired = responses(client, env.token_a, text="again", user=None,
+                        previous_response_id=response_id)
+    assert expired.status_code == 404
+    assert error_code(expired) == "RESPONSE_NOT_FOUND"
+    # 24h is a retrieval TTL, not a deletion job: the stored rows remain.
+    assert env.service.db.one("SELECT response_id FROM openclaw_responses WHERE response_id=?", (response_id,))
+    assert env.service.db.one("SELECT id FROM openclaw_turns WHERE id=?", (turn["id"],))
+    assert env.service.db.one("SELECT id FROM openclaw_sessions WHERE id=?", (session_id,))
+
+    remembered = responses(client, env.token_a, text="first-message", user="binding-user")
+    assert remembered.status_code == 200, remembered.text
+    continued = responses(client, env.token_a, text="second-message", user=None,
+                          previous_response_id=remembered.json()["id"])
+    assert continued.status_code == 200, continued.text
+    request, _ = env.executor.calls[-1]
+    texts = [message.text for message in request.messages]
+    assert "first-message" not in texts
+    assert texts[-1] == "second-message"
