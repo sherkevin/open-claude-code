@@ -38,7 +38,7 @@ GRAPH_STOPWORDS = {"设备", "系统", "数据", "文件", "内容", "说明", "
 # useful for graph navigation and entity-focused acceptance fixtures, but are
 # not a substitute for a trained named-entity or relation extraction model.
 GRAPH_ENTITY_PATTERNS = (
-    ("standard", re.compile(r"(?i)\b(?:GB(?:/T)?|ISO|IEC|ASTM|NIST|OSHA|CFR|SP|IR)\s*[-/]?\s*\d{2,5}(?:[-/]\d+)*(?:\s+Rev\.?\s*\d+)?")),
+    ("standard", re.compile(r"(?i)\b(?:GB(?:/T)?|ISO|IEC|ASTM|NIST|OSHA|CFR|SP|IR)\s*[-/]?\s*[A-Z]?\d{2,5}(?:[-/]\d+)*(?:\s+Rev\.?\s*\d+)?")),
     ("metric", re.compile(r"(?i)(?:合格率|良率|压力|温度|扭矩|厚度|流量|转速|yield_rate)\s*(?:[:=：为是]\s*)[-+]?\d+(?:\.\d+)?\s*(?:%|bar|kPa|MPa|℃|°C|mm|cm|Nm|rpm|件|小时|天)?")),
     ("equipment", re.compile(r"(?i)(?:\b[A-Z]{1,5}[-_]?\d{1,5}\b|[\u3400-\u9fff]{1,12}(?:泵|阀|炉|机|线|站|罐|管|压机|机器人))")),
     ("material", re.compile(r"(?:不锈钢|碳钢|铝合金|聚乙烯|聚氯乙烯|铜合金|钛合金|钢材|铝材)")),
@@ -804,6 +804,23 @@ class KnowledgeService:
             page, paragraph, start, end = edge["location"]
             self.db.execute("INSERT INTO knowledge_graph_edges VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (edge["id"], kb_id, document_id, version, edge["source"], edge["target"], edge["relation"], page, paragraph, start, end, stamp))
 
+    def _graph_quality(self, kb_id):
+        """Read an optional bounded quality receipt for curated graph imports.
+
+        The receipt is written by a project-local seeding job after it has
+        replaced rule-only candidates with source-bound, manually reviewed
+        nodes and edges.  It is metadata only; graph access still goes through
+        the normal knowledge-base permission checks.
+        """
+        path = self.root / kb_id / "graph-quality.json"
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()) or path.stat().st_size > 64 * 1024:
+                return None
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else None
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+
     def graph(self, kb_id, user, query=None, limit=120):
         self.require(kb_id, user)
         limit = max(1, min(200, int(limit)))
@@ -852,6 +869,7 @@ class KnowledgeService:
         return {"nodes": [{"id": row["id"], "label": row["label"], "kind": row["kind"], "source": source(row)} for row in nodes],
                 "edges": [{"id": row["id"], "source": row["source_node_id"], "target": row["target_node_id"], "relation": row["relation"], "provenance": source(row)} for row in edges],
                 "versioned": True, "source": "local-extraction", "query": query or "",
+                "quality": self._graph_quality(kb_id),
                 "multimodal": {
                     "images": images,
                     "visual_embedding": "needs_model",

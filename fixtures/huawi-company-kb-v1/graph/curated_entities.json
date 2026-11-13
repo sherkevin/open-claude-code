@@ -1,0 +1,218 @@
+{
+  "status": "curated",
+  "reviewed_by": "project-owner-default",
+  "entities": [
+    {
+      "id": "huawiseiji",
+      "label": "华微世纪",
+      "kind": "organization",
+      "aliases": [
+        "华微",
+        "北京华微世纪科技有限公司"
+      ],
+      "anchor": "华微世纪"
+    },
+    {
+      "id": "lingxi",
+      "label": "华微灵犀",
+      "kind": "assistant",
+      "aliases": [
+        "灵犀"
+      ],
+      "anchor": "华微灵犀"
+    },
+    {
+      "id": "agent",
+      "label": "智能体",
+      "kind": "concept",
+      "aliases": [
+        "AI智能体"
+      ],
+      "anchor": "智能体"
+    },
+    {
+      "id": "low_code",
+      "label": "低代码平台",
+      "kind": "system",
+      "aliases": [
+        "低代码"
+      ],
+      "anchor": "低代码平台"
+    },
+    {
+      "id": "kb",
+      "label": "知识库",
+      "kind": "system",
+      "aliases": [
+        "知识资料库"
+      ],
+      "anchor": "知识库"
+    },
+    {
+      "id": "kg",
+      "label": "知识图谱",
+      "kind": "concept",
+      "aliases": [
+        "图谱"
+      ],
+      "anchor": "知识图谱"
+    },
+    {
+      "id": "mcp",
+      "label": "MCP",
+      "kind": "protocol",
+      "aliases": [
+        "MCP接口",
+        "MCP工具"
+      ],
+      "anchor": "MCP"
+    },
+    {
+      "id": "rag",
+      "label": "RAG",
+      "kind": "retrieval",
+      "aliases": [
+        "增强检索",
+        "检索增强"
+      ],
+      "anchor": "RAG"
+    },
+    {
+      "id": "memory",
+      "label": "Memory",
+      "kind": "memory",
+      "aliases": [
+        "记忆"
+      ],
+      "anchor": "Memory"
+    },
+    {
+      "id": "workflow",
+      "label": "Workflow",
+      "kind": "orchestration",
+      "aliases": [
+        "工作流"
+      ],
+      "anchor": "Workflow"
+    },
+    {
+      "id": "sop",
+      "label": "SOP",
+      "kind": "process",
+      "aliases": [
+        "标准作业流程"
+      ],
+      "anchor": "SOP"
+    },
+    {
+      "id": "aps",
+      "label": "APS",
+      "kind": "system",
+      "aliases": [
+        "高级计划排程"
+      ],
+      "anchor": "APS"
+    },
+    {
+      "id": "mes",
+      "label": "MES",
+      "kind": "system",
+      "aliases": [
+        "制造执行系统"
+      ],
+      "anchor": "MES"
+    },
+    {
+      "id": "lithography",
+      "label": "光刻机",
+      "kind": "equipment",
+      "aliases": [
+        "光刻设备"
+      ],
+      "anchor": "光刻机"
+    },
+    {
+      "id": "packaging_line",
+      "label": "封装产线",
+      "kind": "process",
+      "aliases": [
+        "封装生产线"
+      ],
+      "anchor": "封装产线"
+    },
+    {
+      "id": "maintenance",
+      "label": "设备维护",
+      "kind": "process",
+      "aliases": [
+        "设备维修"
+      ],
+      "anchor": "设备维护"
+    },
+    {
+      "id": "context",
+      "label": "上下文管理",
+      "kind": "capability",
+      "aliases": [
+        "上下文压缩"
+      ],
+      "anchor": "上下文管理"
+    },
+    {
+      "id": "token_cost",
+      "label": "Token 成本",
+      "kind": "metric",
+      "aliases": [
+        "token消耗",
+        "Token消耗"
+      ],
+      "anchor": "token 消耗"
+    },
+    {
+      "id": "multimodal",
+      "label": "多模态",
+      "kind": "concept",
+      "aliases": [
+        "多模态知识管理"
+      ],
+      "anchor": "多模态"
+    },
+    {
+      "id": "internet_knowledge",
+      "label": "外部互联网知识",
+      "kind": "knowledge_layer",
+      "aliases": [
+        "互联网知识"
+      ],
+      "anchor": "外部互联网知识"
+    },
+    {
+      "id": "internal_knowledge",
+      "label": "内部数据知识",
+      "kind": "knowledge_layer",
+      "aliases": [
+        "内部知识"
+      ],
+      "anchor": "内部数据知识"
+    },
+    {
+      "id": "tool",
+      "label": "工具",
+      "kind": "tool",
+      "aliases": [
+        "MCP工具"
+      ],
+      "anchor": "工具"
+    },
+    {
+      "id": "openclaw",
+      "label": "OpenClaw",
+      "kind": "framework",
+      "aliases": [
+        "OpenClow",
+        "Open Cloud"
+      ],
+      "anchor": "OpenCl"
+    }
+  ]
+}
