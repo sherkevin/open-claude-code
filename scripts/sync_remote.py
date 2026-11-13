@@ -10,7 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "/data/dengkw/workspace/open-claude-code"
 EXCLUDE = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "dist", "data", ".local", ".runtime", "test-results", "playwright-report"}
-PROJECT_DIRECTORIES = {"client", "server", "docs", "examples", "scripts"}
+# Public, non-customer fixtures are part of the application contract: the
+# remote preview must be able to reproduce the same retrieval and acceptance
+# examples as school cloud. Runtime state and customer data remain excluded.
+PROJECT_DIRECTORIES = {"client", "server", "docs", "examples", "scripts", "fixtures"}
 PROJECT_FILES = {"README.md", "TODO.md", ".env.example", ".gitignore", "compose.yaml"}
 
 def main() -> None:
