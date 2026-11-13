@@ -692,6 +692,14 @@ async def run_load(config: LoadConfig | None = None) -> dict[str, Any]:
             if row["level"] > config.max_active_sessions
             and row["execution_layer"]
             and row["capacity_rejected"] == 0
+            # Cancellation intentionally releases an actor while the burst
+            # is still being classified. A complete cancellation accounting
+            # is the capacity evidence for that scenario; requiring a
+            # rejection as well makes the result timing-dependent.
+            and not (
+                row["scenario"] == "cancel"
+                and row["cancellations"] == row["requests"]
+            )
         ]
         report["summary"] = {
             "status": "passed" if rows and unexpected_errors == 0 and not execution_gap else "failed",

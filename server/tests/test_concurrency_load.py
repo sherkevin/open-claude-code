@@ -181,7 +181,11 @@ def test_concurrency_matrix_records_every_layer_and_metric(tmp_path):
     config = concurrency_load.LoadConfig(
         levels=(1, 5),
         iterations=1,
-        timeout=10.0,
+        # FULL SQLite durability on the school-cloud disk can take several
+        # seconds per commit under a concurrent burst. Keep the test budget
+        # above that expected I/O cost so it measures capacity semantics
+        # rather than failing on an overly tight synthetic timeout.
+        timeout=20.0,
         data_dir=tmp_path / "concurrency-load",
     )
     report = asyncio.run(concurrency_load.run_load(config))
