@@ -1,0 +1,100 @@
+{
+  "status": "curated",
+  "edges": [
+    {
+      "source": "huawiseiji",
+      "target": "lingxi",
+      "relation": "owns"
+    },
+    {
+      "source": "lingxi",
+      "target": "openclaw",
+      "relation": "built_on"
+    },
+    {
+      "source": "agent",
+      "target": "kb",
+      "relation": "uses"
+    },
+    {
+      "source": "kb",
+      "target": "rag",
+      "relation": "supports"
+    },
+    {
+      "source": "rag",
+      "target": "kg",
+      "relation": "augmented_by"
+    },
+    {
+      "source": "multimodal",
+      "target": "kg",
+      "relation": "enriches"
+    },
+    {
+      "source": "memory",
+      "target": "context",
+      "relation": "supports"
+    },
+    {
+      "source": "workflow",
+      "target": "sop",
+      "relation": "implements"
+    },
+    {
+      "source": "sop",
+      "target": "tool",
+      "relation": "calls"
+    },
+    {
+      "source": "aps",
+      "target": "mes",
+      "relation": "connects_to"
+    },
+    {
+      "source": "mes",
+      "target": "packaging_line",
+      "relation": "operates"
+    },
+    {
+      "source": "maintenance",
+      "target": "lithography",
+      "relation": "targets"
+    },
+    {
+      "source": "internet_knowledge",
+      "target": "internal_knowledge",
+      "relation": "feeds"
+    },
+    {
+      "source": "internal_knowledge",
+      "target": "sop",
+      "relation": "converges_to"
+    },
+    {
+      "source": "sop",
+      "target": "tool",
+      "relation": "converges_to"
+    },
+    {
+      "source": "context",
+      "target": "token_cost",
+      "relation": "reduces"
+    },
+    {
+      "source": "low_code",
+      "target": "mcp",
+      "relation": "exposes"
+    },
+    {
+      "source": "mcp",
+      "target": "tool",
+      "relation": "connects"
+    },
+    {
+      "source": "agent",
+      "target": "workflow",
+      "relation": "orchestrates"
+    }
+  ]
+}

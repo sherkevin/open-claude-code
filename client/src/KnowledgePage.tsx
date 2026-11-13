@@ -82,8 +82,11 @@ function GraphView({value,onClose}:{value:KnowledgeGraph;onClose:()=>void}) {
     region,
   });
   const statusText=knowledgeGraphStatusLabel;
+  const quality=value.quality;
+  const qualityLabel=quality?.status==='curated_seed'?'人工复核种子':'规则候选';
   return <section className="knowledge-graph-panel">
     <div className="section-label"><span>知识图谱 · {nodes.length} 个实体 · {value.edges.length} 条关系</span><Button variant="ghost" onClick={onClose}>收起</Button></div>
+    {quality&&<p className="section-help">图谱质量：{qualityLabel} · {quality.reviewed_entity_count||nodes.length} 个实体 · {quality.reviewed_edge_count||value.edges.length} 条关系。{quality.source_resolution_rate!==undefined?`原文片段定位率 ${(quality.source_resolution_rate*100).toFixed(0)}%。`:''} 规则候选只作待复核提示；召回率和噪声率尚未完成独立标注集评估。</p>}
     <p className="section-help">节点和关系按文档版本及权限过滤。点击实体可查看来源并打开对应图片；图片证据保留原图、页码、版本和处理状态，不把 OCR 文本冒充视觉语义。</p>
     {!nodes.length&&!imageAssets.length ? <EmptyState icon={<Network size={28}/>} title="暂无可视化证据" description="资料解析完成后，实体和图片证据会显示在这里。解析失败的文件请在资料列表中重新解析。"/> : <>
       <svg className="knowledge-graph-canvas" viewBox="0 0 760 500" role="img" aria-label="知识图谱（含可点击图片证据）">

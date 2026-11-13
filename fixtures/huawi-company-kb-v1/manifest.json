@@ -1,0 +1,584 @@
+{
+  "fixture_id": "huawi-company-kb-v1",
+  "knowledge_base_name": "华微公司知识库",
+  "scope": "team",
+  "source_chat_id": "oc_0e594fd71ee1b3e2e0b46365e4f42a7f",
+  "source_identity": "authorized project-group archive",
+  "school_cloud_only": true,
+  "documents": [
+    {
+      "source": "docs/doc-MhqfdzOM0olYgxxs2j7cB6nGnfb.json",
+      "sha256": "4dacea85237d356af175bbbdf80f917fde9fa58193c9cf7fdcd75ff56223940b",
+      "bytes": 28964,
+      "title": "doc-MhqfdzOM0olYgxxs2j7cB6nGnfb",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": false,
+      "path": "documents/feishu-doc-MhqfdzOM0olYgxxs2j7cB6nGnfb.md",
+      "text_sha256": "1af2d818db638a7375a5d28498eb0b1c09279b50da0d7ec32e9a319e7198da6a"
+    },
+    {
+      "source": "docs/doc-PeAndfoh3oa5hNx0gMWcIGRWnmb.json",
+      "sha256": "7e830f09e026f2ad9b1be4c5a4f2f8aabeca26e8260fb1124738315a8092f73a",
+      "bytes": 24966,
+      "title": "智能纪要：智能工厂系统方案讨论 2026年11月9日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-doc-PeAndfoh3oa5hNx0gMWcIGRWnmb.md",
+      "text_sha256": "f2c1010adbfd14b9c4078461fa444c4e3288378e50f6b11867c06eebfc0c9d0e"
+    },
+    {
+      "source": "docs/doc-PmWSdaUg1owpXmxvqIVcEMsanTf.json",
+      "sha256": "4ce6d8c0b37be74c3b42ae243cbb207d38aa10d3c55440eb8bf99b967e68ada6",
+      "bytes": 10963,
+      "title": "智能纪要：智能体合作方案沟通会议 2026年11月12日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-doc-PmWSdaUg1owpXmxvqIVcEMsanTf.md",
+      "text_sha256": "68632895cf29c484afa0efa3833a36754da5845378d27315fd9d0c91638d2598"
+    },
+    {
+      "source": "docs/doc-QeRcdIBhGoExvHxRjMfcWmDEnR3.json",
+      "sha256": "a3c93f7a93865850ab914a65410f24c506d259a0782f660bf7b57984e4ccdab8",
+      "bytes": 17920,
+      "title": "智能纪要：AI相关业务落地与获客经验讨论 2026年11月7日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-doc-QeRcdIBhGoExvHxRjMfcWmDEnR3.md",
+      "text_sha256": "e7563c60e67401d2ee73886c85838cc3ecd091012a8148ffe64308c1326c0286"
+    },
+    {
+      "source": "docs/meeting-plan-XDRQdiFQ4oocdZxvpcVcFQoEnNd.json",
+      "sha256": "ebf2c4b2bcf2564565bb4e1b5fd8da4cab763eafe4b0abb62bab8c15a03e45af",
+      "bytes": 21654,
+      "title": "华微世纪智能体能力建设合作方案与明日沟通提纲",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": false,
+      "path": "documents/feishu-meeting-plan-XDRQdiFQ4oocdZxvpcVcFQoEnNd.md",
+      "text_sha256": "132f4aefa119075422ce98ee828740a7b6330a231eccf39bebe901468fafd2e9"
+    },
+    {
+      "source": "docs/report-01-B9a1dceuhoibjWxZhaIccygynGx.json",
+      "sha256": "e2d58aff653e27291290c3c19c99aa195796d5fac29c33c95e96d498ec65d82f",
+      "bytes": 18995,
+      "title": "智能纪要：FDE落地实战经验分享 2026年11月7日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-report-01-B9a1dceuhoibjWxZhaIccygynGx.md",
+      "text_sha256": "5bf4d6236f122d3d3854104147c50d2dde78196b8aefe3d20456275b73aaa156"
+    },
+    {
+      "source": "docs/report-02-Otn4dy15ZoLbx2xYMACcOB2nnpf.json",
+      "sha256": "709ba86c4690a710d7ea94dc40e86f762af2192f5dbc4ccde28b8542fc62158c",
+      "bytes": 18866,
+      "title": "智能纪要：CU外脑AI产品落地经验分享 2026年11月7日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-report-02-Otn4dy15ZoLbx2xYMACcOB2nnpf.md",
+      "text_sha256": "38b080e12899a3f133fb3f7ce8a925f5b81451bbbeab09f9655248b0662e2b79"
+    },
+    {
+      "source": "docs/report-03-VAuPdtviGobwr2xXYd7ccstmnId.json",
+      "sha256": "33b33f4d23b2c7bf2369884721433702fbe30076a2ef1edb8633d0215fbed533",
+      "bytes": 17903,
+      "title": "智能纪要：AI落地获客方法与经验分享 2026年11月7日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-report-03-VAuPdtviGobwr2xXYd7ccstmnId.md",
+      "text_sha256": "d65e469df665868b9d972f502eba01b8678cfad2f94fbd257c0e5b03bf5259fe"
+    },
+    {
+      "source": "docs/report-04-X96edn7YOo9B4gxwu28c3pDynvd.json",
+      "sha256": "0843fb7c285e85649b5b8a0bfe90d5b39ff18cda3875295f49fee44bc638c88b",
+      "bytes": 12438,
+      "title": "智能纪要：FDE从业者核心能力构建分享 2026年11月7日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-report-04-X96edn7YOo9B4gxwu28c3pDynvd.md",
+      "text_sha256": "e2c947b63dc0d256702ecfa35a881de25b6cb9803d5e433753f980e45fa12a2e"
+    },
+    {
+      "source": "docs/report-05-LDqUdDpHDos6nWxUDSicJ2mqnOe.json",
+      "sha256": "266e52daf32578d05aa402c1f92d1cf7a6fd6b03edb78948c272a6d24e34a7aa",
+      "bytes": 17121,
+      "title": "智能纪要：AI销售系统落地经验分享 2026年11月7日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-report-05-LDqUdDpHDos6nWxUDSicJ2mqnOe.md",
+      "text_sha256": "d882229e5530d5f910cc57773d1272846e39cffaba846de4a6944170c4bed264"
+    },
+    {
+      "source": "docs/report-06-Z74CdhnqxoPF0Wx9LyOcBGj0nbY.json",
+      "sha256": "53c8186682f0b814e2b25c1dd6d424a4a840c410a06c53cccc02f84e3223ae37",
+      "bytes": 17447,
+      "title": "智能纪要：企业AI落地经验复盘分享 2026年11月7日",
+      "kind": "feishu_doc",
+      "included": true,
+      "summary_only": true,
+      "path": "documents/feishu-report-06-Z74CdhnqxoPF0Wx9LyOcBGj0nbY.md",
+      "text_sha256": "bd33b1856c06f874ab44d98e23390ef2318017ae395f89367764fbe5a420454a"
+    },
+    {
+      "source": "minutes/artifact-AI智能体合作模式探讨-obcn1icwb54fra769n7v12y8/transcript.txt",
+      "sha256": "7220300ef5e5ea8c47d7ab7308d99cefe137cbd0a71840c6ef4f3b3cfb008806",
+      "bytes": 120852,
+      "title": "artifact-AI智能体合作模式探讨-obcn1icwb54fra769n7v12y8",
+      "kind": "feishu_transcript",
+      "included": true,
+      "summary_only": false,
+      "path": "documents/transcript-12.md",
+      "text_sha256": "5c5bb447aee184ba7e2aec50511066d74fd0417efc3c46dd20df781d25edec74"
+    },
+    {
+      "source": "minutes/artifact-token消耗问题解决方案讨论-obcn2h4a9p3821qu79a6ce4j/transcript.txt",
+      "sha256": "45e50b8c639c33ead45e7bdf591be0ca1b4b9b7d9dc1c2168e2406c2db516e38",
+      "bytes": 2891,
+      "title": "artifact-token消耗问题解决方案讨论-obcn2h4a9p3821qu79a6ce4j",
+      "kind": "feishu_transcript",
+      "included": true,
+      "summary_only": false,
+      "path": "documents/transcript-13.md",
+      "text_sha256": "7716127c2f1c4056601eb6ee6f2b5edde7aef99ea0df61e2847de522d9dbaeb8"
+    },
+    {
+      "source": "minutes/artifact-工业端侧小模型方案讨论-obcn2h1b3k2v6559z5r96r9a/transcript.txt",
+      "sha256": "ea31668438c36836066c059dccbbf10e7f70e1f7014a3bde99543d6710b95d41",
+      "bytes": 8813,
+      "title": "artifact-工业端侧小模型方案讨论-obcn2h1b3k2v6559z5r96r9a",
+      "kind": "feishu_transcript",
+      "included": true,
+      "summary_only": false,
+      "path": "documents/transcript-14.md",
+      "text_sha256": "df64dde6ac3fd76f2df7e859f7c6ca22ac2c4be3de0334245b96202549d2fdac"
+    },
+    {
+      "source": "minutes/artifact-智能体产品落地与合作规划讨论-obcn4d648k2143l4by1h3wxa/transcript.txt",
+      "sha256": "2149ca69ea8ffec12b62bc3f9ea36e193365948fd541cd2901fab7be69c6c581",
+      "bytes": 242459,
+      "title": "artifact-智能体产品落地与合作规划讨论-obcn4d648k2143l4by1h3wxa",
+      "kind": "feishu_transcript",
+      "included": true,
+      "summary_only": false,
+      "path": "documents/transcript-15.md",
+      "text_sha256": "485aad2a9d6d3ec6b1a034ba0d1fbb7d07b4b7ae98f711db19634bad0fd0b770"
+    },
+    {
+      "source": "files/huawi-agent-product.pptx",
+      "sha256": "a6ac817087b6a7fefd0dd0d67cf25d932096666726340841a11abbab85c004e1",
+      "bytes": 2877785,
+      "kind": "feishu_pptx",
+      "included": true,
+      "text_path": "documents/slides-huawi-agent-product.md",
+      "text_sha256": "646eb06ab91bdc508eb6504eedab2291e4faeb446f3cf3e038b63609871f7248",
+      "page_previews": [
+        "media/huawi-agent-product/huawi-agent-product-page-01.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-02.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-03.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-04.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-05.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-06.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-07.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-08.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-09.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-10.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-11.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-12.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-13.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-14.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-15.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-16.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-17.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-18.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-19.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-20.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-21.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-22.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-23.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-24.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-25.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-26.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-27.jpg",
+        "media/huawi-agent-product/huawi-agent-product-page-28.jpg"
+      ]
+    },
+    {
+      "source": "files/huawi-brand-webinar.pptx",
+      "sha256": "79f1229be2c9c69fa6236b18f479191a0687392ce4ed04fb671b12314b088129",
+      "bytes": 37094527,
+      "kind": "feishu_pptx",
+      "included": true,
+      "text_path": "documents/slides-huawi-brand-webinar.md",
+      "text_sha256": "e83f57752422b43f7e6526b2240ca29c9aecd8587e8bb94e95971a7465482875",
+      "page_previews": [
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-01.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-02.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-03.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-04.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-05.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-06.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-07.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-08.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-09.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-10.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-11.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-12.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-13.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-14.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-15.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-16.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-17.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-18.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-19.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-20.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-21.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-22.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-23.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-24.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-25.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-26.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-27.jpg",
+        "media/huawi-brand-webinar/huawi-brand-webinar-page-28.jpg"
+      ]
+    },
+    {
+      "source": "scripts/huawi_company_graph/graph-curated-review.md",
+      "sha256": "3758531fbfd6909d5b587cff4bc739b43ca3b20efa49054c64a0464b49d4141c",
+      "bytes": 18546,
+      "title": "华微公司知识库：人工复核实体与关系",
+      "kind": "curated_graph_review",
+      "included": true,
+      "path": "documents/graph-curated-review.md",
+      "evidence_boundary": "人工复核种子；关系需要回到原始逐字稿核对，不把规则候选当事实。"
+    }
+  ],
+  "excluded": [
+    {
+      "source": "docs/doc-FF2ndzsheo9TvmxeveocN0w3nRb.json",
+      "sha256": "6338fa3657f8c1c394b03eca4deb4736838b74353a74251d0b3fd4bba7180946",
+      "bytes": 17171,
+      "title": "智能纪要：AI技术应用与职场生活闲聊讨论 2026年11月8日",
+      "kind": "feishu_doc",
+      "included": false,
+      "summary_only": true,
+      "reason": "与华微项目无关的闲聊内容，不进入公司知识库"
+    },
+    {
+      "source": "minutes/artifact-soundcore Work_11-05 22_34-obcn2h2rk5l18249q7zn5wr6/transcript.txt",
+      "sha256": "e67162fc1daa62c24a28baf2e8d0637367c062a778aa45da0d3b63bf3ef44910",
+      "bytes": 950,
+      "title": "artifact-soundcore Work_11-05 22_34-obcn2h2rk5l18249q7zn5wr6",
+      "kind": "feishu_transcript",
+      "included": false,
+      "summary_only": false,
+      "reason": "群内非华微项目录音，不进入公司知识库"
+    }
+  ],
+  "media": [
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-01.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-02.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-03.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-04.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-05.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-06.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-07.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-08.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-09.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-10.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-11.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-12.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-13.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-14.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-15.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-16.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-17.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-18.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-19.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-20.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-21.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-22.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-23.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-24.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-25.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-26.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-27.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-agent-product/huawi-agent-product-page-28.jpg",
+      "source": "files/huawi-agent-product.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-01.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-02.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-03.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-04.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-05.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-06.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-07.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-08.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-09.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-10.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-11.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-12.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-13.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-14.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-15.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-16.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-17.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-18.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-19.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-20.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-21.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-22.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-23.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-24.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-25.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-26.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-27.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    },
+    {
+      "path": "media/huawi-brand-webinar/huawi-brand-webinar-page-28.jpg",
+      "source": "files/huawi-brand-webinar.pptx",
+      "evidence_kind": "page_preview"
+    }
+  ],
+  "provenance_policy": {
+    "search_text": "sanitized_local_copy",
+    "raw_archive": "school_cloud_only",
+    "private_links_in_body": false,
+    "citation": "local knowledge-document content URL",
+    "ai_summary_disclaimer": "飞书智能纪要由 AI 生成，可能不准确；逐字稿优先。"
+  },
+  "graph": {
+    "status": "curated",
+    "entities": "graph/curated_entities.json",
+    "edges": "graph/curated_edges.json",
+    "rule_candidate_policy": "needs_review",
+    "minimum_acceptance": {
+      "core_entity_recall": 0.9,
+      "candidate_noise_rate": 0.1
+    }
+  }
+}

@@ -1231,6 +1231,23 @@ class KnowledgeService:
             page, paragraph, start, end = edge["location"]
             self.db.execute("INSERT INTO knowledge_graph_edges VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (edge["id"], kb_id, document_id, version, edge["source"], edge["target"], edge["relation"], page, paragraph, start, end, stamp))
 
+    def _graph_quality(self, kb_id):
+        """Read bounded quality metadata for a curated graph import.
+
+        The receipt is written by the project-local seeding job after it has
+        replaced rule-only candidates with source-bound, manually reviewed
+        nodes and edges. It is metadata only; graph access still goes through
+        the normal knowledge-base permission checks.
+        """
+        path = self.root / kb_id / "graph-quality.json"
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()) or path.stat().st_size > 64 * 1024:
+                return None
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else None
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+
     def graph(self, kb_id, user, query=None, limit=120):
         self.require(kb_id, user)
         limit = max(1, min(200, int(limit)))
@@ -1287,6 +1304,7 @@ class KnowledgeService:
         return {"nodes": [{"id": row["id"], "label": row["label"], "kind": row["kind"], "source": source(row)} for row in nodes],
                 "edges": [{"id": row["id"], "source": row["source_node_id"], "target": row["target_node_id"], "relation": row["relation"], "provenance": source(row)} for row in edges],
                 "versioned": True, "source": "local-extraction", "query": query or "",
+                "quality": self._graph_quality(kb_id),
                 "multimodal": {
                     "images": images,
                     "visual_embedding": self.vision.status()["visual_embedding"],
