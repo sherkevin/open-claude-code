@@ -9,7 +9,8 @@ from app.service import Service
 
 
 def test_modified_workspace_attachment_cannot_impersonate_original(tmp_path):
-    service = Service(Settings(data_dir=tmp_path))
+    # This test invokes the legacy SDK attachment hook directly.
+    service = Service(Settings(data_dir=tmp_path, runtime_type="claude"))
     try:
         user = service.create_user({"username": "source-test", "display_name": "Test", "password": "safe-test-password-123", "role": "admin"})
         assistant = service.save_assistant({"name": "Source test", "connections": []})

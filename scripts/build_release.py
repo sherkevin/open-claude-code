@@ -20,6 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 IGNORED = {"node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".git", "data", ".runtime", ".local", "internal", ".credentials", "credentials", "secrets", ".secrets", ".cache", ".mypy_cache", ".ruff_cache", "coverage"}
 PRIVATE_NAMES = {"provider-settings.json", "settings.local.json", "admin-password", "password", "credentials.json", "credentials", "token", ".coverage", ".ds_store", "todo.md", "acceptance_todo.md"}
 PRIVATE_SUFFIXES = {".pyc", ".pyo", ".db", ".sqlite", ".sqlite3", ".log", ".jsonl", ".pem", ".key", ".p12", ".pfx", ".tsbuildinfo"}
+BUILD_COPY_DIRS = {".eggs", ".hypothesis", ".next", ".nox", ".nyc_output", ".parcel-cache", ".tox", ".turbo", "build", "htmlcov", "site-packages"}
+LICENSE_INPUTS = (
+    ("licenses/deepseek-harness-MIT.txt", ".runtime/third_party/deepseek-harness/LICENSE", "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be"),
+    ("licenses/HippoRAG-MIT.txt", ".runtime/third_party/HippoRAG/LICENSE", "93b43d692b033b76129504448695bfe76ef22d18b11e51352bfab4b5622e5aaa"),
+)
 HANDOFF_SCRIPTS = ("scripts/build_release.py", "scripts/preview.py", "scripts/managed_preview.py", "scripts/smoke_api.py", "scripts/browser_smoke.mjs", "scripts/complete_client_browser.mjs", "scripts/benchmark.py", "scripts/lifecycle_smoke.py", "scripts/restart_safety_smoke.py", "scripts/native_context_smoke.py", "scripts/native_boundary_smoke.py", "scripts/local_browser_check.py")
 HANDOFF_DOCUMENTS = ("README.md", "compose.yaml", ".env.example", "docs/API_CONTRACT.md", "docs/DELIVERY_VERIFICATION.md", "docs/OPERATIONS.md", "docs/WORKSPACE_GUIDE.md", "docs/COMPLETE_CLIENT_SCOPE.md", "docs/acceptance-tasks.example.json", "docs/verification/SESSION_LIFECYCLE.md", "docs/verification/RESTART_SAFETY.md", "docs/verification/NATIVE_CONTEXT_MEMORY.md", "docs/verification/DELIVERY_0_1_0.md")
 REVIEWED_SCREENSHOTS = ("docs/screenshots/desktop-connections-20261105.png", "docs/screenshots/mobile-workspace-20261105.png", "docs/screenshots/mobile-chat-20261105.png", "docs/screenshots/desktop-real-model-20261105.png", "docs/screenshots/desktop-memory-0.2.0.png", "docs/screenshots/mobile-memory-0.2.0.png")
@@ -40,11 +45,30 @@ HANDOFF_DOCUMENTS += ("docs/verification/DELIVERY_0_4_0.md", "docs/verification/
 HANDOFF_SCRIPTS += ("scripts/session_isolation_smoke.py", "scripts/identity_selection_smoke.py")
 REVIEWED_SCREENSHOTS += ("docs/screenshots/assistant-detail-0.4.1.png",)
 REVIEWED_SCREENSHOTS += ("docs/screenshots/session-memory-0.4.2.png", "docs/screenshots/model-identity-0.4.2.png")
+HANDOFF_SCRIPTS += ("scripts/setup_harness_runtime.py", "scripts/verify_harness_runtime.py", "scripts/verify_harness_plugins.py", "scripts/verify_harness_sdk_protocol.py")
+HANDOFF_SCRIPTS += ("scripts/trial_smoke.py", "scripts/trial_capacity.py", "scripts/trial_release_manifest.py", "scripts/trial_release_install.py")
+HANDOFF_DOCUMENTS += ("docs/design/HUAWI_TRIAL_RELEASE_SCOPE_2026-11-12.md", "docs/design/HUAWI_TRIAL_RELEASE_GATE.md", "docs/design/TRIAL_CAPABILITY_POLICY.md", "docs/design/TRIAL_NATIVE_RELEASE.md", "docs/upstream-sources.json")
 
-def permitted(path: Path) -> bool:
+def release_root(root: Path | None = None) -> Path:
+    return (root or ROOT).resolve()
+
+def build_copy(relative: PurePosixPath) -> bool:
+    """Reject package-build copies and caches while keeping the client/dist product."""
+    parts = relative.parts
+    for index, part in enumerate(parts[:-1]):
+        lowered = part.lower()
+        if lowered in BUILD_COPY_DIRS:
+            return True
+        if lowered == "dist" and PurePosixPath(*parts[:index + 1]).as_posix() != "client/dist":
+            return True
+    return False
+
+def permitted(path: Path, root: Path | None = None) -> bool:
     """Exclude runtime state and private configuration even inside source roots."""
-    relative = path.relative_to(ROOT)
+    relative = path.relative_to(release_root(root))
     if path.is_symlink() or any(part.lower() in IGNORED or part.startswith('.test-') for part in relative.parts):
+        return False
+    if build_copy(PurePosixPath(relative.as_posix())):
         return False
     name = path.name.lower()
     if name in PRIVATE_NAMES or name.startswith(".env") and name != ".env.example":
@@ -55,32 +79,52 @@ def permitted(path: Path) -> bool:
         return False
     return True
 
-def files_under(folder: Path):
+def files_under(folder: Path, root: Path | None = None):
+    root = release_root(root)
     for directory, subdirs, names in os.walk(folder, followlinks=False):
-        subdirs[:] = sorted(name for name in subdirs if name.lower() not in IGNORED and not name.startswith('.test-') and not name.endswith(".egg-info") and not (Path(directory) / name).is_symlink())
+        kept = []
+        for name in sorted(subdirs):
+            candidate = Path(directory) / name
+            relative = candidate.relative_to(root).as_posix()
+            if (name.lower() in IGNORED or name.lower() in BUILD_COPY_DIRS
+                    or name.startswith('.test-') or name.endswith(".egg-info")
+                    or candidate.is_symlink()
+                    or (name.lower() == "dist" and relative != "client/dist")):
+                continue
+            kept.append(name)
+        subdirs[:] = kept
         for name in sorted(names):
             path = Path(directory) / name
-            if path.is_file() and permitted(path):
+            if path.is_file() and permitted(path, root):
                 yield path
 
-def reviewed_content(path: Path) -> bytes:
-    if not permitted(path):
-        raise SystemExit(f"Refusing a private or unsupported input: {path.relative_to(ROOT)}")
+def reviewed_content(path: Path, root: Path | None = None) -> bytes:
+    if not permitted(path, root):
+        raise SystemExit(f"Refusing a private or unsupported input: {path.relative_to(release_root(root))}")
     content = path.read_bytes()
     if any(marker.search(content) for marker in SECRET_MARKERS):
         # Never print the matched credential or surrounding file contents.
-        raise SystemExit(f"Potential secret marker found; inspect privately: {path.relative_to(ROOT)}")
+        raise SystemExit(f"Potential secret marker found; inspect privately: {path.relative_to(release_root(root))}")
     return content
 
-def collect() -> dict[str, list[tuple[str, bytes]]]:
+def collect(root: Path | None = None, license_inputs: tuple[tuple[str, str, str], ...] | None = None) -> dict[str, list[tuple[str, bytes]]]:
+    root = release_root(root)
     for required in ("client/dist/index.html", "client/package-lock.json", "server/app/main.py", *HANDOFF_DOCUMENTS, *HANDOFF_SCRIPTS):
-        if not (ROOT / required).is_file():
+        if not (root / required).is_file():
             raise SystemExit(f"Required release input missing: {required}")
     groups: dict[str, list[tuple[str, bytes]]] = {}
-    groups["client"] = [(path.relative_to(ROOT).as_posix(), reviewed_content(path)) for path in files_under(ROOT / "client")]
-    groups["server"] = [(path.relative_to(ROOT).as_posix(), reviewed_content(path)) for folder in (ROOT / "server", ROOT / "examples") for path in files_under(folder)]
-    groups["deployment"] = [(name, reviewed_content(ROOT / name)) for name in (*HANDOFF_DOCUMENTS, *HANDOFF_SCRIPTS)]
-    groups["deployment"].extend((name, reviewed_content(ROOT / name)) for name in REVIEWED_SCREENSHOTS if (ROOT / name).is_file())
+    groups["client"] = [(path.relative_to(root).as_posix(), reviewed_content(path, root)) for path in files_under(root / "client", root)]
+    groups["server"] = [(path.relative_to(root).as_posix(), reviewed_content(path, root)) for folder in (root / "server", root / "examples") for path in files_under(folder, root)]
+    groups["deployment"] = [(name, reviewed_content(root / name, root)) for name in (*HANDOFF_DOCUMENTS, *HANDOFF_SCRIPTS)]
+    groups["deployment"].extend((name, reviewed_content(root / name, root)) for name in REVIEWED_SCREENSHOTS if (root / name).is_file())
+    for archive_name, source_name, expected in (LICENSE_INPUTS if license_inputs is None else license_inputs):
+        source = root / source_name
+        if not source.is_file():
+            raise SystemExit(f"Required license evidence missing: {source_name}")
+        content = source.read_bytes()
+        if hashlib.sha256(content).hexdigest() != expected:
+            raise SystemExit(f"License evidence hash mismatch: {source_name}")
+        groups["deployment"].append((archive_name, content))
     for entries in groups.values():
         entries.sort(key=lambda entry: entry[0])
         names = [name for name, _ in entries]

@@ -16,9 +16,10 @@ from datetime import timedelta
 from time import perf_counter
 
 import httpx
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from .db import dump, now, uid
+from .provider_policy import TOKENHUB_BASE_URL
 from .models import (
     WorkflowCreate,
     WorkflowDraftPatch,
@@ -1468,7 +1469,7 @@ async def _invoke_agent_model(service, selection: dict, system_prompt: str, user
     token = provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN")
     if not token:
         raise AppError(503, "WORKFLOW_MODEL_UNAVAILABLE", "当前工作流节点的模型线路尚未配置授权")
-    base = provider.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+    base = provider.get("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL).rstrip("/")
     endpoint = base if base.endswith("/messages") else base + ("/messages" if base.endswith("/v1") else "/v1/messages")
     headers = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
     if provider.get("ANTHROPIC_API_KEY"):
@@ -2219,8 +2220,38 @@ async def decide_workflow_approval(service, run_id: str, node_id: str, body: dic
     return run_view(service, service.db.one("SELECT * FROM workflow_runs WHERE id=?", (run_id,)), user)
 
 
-def create_workflow_router(service_dependency, authenticated):
+_WORKFLOW_DISABLED_MESSAGE = "工作流功能已下线，当前版本请使用助手配置、会话、知识库和业务连接。"
+
+
+def create_workflow_router(service_dependency, authenticated, *, enabled: bool = True):
     router = APIRouter(prefix="/api/v1", tags=["Workflows"])
+
+    if not enabled:
+        # Keep the old URL shapes explicit so disabled requests are auditable
+        # and cannot fall through to an unrelated catch-all route. The
+        # database tables and implementation remain intact for a future,
+        # separately approved migration, but no request can create or run a
+        # workflow while this gate is closed.
+        disabled_routes = (
+            ("/workflow-templates", ("GET",)),
+            ("/assistants/{assistant_id}/workflows", ("GET", "POST")),
+            ("/assistants/{assistant_id}/workflows/from-template", ("POST",)),
+            ("/workflows/{workflow_id}", ("GET",)),
+            ("/workflows/{workflow_id}/runs", ("GET", "POST")),
+            ("/workflows/{workflow_id}/draft", ("PATCH",)),
+            ("/workflows/{workflow_id}/publish", ("POST",)),
+            ("/workflows/{workflow_id}/rollback", ("POST",)),
+            ("/workflows/{workflow_id}/nodes/{node_id}/debug", ("POST",)),
+            ("/workflow-runs/{run_id}", ("GET",)),
+            ("/workflow-runs/{run_id}/approvals/{node_id}/decision", ("POST",)),
+        )
+
+        def disabled(request: Request):
+            raise AppError(410, "FEATURE_DISABLED", _WORKFLOW_DISABLED_MESSAGE)
+
+        for path, methods in disabled_routes:
+            router.add_api_route(path, disabled, methods=list(methods), dependencies=[Depends(authenticated)], response_model=None)
+        return router
 
     @router.get("/workflow-templates")
     def templates(user=Depends(authenticated)):

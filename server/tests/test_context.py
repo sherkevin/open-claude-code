@@ -49,7 +49,7 @@ def native_context(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr("claude_agent_sdk.ClaudeSDKClient", Client)
-    settings = Settings(data_dir=tmp_path, model="fixture", provider_settings="")
+    settings = Settings(data_dir=tmp_path, model="fixture", provider_settings="", runtime_type="claude")
     settings.provider_env = lambda: {"ANTHROPIC_API_KEY": "test-only"}
     app = create_app(settings)
     with TestClient(app) as client:

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .db import now, uid
 from .security import AppError, workspace_path
+from .memory_snapshots import HarnessMemoryStore
 
 MAX_FILE = 128 * 1024
 MAX_TOTAL = 1024 * 1024
@@ -30,11 +31,16 @@ class MemoryWrite(BaseModel):
     path: str = Field(min_length=1, max_length=240)
     content: str = Field(max_length=MAX_FILE)
     revision: int = Field(ge=0)
+    operation_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class NativeMemory:
     def __init__(self, service):
         self.service = service
+        self.snapshots = HarnessMemoryStore(self)
+
+    def is_harness(self, conversation_id):
+        return self.service.require("conversations", conversation_id).get("runtime_type") == "harness"
 
     def _root(self, category, user_id, item_id):
         root = self.service.settings.data_dir / category / user_id / item_id
@@ -45,6 +51,10 @@ class NativeMemory:
         return root
 
     def root(self, user_id, conversation_id):
+        if self.is_harness(conversation_id):
+            conversation = self.service.require("conversations", conversation_id)
+            binding = self.snapshot_for_run(user_id, conversation_id, conversation["active_run_id"])
+            return self.snapshots.fs.path(user_id, conversation_id, binding["snapshot_id"])
         return self._root("conversation-memory", user_id, conversation_id)
 
     def legacy_root(self, user_id, assistant_id):
@@ -58,6 +68,9 @@ class NativeMemory:
         self.service.db.execute("INSERT INTO conversation_memory_scopes(conversation_id,revision,digest,updated_at,origin) VALUES(?,0,?,?,'empty')", (conversation_id, hashlib.sha256(b"").hexdigest(), now()))
 
     def initialize(self, user_id, conversation_id):
+        if self.is_harness(conversation_id):
+            self.snapshots.initialize(user_id, conversation_id)
+            return self.service.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (conversation_id,))
         db = self.service.db
         # Compatible with callers that already hold the run/edit transaction;
         # BEGIN IMMEDIATE also serializes first migration across server workers.
@@ -151,6 +164,9 @@ class NativeMemory:
         return sorted(result)
 
     def refresh(self, user_id, conversation_id):
+        if self.is_harness(conversation_id):
+            self.snapshot_for_run(user_id, conversation_id)
+            return self.service.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (conversation_id,))
         # Sync HTTP handlers run concurrently. Keep digest and revision changes
         # atomic with manual edits and first-time scope initialization.
         with self.service.db.lock:
@@ -178,9 +194,18 @@ class NativeMemory:
         if self.service.db.one("SELECT id FROM conversations WHERE user_id=? AND id=? AND active_run_id IS NOT NULL", (user_id, conversation_id)):
             return True
         manager = self.service.manager
-        return bool(manager and conversation_id in manager.context_requests)
+        return bool((manager and conversation_id in manager.context_requests) or self.service.db.one("SELECT conversation_id FROM conversation_memory_scopes WHERE conversation_id=? AND mutation_id IS NOT NULL", (conversation_id,)))
 
     def view(self, user, conversation_id):
+        if self.is_harness(conversation_id):
+            conversation = self.service.require("conversations", conversation_id, user)
+            binding = self.snapshot_for_run(user["id"], conversation_id)
+            scope = self.service.db.one("SELECT origin FROM conversation_memory_scopes WHERE conversation_id=?", (conversation_id,))
+            return {"conversation_id": conversation_id, "assistant_id": conversation["assistant_id"],
+                    "scope": "conversation", "origin": scope["origin"], "read_only": False,
+                    "busy": self.busy(user["id"], conversation_id), "max_file_bytes": MAX_FILE, "max_total_bytes": MAX_TOTAL,
+                    "context_reset": False, "operation_id": None, "mutation_status": None,
+                    **self.snapshots.read(binding)}
         with self.service.db.lock:
             return self._view(user, conversation_id)
 
@@ -194,6 +219,10 @@ class NativeMemory:
         return [{"path": path.relative_to(root).as_posix(), "size": size, "updated_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()} for path, size in self.files(root)]
 
     def read(self, user, conversation_id, raw):
+        if self.is_harness(conversation_id):
+            self.service.require("conversations", conversation_id, user)
+            binding = self.snapshot_for_run(user["id"], conversation_id)
+            return {**self.snapshots.read(binding, raw), "context_reset": False, "operation_id": None, "mutation_status": None}
         with self.service.db.lock:
             root = self.authorize(user, conversation_id)
             row = self.revision(user["id"], conversation_id)
@@ -211,13 +240,19 @@ class NativeMemory:
         return {"path": path.relative_to(root).as_posix(), "content": content, "revision": row["revision"], "updated_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()}
 
     def revision(self, user_id, conversation_id):
+        if self.is_harness(conversation_id):
+            conversation = self.service.require("conversations", conversation_id)
+            self.snapshot_for_run(user_id, conversation_id, conversation["active_run_id"])
+            return self.service.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (conversation_id,))
         # Native writes during an active turn must not invalidate that same turn's
         # tool policy. Refresh after it ends, or before starting the next turn.
         if not self.busy(user_id, conversation_id):
             return self.refresh(user_id, conversation_id)
         return self.initialize(user_id, conversation_id)
 
-    def edit(self, user, conversation_id, revision, raw=None, content=None):
+    def edit(self, user, conversation_id, revision, raw=None, content=None, operation_id=None):
+        if self.is_harness(conversation_id):
+            return self.snapshots.edit(user, conversation_id, revision, raw, content, operation_id)
         if raw is not None:
             relative_name(raw)
         root = self.authorize(user, conversation_id)
@@ -255,6 +290,53 @@ class NativeMemory:
             if updated["revision"] != row["revision"]:
                 self.service.db.execute("UPDATE conversations SET context_usage=NULL WHERE id=?", (conversation_id,))
         return self.read(user, conversation_id, raw) if content is not None else self.view(user, conversation_id)
+
+    def snapshot_for_run(self, user_id, conversation_id, run_id=None):
+        return self.snapshots.snapshot(user_id, conversation_id, run_id)
+
+    def verified_for_run(self, user_id, conversation_id, run_id=None):
+        return self.snapshots.verified(user_id, conversation_id, run_id)
+
+    def _bound_run(self, binding):
+        conversation = self.service.require("conversations", binding["conversation_id"])
+        if not conversation["active_run_id"]:
+            raise AppError(409, "MEMORY_RUN_CHANGED", "记忆工具仅可用于当前运行任务")
+        return conversation["active_run_id"]
+
+    def list_for_run(self, binding):
+        return self.snapshots.read(binding, run_id=self._bound_run(binding))
+
+    def read_for_run(self, binding, path, expected_revision):
+        return self.snapshots.read(binding, path, expected_revision, self._bound_run(binding))
+
+    def stage_for_run(self, binding, run_id, operation_id, path, content, expected_revision):
+        return self.snapshots.stage(binding, run_id, operation_id, path, content, expected_revision)
+
+    def approve_stage(self, operation_id, approval_id, policy_binding):
+        return self.snapshots.approve(operation_id, approval_id, policy_binding)
+
+    def pending_for_run(self, run_id):
+        return self.snapshots.pending(run_id)
+
+    def commit_for_run(self, run_id, *, authorize, finalize):
+        return self.snapshots.commit(run_id, authorize=authorize, finalize=finalize)
+
+    def discard_for_run(self, run_id, reason="aborted"):
+        return self.snapshots.discard(run_id, reason)
+
+    def recover(self):
+        return self.snapshots.recover()
+
+    def operation_status(self, user, conversation_id, operation_id):
+        with self.snapshots.transaction():
+            self.snapshots.authorized(user["id"], conversation_id)
+            row = self.service.db.one("SELECT * FROM memory_operations WHERE conversation_id=? AND operation_key=? AND run_id IS NULL AND kind!='migration'", (conversation_id, operation_id))
+        if not row:
+            return {"operation_id": operation_id, "status": "not_found", "kind": None, "path": None, "result": None}
+        import json
+        result = json.loads(row["result"]) if row["result"] else None
+        return {"operation_id": operation_id, "status": row["status"], "kind": row["kind"], "path": row["path"],
+                "result": {key: result[key] for key in ("revision", "native_epoch", "context_reset", "mutation_status")} if result else None}
 
     def legacy_authorize(self, user, assistant_id):
         # These are the caller's own historical files, including for an archived
@@ -305,27 +387,33 @@ def create_memory_router(service_dependency, authenticated_dependency):
         return service.memory.view(user, conversation_id)
 
     @router.get("/conversations/{conversation_id}/memory/file")
-    def read(conversation_id: str, path: str = Query(min_length=1, max_length=240), service=Depends(service_dependency), user=Depends(authenticated_dependency)):
+    def read(conversation_id: str, path: str = Query(min_length=1), service=Depends(service_dependency), user=Depends(authenticated_dependency)):
         return service.memory.read(user, conversation_id, path)
+
+    @router.get("/conversations/{conversation_id}/memory/operations/{operation_id}")
+    def operation_status(conversation_id: str, operation_id: str, service=Depends(service_dependency), user=Depends(authenticated_dependency)):
+        if not 1 <= len(operation_id) <= 128:
+            raise AppError(422, "MEMORY_OPERATION_REQUIRED", "操作标识长度无效")
+        return service.memory.operation_status(user, conversation_id, operation_id)
 
     @router.put("/conversations/{conversation_id}/memory/file")
     def write(conversation_id: str, body: MemoryWrite, service=Depends(service_dependency), user=Depends(authenticated_dependency)):
-        return service.memory.edit(user, conversation_id, body.revision, body.path, body.content)
+        return service.memory.edit(user, conversation_id, body.revision, body.path, body.content, body.operation_id)
 
     @router.delete("/conversations/{conversation_id}/memory/file")
-    def delete(conversation_id: str, path: str = Query(min_length=1, max_length=240), revision: int = Query(ge=0), service=Depends(service_dependency), user=Depends(authenticated_dependency)):
-        return service.memory.edit(user, conversation_id, revision, path)
+    def delete(conversation_id: str, path: str = Query(min_length=1), revision: int = Query(ge=0), operation_id: str | None = Query(default=None, min_length=1, max_length=128), service=Depends(service_dependency), user=Depends(authenticated_dependency)):
+        return service.memory.edit(user, conversation_id, revision, path, operation_id=operation_id)
 
     @router.delete("/conversations/{conversation_id}/memory")
-    def clear(conversation_id: str, revision: int = Query(ge=0), service=Depends(service_dependency), user=Depends(authenticated_dependency)):
-        return service.memory.edit(user, conversation_id, revision)
+    def clear(conversation_id: str, revision: int = Query(ge=0), operation_id: str | None = Query(default=None, min_length=1, max_length=128), service=Depends(service_dependency), user=Depends(authenticated_dependency)):
+        return service.memory.edit(user, conversation_id, revision, operation_id=operation_id)
 
     @router.get("/assistants/{assistant_id}/memory")
     def legacy_listing(assistant_id: str, service=Depends(service_dependency), user=Depends(authenticated_dependency)):
         return service.memory.legacy_view(user, assistant_id)
 
     @router.get("/assistants/{assistant_id}/memory/file")
-    def legacy_read(assistant_id: str, path: str = Query(min_length=1, max_length=240), service=Depends(service_dependency), user=Depends(authenticated_dependency)):
+    def legacy_read(assistant_id: str, path: str = Query(min_length=1), service=Depends(service_dependency), user=Depends(authenticated_dependency)):
         return service.memory.legacy_read(user, assistant_id, path)
 
     @router.put("/assistants/{assistant_id}/memory/file")

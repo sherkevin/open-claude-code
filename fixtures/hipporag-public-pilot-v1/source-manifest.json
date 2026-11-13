@@ -1,0 +1,69 @@
+{
+  "schema": "hipporag-public-pilot/v1",
+  "version": "0.1.0-draft",
+  "created_at": "2026-11-10",
+  "annotation_provenance": "assistant-authored-preregistered-pilot",
+  "independent_human_gold": false,
+  "second_review": "assistant_source_reviewed_2026-11-10",
+  "model_calls": 0,
+  "status": "frozen_diagnostic_pilot_not_holdout",
+  "scope": "public-source-development-pilot-not-release-quality",
+  "sources": [
+    {
+      "source_id": "ir8227",
+      "path": "fixtures/industrial-public-v1/documents/nist-ir-8227.pdf",
+      "sha256": "da070b038b7df8d1eb83f7af8bb79d8b8207c7cd8ae83ea52378228363de4731",
+      "url": "https://nvlpubs.nist.gov/nistpubs/ir/2019/NIST.IR.8227.pdf",
+      "title": "Manufacturing Profile Implementation Methodology for a Robotic Workcell",
+      "publisher": "NIST",
+      "license": "US government work; NIST attribution requested"
+    },
+    {
+      "source_id": "sp80082",
+      "path": "fixtures/industrial-public-v1/documents/nist-sp-800-82r3.pdf",
+      "sha256": "608f554514d381853e24e0b33123b7080fbd757826f460032690aade63394616",
+      "url": "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-82r3.pdf",
+      "title": "Guide to Operational Technology (OT) Security",
+      "publisher": "NIST",
+      "license": "US government work; NIST attribution requested"
+    }
+  ],
+  "passage_count": 18,
+  "question_count": 8,
+  "image_count": 2,
+  "extractor": {
+    "executable": "pdftotext",
+    "version": "22.02.0",
+    "arguments": [
+      "-enc",
+      "UTF-8",
+      "-f",
+      "PHYSICAL_PAGE",
+      "-l",
+      "PHYSICAL_PAGE",
+      "SOURCE",
+      "-"
+    ],
+    "canonicalization": "UTF-8 decode; remove form-feed U+000C only; no whitespace normalization",
+    "offset_unit": "Unicode code points in canonical page text; half-open [char_start,char_end)",
+    "page_numbering": "1-based physical PDF pages; printed page recorded separately"
+  },
+  "inference_input_allowlist": [
+    "passages.jsonl",
+    "images.json"
+  ],
+  "evaluation_only": [
+    "evaluation/expectations.json",
+    "evaluation/questions.jsonl"
+  ],
+  "input_boundary": "No expected answers, aliases, relation labels, question batches or review notes in indexing prompts. A later retrieval run sends only the current query. No runner or model call is included.",
+  "no_quality_scores": true,
+  "files": {
+    "passages.jsonl": "922b047c16aa88a580eea68a305b481af34a0c45b2f8ab555714157027958a15",
+    "images.json": "f40e5768480fe27411033362f967ffd3bf35cd986bb7a0d1bf39128f4563b943",
+    "evaluation/expectations.json": "9da322745b83275293dae1bc815bc917cadd922df3823602671fc8a539aabd3b",
+    "evaluation/questions.jsonl": "e3574397740f286de912a55873125d2bd9dfd84336de0fd634b7f78fee8d4200"
+  },
+  "frozen_at": "2026-11-10T15:12:00Z",
+  "pre_inference_editorial_correction": "q05 evidence explanation retains should-not warning, not a regulatory prohibition; no model calls preceded correction."
+}

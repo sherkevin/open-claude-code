@@ -123,6 +123,29 @@ class ModelRecommendationRequest(InputModel):
     candidate_model_ids: list[str] | None = Field(default=None, max_length=20)
 
 
+class ModelCompletionRequest(InputModel):
+    """A short draft sent to the opt-in router for real Tab completion."""
+    text: str = Field(min_length=1, max_length=500)
+
+
+class XlsxSheet(InputModel):
+    """Bounded table input for a user-visible local Excel export."""
+    name: str = Field(default="Sheet 1", min_length=1, max_length=80)
+    columns: list[str] = Field(default_factory=list, max_length=50)
+    rows: list[list[str | int | float | bool | None] | dict[str, str | int | float | bool | None]] = Field(default_factory=list, max_length=5000)
+
+
+class XlsxArtifactRequest(InputModel):
+    filename: str = Field(default="导出.xlsx", min_length=1, max_length=180)
+    sheets: list[XlsxSheet] = Field(min_length=1, max_length=10)
+
+
+class ImageGenerationRequest(InputModel):
+    """Prompt contract kept even while no approved image adapter is present."""
+    prompt: str = Field(min_length=1, max_length=2000)
+    model_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
 class SendMessage(InputModel):
     client_request_id: str = Field(min_length=8, max_length=100)
     text: str = Field(default="", max_length=50000)
@@ -136,6 +159,7 @@ class SendMessage(InputModel):
 
 class ApprovalDecision(InputModel):
     decision: Literal["allow", "deny"]
+    memory_content_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ModelApprovalPolicy(InputModel):
@@ -180,7 +204,7 @@ WorkflowNodeType = Literal[
 
 
 class WorkflowNode(InputModel):
-    """A safe, declarative node used by the workflow editor."""
+    """A safe, declarative node used by the first local workflow slice."""
 
     id: str = Field(min_length=1, max_length=64)
     type: WorkflowNodeType
@@ -223,6 +247,9 @@ class WorkflowRollback(InputModel):
 
 class WorkflowRunRequest(InputModel):
     input: dict[str, object] = Field(default_factory=dict, max_length=30)
+    # Optional session binding for the synthetic execution contract.  A
+    # bound conversation must belong to the workflow's assistant and the
+    # authenticated user; no provider or customer runtime is invoked.
     conversation_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 

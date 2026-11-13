@@ -1,0 +1,28 @@
+[
+  {
+    "id": "nist-sp80082-scada-fig2",
+    "path": "fixtures/industrial-public-v2/images/nist-sp80082-scada-fig2.png",
+    "sha256": "e18948f9f3ec5047fd1e99e8c01a809590351ef4d02be123eb0d183ec2bc7953",
+    "source_id": "sp80082",
+    "source_sha256": "608f554514d381853e24e0b33123b7080fbd757826f460032690aade63394616",
+    "physical_page": 30,
+    "width": 1020,
+    "height": 1320,
+    "purpose": "diagram",
+    "source_url": "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-82r3.pdf",
+    "license": "US government work; retain NIST attribution and original source"
+  },
+  {
+    "id": "nist-sp80082-page15",
+    "path": "fixtures/industrial-public-v2/images/nist-sp80082-page15.png",
+    "sha256": "e9e3cbf82016b603dc447a89c449a813c253ac2eecfc0b8648643525d0a90eb8",
+    "source_id": "sp80082",
+    "source_sha256": "608f554514d381853e24e0b33123b7080fbd757826f460032690aade63394616",
+    "physical_page": 15,
+    "width": 1020,
+    "height": 1320,
+    "purpose": "hard_negative_table_of_contents",
+    "source_url": "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-82r3.pdf",
+    "license": "US government work; retain NIST attribution and original source"
+  }
+]

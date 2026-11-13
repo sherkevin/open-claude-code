@@ -2,13 +2,16 @@ import json
 
 from fastapi.testclient import TestClient
 
+from app.config import Settings
 from app.main import create_app
 from test_api import FakeRuntime, poll, send
 from test_model_catalog import catalog_settings
 
 
-def make_client(tmp_path):
-    return TestClient(create_app(catalog_settings(tmp_path), runtime_factory=FakeRuntime))
+def make_client(tmp_path, *, runtime_type=None):
+    settings = catalog_settings(tmp_path)
+    settings.runtime_type = runtime_type or Settings(model="fixture", provider_settings="").runtime_type
+    return TestClient(create_app(settings, runtime_factory=FakeRuntime))
 
 
 def setup(client):
@@ -21,8 +24,10 @@ def setup(client):
 
 
 def test_selected_identity_is_metadata_and_keeps_native_history(tmp_path):
-    with make_client(tmp_path) as client:
+    # The fixture below explicitly seeds a historical Claude native session.
+    with make_client(tmp_path, runtime_type="claude") as client:
         service, cid = setup(client)
+        assert service.require("conversations", cid)["runtime_type"] == "claude"
         # Existing native state and old identity in application history must not
         # control the public model name of a newly prepared metadata request.
         service.db.execute("UPDATE conversations SET sdk_session_id='native-business-history',sdk_cost_total=1.25 WHERE id=?", (cid,))
@@ -58,6 +63,7 @@ def test_selected_identity_is_metadata_and_keeps_native_history(tmp_path):
 def test_business_and_quoted_identity_are_real_runtime_turns(tmp_path):
     with make_client(tmp_path) as client:
         service, cid = setup(client)
+        assert service.require("conversations", cid)["runtime_type"] == "harness"
         before = FakeRuntime.connects
         texts = ['你是谁？请同时计算17+25。', '请翻译“你是谁”这句话。', '告诉我你是谁的供应商。']
         for index, text in enumerate(texts):

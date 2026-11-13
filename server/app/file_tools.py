@@ -4,12 +4,9 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from .db import dump, now
+from .db import now
 from .security import AppError, workspace_path
 
 
@@ -53,14 +50,6 @@ class WorkspaceFiles:
             raise AppError(403, "PATH_DENIED", "文件路径必须是当前工作区内的相对路径")
         path = workspace_path(self.root, value)
         return path.relative_to(self.root.resolve()).as_posix(), path
-
-    def validate_path(self, raw: str) -> str:
-        """Return the normalized path without reading or writing a file.
-
-        The execution adapter uses this before an approval prompt so a denied
-        or escaping path is rejected before any confirmation is shown.
-        """
-        return self._relative(raw)[0]
 
     def _metadata(self, relative: str) -> dict | None:
         return self.service.db.one(
@@ -222,72 +211,3 @@ class WorkspaceFiles:
                     return {"query": query, "results": matches, "truncated": True}
                 break
         return {"query": query, "results": matches, "truncated": False}
-
-
-@dataclass(frozen=True)
-class FileToolDefinition:
-    """Framework-neutral file tool kept separate from any model SDK."""
-
-    name: str
-    description: str
-    input_schema: dict[str, type]
-    read_only: bool
-    handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
-
-
-def build_file_tools(runtime) -> list[FileToolDefinition]:
-    """Build the three controlled file tools for one conversation run.
-
-    The conversation workspace is resolved lazily on every call so a stale
-    registration cannot outlive a revoked account or a switched assistant.
-    """
-
-    service = runtime.service
-    conversation = service.require("conversations", runtime.conversation_id)
-
-    async def invoke(name, arguments, callback):
-        try:
-            runtime.check_tool(f"mcp__workspace__{name}", arguments)
-            if not runtime.current_run:
-                raise AppError(409, "RUN_REQUIRED", "工具需要活动任务")
-            current_user = service.require("users", conversation["user_id"])
-            service.usable_assistant(conversation["assistant_id"], current_user)
-            files = WorkspaceFiles(service, runtime.conversation_id, current_user["id"])
-            return {"content": [{"type": "text", "text": dump(callback(files, arguments))}]}
-        except AppError as exc:
-            return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
-        except Exception:
-            return {"is_error": True, "content": [{"type": "text", "text": "文件操作暂时失败，请稍后重试"}]}
-
-    async def file_read(arguments):
-        return await invoke("file_read", arguments, lambda files, args: files.read(args))
-
-    async def file_write(arguments):
-        return await invoke("file_write", arguments, lambda files, args: files.write(args))
-
-    async def file_search(arguments):
-        return await invoke("file_search", arguments, lambda files, args: files.search(args))
-
-    return [
-        FileToolDefinition(
-            "file_read",
-            "读取当前会话工作区内已登记的 UTF-8 文本文件，返回版本号、哈希和内容。",
-            {"path": str},
-            True,
-            file_read,
-        ),
-        FileToolDefinition(
-            "file_write",
-            "在当前会话工作区内创建或更新 UTF-8 文本文件。写入必须携带读取得到的 expected_revision，并经过用户确认。",
-            {"path": str, "content": str, "expected_revision": int},
-            False,
-            file_write,
-        ),
-        FileToolDefinition(
-            "file_search",
-            "仅搜索当前会话工作区内已登记的文本文件，返回匹配行、路径、版本号和哈希。",
-            {"query": str},
-            True,
-            file_search,
-        ),
-    ]

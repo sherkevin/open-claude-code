@@ -121,6 +121,8 @@ class Smoke:
         self.other = API(args.base_url, args.origin)
         self.users: list[str] = []
         self.connection_id: str | None = None
+        self.team_connection_id: str | None = None
+        self.member_connection_id: str | None = None
         self.assistant_id: str | None = None
         self.conversations: list[str] = []
         self.runs: list[str] = []
@@ -170,8 +172,42 @@ class Smoke:
         require(REQUIRED_TOOLS.issubset(names), "demo MCP discovery omitted required tools")
         current = self.admin.request("GET", f"/connections/{self.connection_id}")
         require(current.get("name") == payload["name"], "connection was not persisted")
-        self.member.request("POST", "/connections", expected=(403,), json=payload)
+        # Connections default to private, so members may create one of their
+        # own.  The old check incorrectly expected every member create to be
+        # forbidden and therefore rejected the valid private-resource path.
+        member_payload = {**payload, "name": f"个人验收连接 {self.tag}"}
+        member_connection = self.member.request("POST", "/connections", expected=(201,), json=member_payload)
+        self.member_connection_id = member_connection["id"]
+        require(member_connection.get("scope") == "private", "member-created connection was not private")
+        require(member_connection.get("owner_id") == self.users[0], "member-created connection owner is incorrect")
+        require("credential" not in member_connection, "member connection API returned a credential field")
+        own_member_connection = self.member.request("GET", f"/connections/{self.member_connection_id}")
+        require(own_member_connection.get("scope") == "private", "member cannot read its private connection")
+
+        # Team connections are administrator-managed.  A member must not be
+        # able to widen the scope while retaining a private default.
+        self.member.request("POST", "/connections", expected=(403,), json={**member_payload, "scope": "team"})
+        # Private resources must not be readable or editable across owners.
+        self.member.request("GET", f"/connections/{self.connection_id}", expected=(403, 404))
+        self.member.request("PATCH", f"/connections/{self.connection_id}", expected=(403, 404), json={"name": "越权修改"})
+        self.admin.request("GET", f"/connections/{self.member_connection_id}", expected=(403, 404))
+
+        # A team-scoped assistant may bind only team-scoped capabilities. Keep
+        # the private admin fixture above for the cross-owner checks, and use
+        # a separate administrator-managed connection for the shared assistant.
+        team_payload = {**payload, "name": f"团队验收连接 {self.tag}", "scope": "team"}
+        team_connection = self.admin.request("POST", "/connections", expected=(201,), json=team_payload)
+        self.team_connection_id = team_connection["id"]
+        require(team_connection.get("scope") == "team", "admin team connection was not created as a team resource")
+        team_tested = self.admin.request("POST", f"/connections/{self.team_connection_id}/test", timeout=60)
+        require(team_tested.get("status") == "connected", "team demo MCP connection test did not connect")
+        team_names = {tool["name"] for tool in team_tested.get("tools", [])}
+        require(REQUIRED_TOOLS.issubset(team_names), "team demo MCP discovery omitted required tools")
+        team_visible = self.member.request("GET", f"/connections/{self.team_connection_id}")
+        require(team_visible.get("scope") == "team" and "credential" not in team_visible, "team connection was not safely visible to a member")
         self.report["resources"]["connection_id"] = self.connection_id
+        self.report["resources"]["team_connection_id"] = self.team_connection_id
+        self.report["resources"]["member_connection_id"] = self.member_connection_id
 
     def setup_assistant(self) -> None:
         assistant = self.admin.request("POST", "/assistants", expected=(200, 201), json={
@@ -179,10 +215,15 @@ class Smoke:
             "description": "仅连接合成演示知识和演示工单，供验收使用。",
             "instructions": "你是验收助手。按用户要求调用已配置工具，不能凭空编造查询结果。所有数据都是演示数据。创建工单必须使用 create_ticket 工具，保留用户给定的 request_key、title、description、requester。工具拒绝后不要重试写入；如实说明未创建。",
             "enabled": True,
+            # The administrator-owned fixture is shared at the resource level;
+            # its explicit member allow-list still controls assistant access.
+            "scope": "team",
             "access": {"all_members": False, "user_ids": [self.users[0]]},
-            "connections": [{"connection_id": self.connection_id, "allowed_tools": sorted(REQUIRED_TOOLS), "auto_approved_tools": ["search_knowledge", "list_tickets", "slow_lookup"]}],
+            "connections": [{"connection_id": self.team_connection_id, "allowed_tools": sorted(REQUIRED_TOOLS), "auto_approved_tools": ["search_knowledge", "list_tickets", "slow_lookup"]}],
         })
         self.assistant_id = assistant["id"]
+        require(assistant.get("scope") == "team", "acceptance assistant was not created as a team resource")
+        require(assistant.get("access", {}).get("all_members") is False and self.users[0] in assistant.get("access", {}).get("user_ids", []), "assistant member allow-list was not persisted")
         visible = self.member.request("GET", "/assistants")
         require(any(item["id"] == self.assistant_id for item in visible), "authorized member cannot see assistant")
         hidden = self.other.request("GET", "/assistants")
@@ -344,6 +385,16 @@ class Smoke:
             if self.connection_id:
                 try:
                     self.admin.request("DELETE", f"/connections/{self.connection_id}", expected=(200, 204))
+                except Exception:
+                    failures += 1
+            if self.member_connection_id:
+                try:
+                    self.member.request("DELETE", f"/connections/{self.member_connection_id}", expected=(200, 204))
+                except Exception:
+                    failures += 1
+            if self.team_connection_id:
+                try:
+                    self.admin.request("DELETE", f"/connections/{self.team_connection_id}", expected=(200, 204))
                 except Exception:
                     failures += 1
             for user_id in self.users:

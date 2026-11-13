@@ -13,7 +13,8 @@ from app.security import AppError
 
 @pytest.fixture
 def memory_app(tmp_path):
-    app = create_app(Settings(data_dir=tmp_path, provider_settings="", model="test"))
+    # These contracts exercise Claude's native mutable directory and refresh.
+    app = create_app(Settings(data_dir=tmp_path, provider_settings="", model="test", runtime_type="claude"))
     with TestClient(app) as client:
         service = app.state.service
         user = service.create_user({"username": "owner", "display_name": "Owner", "password": "test-password-123", "role": "admin"})
@@ -101,6 +102,7 @@ def test_memory_user_assistant_isolation_and_scope_guards(memory_app):
     assert client.get(url).status_code == 404
     assert client.get(url + "/file", params={"path": "MEMORY.md"}).status_code == 404
     assert client.get(url + "/file", params={"path": str(own / "MEMORY.md")}).status_code == 404
+    assert client.get(url + "/file", params={"path": str(own / ("a" * 300 + ".md"))}).status_code == 404
 
 
 def test_active_scope_blocks_mutation_and_refreshes_after_native_write(memory_app):

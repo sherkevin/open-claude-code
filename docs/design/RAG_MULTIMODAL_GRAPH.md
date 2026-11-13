@@ -1,8 +1,11 @@
 # Multimodal RAG and knowledge graph design
 
-Status: design proposal, 2026-11-05. This document extends the implemented
-knowledge/evidence contracts; it does not claim that the graph or visual index
-is already shipped.
+Status: design proposal with local visual-index and controlled model-candidate
+evidence, 2026-11-07. The repository ships permission-checked local image
+metadata, JPEG thumbnails, a bounded deterministic grid of version-bound
+region previews, local CLIP image/text vectors, and an explicitly gated
+OpenAI-compatible visual candidate stage. It does not claim semantic graph
+quality acceptance.
 
 ## Design boundary and existing contracts
 
@@ -17,7 +20,7 @@ The current implementation is the authority for behavior that already exists:
 - Uploads retain original PDF, DOCX, Markdown, TXT, CSV, and JSON bytes with a
   SHA-256 hash and numbered versions. PDF text is read with PDFium and scanned
   pages use local RapidOCR. Text is chunked with page/section/paragraph and
-  extraction offsets. The current limit is 200 PDF pages, 2 million extracted
+  extraction offsets. The current limit is 400 PDF pages, 2 million extracted
   characters, and 5,000 chunks per document.
 - Retrieval is server-local hybrid BM25 plus the configured local embedding
   model. `local-lexical-v1` is explicitly a lexical fallback, not a semantic
@@ -30,10 +33,14 @@ The current implementation is the authority for behavior that already exists:
   assistant binding. Team resources are administrator-managed; administrators
   do not automatically read another member's private content.
 
-The proposed graph, visual retrieval, table/cell model, and image ingestion are
-new layers. Until implemented, the existing text-only endpoints and evidence
-semantics remain unchanged. No claim below implies that an external OCR,
-embedding, or model service may receive customer files.
+Semantic graph quality remains proposed. The bounded image-asset phase stores
+dimensions, format metadata, a local thumbnail, and at most sixteen
+deterministic grid regions (each with source coordinates and a small preview).
+Local CLIP can index images and return a version-bound visual result for a
+textless image; missing dependencies remain truthful `needs_ocr`/`needs_model`
+states. The grid is a layout preview rather than object detection or semantic
+segmentation. No claim below implies that an external OCR, embedding, or model
+service may receive customer files.
 
 ## Goals and non-goals
 

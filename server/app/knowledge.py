@@ -15,20 +15,28 @@ from pathlib import Path
 from typing import Literal
 from xml.etree import ElementTree
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .db import dump, now, uid
+from .openai_visual import MAX_IMAGE_BYTES, call_visual_json
+from .provider_policy import classify_provider_url
 from .security import AppError, safe_name
+from .vision import IMAGE_SUFFIXES, VisionRuntime
 
-MAX_PAGES = 200
+# Public industrial standards can exceed 200 pages. Keep the parser bounded,
+# but allow the 316-page NIST SP 800-82r3 sample without forcing a lossy split;
+# MAX_TEXT and MAX_CHUNKS remain the independent content limits.
+MAX_PAGES = 400
 MAX_TEXT = 2_000_000
 MAX_CHUNKS = 5000
 MAX_IMAGE_REGIONS = 16
 MAX_IMAGE_REGION_ROWS = 4
 MAX_IMAGE_REGION_COLUMNS = 4
 IMAGE_REGION_THUMBNAIL = (320, 240)
+MAX_MODEL_VISUAL_ENTITIES = 64
+MAX_MODEL_VISUAL_RELATIONS = 128
 # Search responses can contain multiple hits from the same image. Keep media
 # evidence bounded while the client still has a useful visual preview.
 MAX_SEARCH_MEDIA_REGIONS = 4
@@ -38,9 +46,9 @@ GRAPH_STOPWORDS = {"设备", "系统", "数据", "文件", "内容", "说明", "
 # useful for graph navigation and entity-focused acceptance fixtures, but are
 # not a substitute for a trained named-entity or relation extraction model.
 GRAPH_ENTITY_PATTERNS = (
-    ("standard", re.compile(r"(?i)\b(?:GB(?:/T)?|ISO|IEC|ASTM|NIST|OSHA|CFR|SP|IR)\s*[-/]?\s*\d{2,5}(?:[-/]\d+)*(?:\s+Rev\.?\s*\d+)?")),
+    ("standard", re.compile(r"(?i)\b(?:NIST\s+)?(?:GB(?:/T)?|ISO|IEC|ASTM|NIST|OSHA|CFR|SP|IR)\s*[-/]?\s*[A-Z]?\d{2,5}(?:[./-]\d+)*(?:\s*[-/]?r?\d+)?(?:\s+Rev\.?\s*\d+)?")),
     ("metric", re.compile(r"(?i)(?:合格率|良率|压力|温度|扭矩|厚度|流量|转速|yield_rate)\s*(?:[:=：为是]\s*)[-+]?\d+(?:\.\d+)?\s*(?:%|bar|kPa|MPa|℃|°C|mm|cm|Nm|rpm|件|小时|天)?")),
-    ("equipment", re.compile(r"(?i)(?:\b[A-Z]{1,5}[-_]?\d{1,5}\b|[\u3400-\u9fff]{1,12}(?:泵|阀|炉|机|线|站|罐|管|压机|机器人))")),
+    ("equipment", re.compile(r"(?i)(?:\b[A-Z]{1,5}[-_]?\d{1,5}\b|[\u3400-\u9fff]{1,12}(?:泵|阀|炉|机|线|站|罐|管|床|压机|机器人))")),
     ("material", re.compile(r"(?:不锈钢|碳钢|铝合金|聚乙烯|聚氯乙烯|铜合金|钛合金|钢材|铝材)")),
     ("process", re.compile(r"(?:焊接|铸造|锻造|车削|铣削|磨削|热处理|喷涂|装配|校准|机加工|检验)")),
     ("organization", re.compile(r"(?i)\b(?:NIST|OSHA|Better\s+AI|华微世纪|华为)\b")),
@@ -118,6 +126,56 @@ CREATE TABLE IF NOT EXISTS knowledge_image_regions(
  created_at TEXT NOT NULL,
  UNIQUE(document_id,version,grid_row,grid_col));
 CREATE INDEX IF NOT EXISTS knowledge_image_regions_document ON knowledge_image_regions(document_id,version,grid_row,grid_col);
+CREATE TABLE IF NOT EXISTS knowledge_visual_embeddings(
+ document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
+ version INTEGER NOT NULL,
+ region_id TEXT NOT NULL DEFAULT '',
+ model TEXT NOT NULL,
+ dimensions INTEGER NOT NULL,
+ vector TEXT NOT NULL,
+ device TEXT NOT NULL DEFAULT 'cpu',
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(document_id,version,region_id));
+CREATE INDEX IF NOT EXISTS knowledge_visual_embeddings_document ON knowledge_visual_embeddings(document_id,version);
+CREATE TABLE IF NOT EXISTS knowledge_visual_ocr(
+ document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
+ version INTEGER NOT NULL,
+ region_id TEXT NOT NULL DEFAULT '',
+ model TEXT NOT NULL,
+ text TEXT NOT NULL,
+ boxes TEXT NOT NULL DEFAULT '[]',
+ status TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(document_id,version,region_id));
+CREATE INDEX IF NOT EXISTS knowledge_visual_ocr_document ON knowledge_visual_ocr(document_id,version);
+CREATE TABLE IF NOT EXISTS knowledge_visual_entities(
+ id TEXT PRIMARY KEY,
+ document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
+ version INTEGER NOT NULL,
+ region_id TEXT NOT NULL DEFAULT '',
+ label TEXT NOT NULL,
+ normalized TEXT NOT NULL,
+ kind TEXT NOT NULL,
+ confidence REAL NOT NULL DEFAULT 0,
+ source_text TEXT NOT NULL DEFAULT '',
+ source_boxes TEXT NOT NULL DEFAULT '[]',
+ source_offset_start INTEGER,
+ source_offset_end INTEGER,
+ evidence_kind TEXT NOT NULL DEFAULT 'source_bound',
+ created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS knowledge_visual_entities_document ON knowledge_visual_entities(document_id,version);
+CREATE TABLE IF NOT EXISTS knowledge_visual_relations(
+ id TEXT PRIMARY KEY,
+ document_id TEXT NOT NULL REFERENCES knowledge_documents(id),
+ version INTEGER NOT NULL,
+ source_entity_id TEXT NOT NULL,
+ target_entity_id TEXT NOT NULL,
+ relation TEXT NOT NULL,
+ confidence REAL NOT NULL DEFAULT 0,
+ evidence TEXT NOT NULL DEFAULT '',
+ evidence_kind TEXT NOT NULL DEFAULT 'evidence_only',
+ created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS knowledge_visual_relations_document ON knowledge_visual_relations(document_id,version);
 """
 
 
@@ -146,7 +204,10 @@ class SearchInput(BaseModel):
     # Human-facing retrieval mode.  ``hybrid`` is the safe default used by
     # assistant runs; users can explicitly compare lexical BM25 and local
     # vector retrieval without changing the indexed data.
-    mode: Literal["hybrid", "bm25", "vector"] = "hybrid"
+    # Keep this a bounded string so an unknown value reaches the shared
+    # deployment-policy check as 403 FEATURE_DISABLED in trial mode instead of
+    # being rejected earlier by Pydantic as a generic 422.
+    mode: str = Field(default="hybrid", max_length=32)
     context_chars: int = Field(default=12000, ge=0, le=24000)
 
 
@@ -377,7 +438,7 @@ class DocumentParser:
             raise AppError(415, "DOCUMENT_TYPE_UNSUPPORTED", "支持 PDF、DOCX、XLSX、Markdown、TXT、CSV、JSON 和常见图片文件")
         if sum(len(page["text"]) for page in pages) > MAX_TEXT:
             raise AppError(413, "DOCUMENT_TOO_LARGE", "文档文本超过处理上限")
-        if not any(page["text"].strip() for page in pages):
+        if not any(page["text"].strip() for page in pages) and suffix not in IMAGE_SUFFIXES:
             raise AppError(422, "EMPTY_DOCUMENT", "未提取到可检索文本，请检查文件内容或 OCR 结果")
         return pages
 
@@ -408,12 +469,36 @@ class KnowledgeService:
     def __init__(self, service):
         self.service, self.db = service, service.db
         with self.db.lock:
-            self.db.conn.executescript(SCHEMA)
+            # Knowledge schema bootstrap follows the same rule as the main
+            # database: one transaction, so synchronous=FULL fsyncs the
+            # migration once instead of once per CREATE/ALTER statement.
+            self.db.conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\nCOMMIT;")
+            self.db.conn.execute("BEGIN IMMEDIATE")
+            # Visual tables were introduced after the first knowledge release.
+            # Add provenance columns in place so existing local indexes gain
+            # the same auditable image binding without destructive migration.
+            entity_columns = {row["name"] for row in self.db.conn.execute("PRAGMA table_info(knowledge_visual_entities)")}
+            for column, definition in (
+                ("source_boxes", "TEXT NOT NULL DEFAULT '[]'"),
+                ("source_offset_start", "INTEGER"),
+                ("source_offset_end", "INTEGER"),
+                ("evidence_kind", "TEXT NOT NULL DEFAULT 'source_bound'"),
+            ):
+                if column not in entity_columns:
+                    self.db.conn.execute(f"ALTER TABLE knowledge_visual_entities ADD COLUMN {column} {definition}")
+            relation_columns = {row["name"] for row in self.db.conn.execute("PRAGMA table_info(knowledge_visual_relations)")}
+            if "evidence_kind" not in relation_columns:
+                self.db.conn.execute("ALTER TABLE knowledge_visual_relations ADD COLUMN evidence_kind TEXT NOT NULL DEFAULT 'evidence_only'")
+            self.db.conn.execute("COMMIT")
         self.root = service.settings.data_dir / "knowledge"
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.parser = DocumentParser()
         self.embeddings = LocalEmbeddings(self.root)
+        self.vision = VisionRuntime(self.root)
         self.index_lock = threading.RLock()
+        # Only an explicitly prepared, source-bound index may be injected.
+        # Normal service startup never imports HippoRAG or builds its index.
+        self.hipporag_backend = None
         # A crashed parse must not stay apparently in progress forever.
         self.db.execute("UPDATE knowledge_versions SET status='failed',error='上次索引中断，请重新索引' WHERE status='processing'")
 
@@ -432,10 +517,15 @@ class KnowledgeService:
                 "index_status": {item["status"]: item["n"] for item in statuses}, "retrieval": self.retrieval_info()}
 
     def retrieval_info(self):
-        return {"mode": "hybrid", "available_modes": ["hybrid", "bm25", "vector"],
+        visual = self.vision.status()
+        return {"mode": "hybrid", "available_modes": list(self.service.policy.retrieval_modes()),
                 "lexical": "BM25", "vector_model": self.embeddings.name,
                 "semantic": self.embeddings.name != "local-lexical-v1", "execution": "server-local",
-                "visual_embedding": {"status": "needs_model", "model": None, "scope": "page-or-region", "local_only": True}}
+                "visual_embedding": {"status": visual["visual_embedding"], "model": visual["model"] if visual["visual_embedding"] == "ready" else None,
+                                     "dimensions": visual["embedding_dimensions"], "scope": "page-or-region", "local_only": True},
+                "visual_ocr": {"status": visual["ocr"], "model": "rapidocr-onnxruntime" if visual["ocr"] == "ready" else None,
+                               "entity_extraction": visual["entity_extraction"], "relation_extraction": visual["relation_extraction"]},
+                "device": visual["device"], "cuda_devices": visual["cuda_devices"]}
 
     def list(self, user):
         return [self.view(row, user) for row in self.db.all("SELECT * FROM knowledge_bases WHERE deleted=0 ORDER BY updated_at DESC") if self.service.resource_access(row, user)]
@@ -492,7 +582,9 @@ class KnowledgeService:
                 "metadata": json.loads(asset["metadata_json"]),
                 "ocr_status": asset["ocr_status"],
                 "visual_index_status": asset["visual_index_status"],
-                "evidence_boundary": "仅登记尺寸、缩略图、网格区域和本地 OCR 状态；未启用视觉模型，不将像素内容冒充实体或语义检索。",
+                "visual_embedding": self.db.one("SELECT model,dimensions,device FROM knowledge_visual_embeddings WHERE document_id=? AND version=? AND region_id=''", (row["id"], row["version"])) or None,
+                "entity_count": self.db.one("SELECT COUNT(*) AS n FROM knowledge_visual_entities WHERE document_id=? AND version=?", (row["id"], row["version"]))["n"],
+                "evidence_boundary": "图片缩略图与实体候选绑定到文件版本；OCR实体有文字框证据，模型实体仅是候选，关系统一标记 evidence_only，不等同于人工金标准。",
             }
         previews = self.db.all("SELECT page,width,height FROM knowledge_page_previews WHERE document_id=? AND version=? ORDER BY page LIMIT 12", (row["id"], row["version"]))
         if previews:
@@ -639,8 +731,23 @@ class KnowledgeService:
             "thumbnail_url": f"/api/v1/knowledge-documents/{row['document_id']}/regions/{row['id']}/thumbnail?version={row['version']}",
             "visual_index_status": row["visual_index_status"],
             "entity_index_status": row["entity_index_status"],
-            "evidence_boundary": "仅按原图坐标生成本地缩略图；未启用视觉模型，不推断对象、实体、文字或关系。",
+                "evidence_boundary": "区域坐标和缩略图绑定到文件版本；OCR实体有文字框证据，模型实体仅是候选，关系统一标记 evidence_only。",
         }
+
+    @staticmethod
+    def _visual_entity_view(row):
+        """Return an entity with direct image/region links for graph clients."""
+        item = dict(row)
+        try:
+            item["source_boxes"] = json.loads(item.get("source_boxes") or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            item["source_boxes"] = []
+        item["thumbnail_url"] = f"/api/v1/knowledge-documents/{item['document_id']}/thumbnail?version={item['version']}"
+        item["region_thumbnail_url"] = (
+            f"/api/v1/knowledge-documents/{item['document_id']}/regions/{item['region_id']}/thumbnail?version={item['version']}"
+            if item.get("region_id") else None
+        )
+        return item
 
     def image_regions(self, document_id, version, user, limit=MAX_IMAGE_REGIONS):
         """Return current or historical regions only after version ACL checks."""
@@ -659,9 +766,10 @@ class KnowledgeService:
                 "max_regions": MAX_IMAGE_REGIONS,
             },
             "regions": [self._image_region_view(item) for item in regions],
-            "visual_embedding": "needs_model",
-            "entity_extraction": "needs_model",
-            "evidence_boundary": "区域来自有界网格裁剪，坐标和缩略图绑定到文件版本并经过访问控制；没有视觉模型时不产生像素实体或语义结论。",
+            "visual_embedding": self.vision.status()["visual_embedding"],
+            "entity_extraction": self.vision.status()["entity_extraction"],
+            "relation_extraction": self.vision.status()["relation_extraction"],
+            "evidence_boundary": "区域来自有界网格裁剪，坐标和缩略图绑定到文件版本并经过访问控制；OCR实体有文字框证据，模型实体仅是候选，关系统一标记 evidence_only。",
         }
 
     def image_region_thumbnail(self, document_id, region_id, version, user):
@@ -708,13 +816,325 @@ class KnowledgeService:
             # optional and must not make an otherwise searchable PDF fail.
             return
 
+    @staticmethod
+    def _visual_entity_candidates(text):
+        """Extract explainable typed candidates from OCR text.
+
+        This intentionally mirrors the text graph extractor.  OCR output is
+        noisy, so candidates are labelled ``ocr_entity`` and their source text
+        is retained; no semantic relation is claimed without an approved model.
+        """
+        candidates, seen = [], set()
+        for kind, pattern in GRAPH_ENTITY_PATTERNS:
+            for match in pattern.finditer(text or ""):
+                label = match.group(0).strip(" _-")
+                normalized = label.casefold().strip(" _-")
+                if len(normalized) < 2 or normalized in GRAPH_STOPWORDS or normalized in seen:
+                    continue
+                seen.add(normalized)
+                candidates.append({"label": label, "normalized": normalized, "kind": kind,
+                                   "offset": match.start(), "confidence": 0.55})
+                if len(candidates) >= 32:
+                    return candidates
+        return candidates
+
+    @staticmethod
+    def _bounded_confidence(value, default=0.5):
+        """Clamp model/OCR confidence, rejecting NaN and infinity."""
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, min(1.0, value)) if math.isfinite(value) else default
+
+    @staticmethod
+    def _entity_source_boxes(text, boxes, start, end):
+        """Bind an OCR entity span back to the OCR boxes that contain it.
+
+        OCR rows are stored as a newline-joined string, so the offset is
+        relative to that exact source string.  The returned payload contains
+        only bounded coordinates/text and can be rendered as a clickable
+        highlight on the source image.
+        """
+        if not isinstance(text, str) or not isinstance(boxes, list):
+            return []
+        cursor, selected = 0, []
+        for item in boxes[:256]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("text") or "")
+            if not label:
+                continue
+            item_start, item_end = cursor, cursor + len(label)
+            if item_end > start and item_start < end:
+                polygon = item.get("polygon") or item.get("box")
+                if isinstance(polygon, list) and len(polygon) <= 16:
+                    selected.append({
+                        "text": label[:120],
+                        "polygon": polygon,
+                        "confidence": KnowledgeService._bounded_confidence(item.get("confidence"), 0.0),
+                    })
+                if len(selected) >= 8:
+                    break
+            cursor = item_end + 1  # rows are joined with a single newline
+        return selected
+
+    def _index_visual_asset(self, document_id, version, path):
+        """Index local image embeddings, OCR boxes and bounded entity links.
+
+        Every artifact is pinned to the immutable source version.  A missing
+        visual model is a visible ``needs_model`` state, not a fake vector.
+        """
+        asset = self.db.one("SELECT * FROM knowledge_image_assets WHERE document_id=? AND version=?", (document_id, version))
+        if not asset:
+            return
+        regions = self.db.all("SELECT * FROM knowledge_image_regions WHERE document_id=? AND version=? ORDER BY grid_row,grid_col", (document_id, version))
+        self.db.execute("DELETE FROM knowledge_visual_embeddings WHERE document_id=? AND version=?", (document_id, version))
+        self.db.execute("DELETE FROM knowledge_visual_ocr WHERE document_id=? AND version=?", (document_id, version))
+        self.db.execute("DELETE FROM knowledge_visual_entities WHERE document_id=? AND version=?", (document_id, version))
+        self.db.execute("DELETE FROM knowledge_visual_relations WHERE document_id=? AND version=?", (document_id, version))
+        self.db.execute("UPDATE knowledge_image_assets SET ocr_status='pending',visual_index_status='needs_model' WHERE document_id=? AND version=?", (document_id, version))
+        self.db.execute("UPDATE knowledge_image_regions SET visual_index_status='needs_model',entity_index_status='needs_model' WHERE document_id=? AND version=?", (document_id, version))
+
+        # OCR and vector model failures are independent.  A model can produce
+        # a visual vector even when the OCR runtime is unavailable, and vice
+        # versa, without conflating the two acceptance signals.
+        try:
+            ocr = self.vision.ocr_image(path)
+        except Exception:
+            ocr = None
+        if ocr:
+            self.db.execute(
+                "INSERT OR REPLACE INTO knowledge_visual_ocr(document_id,version,region_id,model,text,boxes,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (document_id, version, "", ocr["model"], ocr["text"], dump(ocr["boxes"]), "ready", now()),
+            )
+            self.db.execute("UPDATE knowledge_image_assets SET ocr_status='ready' WHERE document_id=? AND version=?", (document_id, version))
+            for region in regions:
+                selected = [box for box in ocr["boxes"] if self.vision.region_for_box(box, [dict(region)]) == region["id"]]
+                text = "\n".join(box["text"] for box in selected)
+                self.db.execute(
+                    "INSERT OR REPLACE INTO knowledge_visual_ocr(document_id,version,region_id,model,text,boxes,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (document_id, version, region["id"], ocr["model"], text, dump(selected), "ready", now()),
+                )
+        else:
+            self.db.execute(
+                "INSERT OR REPLACE INTO knowledge_visual_ocr(document_id,version,region_id,model,text,boxes,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (document_id, version, "", "", "", "[]", "needs_ocr", now()),
+            )
+            self.db.execute("UPDATE knowledge_image_assets SET ocr_status='needs_ocr' WHERE document_id=? AND version=?", (document_id, version))
+
+        try:
+            full_vector = self.vision.embed_image(path)
+        except Exception:
+            full_vector = None
+        if full_vector:
+            self.db.execute(
+                "INSERT OR REPLACE INTO knowledge_visual_embeddings(document_id,version,region_id,model,dimensions,vector,device,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (document_id, version, "", full_vector["model"], full_vector["dimensions"], dump(full_vector["vector"]), full_vector["device"], now()),
+            )
+            self.db.execute("UPDATE knowledge_image_assets SET visual_index_status='ready' WHERE document_id=? AND version=?", (document_id, version))
+            for region in regions:
+                region_path = Path(region["thumbnail_path"])
+                if not region_path.is_file() or not region_path.resolve().is_relative_to(self.root.resolve()):
+                    continue
+                try:
+                    vector = self.vision.embed_image(region_path)
+                except Exception:
+                    vector = None
+                if vector:
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO knowledge_visual_embeddings(document_id,version,region_id,model,dimensions,vector,device,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (document_id, version, region["id"], vector["model"], vector["dimensions"], dump(vector["vector"]), vector["device"], now()),
+                    )
+                    self.db.execute("UPDATE knowledge_image_regions SET visual_index_status='ready' WHERE id=?", (region["id"],))
+
+        # OCR text is the only source for deterministic image entities.  Each
+        # entity stores the region and text span; relations stay explicitly
+        # co-occurrence links until a relation model is authorized.
+        entity_ids_by_region = {}
+        for row in self.db.all("SELECT * FROM knowledge_visual_ocr WHERE document_id=? AND version=? AND text<>''", (document_id, version)):
+            if not row["region_id"]:
+                continue
+            candidates = self._visual_entity_candidates(row["text"])
+            try:
+                ocr_boxes = json.loads(row["boxes"] or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                ocr_boxes = []
+            entity_ids = []
+            for candidate in candidates:
+                entity_id = hashlib.sha256(f"{document_id}:{version}:{row['region_id']}:{candidate['normalized']}".encode()).hexdigest()[:32]
+                entity_ids.append(entity_id)
+                source_boxes = self._entity_source_boxes(row["text"], ocr_boxes, candidate["offset"], candidate["offset"] + len(candidate["label"]))
+                self.db.execute(
+                    "INSERT OR REPLACE INTO knowledge_visual_entities(id,document_id,version,region_id,label,normalized,kind,confidence,source_text,source_boxes,source_offset_start,source_offset_end,evidence_kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (entity_id, document_id, version, row["region_id"], candidate["label"], candidate["normalized"], "ocr_entity:" + candidate["kind"], candidate["confidence"], row["text"], dump(source_boxes), candidate["offset"], candidate["offset"] + len(candidate["label"]), "source_bound", now()),
+                )
+            entity_ids_by_region[row["region_id"]] = entity_ids
+            if entity_ids:
+                self.db.execute("UPDATE knowledge_image_regions SET entity_index_status='ready' WHERE id=?", (row["region_id"],))
+            for source_id, target_id in zip(entity_ids, entity_ids[1:]):
+                relation_id = hashlib.sha256(f"{document_id}:{version}:{source_id}:{target_id}:co_occurs".encode()).hexdigest()[:32]
+                self.db.execute(
+                    "INSERT OR REPLACE INTO knowledge_visual_relations(id,document_id,version,source_entity_id,target_entity_id,relation,confidence,evidence,evidence_kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (relation_id, document_id, version, source_id, target_id, "co_occurs", 0.35, row["region_id"], "evidence_only", now()),
+                )
+
+        # TokenHub vision/entity/relation inference is an explicit second
+        # stage. It is disabled by default so a normal upload never incurs a
+        # provider call; when enabled, only the already-authorized image file
+        # and a bounded schema prompt are sent. Model candidates remain
+        # source-bound and never replace deterministic OCR evidence.
+        self._index_provider_visual_candidates(document_id, version, path, regions)
+        return bool(self.db.one("SELECT 1 AS ok FROM knowledge_visual_embeddings WHERE document_id=? AND version=? LIMIT 1", (document_id, version)))
+
+    @staticmethod
+    def _bounded_visual_label(value):
+        if not isinstance(value, str):
+            return ""
+        value = re.sub(r"[\x00-\x1f\x7f]", " ", value)
+        return " ".join(value.split())[:120]
+
+    def _provider_visual_selection(self):
+        settings = self.service.settings
+        if not getattr(settings, "knowledge_vision_enabled", False):
+            return None
+        public_id = str(getattr(settings, "knowledge_vision_model_id", "") or "").strip()
+        if not public_id:
+            return None
+        try:
+            selection = self.service.catalog.select(public_id)
+            item = self.service.catalog.models.get(public_id, {})
+            if "multimodal" not in item.get("capabilities", []):
+                return None
+            provider = self.service.effective_provider(selection)
+        except Exception:
+            return None
+        token = provider.get("ANTHROPIC_AUTH_TOKEN") or provider.get("ANTHROPIC_API_KEY") or ""
+        base_url = str(getattr(settings, "knowledge_vision_base_url", "") or "").strip()
+        if not base_url or not token:
+            return None
+        route = classify_provider_url(base_url)
+        if not (route.production_ready or (getattr(settings, "provider_test_mode", False) and route.allowed)):
+            # Vision indexing must not silently call a direct provider URL.
+            # A loopback adapter is permitted only as a locally controlled
+            # bridge whose upstream remains TokenHub.
+            return None
+        return {"public_id": public_id, "upstream_model": selection["upstream_model"], "base_url": base_url,
+                "token": token, "timeout": float(getattr(settings, "knowledge_vision_timeout_seconds", 30) or 30),
+                "provider_route": route.kind}
+
+    def _provider_visual_failure(self, document_id, version, selection, reason="provider_response_unusable"):
+        """Persist a bounded provider failure without response text or secrets."""
+        try:
+            asset = self.db.one("SELECT metadata_json FROM knowledge_image_assets WHERE document_id=? AND version=?", (document_id, version))
+            metadata = json.loads(asset["metadata_json"] or "{}") if asset else {}
+            metadata["provider_visual"] = {"status": "failed", "model": selection["public_id"], "evidence_kind": "model_candidate", "failure": reason[:80]}
+            self.db.execute("UPDATE knowledge_image_assets SET metadata_json=? WHERE document_id=? AND version=?", (dump(metadata), document_id, version))
+        except Exception:
+            return
+
+    def _index_provider_visual_candidates(self, document_id, version, path, regions):
+        selection = self._provider_visual_selection()
+        if not selection:
+            return
+        try:
+            raw = path.read_bytes()
+            if len(raw) > MAX_IMAGE_BYTES:
+                self._provider_visual_failure(document_id, version, selection, "image_too_large")
+                return
+            prompt = (
+                "你是工业知识抽取器。只返回 JSON，不要 Markdown、推理过程或额外文字。"
+                "格式必须是 {\"entities\":[{\"label\":\"实体\",\"kind\":\"equipment|standard|process|metric|material|organization|other\",\"confidence\":0.0}],"
+                "\"relations\":[{\"source\":\"实体标签或实体序号\",\"target\":\"实体标签或实体序号\",\"relation\":\"关系\",\"confidence\":0.0}]}。"
+                "只记录图中可直接观察或文字明确支持的工业实体；不确定就省略。"
+            )
+            suffix = path.suffix.lower().lstrip(".")
+            mime_type = "image/jpeg" if suffix in {"jpg", "jpeg"} else "image/" + (suffix or "jpeg")
+            result = asyncio.run(call_visual_json(
+                base_url=selection["base_url"], model=selection["upstream_model"], image=raw,
+                mime_type=mime_type, prompt=prompt,
+                timeout_seconds=selection["timeout"], auth_token=selection["token"],
+            ))
+            payload = result.get("json") if isinstance(result, dict) else None
+            if not isinstance(payload, dict):
+                self._provider_visual_failure(document_id, version, selection)
+                return
+            entities = payload.get("entities") if isinstance(payload.get("entities"), list) else []
+            relations = payload.get("relations") if isinstance(payload.get("relations"), list) else []
+            entity_ids, entity_labels = {}, []
+            allowed_regions = {str(region["id"]) for region in regions}
+            for index, item in enumerate(entities[:MAX_MODEL_VISUAL_ENTITIES]):
+                if not isinstance(item, dict):
+                    continue
+                label = self._bounded_visual_label(item.get("label"))
+                if len(label) < 2:
+                    continue
+                normalized = label.casefold().strip(" _-")
+                if normalized in entity_ids:
+                    continue
+                kind = self._bounded_visual_label(item.get("kind") or "other").casefold()
+                if kind not in {"equipment", "standard", "process", "metric", "material", "organization", "other"}:
+                    kind = "other"
+                confidence = self._bounded_confidence(item.get("confidence", 0.5))
+                region_id = str(item.get("region_id") or "")
+                if region_id not in allowed_regions:
+                    region_id = ""
+                entity_id = hashlib.sha256(f"{document_id}:{version}:provider:{normalized}".encode()).hexdigest()[:32]
+                entity_ids[normalized] = entity_id
+                entity_labels.append((label, entity_id))
+                self.db.execute(
+                    "INSERT OR REPLACE INTO knowledge_visual_entities(id,document_id,version,region_id,label,normalized,kind,confidence,source_text,source_boxes,source_offset_start,source_offset_end,evidence_kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (entity_id, document_id, version, region_id, label, normalized, "model_entity:" + kind, confidence, "provider_visual_candidate", "[]", None, None, "model_candidate", now()),
+                )
+            def resolve(value):
+                if isinstance(value, int) and 0 <= value < len(entity_labels):
+                    return entity_labels[value][1]
+                label = self._bounded_visual_label(value).casefold().strip(" _-")
+                return entity_ids.get(label)
+            for item in relations[:MAX_MODEL_VISUAL_RELATIONS]:
+                if not isinstance(item, dict):
+                    continue
+                source_id, target_id = resolve(item.get("source")), resolve(item.get("target"))
+                relation = self._bounded_visual_label(item.get("relation") or "related_to")
+                if not source_id or not target_id or not relation or source_id == target_id:
+                    continue
+                confidence = self._bounded_confidence(item.get("confidence", 0.5))
+                relation_id = hashlib.sha256(f"{document_id}:{version}:provider:{source_id}:{target_id}:{relation.casefold()}".encode()).hexdigest()[:32]
+                self.db.execute(
+                    "INSERT OR REPLACE INTO knowledge_visual_relations(id,document_id,version,source_entity_id,target_entity_id,relation,confidence,evidence,evidence_kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (relation_id, document_id, version, source_id, target_id, relation, confidence, "provider_visual_candidate", "evidence_only", now()),
+                )
+            # Persist only bounded audit metadata; never raw model text, image
+            # bytes, request headers or credentials.
+            asset = self.db.one("SELECT metadata_json FROM knowledge_image_assets WHERE document_id=? AND version=?", (document_id, version))
+            metadata = json.loads(asset["metadata_json"] or "{}") if asset else {}
+            relation_count = self.db.one("SELECT COUNT(*) AS n FROM knowledge_visual_relations WHERE document_id=? AND version=? AND evidence='provider_visual_candidate'", (document_id, version))["n"]
+            metadata["provider_visual"] = {"status": "ready" if entity_ids else "empty", "model": selection["public_id"],
+                                            "entity_count": len(entity_ids), "relation_count": relation_count,
+                                            "latency_ms": result.get("latency_ms") if isinstance(result.get("latency_ms"), (int, float)) else None,
+                                            "response_sha256": result.get("response_sha256") if isinstance(result.get("response_sha256"), str) else None,
+                                            "usage": {key: value for key, value in (result.get("usage") or {}).items() if key in {"prompt_tokens", "completion_tokens", "total_tokens"} and type(value) is int and value >= 0},
+                                            "evidence_kind": "model_candidate"}
+            self.db.execute("UPDATE knowledge_image_assets SET metadata_json=? WHERE document_id=? AND version=?", (dump(metadata), document_id, version))
+        except Exception:
+            # Provider inference is additive and fail-closed. Local OCR/CLIP
+            # evidence remains valid when a route times out or returns invalid
+            # JSON; the failed provider call is not presented as success.
+            self._provider_visual_failure(document_id, version, selection)
+            return
+
     def _index(self, document_id, version, path, name):
         try:
             pages = self.parser.parse(path, name)
             chunks = chunk_pages(pages)
-            if not chunks:
+            is_image = Path(name).suffix.lower() in IMAGE_SUFFIXES
+            # A diagram or photograph can be a valid knowledge asset even when
+            # OCR finds no text. Keep the page/image evidence and let the
+            # visual index provide the searchable artifact instead of marking
+            # the upload as an empty failed document.
+            if not chunks and not is_image:
                 raise AppError(422, "EMPTY_DOCUMENT", "未找到可检索的文本片段")
-            vectors = self.embeddings.embed([chunk["text"] for chunk in chunks])
+            vectors = self.embeddings.embed([chunk["text"] for chunk in chunks]) if chunks else []
             with self.db.transaction():
                 self.db.execute("DELETE FROM knowledge_pages WHERE document_id=? AND version=?", (document_id, version))
                 self.db.execute("DELETE FROM knowledge_chunks WHERE document_id=? AND version=?", (document_id, version))
@@ -726,6 +1146,13 @@ class KnowledgeService:
                 self.db.execute("UPDATE knowledge_versions SET status='ready',error=NULL,page_count=?,chunk_count=?,extraction=?,embedding_model=? WHERE document_id=? AND version=?", (len(pages), len(chunks), dump(sorted({page["extraction"] for page in pages})), self.embeddings.name, document_id, version))
                 if Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
                     self.db.execute("UPDATE knowledge_image_assets SET ocr_status='ready' WHERE document_id=? AND version=?", (document_id, version))
+            if Path(name).suffix.lower() in IMAGE_SUFFIXES:
+                try:
+                    self._index_visual_asset(document_id, version, path)
+                except Exception:
+                    # Visual enrichment is additive.  A model/runtime failure
+                    # must not invalidate a successfully OCR-indexed document.
+                    self.db.execute("UPDATE knowledge_image_assets SET visual_index_status='needs_model' WHERE document_id=? AND version=?", (document_id, version))
         except Exception as exc:
             message = exc.message if isinstance(exc, AppError) else "文档解析或索引失败，请检查格式后重试"
             self.db.execute("UPDATE knowledge_versions SET status=?,error=? WHERE document_id=? AND version=?", ("needs_ocr" if isinstance(exc, AppError) and exc.code == "OCR_REQUIRED" else "failed", message, document_id, version))
@@ -849,15 +1276,29 @@ class KnowledgeService:
                 "regions_url": f"/api/v1/knowledge-documents/{item['document_id']}/regions?version={item['version']}",
                 "regions": [self._image_region_view(region) for region in region_rows],
             })
+        visual_entities = self.db.all(
+            "SELECT id,document_id,version,region_id,label,normalized,kind,confidence,source_text,source_boxes,source_offset_start,source_offset_end,evidence_kind FROM knowledge_visual_entities WHERE document_id IN (SELECT id FROM knowledge_documents WHERE kb_id=? AND deleted=0) AND version=(SELECT current_version FROM knowledge_documents WHERE id=knowledge_visual_entities.document_id) ORDER BY document_id,region_id,label LIMIT 400",
+            (kb_id,),
+        )
+        visual_relations = self.db.all(
+            "SELECT id,document_id,version,source_entity_id,target_entity_id,relation,confidence,evidence,evidence_kind FROM knowledge_visual_relations WHERE document_id IN (SELECT id FROM knowledge_documents WHERE kb_id=? AND deleted=0) AND version=(SELECT current_version FROM knowledge_documents WHERE id=knowledge_visual_relations.document_id) ORDER BY id LIMIT 800",
+            (kb_id,),
+        )
         return {"nodes": [{"id": row["id"], "label": row["label"], "kind": row["kind"], "source": source(row)} for row in nodes],
                 "edges": [{"id": row["id"], "source": row["source_node_id"], "target": row["target_node_id"], "relation": row["relation"], "provenance": source(row)} for row in edges],
                 "versioned": True, "source": "local-extraction", "query": query or "",
                 "multimodal": {
                     "images": images,
-                    "visual_embedding": "needs_model",
+                    "visual_embedding": self.vision.status()["visual_embedding"],
+                    # Keep the historical field stable for existing clients;
+                    # the richer mode is exposed alongside it.
                     "entity_extraction": "ocr_only",
+                    "entity_extraction_mode": self.vision.status()["entity_extraction"],
+                    "relation_extraction": self.vision.status()["relation_extraction"],
+                    "visual_entities": [self._visual_entity_view(item) for item in visual_entities],
+                    "visual_relations": [{"id": item["id"], "document_id": item["document_id"], "version": item["version"], "source": item["source_entity_id"], "target": item["target_entity_id"], "relation": item["relation"], "confidence": item["confidence"], "evidence": item["evidence"], "evidence_kind": item["evidence_kind"]} for item in visual_relations],
                     "region_segmentation": "bounded_grid",
-                    "evidence_boundary": "图谱节点和边来自文本、表格或本地 OCR；图片仅提供版本绑定的网格缩略图，像素尚未经过视觉模型，不推断对象或关系。",
+                    "evidence_boundary": "图谱节点和边来自文本、表格或本地 OCR；图片 OCR实体保留文字框、区域和版本证据，模型实体仅为候选，关系统一标记 evidence_only。",
                 }}
 
     def reindex(self, document_id, user):
@@ -883,28 +1324,262 @@ class KnowledgeService:
                 item["page"] = None
         return result
 
-    def _search(self, kb_ids, user, query, limit, run_id=None, mode="hybrid", context_chars=12000):
-        if mode not in {"hybrid", "bm25", "vector"}:
+    def _hipporag_graph_scores(self, kb_ids, query, rows, run_id=None):
+        """Return bounded, source-linked HippoRAG2-lite scores.
+
+        This is deliberately a local deterministic approximation of HippoRAG2:
+        query entities seed a two-hop graph neighborhood, eight PageRank
+        iterations propagate relevance, and node scores are projected back to
+        the immutable chunks that provided the node evidence.  It never calls a
+        model and it fails closed when a graph or seed is unavailable.
+        """
+        trace = {
+            "algorithm": "hipporag2-lite", "damping": 0.85, "iterations": 8,
+            "max_hops": 2, "seed_nodes": [], "seed_count": 0,
+            "node_count": 0, "edge_count": 0, "visited_node_count": 0,
+            "score_count": 0, "fallback": None,
+        }
+        if not rows:
+            trace["fallback"] = "no_retrieval_chunks"
+            return {}, trace
+        placeholders = ",".join("?" for _ in kb_ids)
+        if run_id:
+            node_scope = "EXISTS (SELECT 1 FROM knowledge_run_documents rd WHERE rd.run_id=? AND rd.document_id=n.document_id AND rd.version=n.version)"
+            edge_scope = "EXISTS (SELECT 1 FROM knowledge_run_documents rd WHERE rd.run_id=? AND rd.document_id=e.document_id AND rd.version=e.version)"
+            # The ``IN (...)`` placeholders appear before the snapshot EXISTS
+            # predicate in each statement, so keep parameters in SQL order.
+            node_values = [*kb_ids, run_id]
+            edge_values = [*kb_ids, run_id]
+        else:
+            node_scope = "d.current_version=n.version"
+            edge_scope = "d.current_version=e.version"
+            node_values = list(kb_ids)
+            edge_values = list(kb_ids)
+        nodes = self.db.all(
+            f"SELECT n.* FROM knowledge_graph_nodes n "
+            f"JOIN knowledge_documents d ON d.id=n.document_id AND d.deleted=0 "
+            f"JOIN knowledge_versions v ON v.document_id=n.document_id AND v.version=n.version AND v.status='ready' "
+            f"WHERE n.kb_id IN ({placeholders}) AND {node_scope} "
+            "ORDER BY n.id LIMIT 4000",
+            node_values,
+        )
+        edges = self.db.all(
+            f"SELECT e.* FROM knowledge_graph_edges e "
+            f"JOIN knowledge_documents d ON d.id=e.document_id AND d.deleted=0 "
+            f"JOIN knowledge_versions v ON v.document_id=e.document_id AND v.version=e.version AND v.status='ready' "
+            f"WHERE e.kb_id IN ({placeholders}) AND {edge_scope} "
+            "ORDER BY e.id LIMIT 10000",
+            edge_values,
+        )
+        trace["node_count"], trace["edge_count"] = len(nodes), len(edges)
+        if not nodes:
+            trace["fallback"] = "no_graph_index"
+            return {}, trace
+        by_id = {node["id"]: node for node in nodes}
+        adjacency = {node_id: set() for node_id in by_id}
+        for edge in edges:
+            source, target = edge["source_node_id"], edge["target_node_id"]
+            if source in by_id and target in by_id and source != target:
+                adjacency[source].add(target)
+                adjacency[target].add(source)
+
+        query_text = query.casefold()
+        query_terms = terms(query)
+        candidates = []
+        for node in nodes:
+            normalized = str(node["normalized"] or node["label"] or "").casefold().strip()
+            if len(normalized) < 2:
+                continue
+            exact = normalized in query_text
+            overlap = sum(1 for token in terms(normalized) if token in query_terms)
+            if exact or overlap:
+                candidates.append((0 if exact else 1, -overlap, normalized, node["id"]))
+        candidates.sort()
+        seeds = [item[3] for item in candidates[:32]]
+        trace["seed_nodes"] = seeds
+        trace["seed_count"] = len(seeds)
+        if not seeds:
+            trace["fallback"] = "no_query_entity_seed"
+            return {}, trace
+
+        # Restrict propagation to the seed two-hop neighborhood. This keeps
+        # latency and the evidence surface bounded while retaining local paths.
+        visited = set(seeds)
+        frontier = set(seeds)
+        for _ in range(2):
+            frontier = {neighbor for node_id in frontier for neighbor in adjacency.get(node_id, ())} - visited
+            visited.update(frontier)
+        trace["visited_node_count"] = len(visited)
+        if not visited:
+            trace["fallback"] = "empty_graph_neighborhood"
+            return {}, trace
+        seed_prior = {node_id: (1.0 / len(seeds) if node_id in seeds else 0.0) for node_id in visited}
+        rank = dict(seed_prior)
+        damping = 0.85
+        for _ in range(8):
+            updated = {node_id: (1.0 - damping) * seed_prior[node_id] for node_id in visited}
+            for source in sorted(visited):
+                neighbors = sorted(adjacency.get(source, ()) & visited)
+                if not neighbors:
+                    updated[source] += damping * rank[source]
+                    continue
+                share = damping * rank[source] / len(neighbors)
+                for target in neighbors:
+                    updated[target] += share
+            rank = updated
+
+        # Map graph evidence to chunks. Direct page/paragraph matches retain
+        # full score; same-document propagation is a small, explicit fallback
+        # for a neighboring entity whose paragraph has no separate chunk.
+        graph_scores = Counter()
+        for node_id in sorted(visited):
+            node, node_score = by_id[node_id], rank[node_id]
+            for row in rows:
+                if row["document_id"] != node["document_id"] or int(row["version"]) != int(node["version"]):
+                    continue
+                direct = (row["page"] == node["source_page"] and row["paragraph"] == node["source_paragraph"])
+                if direct:
+                    graph_scores[row["id"]] += node_score
+                elif row["page"] == node["source_page"]:
+                    graph_scores[row["id"]] += node_score * 0.25
+        trace["score_count"] = len(graph_scores)
+        if not graph_scores:
+            trace["fallback"] = "graph_nodes_without_chunk_evidence"
+        return dict(graph_scores), trace
+
+    def _search_rows(self, kb_ids, run_id=None):
+        placeholders = ",".join("?" for _ in kb_ids)
+        version_clause = "EXISTS(SELECT 1 FROM knowledge_run_documents rd WHERE rd.run_id=? AND rd.document_id=c.document_id AND rd.version=c.version)" if run_id else "d.current_version=c.version"
+        values = ([run_id] if run_id else []) + kb_ids
+        return self.db.all(f"SELECT c.*,d.name,d.kb_id,v.sha256,v.created_at AS imported_at,k.name AS knowledge_base FROM knowledge_chunks c JOIN knowledge_documents d ON d.id=c.document_id AND {version_clause} JOIN knowledge_versions v ON v.document_id=c.document_id AND v.version=c.version JOIN knowledge_bases k ON k.id=d.kb_id WHERE d.kb_id IN ({placeholders}) AND d.deleted=0 AND v.status='ready' LIMIT 50000", values)
+
+    def _official_search_user(self, kb_ids, user, run_id):
+        user = self.service.require("users", user["id"])
+        if not user["enabled"]:
+            raise AppError(403, "USER_DISABLED", "账号已停用")
+        for kb_id in kb_ids:
+            if not self.require(kb_id, user)["enabled"]:
+                raise AppError(403, "KNOWLEDGE_DISABLED", "知识库已停用")
+        if run_id:
+            run = self.service.require("runs", run_id, user)
+            conversation = self.service.require("conversations", run["conversation_id"], user)
+            if (run["status"] not in {"queued", "running"} or conversation["archived"]
+                    or conversation["active_run_id"] != run_id):
+                raise AppError(409, "KNOWLEDGE_RUN_CHANGED", "任务状态已变化，请重新检索")
+            try:
+                snapshot = json.loads(run.get("capability_snapshot") or "null")
+            except (TypeError, ValueError):
+                snapshot = None
+            if not isinstance(snapshot, dict) or snapshot.get("id") != conversation["assistant_id"]:
+                raise AppError(409, "KNOWLEDGE_SNAPSHOT_MISSING", "任务缺少有效的知识权限快照")
+            if not set(kb_ids).issubset(self._assistant_ids(user, snapshot, run_id)):
+                raise AppError(403, "KNOWLEDGE_SCOPE_CHANGED", "助手知识范围已变化，请重新检索")
+        return user
+
+    def _recheck_official_results(self, kb_ids, user, run_id, rows, results):
+        with self.db.lock:
+            user = self._official_search_user(kb_ids, user, run_id)
+            if rows != self._search_rows(kb_ids, run_id):
+                raise AppError(409, "KNOWLEDGE_SNAPSHOT_CHANGED", "检索期间知识版本或索引已变化，请重新检索")
+            # Pure images need their own check: they need not have text chunks.
+            for item in results:
+                version = self.version(item["document_id"], item["version"], user)
+                expected = version["current_version"]
+                if run_id:
+                    pinned = self.db.one("SELECT version FROM knowledge_run_documents WHERE run_id=? AND document_id=?", (run_id, item["document_id"]))
+                    expected = pinned["version"] if pinned else None
+                if (version["kb_id"] not in kb_ids or version["version"] != expected
+                        or version["status"] != "ready" or version["sha256"] != item["sha256"]):
+                    raise AppError(409, "KNOWLEDGE_SNAPSHOT_CHANGED", "检索期间知识版本或索引已变化，请重新检索")
+
+    def _search(self, kb_ids, user, query, limit, run_id=None, mode="hybrid", context_chars=12000, cancel_event=None):
+        policy = self.service.policy
+        if policy.is_trial:
+            policy.require_retrieval_mode(mode)
+        elif mode not in {"hybrid", "bm25", "vector", "hipporag"}:
             raise AppError(422, "INVALID_RETRIEVAL_MODE", "不支持的检索模式")
         kb_ids = list(dict.fromkeys(kb_ids))[:100]
         for kb_id in kb_ids:
             if not self.require(kb_id, user)["enabled"]:
                 raise AppError(403, "KNOWLEDGE_DISABLED", "知识库已停用")
         if not kb_ids:
-            return {"results": [], "retrieval": {**self.retrieval_info(), "mode": mode}, "context": {"text": "", "characters": 0, "truncated": False}}
-        placeholders = ",".join("?" for _ in kb_ids)
-        version_clause = "EXISTS(SELECT 1 FROM knowledge_run_documents rd WHERE rd.run_id=? AND rd.document_id=c.document_id AND rd.version=c.version)" if run_id else "d.current_version=c.version"
-        values = ([run_id] if run_id else []) + kb_ids
-        rows = self.db.all(f"SELECT c.*,d.name,d.kb_id,v.sha256,v.created_at AS imported_at,k.name AS knowledge_base FROM knowledge_chunks c JOIN knowledge_documents d ON d.id=c.document_id AND {version_clause} JOIN knowledge_versions v ON v.document_id=c.document_id AND v.version=c.version JOIN knowledge_bases k ON k.id=d.kb_id WHERE d.kb_id IN ({placeholders}) AND d.deleted=0 AND v.status='ready' LIMIT 50000", values)
+            return {"results": [], "retrieval": {**self.retrieval_info(), "mode": mode, "algorithm": "hipporag2-lite" if mode == "hipporag" else mode, **({"backend": "lite"} if mode == "hipporag" else {})}, "context": {"text": "", "characters": 0, "truncated": False}}
+        backend = self.hipporag_backend if mode == "hipporag" else None
+        if backend is not None:
+            user = self._official_search_user(kb_ids, user, run_id)
+        rows = self._search_rows(kb_ids, run_id)
         if not rows:
-            return {"results": [], "retrieval": {**self.retrieval_info(), "mode": mode}, "context": {"text": "", "characters": 0, "truncated": False}}
+            visual = self._visual_search(kb_ids, query, limit, run_id=run_id) if mode in {"hybrid", "vector", "hipporag"} else []
+            trace = {"algorithm": "hipporag2-lite", "fallback": "no_text_chunks"} if mode == "hipporag" else None
+            retrieval = {**self.retrieval_info(), "mode": mode, "algorithm": "hipporag2-lite" if mode == "hipporag" else mode}
+            if trace:
+                retrieval["graph_trace"] = trace
+                retrieval["backend"] = "lite"
+            if backend is not None:
+                retrieval["fallback"] = "no_text_chunks"
+                self._recheck_official_results(kb_ids, user, run_id, rows, visual)
+            return {"results": visual, "retrieval": retrieval, "context": {"text": "", "characters": 0, "truncated": False}}
+        official_scores, official_stats, official_fallback = None, None, None
+        if backend is not None:
+            from .hipporag import HippoRAGError
+            knowledge = self
+
+            class Cancellation:
+                def is_set(self):
+                    if cancel_event is not None and cancel_event.is_set():
+                        return True
+                    try:
+                        knowledge._official_search_user(kb_ids, user, run_id)
+                    except Exception:
+                        return True
+                    return False
+
+            cancellation = Cancellation()
+            try:
+                # Pass a copy so backend bookkeeping cannot mutate local evidence.
+                options = {"cancel_event": cancellation} if getattr(backend, "supports_cancellation", False) is True else {}
+                candidate_scores, candidate_stats = backend.search(query, rows=[dict(row) for row in rows], limit=limit, **options)
+                valid_ids = {row["id"] for row in rows}
+                if (type(candidate_scores) is not dict or len(candidate_scores) > limit
+                        or any(key not in valid_ids or type(value) not in (float, int)
+                               or not math.isfinite(value) or abs(value) > 1e12
+                               for key, value in candidate_scores.items())):
+                    official_fallback = "result_invalid"
+                elif not candidate_scores:
+                    official_fallback = "no_results"
+                else:
+                    official_scores = candidate_scores
+                    # Never forward arbitrary upstream trace, model text or paths.
+                    official_stats = {"algorithm": "hipporag2-official"}
+                    for key in ("source_count", "unique_text_count", "returned_count", "graph_seed_count"):
+                        value = candidate_stats.get(key) if isinstance(candidate_stats, dict) else None
+                        if type(value) is int and 0 <= value <= 50000:
+                            official_stats[key] = value
+            except HippoRAGError as exc:
+                if exc.code == "cancelled":
+                    self._official_search_user(kb_ids, user, run_id)
+                    raise AppError(409, "KNOWLEDGE_SEARCH_CANCELLED", "知识检索已取消") from None
+                official_fallback = exc.code if exc.code in {
+                    "unavailable", "invalid_input", "identity_mismatch", "index_untrusted",
+                    "index_failed", "index_not_ready", "result_invalid", "retrieval_failed",
+                    "timeout", "worker_failed", "worker_protocol",
+                } else "backend_failed"
+            except Exception:
+                official_fallback = "backend_failed"
+            # Retrieval can call models. Revocation and version changes during
+            # that wait must not return stale results or fall back to stale rows.
+            user = self._official_search_user(kb_ids, user, run_id)
+            if cancel_event is not None and cancel_event.is_set():
+                raise AppError(409, "KNOWLEDGE_SEARCH_CANCELLED", "知识检索已取消")
+            if rows != self._search_rows(kb_ids, run_id):
+                raise AppError(409, "KNOWLEDGE_SNAPSHOT_CHANGED", "检索期间知识版本或索引已变化，请重新检索")
         counts, query_terms = [json.loads(row["terms"]) for row in rows], terms(query)
         average = sum(sum(count.values()) for count in counts) / len(counts) or 1
         document_frequency = {token: sum(token in count for count in counts) for token in query_terms}
         # Pure BM25 must remain usable even when an optional local embedding
         # model is not installed. Hybrid/vector modes are the only paths that
         # initialize the embedding model.
-        vector = None if mode == "bm25" else self.embeddings.embed([query], query=True)[0]
+        vector = None if mode == "bm25" or official_scores is not None else self.embeddings.embed([query], query=True)[0]
         ranked = []
         for row, count in zip(rows, counts):
             length = sum(count.values()) or 1
@@ -919,20 +1594,35 @@ class KnowledgeService:
         lexical = sorted(ranked, key=lambda row: row["lexical_score"], reverse=True)
         dense = sorted(ranked, key=lambda row: row["vector_score"], reverse=True)
         scores = Counter()
-        if mode == "bm25":
+        base_mode = "hybrid" if mode == "hipporag" else mode
+        if base_mode == "bm25":
             scores.update({row["id"]: row["lexical_score"] for row in lexical if row["lexical_score"] > 0})
-        elif mode == "vector":
+        elif base_mode == "vector":
             scores.update({row["id"]: row["vector_score"] for row in dense if row["vector_score"] > .1})
         else:
             for order, key in ((lexical, "lexical_score"), (dense, "vector_score")):
                 for index, row in enumerate(order):
                     if row[key] > (0 if key == "lexical_score" else .1):
                         scores[row["id"]] += 1 / (60 + index + 1)
-        ordered = sorted(ranked, key=lambda item: scores[item["id"]], reverse=True)
+        graph_scores, graph_trace = self._hipporag_graph_scores(kb_ids, query, rows, run_id=run_id) if mode == "hipporag" and official_scores is None else ({}, official_stats)
+        if graph_scores:
+            maximum = max(graph_scores.values()) or 1.0
+            # Reciprocal-rank fusion keeps lexical/vector evidence useful while
+            # allowing a source-linked graph path to promote related chunks.
+            for item in ranked:
+                graph_value = graph_scores.get(item["id"], 0.0) / maximum
+                if mode == "hipporag":
+                    scores[item["id"]] = scores[item["id"]] * 0.45 + graph_value * 0.55
+        if official_scores is not None:
+            scores = Counter(official_scores)
+            by_id = {row["id"]: row for row in ranked}
+            ordered = [by_id[chunk_id] for chunk_id in official_scores]
+        else:
+            ordered = sorted(ranked, key=lambda item: (-scores[item["id"]], item["id"]))
         selected = []
         selected_ids = set()
         for row in ordered:
-            if not scores[row["id"]]:
+            if official_scores is None and not scores[row["id"]]:
                 continue
             selected.append((row, False))
             selected_ids.add(row["id"])
@@ -946,7 +1636,7 @@ class KnowledgeService:
         # section.  Fill unused result slots with immediate source neighbors so
         # RAG receives the bounded local context needed to verify an answer.
         # Neighbors are explicitly marked and never treated as a semantic hit.
-        if selected and len(selected) < limit:
+        if official_scores is None and selected and len(selected) < limit:
             by_source = {}
             for candidate in ranked:
                 by_source.setdefault((candidate["document_id"], candidate["version"]), []).append(candidate)
@@ -970,6 +1660,13 @@ class KnowledgeService:
         result = []
         for rank, (row, adjacent) in enumerate(selected, start=1):
             item = {key: row[key] for key in ("document_id", "version", "page", "section", "paragraph", "start", "end", "text", "name", "kb_id", "knowledge_base", "sha256", "imported_at")} | {"title": row["name"], "excerpt": row["text"], "chunk_id": row["id"], "score": round(scores[row["id"]], 6), "rank": rank, "lexical_score": round(row["lexical_score"], 6), "vector_score": round(row["vector_score"], 6), "retrieval_mode": mode, "page": row["page"] if Path(row["name"]).suffix.lower() == ".pdf" else None}
+            if mode == "hipporag":
+                maximum = max(graph_scores.values()) if graph_scores else 1.0
+                if official_scores is None:
+                    item["graph_score"] = round(graph_scores.get(row["id"], 0.0) / maximum if maximum else 0.0, 6)
+                item["graph_trace"] = graph_trace
+                item["retrieval_algorithm"] = "hipporag2-official" if official_scores is not None else "hipporag2-lite"
+            item["content_url"] = f"/api/v1/knowledge-documents/{row['document_id']}/content?version={row['version']}"
             if adjacent:
                 item["evidence_type"] = "adjacent_source_context"
             # Text retrieval remains the ranking source. When the source also
@@ -979,6 +1676,12 @@ class KnowledgeService:
             if media:
                 item["media"] = media
             result.append(item)
+        # Cross-modal retrieval is additive: a local CLIP text vector can
+        # surface an image that has no OCR text at all. It never replaces
+        # BM25/vector text ranking and is unavailable when the local checkpoint
+        # is absent. The result keeps an explicit visual evidence boundary.
+        if official_scores is None and mode in {"hybrid", "vector", "hipporag"} and len(result) < limit:
+            result.extend(self._visual_search(kb_ids, query, limit - len(result), run_id=run_id))
         # Return a bounded, copyable context preview for human inspection and
         # downstream RAG prompts. It is assembled only from authorized hits.
         context_parts, used = [], 0
@@ -989,6 +1692,8 @@ class KnowledgeService:
             text = f"{label}\n{item['text']}"
             if context_chars <= 0:
                 break
+            if not item.get("text"):
+                continue
             separator = "\n\n" if context_parts else ""
             remaining = context_chars - used - len(separator)
             if remaining <= 0:
@@ -1000,7 +1705,76 @@ class KnowledgeService:
             if used >= context_chars:
                 break
         context_text = "\n\n".join(context_parts)
-        return {"results": result, "retrieval": {**self.retrieval_info(), "mode": mode}, "context": {"text": context_text, "characters": len(context_text), "truncated": bool(result and len(context_text) >= context_chars and context_chars > 0)}}
+        retrieval = {**self.retrieval_info(), "mode": mode, "algorithm": "hipporag2-official" if official_scores is not None else "hipporag2-lite" if mode == "hipporag" else mode}
+        if mode == "hipporag":
+            retrieval["backend"] = "official" if official_scores is not None else "lite"
+        if official_fallback:
+            retrieval["fallback"] = official_fallback
+        if graph_trace is not None:
+            retrieval["graph_trace"] = graph_trace
+        if backend is not None:
+            self._recheck_official_results(kb_ids, user, run_id, rows, result)
+        return {"results": result, "retrieval": retrieval, "context": {"text": context_text, "characters": len(context_text), "truncated": bool(result and len(context_text) >= context_chars and context_chars > 0)}}
+
+    def _visual_search(self, kb_ids, query, limit, run_id=None):
+        query_vector = self.vision.embed_text(query)
+        if not query_vector:
+            return []
+        placeholders = ",".join("?" for _ in kb_ids)
+        values = list(kb_ids)
+        snapshot_clause = ""
+        if run_id:
+            snapshot_clause = " AND EXISTS (SELECT 1 FROM knowledge_run_documents rd WHERE rd.run_id=? AND rd.document_id=a.document_id AND rd.version=a.version)"
+            values.append(run_id)
+        # A normal search uses the current document version, while a running
+        # turn must use the immutable snapshot version.  Applying the current
+        # version join in both cases silently dropped historical image hits.
+        document_version_clause = "d.current_version=a.version" if not run_id else "1=1"
+        rows = self.db.all(
+            f"SELECT a.document_id,a.version,a.mime_type,a.visual_index_status,d.name,d.kb_id,k.name AS knowledge_base,v.sha256,v.created_at AS imported_at,e.vector,e.model,e.dimensions,e.device "
+            f"FROM knowledge_image_assets a JOIN knowledge_documents d ON d.id=a.document_id AND {document_version_clause} AND d.deleted=0 "
+            f"JOIN knowledge_versions v ON v.document_id=a.document_id AND v.version=a.version AND v.status='ready' "
+            f"JOIN knowledge_bases k ON k.id=d.kb_id "
+            f"JOIN knowledge_visual_embeddings e ON e.document_id=a.document_id AND e.version=a.version AND e.region_id='' "
+            f"WHERE d.kb_id IN ({placeholders}){snapshot_clause} LIMIT 256", values,
+        )
+        scored = []
+        for row in rows:
+            try:
+                # Never compare vectors produced by different checkpoints or
+                # dimensions.  A model change therefore fails closed instead
+                # of producing an attractive but meaningless score.
+                vector = json.loads(row["vector"])
+                if row["model"] != query_vector.get("model") or int(row["dimensions"] or 0) != int(query_vector.get("dimensions") or 0):
+                    continue
+                if len(vector) != len(query_vector["vector"]):
+                    continue
+                score = sum(a * b for a, b in zip(query_vector["vector"], vector))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if score < 0.12:
+                continue
+            item = dict(row)
+            item["name"] = row["name"]
+            item["page"] = None
+            item["text"] = ""
+            item["lexical_score"] = 0.0
+            item["vector_score"] = score
+            scored.append(item)
+        result = []
+        for rank, row in enumerate(sorted(scored, key=lambda value: value["vector_score"], reverse=True)[:limit], start=1):
+            item = {key: row.get(key) for key in ("document_id", "version", "page", "name", "kb_id", "knowledge_base", "sha256", "imported_at")}
+            item.update({"title": row["name"], "excerpt": "图片视觉召回（无可用 OCR 文本）", "chunk_id": None,
+                         "text": "", "score": round(row["vector_score"], 6), "rank": rank,
+                         "lexical_score": 0.0, "vector_score": round(row["vector_score"], 6),
+                         "section": "", "paragraph": None, "start": None, "end": None,
+                         "retrieval_mode": "visual", "evidence_type": "visual_embedding",
+                         "content_url": f"/api/v1/knowledge-documents/{row['document_id']}/content?version={row['version']}"})
+            media = self._search_media(row)
+            if media:
+                item["media"] = media
+            result.append(item)
+        return result
 
     def _search_media(self, row):
         """Return source-bound visual evidence for a retrieved text chunk.
@@ -1025,7 +1799,8 @@ class KnowledgeService:
                 "thumbnail_url": f"/api/v1/knowledge-documents/{row['document_id']}/thumbnail?version={row['version']}",
                 "regions": [self._image_region_view(region) for region in regions],
                 "ocr_status": asset["ocr_status"], "visual_index_status": asset["visual_index_status"],
-                "evidence_boundary": "图片预览和安全网格绑定到文件版本；未启用视觉模型，不推断像素实体或关系。",
+                "visual_embedding": self.db.one("SELECT model,dimensions,device FROM knowledge_visual_embeddings WHERE document_id=? AND version=? AND region_id=''", (row["document_id"], row["version"])) or None,
+                "evidence_boundary": "图片预览和安全网格绑定到文件版本；OCR实体有文字框证据，模型实体仅是候选，关系统一标记 evidence_only。",
             }
         if suffix == ".pdf":
             preview = self.db.one(
@@ -1038,17 +1813,56 @@ class KnowledgeService:
                 "page": row["page"],
                 "thumbnail_url": f"/api/v1/knowledge-documents/{row['document_id']}/thumbnail?version={row['version']}&page={row['page']}" if preview else None,
                 "width": preview["width"] if preview else None, "height": preview["height"] if preview else None,
-                "visual_index_status": "needs_model",
-                "evidence_boundary": "页面预览绑定到文件版本；未启用视觉模型，不推断像素实体或关系。",
+                "visual_index_status": self.vision.status()["visual_embedding"],
+                "evidence_boundary": "页面预览绑定到文件版本；页面视觉向量需先将页面导出为图片后索引。",
             }
         return None
 
-    def search(self, kb_ids, user, query, limit=6, run_id=None, mode="hybrid", context_chars=12000):
+    def search(self, kb_ids, user, query, limit=6, run_id=None, mode="hybrid", context_chars=12000, cancel_event=None):
+        if cancel_event is not None and cancel_event.is_set():
+            raise AppError(409, "KNOWLEDGE_SEARCH_CANCELLED", "知识检索已取消")
         if not isinstance(query, str) or not query.strip() or len(query) > 2000:
             raise AppError(422, "INVALID_QUERY", "请输入有效的知识检索问题")
-        if mode not in {"hybrid", "bm25", "vector"}:
+        policy = self.service.policy
+        if policy.is_trial:
+            policy.require_retrieval_mode(mode)
+        elif mode not in {"hybrid", "bm25", "vector", "hipporag"}:
             raise AppError(422, "INVALID_RETRIEVAL_MODE", "不支持的检索模式")
-        return self._search(kb_ids, user, query, max(1, min(int(limit), 20)), run_id, mode, max(0, min(int(context_chars), 24000)))
+        result = self._search(kb_ids, user, query, max(1, min(int(limit), 20)), run_id, mode, max(0, min(int(context_chars), 24000)), cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            raise AppError(409, "KNOWLEDGE_SEARCH_CANCELLED", "知识检索已取消")
+        return result
+
+    async def search_async(self, *args, disconnected=None, **kwargs):
+        cancellation = threading.Event()
+        worker = asyncio.create_task(asyncio.to_thread(self.search, *args, **kwargs, cancel_event=cancellation))
+        worker.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+
+        async def watch_disconnect():
+            while not cancellation.is_set():
+                if await disconnected():
+                    cancellation.set()
+                    return
+                await asyncio.sleep(.05)
+
+        watcher = asyncio.create_task(watch_disconnect()) if disconnected is not None else None
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancellation.set()
+            # A process backend reaps its own worker before returning. Shield the
+            # thread handoff so cancelling the coroutine does not lose cleanup.
+            if getattr(self.hipporag_backend, "supports_cancellation", False) is True:
+                try:
+                    await asyncio.wait_for(asyncio.shield(worker), timeout=5)
+                except (Exception, asyncio.CancelledError):
+                    pass
+            raise
+        finally:
+            cancellation.set()
+            if watcher is not None:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
 
     def snapshot_for_run(self, run_id, assistant, user):
         """Called inside prepare_run's transaction; no nested transaction here."""
@@ -1077,19 +1891,40 @@ class KnowledgeService:
         return [item for item in snapshot_ids if item in current_ids]
 
     def _register_chunk(self, run_id, item):
+        # Visual-only hits have no text chunk or paragraph locator, but still
+        # need an auditable source record so an agent turn can cite the image.
+        # Keep the excerpt bounded and explicitly label its evidence boundary.
+        if item.get("retrieval_mode") == "visual" or item.get("evidence_type") == "visual_embedding":
+            item = {
+                "knowledge_base": item.get("knowledge_base", ""),
+                "kb_id": item["kb_id"], "name": item["name"],
+                "version": item["version"], "sha256": item["sha256"],
+                "page": None, "section": "", "paragraph": None,
+                "chunk_id": None, "start": None, "end": None,
+                "imported_at": item["imported_at"], "document_id": item["document_id"],
+                "text": item.get("excerpt") or "图片视觉召回（无可用 OCR 文本）",
+                **{key: value for key, value in item.items() if key not in {"knowledge_base", "kb_id", "name", "version", "sha256", "page", "section", "paragraph", "chunk_id", "start", "end", "imported_at", "document_id", "text"}},
+            }
         if Path(item["name"]).suffix.lower() != ".pdf":
             item = {**item, "page": None}
         locator = {"knowledge_base": item["knowledge_base"], "knowledge_base_id": item["kb_id"], "file": item["name"],
                    "version": item["version"], "sha256": item["sha256"], "page": item["page"], "section": item["section"],
                    "paragraph": item["paragraph"], "chunk_id": item["chunk_id"], "start": item.get("start"), "end": item.get("end"), "imported_at": item["imported_at"]}
         source = self.service.evidence.register(run_id, "knowledge", item["name"], locator, item["text"], resource_type="knowledge_base", resource_id=item["kb_id"], document_id=item["document_id"], document_version=item["version"])
-        return {**item, "source_id": source["id"], "citation": f"[[source:{source['id']}]]"}
+        return {**item, "source_id": source["id"], "source_url": source["url"], "content_url": source.get("content_url") or item.get("content_url"), "citation": f"[[source:{source['id']}]]"}
 
     async def search_for_run(self, user, assistant, run_id, query, limit=6):
         kb_ids = self._assistant_ids(user, assistant, run_id)
         self.snapshot_for_run(run_id, assistant, user)
-        result = await asyncio.to_thread(self.search, kb_ids, user, query, limit, mode="hybrid", run_id=run_id)
-        result["results"] = [self._register_chunk(run_id, item) for item in result["results"]]
+        mode = "hybrid" if self.service.policy.is_trial else ("hipporag" if self.hipporag_backend is not None else "hybrid")
+        self.service.policy.require_retrieval_mode(mode)
+        rows = self._search_rows(kb_ids, run_id) if mode == "hipporag" else None
+        result = await self.search_async(kb_ids, user, query, limit, mode=mode, run_id=run_id)
+        # The worker-to-event-loop handoff is another revocation boundary.
+        with self.db.lock:
+            if rows is not None:
+                self._recheck_official_results(kb_ids, user, run_id, rows, result["results"])
+            result["results"] = [self._register_chunk(run_id, item) for item in result["results"]]
         return result
 
     async def read_for_run(self, user, assistant, run_id, document_id, page=None, version=None):
@@ -1188,14 +2023,21 @@ def create_knowledge_router(svc, authenticated):
             "grid": regions["grid"], "regions": regions["regions"],
             "metadata": json.loads(asset["metadata_json"]), "ocr_status": asset["ocr_status"],
             "visual_index_status": asset["visual_index_status"],
-            "entity_index_status": "needs_model",
+            "visual_embedding": service.db.one("SELECT model,dimensions,device FROM knowledge_visual_embeddings WHERE document_id=? AND version=? AND region_id=''", (document_id, row["version"])) or None,
+            "ocr": ({**dict(ocr_row), "boxes": json.loads(ocr_row["boxes"])} if (ocr_row := service.db.one("SELECT model,text,boxes,status FROM knowledge_visual_ocr WHERE document_id=? AND version=? AND region_id=''", (document_id, row["version"]))) else None),
+            "entities": [service.knowledge._visual_entity_view({"id": item["id"], "document_id": document_id, "version": row["version"], **dict(item)}) for item in service.db.all("SELECT id,region_id,label,kind,confidence,source_text,source_boxes,source_offset_start,source_offset_end,evidence_kind FROM knowledge_visual_entities WHERE document_id=? AND version=? ORDER BY region_id,label", (document_id, row["version"]))],
+            "relations": [dict(item) for item in service.db.all("SELECT source_entity_id,target_entity_id,relation,confidence,evidence,evidence_kind FROM knowledge_visual_relations WHERE document_id=? AND version=? ORDER BY id", (document_id, row["version"]))],
+            # Preserve the original API's ``needs_model`` state for clients
+            # that treat it as a conservative not-ready value; the richer OCR
+            # status is available in ``ocr.status`` and ``retrieval``.
+            "entity_index_status": "ready" if service.db.one("SELECT 1 AS ok FROM knowledge_visual_entities WHERE document_id=? AND version=? LIMIT 1", (document_id, row["version"])) else ("needs_model" if asset["visual_index_status"] == "needs_model" else "needs_ocr"),
             "evidence_boundary": regions["evidence_boundary"],
         }
     @router.get("/knowledge-documents/{document_id}/regions")
     def image_regions(document_id: str, version: int | None = Query(default=None, ge=1), limit: int = Query(default=MAX_IMAGE_REGIONS, ge=1, le=MAX_IMAGE_REGIONS), user=Depends(authenticated), service=Depends(svc)):
         return service.knowledge.image_regions(document_id, version, user, limit)
     @router.get("/knowledge-documents/{document_id}/thumbnail")
-    def thumbnail(document_id: str, version: int | None = Query(default=None, ge=1), page: int | None = Query(default=None, ge=1, le=200), user=Depends(authenticated), service=Depends(svc)):
+    def thumbnail(document_id: str, version: int | None = Query(default=None, ge=1), page: int | None = Query(default=None, ge=1, le=MAX_PAGES), user=Depends(authenticated), service=Depends(svc)):
         row = service.knowledge.version(document_id, version, user)
         thumbnail_path = None
         if page is not None:
@@ -1218,6 +2060,7 @@ def create_knowledge_router(svc, authenticated):
     def chunks(document_id: str, version: int | None = Query(default=None, ge=1), user=Depends(authenticated), service=Depends(svc)):
         return service.knowledge.chunks(document_id, user, version)
     @router.post("/knowledge-bases/{kb_id}/search")
-    async def search(kb_id: str, data: SearchInput, user=Depends(authenticated), service=Depends(svc)):
-        return await asyncio.to_thread(service.knowledge.search, [kb_id], user, data.query, data.limit, mode=data.mode, context_chars=data.context_chars)
+    async def search(kb_id: str, data: SearchInput, request: Request, user=Depends(authenticated), service=Depends(svc)):
+        return await service.knowledge.search_async([kb_id], user, data.query, data.limit, mode=data.mode,
+                                                   context_chars=data.context_chars, disconnected=request.is_disconnected)
     return router

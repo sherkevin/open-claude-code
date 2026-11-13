@@ -77,7 +77,7 @@ def tool_risk_profile(tool_name: str) -> dict[str, object]:
     external tools default to the stricter profile so a newly discovered tool
     cannot accidentally inherit a read-only policy.
     """
-    if tool_name in {"Read", "Glob", "Grep", "mcp__workspace__knowledge_search", "mcp__workspace__knowledge_read", "mcp__workspace__web_search", "mcp__workspace__web_read", "mcp__workspace__file_read", "mcp__workspace__file_search"}:
+    if tool_name in {"Read", "Glob", "Grep", "mcp__workspace__knowledge_search", "mcp__workspace__knowledge_read", "mcp__workspace__web_search", "mcp__workspace__web_read", "mcp__workspace__file_read", "mcp__workspace__file_search", "mcp__workspace__memory_list", "mcp__workspace__memory_read"}:
         return {
             "risk_level": "low",
             "approval_policy": "safe_read",
@@ -88,6 +88,21 @@ def tool_risk_profile(tool_name: str) -> dict[str, object]:
             "risk_level": "medium",
             "approval_policy": "user_confirmation",
             "impact": "修改当前会话工作区或记忆，执行前需要用户明确确认",
+        }
+    if tool_name == "mcp__workspace__memory_write":
+        return {"risk_level": "medium", "approval_policy": "user_confirmation",
+                "impact": "完整内容须所属用户人工审阅；本轮成功并关闭执行器后才提交记忆并隔离旧上下文"}
+    if tool_name == "mcp__workspace__generate_xlsx":
+        return {
+            "risk_level": "medium",
+            "approval_policy": "user_confirmation",
+            "impact": "在当前会话产物目录生成可下载的 Excel 文件",
+        }
+    if tool_name == "mcp__workspace__generate_image":
+        return {
+            "risk_level": "high",
+            "approval_policy": "deny_by_default",
+            "impact": "图片生成依赖单独授权的模型适配器，未验收时默认拒绝",
         }
     if tool_name.startswith("mcp__"):
         return {

@@ -8,6 +8,7 @@ policy therefore cannot widen an in-flight request.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any
@@ -261,8 +262,31 @@ class HighRiskApprovalService:
         The HTTP route also performs this check for ordinary runtime approvals;
         keeping it here makes the same durable vote contract safe for the
         synthetic sub-agent path and remains idempotent when both paths run.
+
+        ``record_vote`` executes on a worker thread (``offload_write``), and
+        ``asyncio.Future`` is not thread-safe.  The result is therefore applied
+        on the future's own event-loop thread; a closed loop (shutdown) simply
+        leaves the durable vote as the record.
         """
         manager = getattr(self.service, "manager", None)
         future = getattr(manager, "approvals", {}).get(approval_id) if manager else None
-        if future and not future.done():
-            future.set_result(decision)
+        if future is None or future.done():
+            return
+
+        def resolve():
+            if not future.done():
+                future.set_result(decision)
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is future.get_loop():
+            resolve()
+        else:
+            try:
+                future.get_loop().call_soon_threadsafe(resolve)
+            except RuntimeError:
+                # The loop closed while the vote was being persisted; the
+                # durable approval row is still the authoritative outcome.
+                pass

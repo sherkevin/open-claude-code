@@ -1,0 +1,220 @@
+{
+  "schema": "trial-release-acceptance/v1",
+  "schema_version": "oc-t13-release-acceptance/v1",
+  "generated_at": "2026-11-13",
+  "task": "OC-T13",
+  "candidate_scope": "school_cloud_t13_execution_candidate",
+  "status": "PASS",
+  "source_tree_sha256": "cf67c341094d3d2a45c49424176f77d681c2d48c52c12b9c38797251578792a5",
+  "environment": {
+    "server": "学校云",
+    "execution_mode": "isolated-loopback-synthetic",
+    "provider_calls": 0,
+    "model_calls": 0,
+    "customer_data_used": false,
+    "client_credentials_used": false,
+    "tencent_cloud_used": false
+  },
+  "commands": [
+    {
+      "name": "trial_smoke",
+      "command": ".venv/bin/python scripts/trial_smoke.py --report .runtime/evidence/oc_t13_final_trial_smoke_20261113.json --timeout 90",
+      "exit_code": 0,
+      "result": {
+        "passed": 21,
+        "failed": 0,
+        "total": 21,
+        "model_calls": 0
+      },
+      "report": ".runtime/evidence/oc_t13_final_trial_smoke_20261113.json",
+      "log": ".runtime/evidence/oc_t13_final_trial_smoke_20261113.log",
+      "run_state": "executed"
+    },
+    {
+      "name": "full_backend_regression",
+      "command": ".venv/bin/python -m pytest -p no:cacheprovider --basetemp=<runtime-tmp> --junitxml=<runtime-tmp>/junit.xml -ra server/tests",
+      "exit_code": 0,
+      "result": {
+        "passed": 1524,
+        "skipped": 17,
+        "failed": 0,
+        "junit_cases": 1541,
+        "duration_seconds": 1180.42
+      },
+      "report": "docs/evidence/TRIAL_FINAL_ACCEPTANCE_2026-11-13.json",
+      "log": ".runtime/evidence/oc_t13_final_full_backend2_20261113.log",
+      "junit": ".runtime/evidence/oc_t13_final_full_backend2_20261113_junit.xml",
+      "run_state": "executed"
+    },
+    {
+      "name": "client_quality_gate",
+      "command": "cd client && npm test -- --run && ./node_modules/.bin/tsc --noEmit --pretty false && npm run build",
+      "exit_code": 0,
+      "result": {
+        "test_files_passed": 22,
+        "tests_passed": 147,
+        "failed": 0,
+        "typescript_errors": 0,
+        "production_build": true
+      },
+      "report": "docs/evidence/TRIAL_FINAL_ACCEPTANCE_2026-11-13.json",
+      "logs": [
+        ".runtime/evidence/oc_t13_final_client_test_20261113.log",
+        ".runtime/evidence/oc_t13_final_client_tsc_20261113.log",
+        ".runtime/evidence/oc_t13_final_client_build_20261113.log"
+      ],
+      "run_state": "executed"
+    },
+    {
+      "name": "browser_acceptance",
+      "command": ".venv/bin/python scripts/trial_browser_acceptance.py --report .runtime/evidence/oc_t13_final_browser_acceptance_20261113.json --output-dir .runtime/evidence/oc_t13_browser_final_20261113",
+      "exit_code": 0,
+      "result": {
+        "trial_passed": 11,
+        "trial_total": 11,
+        "normal_passed": 4,
+        "normal_total": 4,
+        "failed_modes": [],
+        "trial_err_aborted": 3,
+        "normal_err_aborted": 0,
+        "trial_dcl_ms": 158,
+        "trial_load_ms": 159,
+        "model_calls": 0
+      },
+      "report": ".runtime/evidence/oc_t13_final_browser_acceptance_20261113.json",
+      "log": ".runtime/evidence/oc_t13_final_browser_acceptance_20261113.log",
+      "run_state": "executed"
+    },
+    {
+      "name": "default_capacity",
+      "command": ".venv/bin/python scripts/trial_capacity.py --json-out .runtime/evidence/oc_t13_final_trial_capacity_20261113.json --timeout 90",
+      "exit_code": 0,
+      "result": {
+        "status": "passed",
+        "accepted": 13,
+        "rejected": 25,
+        "unexpected": 0,
+        "peak_simultaneous_executions": 4,
+        "synchronous_pragma": 2
+      },
+      "report": ".runtime/evidence/oc_t13_final_trial_capacity_20261113.json",
+      "log": ".runtime/evidence/oc_t13_final_trial_capacity_20261113.log",
+      "run_state": "executed"
+    },
+    {
+      "name": "concurrency_matrix",
+      "command": ".venv/bin/python scripts/concurrency_load.py --levels 1,5,10,25 --iterations 2 --scenarios chat,sse,retrieval,attachment,cancel --timeout 20 --sample-interval 0.05 --max-active-sessions 4 --execution-hold-ms 350 --json-out .runtime/evidence/oc_t13_final_concurrency_matrix_20261113.json --markdown-out .runtime/evidence/oc_t13_final_concurrency_matrix_20261113.md",
+      "exit_code": 0,
+      "result": {
+        "status": "passed",
+        "matrix_rows": 20,
+        "requests": 410,
+        "errors": 0,
+        "timeouts": 0,
+        "capacity_rejections": 168,
+        "completed": 78,
+        "cancellations": 26,
+        "transport_failures": 0,
+        "model_calls": 0,
+        "resource_peak": {
+          "rss_bytes": 164892672,
+          "threads": 113,
+          "fds": 133
+        }
+      },
+      "report": ".runtime/evidence/oc_t13_final_concurrency_matrix_20261113.json",
+      "markdown": ".runtime/evidence/oc_t13_final_concurrency_matrix_20261113.md",
+      "log": ".runtime/evidence/oc_t13_final_concurrency_matrix_20261113.log",
+      "run_state": "executed"
+    },
+    {
+      "name": "control_20_users_600s",
+      "command": ".venv/bin/python scripts/trial_soak.py --profile control --duration 600 --virtual-users 20 --streams 4 --pace 1.0 --json-out .runtime/evidence/oc_t13_control_20u_600s_20261113.json --markdown-out .runtime/evidence/oc_t13_control_20u_600s_20261113.md",
+      "exit_code": 0,
+      "result": {
+        "status": "passed",
+        "requests": 35841,
+        "success_rate_pct": 100.0,
+        "p95_ms": 274.034,
+        "p99_ms": 419.579,
+        "sse_streams": 4,
+        "model_calls": 0
+      },
+      "report": ".runtime/evidence/oc_t13_control_20u_600s_20261113.json",
+      "log": ".runtime/evidence/oc_t13_control_20u_600s_20261113.log",
+      "run_state": "executed"
+    },
+    {
+      "name": "soak_20_users_1800s",
+      "command": ".venv/bin/python scripts/trial_soak.py --profile soak --duration 1800 --virtual-users 20 --streams 2 --pace 1.0 --json-out .runtime/evidence/oc_t13_final_soak_1800s_20261113.json --markdown-out .runtime/evidence/oc_t13_final_soak_1800s_20261113.md",
+      "exit_code": 0,
+      "result": {
+        "status": "passed",
+        "total_requests": 100766,
+        "success_rate_pct": 100.0,
+        "p95_ms": 238.142,
+        "p99_ms": 369.666,
+        "execution_layer_requests": 4259,
+        "execution_capacity_rejections": 1054,
+        "sse_streams": 2,
+        "model_calls": 0
+      },
+      "report": ".runtime/evidence/oc_t13_final_soak_1800s_20261113.json",
+      "log": ".runtime/evidence/oc_t13_final_soak_1800s_20261113.log",
+      "run_state": "executed"
+    },
+    {
+      "name": "acceptance_record_consistency",
+      "command": "python3 .runtime/oc_t13_rework1_verify.py",
+      "exit_code": 0,
+      "result": {
+        "status": "PASS",
+        "matrix_rows_checked": 20,
+        "matrix_data_cells_checked": 200,
+        "matrix_cell_errors": 0,
+        "smoke_backend_browser_control_soak_file_count_consistent": true
+      },
+      "report": ".runtime/evidence/oc_t13_rework1_consistency_20261113.json",
+      "run_state": "executed"
+    },
+    {
+      "name": "staging_input_check",
+      "command": "python3 scripts/build_release.py --check-only",
+      "exit_code": 0,
+      "result": {
+        "status": "inputs_checked",
+        "client_members": 94,
+        "server_members": 163,
+        "deployment_members": 72
+      },
+      "report": ".runtime/evidence/oc_t13_rework1_candidate_build_20261113.json",
+      "run_state": "executed"
+    }
+  ],
+  "independent_review": {
+    "review_report": ".runtime/evidence/oc_t13_independent_review_20261113.md",
+    "first_round_verdict": "FAIL",
+    "c1": "PASS",
+    "c2": "FAIL",
+    "c3": "PASS",
+    "c4": "FAIL",
+    "rework": "rework_1",
+    "blockers_being_closed": [
+      "F-B1: final Markdown matrix and resource peaks regenerated from final concurrency JSON and verified cell-by-cell",
+      "F-B2: current source-bound staging candidate and audit acceptance binding created without changing release_ready or publishable"
+    ],
+    "second_independent_review_required": true
+  },
+  "boundaries": {
+    "synthetic_data_only": true,
+    "product_runtime_installed": false,
+    "v4_clean_install_completed": false,
+    "real_harness_runtime_verified": false,
+    "real_model_verified": false,
+    "customer_acceptance": false,
+    "t13_pass": false,
+    "release_ready": false,
+    "publishable": false,
+    "statement": "This report binds current T13 execution evidence to the staging candidate digest for audit. It is not customer acceptance, not a T13 PASS, and not a publishable release."
+  }
+}

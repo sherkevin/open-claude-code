@@ -32,6 +32,10 @@ slice, not authorization for a real endpoint, API-key route, or production
 deployment. `server/tests/test_openai_compat.py` covers both envelopes,
 streaming/non-streaming, function calls, bounds, error mapping, and redaction.
 
+## Per-conversation execution engine (Harness pilot)
+
+Conversations expose `runtime_type` (`claude|harness`). It is fixed by the server when the conversation is created; create/patch requests cannot select an engine, launch path, or native session ID. Historical conversations remain Claude. `has_native_session` refers only to the selected engine. The send, event, approval, cancel, artifact, bounded-attachment and authorized business-MCP contracts are shared. Harness also exposes session-bound context statistics, controlled conversation memory and manual compaction; unsupported paths still fail explicitly rather than falling back to another engine. See [pilot boundaries](operations/HARNESS_PILOT.md).
+
 ## Models
 
 `User`: id, username, display_name, role (`admin|member`), enabled.
@@ -56,7 +60,7 @@ streaming/non-streaming, function calls, bounds, error mapping, and redaction.
 
 | Method | Path | Request/response |
 |---|---|---|
-| GET | /config | `{brand_name,upload_max_bytes,auth_types:["none","bearer"],model_label,default_model_id,default_reasoning_level}` |
+| GET | /config | `{brand_name,upload_max_bytes,auth_types:["none","bearer"],model_label,default_model_id,default_reasoning_level,feishu_h5:{enabled,app_id,path}}`; `feishu_h5.app_id` belongs to the separate workbench app and no app secret is returned |
 | GET | /models | Authenticated `ModelOption[]`; public model labels, availability and supported reasoning levels |
 | GET | /health/live, /health/ready | health JSON |
 | POST | /auth/login | `{username,password}` → User plus session cookie |
@@ -85,7 +89,13 @@ streaming/non-streaming, function calls, bounds, error mapping, and redaction.
 | GET/PUT | /assistants/{id}/high-risk-approval | Administrator-only local high-risk policy; PUT accepts `{enabled,policy_id,allowed_tools,admin_allowlist,required_approvals:2}`. Enabled policies require two distinct enabled administrators; an empty tool/administrator allowlist denies by default. |
 | POST | /files | multipart field `file` → File |
 | GET | /files/{id}, /files/{id}/content | metadata / authorized bytes |
+| POST | /artifacts/xlsx | `{filename,sheets:[{name,columns,rows}]}` → user-owned File and download path; bounded local export with formula-text escaping |
+| GET | /artifacts/image-capability | image route status; no credentials or private provider URL |
+| POST | /artifacts/image | `{prompt,model_id?}`; default-deny `IMAGE_MODEL_UNAVAILABLE` until a separately authorized and accepted image adapter exists |
 | GET | /usage | UsageSummary |
+| GET | /models/router-status | Authenticated, metadata-only readiness for the exact fitness/Tab target; never makes a provider call |
+| GET | /feishu/h5/config | `{enabled,app_id,path}`; public H5 capability metadata, with no secret |
+| POST | /feishu/h5/login | `{code}` from `tt.requestAccess` or `tt.requestAuthCode` → User plus the normal HttpOnly session cookie; the code is single-use and the returned open ID is allowlisted and mapped to a local member |
 
 ## Model selection and private routing
 
@@ -95,7 +105,7 @@ Creating a conversation without an explicit selection uses the assistant default
 
 GLM-5.3 currently sets `requires_new_conversation_on_switch:true`: use it in a new conversation. If a conversation has a native SDK session and a PATCH changes the public model ID, a protected old or new model returns `409 MODEL_NEW_CONVERSATION_REQUIRED` with `请新建对话使用此模型；原对话和记忆保留`. This rule is bidirectional, including historical public aliases whose private upstream route matches a protected catalog entry. It does not erase context, silently fork, or change the original model. An empty conversation without a native session may select GLM normally; subsequent turns within its GLM session remain available. Same-model reasoning changes and Dano/DeepSeek switching remain available. The client uses `has_native_session` and this public capability to explain the limitation before submitting a forbidden switch. This boundary follows observed repeated GLM continuation timeouts on cross-model history, while a fresh GLM conversation succeeded; it is not a general claim that the provider can never support such history.
 
-When `auto_model_routing` is enabled, task-submit routing is bounded and local: it uses only the sanitized current task text and available catalog capabilities, never calls the provider router, and records a public `model_routing` decision in the private run execution metadata. An explicit one-shot `model_id` bypasses routing for that run and does not change the conversation's durable selection. Active runs are rejected before routing; routing failures, unavailable candidates, and native-session switch restrictions retain the pinned selection. Changing the conversation model through the selector disables automatic routing until `auto_model_routing:true` is set explicitly.
+When `auto_model_routing` is enabled, task-submit routing sends only the sanitized current task text and available catalog capabilities to the bounded router. If the administrator enabled a valid authorized target, one provider call is made; otherwise the local scorer is used and the target evidence remains explicit. The resulting public `model_routing` decision is recorded in private run execution metadata. An explicit one-shot `model_id` bypasses routing for that run and does not change the conversation's durable selection. Active runs are rejected before routing; routing failures, unavailable candidates, and native-session switch restrictions retain the pinned selection. Changing the conversation model through the selector disables automatic routing until `auto_model_routing:true` is set explicitly.
 
 Selection is persisted per conversation. Changing model or reasoning while a run/approval is active returns `409 CONVERSATION_BUSY`; while native context measurement is active it returns `409 CONTEXT_BUSY`. A successful switch clears the old context statistics and changes the runtime fingerprint. The next operation rebuilds the native SDK client with the existing session ID; message history and the conversation memory scope remain available. Each prepared run freezes its selection privately, so its trace retains the original public model after later switches. The selection also pins a SHA-256 digest of the effective provider environment (global settings plus per-model overrides and selected model aliases); credentials are never copied into database snapshots. Endpoint/key/configuration changes require explicit reselection and cannot silently retarget a prepared run. Runtime initialization uses only the validated in-memory environment, never a second dynamic configuration-file read.
 
@@ -177,15 +187,21 @@ Run views expose `execution_kind:"product_metadata"|"model"`, `identity_source:"
 
 ### Native context reporting
 
-`GET /conversations/{id}/context` reads a persisted snapshot and makes no provider request. `POST /conversations/{id}/context/refresh` has no body and explicitly invokes the active actor's public SDK `get_context_usage()`; a snapshot less than 60 seconds old is reused. An active run or approval returns `409 CONTEXT_BUSY`. A conversation without a native session returns unavailable statistics without starting a model query.
+`GET /conversations/{id}/context` reads a persisted snapshot and makes no provider request. `POST /conversations/{id}/context/refresh` has no body and runs in the conversation's owning actor. Claude uses its public SDK `get_context_usage()`; Harness uses a session-bound, read-only `workspace/context` request to the pinned official token meter. A valid, authorized snapshot less than 60 seconds old is reused; errors and stale snapshots are not treated as successful cache hits. An active run or approval returns `409 CONTEXT_BUSY`. A conversation without a native session returns unavailable statistics without starting a model query.
 
-Context object: `{source:"native_runtime",status:"available"|"unavailable"|"not_measured",total_tokens:number|null,max_tokens:number|null,percentage:number|null,auto_compact_enabled:boolean|null,auto_compact_threshold:number|null,model:string|null,measured_at:ISO|null,cached:boolean,error:string|null,last_compaction:LastCompaction|null}`. `available` requires native total, limit and percentage fields; absent values remain null, and the service never calculates them from accumulated usage. Detailed private memory/config paths are omitted. A new native query invalidates the old snapshot.
+Context object retains `total_tokens`, `max_tokens`, `percentage`, `auto_compact_enabled`, `auto_compact_threshold`, `model`, `measured_at`, `cached`, `error` and `last_compaction`. `source` is `native_runtime|harness_token_meter`; `status` is `available|partial|unavailable|not_measured`. Claude `available` still requires native total, limit and percentage; absent values remain null. Additional fields are `precision:native_reported|estimated|unknown`, `baseline_kind:usage|estimated|none|null`, `observed_prompt_tokens:number|null`, `observed_at:ISO|null`, `stale:boolean`, `stale_reason:route_changed|request_unobserved|snapshot_expired|null`, `projection_seq:number|null`, `manual_compact_available:boolean` and nullable `breakdown:{system_tokens,tools_tokens,message_tokens}`. Private bindings, paths, request headers, raw projections and provider identities are never returned. A new native query invalidates the old snapshot.
 
-Context measurement can make additional provider token-counting requests; it is not claimed to be a local or free operation for a compatible third-party provider. The client should request it only on explicit refresh, not on each SSE event. Measurement errors produce a safe unavailable object and do not fail an otherwise successful chat or compaction.
+Harness `total_tokens` is the official `tokenMeter.measure()` estimate of current request-and-response context pressure, not accumulated billed usage or the input size of a future user message. A `usage` baseline includes normalized runtime input/cache/output buckets plus estimated context changes; it is still an estimate. The pinned adapter fills absent raw input/output buckets with zero and does not preserve their presence bits, so normalized counts cannot prove that a supplier actually reported them. This integration therefore keeps `observed_prompt_tokens` null, including normalized nonzero and zero values; it does not relabel a runtime default as a verified provider observation. Composition estimates must not be added to the displayed total or used for billing. The pinned adapter's default one-million-token window is not verified supplier capacity: this integration keeps Harness `max_tokens`, `percentage` and `auto_compact_threshold` null and reports `partial` when estimates are otherwise usable. `observed_at` remains null because this projection provides no supplier sample timestamp; `measured_at` only records the statistics read time.
+
+Harness refresh sends no prompt, count request, tool call or model request. It may cold-start the owned process and restore the existing native session; official recovery can persist interrupted-turn closers, so only the statistics RPC is described as read-only, not the complete recovery lifecycle. The RPC has a 15-second timeout, separate from existing startup/resume deadlines; its process is closed after the operation. Current configuration, authorization, native-session identity and a host-recorded successful-run binding must match before statistics are returned or reused. Unknown legacy bindings, changed routes/configuration and invalidated snapshots keep quantities unknown instead of generating a new request to fill them in. Product-metadata-only answers do not invalidate an otherwise unchanged native history. The locked Harness profile keeps automatic compaction disabled; the controlled manual-compaction contract is available below.
+
+Claude context measurement can make additional provider token-counting requests; it is not claimed to be local or free. Both clients should refresh explicitly, not on each SSE event. Measurement errors produce safe unavailable objects; they do not fail an otherwise successful chat or compaction. The client must distinguish estimated, unknown and stale values and must not enable compression when runtime capability is unknown.
 
 ### Native manual compaction
 
-`POST /conversations/{id}/compact` accepts `{client_request_id:string,instructions?:string}` and returns `202 {message,run_id}`. It sends the native `/compact` command (optionally with user focus instructions) through the same session actor; there is no separate model call or application summary pipeline. No native session yields `409 CONTEXT_NOT_READY`; execution/approval conflicts use the existing busy errors. Repeating a request ID returns its original run.
+For Claude and Harness conversations, `POST /conversations/{id}/compact` accepts `{client_request_id:string,instructions?:string}` and returns `202 {message,run_id}`. It runs through the same session actor; there is no second application summarizer. Claude dispatches its native `/compact`. Harness invokes a product-owned `/compact` command over the pinned official compaction engine without modifying upstream; optional user focus is appended to the summary request as clearly delimited untrusted data that narrows what to preserve but cannot change the output structure or grant tools. No native session yields `409 CONTEXT_NOT_READY`; execution/approval conflicts use the existing busy errors. Repeating a request ID returns its original run.
+
+Harness success requires correlated `command/run`, `command/done`, `compaction/start`, `compaction/summary` and `compaction/end` evidence for the same owned session, command and compaction transaction. A summary sequence is required for `completed`; a successful command without a compaction boundary is `not_needed`, never a claimed compression. Summary input/output/cache usage is added incrementally to the run ledger with cost unknown unless the supplier actually reports a reliable cost. Timeout, cancellation, protocol failure or command failure closes the owned executor and reaps its request thread. If a real boundary already occurred, compaction remains `completed` and `followup_status` records failure of later steps. `manual_compact_available` is true only for an idle, authorized native session whose current user, assistant and configuration can still be verified; the endpoint repeats the full check and does not trust this hint as authorization.
 
 Run objects add `kind:"chat"|"compact"` and nullable `compaction:{status:"started"|"completed"|"not_needed"|"failed"|"cancelled"|"interrupted",trigger:string|null,pre_tokens:number|null,before:Context|null,after:Context|null,boundary_observed?:boolean,error?:string|null,followup_status?:"failed"|"cancelled"|"interrupted"}`. `completed` requires an actual native `compact_boundary` event. A successful ResultMessage without that event is `not_needed` (for example, insufficient history), never a claimed compression. Failure, cancellation and restart persist their terminal state. If a boundary already occurred, compaction remains `completed` and `followup_status` records interruption of subsequent counting or completion steps; cancellation cannot undo compaction. Before/after snapshots may be unavailable.
 
@@ -243,14 +259,17 @@ Messages accept up to5 unique `skill_ids`. The server validates assistant bindin
 | GET | /knowledge-documents/{id}/content?version=N | Authorized original bytes with correct MIME |
 | POST | /knowledge-documents/{id}/reindex | Rebuild current version index; returns document status |
 | DELETE | /knowledge-documents/{id} | Soft delete file and remove access from retrieval/source views |
-| POST | /knowledge-bases/{id}/search | `{query,limit?}` → `{results,retrieval}` |
+| POST | /knowledge-bases/{id}/search | `{query,limit?,mode?,context_chars?}` → `{results,retrieval,context}`; `mode` is `hybrid`, `bm25`, or `vector` |
 | GET | /knowledge-bases/{id}/graph?q=&limit= | Current ready document-version graph with source-linked nodes and edges; authorized knowledge-base access is rechecked |
+| GET | /knowledge-documents/{id}/image?version=N | Authorized image metadata, bounded thumbnail, grid summary and region previews; visual/entity status remains `needs_model` without an approved model |
+| GET | /knowledge-documents/{id}/regions?version=N&limit=16 | Authorized, immutable-version-bound grid regions with source pixel coordinates and safe preview URLs; at most 16 regions |
+| GET | /knowledge-documents/{id}/regions/{region_id}/thumbnail?version=N | Permission-checked JPEG preview for one version-bound region |
 
 KnowledgeBase fields include `id,name,description,scope,owner_id,can_edit,enabled,revision,default_for_new_assistants,document_count,index_status,retrieval`. Only administrators may mark an enabled team knowledge base as a default. `index_status` is a count map by status, not a fabricated completion percentage.
 
-Document metadata includes `id,kb_id,name,mime_type,version,sha256,size,status,error,page_count,chunk_count,embedding_model,extraction,created_at,content_url`. Status is `processing`, `ready`, `needs_ocr`, or `failed`. A failed or empty extraction is not ready. Originals and prior versions are retained separately; uploads keep the document format. File sizes follow deployment upload limits; the parser also bounds PDF pages and extracted text. Physical page numbers apply only to PDFs. Text/DOCX content uses sections, paragraph indices and extraction offsets.
+Document metadata includes `id,kb_id,name,mime_type,version,sha256,size,status,error,page_count,chunk_count,embedding_model,extraction,created_at,content_url`; image documents additionally expose `image.region_count`, `image.regions_url` and `image.grid`. Status is `processing`, `ready`, `needs_ocr`, or `failed`. A failed or empty extraction is not ready. Originals and prior versions are retained separately; uploads keep the document format. File sizes follow deployment upload limits; the parser also bounds PDF pages and extracted text. Physical page numbers apply only to PDFs. Text/DOCX content uses sections, paragraph indices and extraction offsets. Grid regions are layout previews only, not semantic segmentation or visual entities.
 
-Search result fields include `document_id,version,name,title,text,excerpt,page,section,paragraph,start,end,chunk_id,score` and knowledge-base metadata. Retrieval reports `mode`, `lexical`, `vector_model`, `semantic` and `execution`. BM25 combines with the configured local vector method; `local-lexical-v1` is explicitly nonsemantic. Run admission pins visible document versions; retrieval and source reopening also recheck current authorization. The application supplies native targeted-read and retrieval tools through the same guarded runtime. See [knowledge implementation and deployment](KNOWLEDGE_AND_SOURCES.md).
+Search result fields include `document_id,version,name,title,text,excerpt,page,section,paragraph,start,end,chunk_id,score,rank,lexical_score,vector_score,retrieval_mode` and knowledge-base metadata. Image and PDF-page hits may additionally include `media` with `kind`, source `sha256`, version-bound `thumbnail_url`, dimensions/page, bounded region previews, and `visual_index_status`; this is evidence attachment after text ranking, not visual-vector recall. Retrieval reports `mode`, `available_modes`, `lexical`, `vector_model`, `semantic` and `execution`; `context` is a bounded copyable RAG preview with `text`, `characters` and `truncated`. BM25 can be selected directly or combined with the configured local vector method; `local-lexical-v1` is explicitly nonsemantic. Run admission pins visible document versions; retrieval and source reopening also recheck current authorization. The application supplies native targeted-read and retrieval tools through the same guarded runtime. See [knowledge implementation and deployment](KNOWLEDGE_AND_SOURCES.md).
 
 ### Registered evidence and references
 
@@ -270,6 +289,67 @@ The client makes internal source controls clickable only when their canonical ID
 
 ### Advisory model fitness recommendation
 
-`POST /api/v1/models/recommend` accepts `{ "task_summary": string, "candidate_model_ids"?: string[] }`. The summary is capped at 2,000 characters and candidates at 20 public catalog IDs. The response includes `{model_id,model_label,reasoning_level,reason,applied:false,router}`. The operation is advisory metadata and does not itself patch a conversation, replace an active run, create a native session, or add a run/usage row. The client may explicitly apply the returned selection only while the conversation is idle; ordinary model-switch guards remain authoritative. Unavailable or unknown candidate IDs are filtered; if none remain the server returns `NO_AVAILABLE_MODELS`.
+`POST /api/v1/models/recommend` accepts `{ "task_summary": string, "candidate_model_ids"?: string[] }`. The summary is capped at 2,000 characters and candidates at 20 public catalog IDs. The response includes `{model_id,model_label,reasoning_level,reason,applied:false,router}`. The operation is advisory metadata and does not itself patch a conversation, replace an active run, create a native session, or add a run/usage row. The client applies the returned selection only while the conversation is idle and then enables `auto_model_routing`; ordinary model-switch guards remain authoritative. Unavailable or unknown candidate IDs are filtered; if none remain the server returns `NO_AVAILABLE_MODELS`. `POST /api/v1/models/complete` accepts only a 500-character draft and returns a real provider completion on explicit Tab when the configured router target is available; otherwise it returns `suggestion:null` with `router.target_status=unavailable` rather than a hard-coded phrase.
 
-The router identity is the public `deepseek-v4.1-flash` ID. The default bounded local scorer makes no provider call. With explicit administrator configuration, one provider call receives only the sanitized task summary and public catalog capabilities, with bounded timeout/output/budget and strict response validation; failures fall back to the local scorer. Provider credentials, private upstream model names, conversation history, attachments, assistant instructions and MCP data are never sent to the router. Applying a suggestion still uses normal conversation model-switch and new-conversation guards.
+The router identity defaults to the exact public `deepseek-v4.1-flash-1007` and can be overridden with `AGENT_MODEL_ROUTER_MODEL_ID` only for an explicitly authorized catalog entry. A missing exact target is reported as an evidence gap and fails closed rather than silently calling a different model; no unavailable model is fabricated. The default bounded local scorer makes no provider call. With explicit administrator configuration, one provider call receives only the sanitized task summary and public catalog capabilities, with bounded timeout/output/budget and strict response validation; failures fall back to the local scorer. `router.provider_configured` and `router.provider_status` distinguish a selectable catalog route from an actually authorized provider; missing credentials yield `provider_attempted:false`, while rejected provider output yields the bounded `provider_response_rejected` reason. Provider credentials, private upstream model names, conversation history, attachments, assistant instructions and MCP data are never sent to the router. Applying a suggestion still uses normal conversation model-switch and new-conversation guards.
+
+`GET /api/v1/models/router-status` is an authenticated metadata-only preflight. It
+returns `schema_version=model-router-preflight/v1`, the exact public target ID,
+catalog availability, router enablement, positive budget state, provider
+authorization state, and a `tab_completion_mode`/`ready` decision. It never
+contacts a model provider, returns a private upstream model name, or exposes a
+credential. `ready=true` means the provider route is eligible for a future
+bounded call; it is not evidence that a paid request has succeeded.
+
+### Versioned local workflow contract (retired 2026-11-13)
+
+The customer-facing low-code workflow surface was retired from the current
+product scope. The historical contract below is retained for migration and
+test compatibility only. Normal deployments keep `AGENT_WORKFLOWS_ENABLED=false`;
+authenticated calls to these paths return HTTP `410` with error code
+`FEATURE_DISABLED`, and the client does not render a workflow entry point.
+The database tables and implementation are not removed so an explicitly
+approved migration can inspect or archive existing records without a schema
+destructive change. Internal legacy tests may opt in with the setting enabled.
+
+The first low-code workflow slice is a declarative, synthetic-only contract. It
+does not execute a model, an MCP connection, a customer system or an artifact
+writer.
+
+| Method | Path | Input / result |
+| --- | --- | --- |
+| GET | `/workflow-templates` | List versioned synthetic finance templates and their safe graphs |
+| GET/POST | `/assistants/{assistant_id}/workflows` | List or create a workflow with `name`, `description` and `graph:{nodes,edges}` |
+| POST | `/assistants/{assistant_id}/workflows/from-template` | `{template_id,name?}` copies a synthetic template into a new draft |
+| GET | `/workflows/{id}` | Workflow metadata and version summaries/graphs |
+| PATCH | `/workflows/{id}/draft` | Replace a draft graph; optional `expected_revision` prevents lost updates |
+| POST | `/workflows/{id}/publish` | Publish the immutable draft version and its graph hash |
+| POST | `/workflows/{id}/rollback` | `{version}` creates a new unpublished draft from an earlier version |
+| POST | `/workflows/{id}/runs` | `{input,conversation_id?}` runs the published version through the local synthetic replay; an optional conversation must belong to the same assistant |
+| GET | `/workflow-runs/{id}` | Safe node trace, synthetic output and immutable permission snapshot; input values are never echoed |
+
+Allowed node types are `agent`, `skill`, `knowledge_search`, `mcp_read`,
+`condition`, `approval` and `artifact`. Graph validation rejects duplicate
+nodes, invalid edges, cycles, isolated nodes, sensitive configuration keys,
+oversized payloads and any execution mode other than `synthetic`. A run pins
+the published version, records a node order and marks every step
+`external_call:false`. An optional session binding is checked against the
+workflow assistant and user, then persisted with a permission digest and
+sanitized permission snapshot. This remains a synthetic run contract, not
+customer runtime execution or a production visual editor.
+
+## 2026-11-10 HippoRAG 官方后端的开发注入切片
+
+`POST /api/v1/knowledge-bases/{kb_id}/search` 的请求字段保持不变。`mode=hipporag` 默认仍使用 `hipporag2-lite`；只在可信开发调用方显式注入预构建官方快照后尝试官方检索，没有客户端启用参数，也没有启动时自动安装模型。
+
+新增可选响应字段：
+
+- `retrieval.algorithm`：`hipporag2-official` 或既有 `hipporag2-lite`。
+- `retrieval.backend`：`official` 或 `lite`；不能把回退结果标为官方成功。
+- `retrieval.fallback`：受限错误代码，例如 `identity_mismatch`、`index_not_ready`、`index_untrusted`、`result_invalid`、`retrieval_failed`、`no_results`、`no_text_chunks`。不包含异常原文。
+- 官方 `graph_trace` 只公开 `algorithm` 和有界的来源数、去重文本数、返回来源数、候选图种子数量；不是已核验关系或路径。
+- 官方命中保留现有 `chunk_id/document_id/version/sha256/content_url/media` 等本地证据字段，`retrieval_algorithm=hipporag2-official`，不伪造归一化 `graph_score`。分数允许有限的零值与负值；来源数量受 `limit` 限制。
+
+官方索引必须与整个已授权片段集合匹配。查询期间账号停用、权限撤销、文档删除或版本变化，返回现有权限错误或 `409 KNOWLEDGE_SNAPSHOT_CHANGED`，不把旧结果组装为上下文。运行快照允许已固定的历史版本，但禁止采用新版本。
+
+聊天知识工具仅在相同的显式开发注入下尝试官方后端，引用仍经现有来源登记。默认聊天继续混合检索。完整限制及测试见 `design/HIPPORAG_ADAPTER.md`、`evidence/HIPPORAG_OFFICIAL_2026-11-10.md`；本合同不表示官方后端已经上线。

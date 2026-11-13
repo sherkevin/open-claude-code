@@ -49,23 +49,26 @@ def test_same_assistant_sessions_run_in_parallel_and_approvals_cancel_independen
 def test_session_memory_revision_fingerprint_context_and_context_busy_are_isolated(client):
     service, user, _, a, b = sessions(client)
     urls = [f"/api/v1/conversations/{value['id']}/memory" for value in (a, b)]
-    for url, text in zip(urls, ("Only session A", "Only session B")):
-        assert client.put(url + "/file", json={"path": "MEMORY.md", "content": text, "revision": 0}).status_code == 200
+    for key, url, text in zip(("a-initial", "b-initial"), urls, ("Only session A", "Only session B")):
+        assert client.put(url + "/file", json={"path": "MEMORY.md", "content": text, "revision": 0,
+                                              "operation_id": key}).status_code == 200
     first_config, second_config = [service.runtime_config(value["id"]) for value in (a, b)]
     assert first_config["memory_dir"] != second_config["memory_dir"]
     assert first_config["fingerprint"] != second_config["fingerprint"]
     for value in (a, b):
         service.db.execute("UPDATE conversations SET context_usage=? WHERE id=?", (dump({"session": value["id"]}), value["id"]))
-    assert client.put(urls[0] + "/file", json={"path": "MEMORY.md", "content": "A revised", "revision": 1}).status_code == 200
+    assert client.put(urls[0] + "/file", json={"path": "MEMORY.md", "content": "A revised", "revision": 1,
+                                              "operation_id": "a-revised"}).status_code == 200
     assert service.require("conversations", a["id"])["context_usage"] is None
     assert json.loads(service.require("conversations", b["id"])["context_usage"])["session"] == b["id"]
     assert service.runtime_config(b["id"])["fingerprint"] == second_config["fingerprint"]
     assert client.get(urls[1] + "/file", params={"path": "MEMORY.md"}).json()["content"] == "Only session B"
     service.manager.context_requests[a["id"]] = None
     try:
-        blocked = client.delete(urls[0], params={"revision": 2})
+        blocked = client.delete(urls[0], params={"revision": 2, "operation_id": "a-clear-blocked"})
         assert blocked.status_code == 409 and blocked.json()["error"]["code"] == "MEMORY_BUSY"
-        assert client.put(urls[1] + "/file", json={"path": "MEMORY.md", "content": "B while A measures", "revision": 1}).status_code == 200
+        assert client.put(urls[1] + "/file", json={"path": "MEMORY.md", "content": "B while A measures", "revision": 1,
+                                                  "operation_id": "b-while-a-measures"}).status_code == 200
         with pytest.raises(AppError) as busy:
             service.prepare_run(a["id"], {"text": "same session", "file_ids": [], "client_request_id": "context-conflict"}, user)
         assert busy.value.code == "CONTEXT_BUSY"
@@ -97,14 +100,15 @@ def test_legacy_snapshot_migration_is_once_per_existing_session_and_new_sessions
         view = service.memory.view(user, value["id"])
         assert view["origin"] == "legacy_snapshot"
         assert service.memory.read(user, value["id"], "MEMORY.md")["content"] == "Preserved shared original"
-    service.memory.edit(user, a["id"], 0, "MEMORY.md", "A only")
+    service.memory.edit(user, a["id"], 0, "MEMORY.md", "A only", operation_id="legacy-a-upsert")
     assert service.memory.read(user, b["id"], "MEMORY.md")["content"] == "Preserved shared original"
     assert (legacy / "MEMORY.md").read_text(encoding="utf-8") == "Preserved shared original"
     # Recovery after directory publication but before marker commit reuses the
     # existing snapshot, instead of overwriting it from the shared original.
     service.db.execute("UPDATE conversation_memory_scopes SET origin='legacy_pending' WHERE conversation_id=?", (a["id"],))
     assert service.memory.read(user, a["id"], "MEMORY.md")["content"] == "A only"
-    service.memory.edit(user, a["id"], service.memory.view(user, a["id"])["revision"])
+    service.memory.edit(user, a["id"], service.memory.view(user, a["id"])["revision"],
+                        operation_id="legacy-a-clear")
     new = service.create_conversation({"assistant_id": assistant["id"], "title": "New empty"}, user)
     reopened = Database(service.settings.data_dir / "app.sqlite3")
     reopened.close()
@@ -130,7 +134,9 @@ def test_invalid_legacy_memory_preserves_original_and_retries_only_that_session(
         service.memory.view(user, a["id"])
     assert too_big.value.status == 413
     assert source.stat().st_size == MAX_FILE + 1
-    assert not service.memory.root(user["id"], a["id"]).exists()
+    scope = service.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (a["id"],))
+    assert scope["storage_version"] == 0 and scope["active_snapshot_id"] is None
+    assert not (service.settings.data_dir / "conversation-memory-snapshots" / user["id"] / a["id"]).exists()
     assert service.memory.view(user, b["id"])["files"] == []
     source.write_text("Recovered source", encoding="utf-8")
     assert service.memory.read(user, a["id"], "MEMORY.md")["content"] == "Recovered source"

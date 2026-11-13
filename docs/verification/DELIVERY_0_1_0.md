@@ -60,6 +60,17 @@ cd ..
 .venv/bin/python scripts/smoke_api.py --password-file .runtime/admin-password --origin http://127.0.0.1:18081 --report .runtime/api-smoke.json
 ```
 
+`smoke_api.py` 的资源权限检查遵循当前合同：成员创建默认个人连接必须返回
+`201` 并归属该成员；成员显式创建 `scope=team` 必须返回 `403`；成员对其他
+成员或管理员的个人连接读取、修改必须返回 `403` 或 `404`。因此，成员创建个人
+连接不是验收失败，脚本会在清理阶段删除本次创建的个人连接。
+
+验收助手由管理员显式创建为 `scope=team`，但仍使用
+`access.all_members=false` 与成员 `user_ids` 白名单：白名单成员必须可见，未授权
+成员必须不可见且不能创建会话。这里的团队范围表示配置由管理员管理，不表示所有
+成员自动获得助手访问权。脚本为该助手单独创建并测试一个团队连接；个人连接仍
+保留用于跨所有者拒绝检查，避免把私有连接错误地绑定到团队助手。
+
 浏览器验收需要安装 Playwright 及可用的 Chromium。默认不启用付费模型调用：
 
 ```bash

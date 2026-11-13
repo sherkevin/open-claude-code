@@ -1,0 +1,27 @@
+# Optional HippoRAG integration
+
+The optional official retrieval backend uses HippoRAG from the OSU Natural
+Language Processing group:
+
+- Source: https://github.com/OSU-NLP-Group/HippoRAG
+- Reviewed commit: `d5c8329422e0a0b834a15874545cb6a74b4f9b26`
+- Copyright (c) 2025 OSU Natural Language Processing
+- License: MIT. The complete, unmodified copyright and permission notice is
+  retained in `LICENSE.HippoRAG` alongside this document.
+- License SHA-256:
+  `93b43d692b033b76129504448695bfe76ef22d18b11e51352bfab4b5622e5aaa`
+
+The product adapter does not replace or relicense upstream code. Retain the
+upstream notice whenever distributing copies or substantial portions of that
+code. Upstream source and optional runtime dependencies are not bundled by this
+notice or enabled by default.
+
+MIT applies to HippoRAG itself, not automatically to its dependencies. In
+particular, the reviewed igraph dependency is GPL-2.0-or-later, tqdm includes
+MPL-2.0 terms, and numerical wheels contain separately licensed native libraries.
+Review the actual source and binary contents, modifications, integration and
+distribution obligations before shipping an optional runtime. This notice is
+not a completed dependency license audit or a legal conclusion.
+
+Development evidence and remaining distribution checks:
+`docs/evidence/HIPPORAG_OFFICIAL_2026-11-10.md` in the repository root.

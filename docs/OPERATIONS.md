@@ -4,12 +4,17 @@
 
 ## 启动、健康和日志
 
+2026-11-11 起，当前源码中新会话默认执行器为 DeepSeek Harness，旧会话继续使用存储的执行器。本轮没有部署或重启现有服务。采用本版前须按 [Harness 操作](operations/HARNESS_PILOT.md) 显式配置固定源码、专用 Node 路径、API Key 兼容接口和支持的推理档位；仅启动 Python 或看到 `health/ready` 成功不代表 Harness 可以回答。完整功能迁移尚未结束，不能据此直接上线；显式 `AGENT_RUNTIME_TYPE=claude` 仅回滚之后创建的会话默认，不转换既有 Harness 历史。
+
 原生部署由现有进程管理器托管以下命令；手工排查时也可在前台运行，按 Ctrl+C 优雅退出：
 
 ```bash
+export AGENT_PROVIDER_SETTINGS=/absolute/private/path/provider-settings.json
 export PYTHONPATH=server
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
+
+启动前必须显式提供已授权的 provider settings，或在进程环境中提供支持的模型凭据；不要依赖窗口或宿主用户的隐式配置。先检查 `health/ready` 的 `model_configured=true`，再开放聊天入口。若为本机开发且已授权使用 Claude Code settings，可将 `AGENT_PROVIDER_SETTINGS` 指向受控的本机 settings 文件；不要把该文件复制进仓库、客户端或日志。
 
 必须保持 `--workers 1`，不要使用生产热重载。容器部署使用 `docker compose up -d`，停机使用 `docker compose stop`；开发预览使用 `scripts/preview.py start/status/stop`，不要混用三种启动方式。
 
@@ -38,6 +43,7 @@ GLM-5.3 目录项保持 `requires_new_conversation_on_switch:true`。已有原�
 | --- | --- |
 | `AGENT_DATA_DIR` | 数据根目录；使用固定绝对路径。不能通过改路径直接迁移已有数据库和会话。 |
 | `AGENT_MODEL`、`AGENT_EFFORT` | 明确的 `AGENT_MODEL` 优先；否则取模型配置中的 `ANTHROPIC_MODEL`，再取默认型号。模型环境字段以进程环境优先于 `AGENT_PROVIDER_SETTINGS` 文件。默认 effort 为 `medium`。 |
+| `AGENT_DEPLOYMENT_MODE`、`AGENT_TRIAL_CAPABILITIES` | 部署能力边界。默认 `normal` 保持现有功能；`trial` 只放行显式能力清单。可选用逗号分隔的已知能力名覆盖试用默认集合；未知模式、未知能力和错误类型都会启动失败。 |
 | `AGENT_ALLOWED_ORIGINS`、`AGENT_COOKIE_SECURE` | 生产填写实际 HTTPS 站点来源并设 `true`；源列表用逗号分隔。 |
 | `AGENT_MCP_ALLOWED_HOSTS` | MCP 主机允许名单，逗号分隔主机名，不含协议或路径。修改后重启 server，再在业务连接页面测试。 |
 | `AGENT_IDLE_SECONDS`、`AGENT_APPROVAL_SECONDS` | 默认分别为 600 秒；空闲执行进程回收不删除历史，审批超时视为拒绝。 |
@@ -125,7 +131,7 @@ PY
 
 修改或清除记忆需要最新版本号，且该会话没有任务执行或上下文统计请求。同一会话一次执行一个任务；同助手的其它会话可以并行，受 `AGENT_MAX_ACTIVE_SESSIONS` 总容量限制。取消、审批和上下文统计均绑定具体会话。清除记忆不删除已经进入该会话上下文的事实。原生文件仍由运行时管理，应用没有另一套摘要服务。
 
-上下文统计只在用户手动刷新或手动压缩前后请求运行时，可能触发模型供应商的额外 Token 计数请求；刷新缓存60秒。供应商无法提供统计时显示未知，不影响普通聊天。手动压缩只有收到原生压缩完成事件才标记完成；历史太短而未触发压缩时会明确显示无需压缩。自动压缩继续由原生运行时负责。
+上下文统计只在用户手动刷新或手动压缩前后请求运行时。Claude 统计可能触发模型供应商的额外 Token 计数请求；Harness 统计使用官方估算接口，不额外调用模型。刷新缓存60秒，供应商无法提供统计时显示未知，不影响普通聊天。Claude 与 Harness 的手动压缩都只有收到真实压缩完成边界才标记完成；历史太短而未触发压缩时会明确显示无需压缩。Claude 继续采用其运行时报告的自动压缩设置；当前 Harness 固定配置关闭自动整理，手动压缩已完成开发迁移。
 
 升级前完成上述停机整体备份，并保留旧 client/server 发行包、摘要、私有配置与对应数据快照。先在隔离环境用恢复副本检查新版本，再切换整套 client/server。当前没有承诺数据库自动降级兼容；若需回退，应停止新版本，将旧版本与升级前对应数据快照一起恢复到空目录。升级后产生的数据须另行保全和处理，不能让旧程序直接写未经兼容验证的新数据库。
 

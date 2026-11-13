@@ -1,0 +1,25 @@
+[Unit]
+Description=知行工作台 Feishu long-connection bridge
+After=network-online.target
+Wants=network-online.target
+# If Easy Connect is managed by a local systemd unit, add its real unit name:
+# After=easyconnect.service
+# Wants=easyconnect.service
+
+[Service]
+Type=simple
+WorkingDirectory=/media/data3/dengkw/projects/open-claude-code
+EnvironmentFile=/media/data3/dengkw/projects/open-claude-code/.runtime/feishu/bridge.env
+ExecStart=/media/data3/dengkw/projects/open-claude-code/.runtime/feishu-venv/bin/python -m feishu_bridge
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/media/data3/dengkw/projects/open-claude-code/.runtime/feishu
+
+[Install]
+WantedBy=default.target

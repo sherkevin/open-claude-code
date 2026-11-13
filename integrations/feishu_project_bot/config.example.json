@@ -1,0 +1,24 @@
+{
+  "enabled": false,
+  "send_replies": false,
+  "profile": "REPLACE_WITH_DEDICATED_LARK_PROFILE",
+  "expected_app_id": "cli_REPLACE_WITH_SEPARATE_PROJECT_APP",
+  "forbidden_app_ids": ["cli_aa5e2ae5a638dd0d"],
+  "project_name": "华微世纪",
+  "project_scope": "华微世纪项目需求、设计、开发、测试、验收及项目内协作；不包括主账号凭据、私人会话、其他项目或服务器系统管理。",
+  "chat_id": "oc_0e594fd71ee1b3e2e0b46365e4f42a7f",
+  "bot_open_id": "ou_REPLACE_WITH_VERIFIED_BOT_OPEN_ID",
+  "session_id": "01a1afd9-455e-7a81-9db7-f9a1d768a396",
+  "state_dir": "~/.local/state/feishu-huawei-project-bot",
+  "history_limit": 40,
+  "context_char_limit": 18000,
+  "poll_interval_seconds": 5,
+  "transport": {
+    "codex_home": "REPLACE_WITH_REGISTERED_CODEX_HOME",
+    "cwd": "/media/data3/dengkw/projects/open-claude-code",
+    "codex_binary": "REPLACE_WITH_REGISTERED_CODEX_BINARY",
+    "orca_command": ["REPLACE_WITH_REGISTERED_ORCA_WRAPPER"],
+    "worktree_id": "REPLACE_WITH_REGISTERED_WORKTREE_ID",
+    "pane_key": "REPLACE_WITH_REGISTERED_PANE_KEY"
+  }
+}

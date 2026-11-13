@@ -1,0 +1,36 @@
+{
+  "schema_version": "industrial-visual-entities-1",
+  "coordinate_system": "pixel_xywh",
+  "status_values": [
+    "assistant_reviewed_demo",
+    "model_pending",
+    "evidence_only"
+  ],
+  "acceptance": [
+    {
+      "asset_id": "wikimedia-industrial-machine-960",
+      "required_labels": [
+        "machine_tool",
+        "cutting_tool",
+        "manufacturing_facility"
+      ],
+      "require_source_bound": true,
+      "allow_semantic_relation": false
+    },
+    {
+      "asset_id": "nist-sp80082-scada-fig2",
+      "required_labels": [
+        "control_center",
+        "hmi",
+        "engineering_workstation",
+        "data_historian",
+        "plc",
+        "rtu",
+        "field_site"
+      ],
+      "require_source_bound": true,
+      "allow_semantic_relation": false
+    }
+  ],
+  "boundary": "These are assistant-reviewed visual regions for UI and regression tests. They were checked against the rendered pixels but are not an independent human gold standard, evidence that a vision model has been trained, or evidence that relationships between entities were inferred."
+}

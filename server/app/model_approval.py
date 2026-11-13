@@ -18,7 +18,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .db import dump, now, uid
+from .db import dump, now, offload, uid
 from .security import AppError, redact, tool_risk_profile, workspace_path
 
 
@@ -252,8 +252,8 @@ class ModelApprovalService:
         return _digest(arguments) == review.argument_digest
 
     async def review(self, run: dict, tool: str, arguments: dict[str, Any]) -> ModelReview | None:
-        conversation = self.service.require("conversations", run["conversation_id"])
-        policy = self.policy(conversation["assistant_id"])
+        conversation = await offload(self.service.require, "conversations", run["conversation_id"])
+        policy = await offload(self.policy, conversation["assistant_id"])
         if not policy or not policy["enabled"]:
             return None
         operation = self._operation(tool, arguments)
@@ -269,7 +269,7 @@ class ModelApprovalService:
             # Grants may be revoked after a policy was saved.  Re-evaluate the
             # current conversation/assistant/connection scope immediately
             # before invoking the reviewer.
-            if self.service.authorize_tool(run["conversation_id"], tool, arguments) is not True:
+            if await offload(self.service.authorize_tool, run["conversation_id"], tool, arguments) is not True:
                 return self._denied(policy, "服务端授权未明确允许，已安全拒绝", operation, scope, amount, argument_digest, result={"status": "authorization_denied"})
         except Exception:
             return self._denied(policy, "服务端授权复核失败，已安全拒绝", operation, scope, amount, argument_digest, result={"status": "authorization_denied"})

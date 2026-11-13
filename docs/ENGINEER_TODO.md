@@ -1,5 +1,86 @@
 # Client and Server Delivery TODO
 
+## Harness 主线切换与逐项迁移 — 2026-11-11
+
+- [DONE] 用户明确批准以 DeepSeek Harness 作为开发底座，逐项落实需求；[主线计划](plans/2026-11-11-harness-mainline.md) 保留完整范围和各批门槛，不将切换默认值算作迁移完成。
+- [DONE] 新会话代码默认 Harness；显式 Claude 兼容/回滚、旧会话原生标识和历史推理档位保留；私有启动路径不自动扫描，缺配置不静默回退。
+- [DONE] 附件受控传入、图片编码协议、来源登记与真实 Node 合成模型测试；会话界面标明执行框架。这里完成的是协议与权限合同，不是实际供应商视觉质量验收。
+- [DONE] 第一批冻结回归覆盖服务端 1,226 项：初轮 1,225 通过和 1 项旧夹具失败，补齐夹具执行器快照后相关整文件 65 项通过；当前用例清单与源码哈希核对后无遗留失败，不能称第二次单轮全绿。前端 126 项及 TypeScript 检查通过；[证据](evidence/HARNESS_MAINLINE_2026-11-11.md) 保留失败和修正过程。
+- [DONE] 接入官方只读上下文估算与受控统计接口，来源、陈旧状态、未核验供应商计数及未知容量明确；修正后完整服务端 1,289 项、前端 134 项、类型检查与本地浏览器 15 项通过。定向 140 项不与完整回归重复相加；原始中止及修正记录见 [统计迁移记录](evidence/HARNESS_CONTEXT_2026-11-11.md)。不将此项算作全部 CTX-001 完成。
+- [DONE] 受控记忆按版本及新推理代次迁移完成开发阶段验收，包括不可变快照、版本 CAS、完整正文人工审批、成功后提交、失败/取消回滚、附件代次隔离与历史单次迁移；完整服务端 1,378 项通过。共享服务和真实供应商质量尚未验收。证据见 [受控记忆验收](evidence/HARNESS_MEMORY_2026-11-11.md)。
+- [DONE, development slice] Harness 手动压缩完成开发迁移：保留用户重点、严格关联命令与压缩事务、真实边界才报完成、`not_needed` 不伪造、摘要用量增量入账，并覆盖超时、取消、失败、边界后配置变化和执行器回收。真实固定 Node 加本地合成 Messages 服务端到端通过；服务端完整三片合计 1,399 项全绿，前端 21 个文件 144 项、类型检查和隔离 Vite 构建通过。证据见 [手动压缩验收](evidence/HARNESS_COMPACTION_2026-11-11.md)。这不代表 C 批的自动整理、真实供应商质量或完整用量已经完成。
+- [TODO] 继续自动整理、真实子任务及其余需求；每批补齐测试与需求状态。
+- [TODO] 修正 Harness 用量的尝试事件、失败重试、同一步骤替换结算和取消/失败调用账本；手动压缩摘要的成功增量计量已完成，但不能替代 CTX-004/BENCH-001 的真实供应商总用量。
+- [TODO] 每个需求的真实模型、数据质量、浏览器交互与交付证据按原门槛补齐。本次不部署、不重启共享服务、不切换默认检索；旧阶段记录中的默认 Claude 是历史状态。
+
+## Requirements decisions and engineering gates — 2026-11-11
+
+- [DONE] Record the user's fixed Fitness 1007 answering policy, independent Tab 1017 target and continued Zhixing Workbench brand in [requirements v0.4.1](REQUIREMENTS_ALIGNMENT.md). Selection is not an extra paid router call; missing 1007 cannot silently use another model.
+- [DONE] Set engineering acceptance gates v1 for public corpus coverage, source-grounded entities/relations, image localization, retrieval/answers/fusion, browsers, stability, long-context ablation and safety. These are authorized engineering targets, not achieved scores or customer service guarantees.
+- [TODO] Prepare and freeze actual corpus/labels/held-out manifests and calibrated scoring checks; then verify the exact 1007 resource and implement the fixed-mode contract without changing existing defaults or shared services in this documentation step.
+- [TODO] Execute the documented acceptance matrix and user visual review. The previous diagnostic sample is regression-only, not a substitute for unseen quality evidence. Missing provider resources remain explicit blockers to their own tests, not a reason to fake a passing result.
+
+## Earlier requirements clarification checkpoint — 2026-11-11
+
+- [DONE] Consolidate the existing product scope in [requirements v0.4](REQUIREMENTS_ALIGNMENT.md): user-visible outcomes, runtime-scoped status, three risk levels/four approval strategies, real Tab behavior, browser sending, examples, ablation versus customer comparison, artifacts, eight-layer coverage and official HippoRAG quality gates.
+- [DONE] Put the three existing artifact/governance IDs into the main register and register the previously unnumbered guardrail/cache obligations. The main register has 74 unique IDs; this is documentation coverage, not new implementation or a completion percentage.
+- [DONE] Align incremental gaps and historical/Feishu references. Public-data development does not require customer inputs; existing authorization does not prove a missing route or adapter exists.
+- [DONE] The subsequent user decision resolves fixed Fitness 1007 and the existing brand; engineering thresholds are specified above. Actual datasets, resource checks and test results remain incomplete.
+- This checkpoint changes documentation only: no model calls, application changes, default switch, shared service restart, deployment or customer-data access. Prior regression evidence remains historical, not a newly executed test run.
+- Historical `dist/releases/` links below are not present in this checkout. They remain historical release references, not verified current delivery artifacts; no package was rebuilt or published during this documentation pass.
+
+## Official HippoRAG recovery and public-data quality — 2026-11-10 follow-up
+
+- [DONE] Seal only a successfully flushed host-owned index; restore a byte-verified copy with an externally trusted receipt before constructing the official engine. Tampering, changed identities and unsafe paths fail closed.
+- [DONE] Add explicit Linux process ownership, bounded JSON transport, real timeout/cancellation reaping and queued-request isolation; preserve authorization, version, image evidence and duplicate-text source mapping in the knowledge service.
+- [DONE] Run the real pinned official build/search/seal/restore/interruption path with synthetic models: six checks, three worker processes reaped, no duplicate indexing. This proves lifecycle behavior, not model quality.
+- [DONE] Preserve the complete upstream MIT notice and verify both license and notice inclusion in a local development wheel; no release or distribution approval is implied.
+- [DONE] Correct the nine known SCADA image boxes and freeze an assistant-reviewed public NIST diagnostic pilot; source integrity and coordinate regression do not prove model extraction quality.
+- [DONE] Run the frozen public pilot through the real official algorithm, authorized text/vision routes and real local E5. Third run completes indexing, eight retrieval queries and sealing; two failed runs and their usage remain visible. Official designated evidence coverage is 8/8, same-source dense 7/8, image-rank fusion 7/8; these are not answer accuracy or customer gains.
+- [DONE] Review all 152 textual entity labels and 266 relations, plus public image candidates. Record 18 unsupported and 16 ambiguous relations, six cross-source name collisions, image localization 0/6 and harmful directory-image fusion. Candidate parsing and source word matches do not establish display quality.
+- [DONE] Final frozen-source regression after the real E5 numpy-string compatibility fix: server 1,140 passed, 0 failed/errors/skipped; client 123 passed and TypeScript check passed. Superseded failures/stopped runs remain visible; overlapping focused totals are not added. No customer data, production change, shared restart or default retrieval switch.
+- [DONE] Restore the third run's actual sealed index with the original model factories and default network denial; verify all ten files and source state, then reap the worker. No search, reindex, supplier call or old failed-index reuse.
+- [TODO] Fix typed/scoped display entities, document-reference versus version confusion and relation qualifiers; then source-anchored image geometry and image-role-aware fusion. Use known failures for regression and a separate expanded frozen public set for quality, without changing this run's labels or scores.
+- [TODO] Broader independent entity/relation and image annotations, answer-quality evaluation, customer acceptance, operational authorization/configuration UI, capacity/load testing, and optional-runtime dependency distribution review. `HPR-007` remains partial.
+- Evidence: [official recovery](evidence/HIPPORAG_RECOVERY_2026-11-10.md), [actual public-data diagnostic and gaps](evidence/HIPPORAG_PUBLIC_2026-11-10.md), [full text review](evidence/HIPPORAG_PUBLIC_TEXT_REVIEW_2026-11-10.md), [image/fusion review](evidence/HIPPORAG_PUBLIC_VISUAL_REVIEW_2026-11-10.md). `HPR-005` advances only to partial; no full-product requirement is marked complete.
+
+## DeepSeek Harness 业务连接 — 2026-11-10
+
+- [DONE] 复用官方 Python MCP SDK 和 jsonschema，将授权工具映射到受控插件；地址、凭据和路由只留在 Python，完整嵌套参数由宿主校验。
+- [DONE] 接通现有人工、双人审批与来源登记；审批后、远端初始化后和结果返回前重查授权、工具定义及策略，保留模型代审的高风险限制。
+- [DONE] 加入重定向拒绝、响应/参数上限、操作期限和凭据清理；第三方传输异常日志限定在调用上下文脱敏。
+- [HISTORICAL, superseded by 2026-11-11 increments] 该阶段仍待附件、文件工具、原生记忆/压缩、上下文统计、子代理与真实供应商等价验收，且默认仍为 Claude。后续已迁移附件、统计、受控记忆与手动压缩；文件工具、自动整理、真实子代理和真实供应商等价仍待完成。
+- 验证范围、边界和原始证据见 [业务连接验收](evidence/HARNESS_MCP_2026-11-10.md)。
+
+## DeepSeek Harness 真实执行链路 — 2026-11-10
+
+- [DONE] 隔离安装 Node 24.9.0 / pnpm 11.28.5，冻结官方依赖，构建必要的本机扩展和源码产物；真实握手七项通过，没有模型调用。
+- [DONE] 加入按会话固定的执行器选择、独立 Harness 会话编号和旧会话迁移保护；默认保持 Claude。
+- [DONE] 自有锁定插件、完整工具参数、后端授权与人工审批、实时正文转发、每轮专属进程关闭和原生历史恢复。
+- [DONE] 真实 Node 加本地合成模型通过字面消息、流式无重复、知识引用、Excel 拒绝/批准、停止恢复及异常流失败测试。
+- [HISTORICAL, superseded by 2026-11-11 increments] 该阶段业务 MCP 连接和双人审批成功路径由后续增量补齐；附件、统计、受控记忆与手动压缩亦已迁移。文件工具、自动整理、真实子代理及适用的模型代审业务路径仍待完成，真实供应商与全部功能等价验收前不能宣称完整交付。
+- 操作与边界见 [Harness 隔离试点](operations/HARNESS_PILOT.md)。前期审计如下，保留其发生时的证据。
+
+## DeepSeek Harness 主线审计 — 2026-11-10
+
+- [DONE] 核对 `HAR-001` 至 `HAR-005`、默认执行调用链与迁移功能矩阵。结论：Foundation 基础切片已具备，普通聊天仍使用 Claude SDK；真实 Harness 运行时、完整审批通道、功能等价迁移和受控插件尚未完成。
+- [DONE] 本轮重新验证服务端定向 66 项、客户端 117 项及 TypeScript 检查，全部通过。官方 Python SDK 协议仍使用模拟对端，不代表真实 Harness 执行。
+- [PARTIAL] 真实运行时环境、`HarnessRuntime`/独立会话映射和人工审批通道已在后续增量完成；完整功能等价验证仍未完成。原审计代码证据与产品文档校准见 [主线需求实现审计](verification/DEEPSEEK_HARNESS_REQUIREMENTS_AUDIT_2026-11-10.md)。
+
+## DeepSeek Harness foundation — 2026-11-10
+
+- [DONE] Pin the official Harness and HippoRAG source checkouts and license hashes; record them in `docs/upstream-sources.json` without enabling either upstream runtime.
+- [DONE] Extract six existing workspace tools into a framework-neutral registry and preserve the Claude SDK wrapper contract; 19 registry/compatibility tests pass.
+- [DONE] Implement a disabled-by-default, in-process knowledge bridge with run binding, strict argument limits, current permission checks, approval refusal, source reuse and bounded audit records. This is not a public endpoint or an enabled Harness runtime.
+- [DONE] Verify the real upstream Python SDK against a fake peer; eight protocol checks pass, explicitly not a real runtime/model acceptance.
+- [DONE] Record server regression: initial full run 508 passed and two stale fixture failures; final related 66 tests pass after fixing the fixtures. Combined coverage is 516 current server tests, with no unresolved failures (not a second all-green single full run). Client 117 tests and TypeScript checks pass. See `docs/evidence/HARNESS_FOUNDATION_2026-11-10.md`.
+- [TODO] Add an isolated compatible Node environment, a reviewed minimal profile and a trusted plugin-to-backend channel; verify actual handshake, process shutdown, streaming and context APIs before runtime selection is enabled. Preserve the full migration matrix in `docs/design/DEEPSEEK_HARNESS_MIGRATION.md`.
+
+## DeepSeek Harness plugin candidates — 2026-11-12
+
+- [DONE] Added the controlled OC-T11 boundary for `dshmarket` v1.73.18 and `billion-context` v0.1.213: fixed sources, tag commits, package digests, licenses, declared permissions, offline metadata discovery, revocation/cancellation/network failure handling, compression rollback, and two-stage usage accounting. Evidence: `docs/evidence/BOARD_OC_T11_HARNESS_PLUGINS_2026-11-12.md`.
+- [PARTIAL] `dshmarket` is usable only as a metadata-only discovery layer; `billion-context` is only an adapter boundary with a synthetic reference compressor. Neither plugin is installed or executed in a Harness profile. Real compression quality, provider savings, runtime handshake, automatic updates, and visible attribution remain external gates; do not claim token savings or production readiness.
+
 ## Business-readable live execution progress — design, 2026-11-05
 
 - [DONE] Audited [runtime hooks](../server/app/runtime.py), [event replay](../server/app/main.py), [source registration](../server/app/evidence.py), and [chat rendering](../client/src/ChatPage.tsx). A model message starting does not establish thinking; a pre-tool hook can precede approval; result summaries are missing; the current status vanishes on first text.
@@ -105,12 +186,12 @@ Long-term goal created on 2026-11-04. Scope authorized by the user: implement an
 
 ## Stage 0/next-version implementation — 2026-11-06
 
-- [DONE] 建立初始 17 项部分实现需求的逐项差距登记，并在优先级 1/2 后补充 SUB-001/SUB-002/APR-002：[PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06](verification/PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06.md)。当前状态为 22 项已实现、21 项部分实现、1 项设计中、0 项 TODO；合成 Sub-agent、模型代审和高风险双人审批仍不等于生产交付。
+- [DONE] 建立初始 17 项部分实现需求的逐项差距登记，并在优先级 1/2/3 后补充 SUB-001/SUB-002/APR-002/APR-004，同时将 RAG-005 校准为本地资产阶段部分实现：[PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06](verification/PARTIAL_REQUIREMENTS_GAP_REGISTER_2026-11-06.md)。当前状态为 22 项已实现、22 项部分实现、0 项设计中、0 项 TODO；合成 Sub-agent、模型代审、高风险双人审批和多模态本地资产仍不等于生产交付。
 
 - [DONE] 优先级 1：完成本地合成/只读 Sub-agent 隔离编排（`server/app/subagents.py`、`server/app/db.py`、受保护 API 与 `server/tests/test_subagents.py`）。专项和既有回归通过；证据见 [SUBAGENT_LOCAL_PRIORITY1_2026-11-06](evidence/SUBAGENT_LOCAL_PRIORITY1_2026-11-06.md)。真实客户和生产部署仍未推进。
 - [DONE] 优先级 2：完成本地合成模型代审最小闭环（`server/app/model_approval.py`、管理员策略 API、前后授权复核、审计字段、默认拒绝与 8 项专项测试）。证据见 [MODEL_APPROVAL_PRIORITY2_2026-11-06](evidence/MODEL_APPROVAL_PRIORITY2_2026-11-06.md)；真实模型质量/成本/延迟和客户策略仍缺外部证据。
-- [DONE] 优先级 3：完成本地合成高风险管理员/双人审批最小闭环（管理员白名单快照、两名不同管理员投票、拒绝优先、重启/策略变更失效、管理员待审批过滤队列），并补充 Sub-agent 子任务审批级联、默认拒绝和父取消过期。仍缺真实子会话、生产角色和客户风险矩阵。证据见 [HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06](evidence/HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06) 与 [SUBAGENT_APPROVAL_CASCADE_PRIORITY3_2026-11-07](evidence/SUBAGENT_APPROVAL_CASCADE_PRIORITY3_2026-11-07)。
-- [DONE] 优先级 1/2/3 收口回归：修复父取消与执行竞态下的重复终态事件、允许终态父任务只读查询、后台任务不可重放时的中断收口，并为合成输入、模型代审、OpenAI-compatible 本地适配器和子任务审批级联补充边界校验；最终全量服务端 358 项通过（1 个第三方警告），客户端 61 项通过，TypeScript 检查通过。
+- [DONE] 优先级 3：完成本地合成高风险管理员/双人审批最小闭环（管理员白名单快照、两名不同管理员投票、拒绝优先、重启/策略变更失效、管理员待审批过滤队列），并补充 Sub-agent 子任务审批级联、默认拒绝和父取消过期。仍缺真实子会话、生产角色和客户风险矩阵。证据见 [HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06](evidence/HIGH_RISK_DUAL_APPROVAL_PRIORITY3_2026-11-06.md) 与 [SUBAGENT_APPROVAL_CASCADE_PRIORITY3_2026-11-07](evidence/SUBAGENT_APPROVAL_CASCADE_PRIORITY3_2026-11-07.md)。
+- [DONE] 优先级 1/2/3 收口回归：修复父取消与执行竞态下的重复终态事件、允许终态父任务只读查询、后台任务不可重放时的中断收口，并为合成输入、模型代审、OpenAI-compatible 本地适配器、工作流会话绑定和子任务审批级联补充边界校验；最新全量服务端 399 项通过（1 个第三方警告），客户端 72 项通过，TypeScript 检查通过。新增公开工业知识库哈希清单和实体来源偏移测试。
 
 - [DONE] Added `fixtures/synthetic-industrial-v1/`, deterministic `scripts/synthetic_benchmark.py`, a loopback-only Streamable HTTP MCP fixture, standard answers, SHA-256 checks, source markers, JSON evidence, and explicit report cleanup. Offline validation: 4 tasks and 5 assertions passed; Token, cost, native context, visual quality, and cross-platform comparison remain `not_measured`.
 - [DONE] Added local XLSX cell extraction, optional local image OCR with `needs_ocr` failure state, versioned source-linked graph nodes/edges, `GET /knowledge-bases/{id}/graph`, and a client SVG graph view. Added XLSX, OCR failure, graph versioning, and provenance tests. This is a bounded co-occurrence graph, not the complete semantic multimodal graph.
@@ -122,6 +203,8 @@ Long-term goal created on 2026-11-04. Scope authorized by the user: implement an
 User requested continued work after0.1.0 delivery. Preserve the released archives; continue the original client/server pilot toward operational handoff and real customer integration.
 
 0. [SUPERSEDED] Intermediate interpretation that HuaWei's Harness needed OpenAI-facing Agent APIs. User explicitly corrected: they have no Harness to integrate; they only provide internal read-data MCP tools. Stop API-key/OpenAI compatibility work and do not include unfinished protocol adapters in the runnable product or release. Preserve completed, useful MCP import work.
+
+0a-history. [CLARIFIED 2026-11-12] The customer has now been identified as using **OpenClaw**, not Harness. The earlier statement remains historical for the old scope; the current direction is a separately gated OpenClaw compatibility/replacement surface. See [OpenClaw compatibility design](design/OPENCLAW_COMPATIBILITY_AND_MIGRATION.md) and requirement IDs `OCLAW-001` through `OCLAW-005`. No public adapter, customer connection, production deployment, restart, real customer data, or credentials are claimed by this note.
 
 0a. [DONE] Authoritative target: deliver a complete usable Agent client+server. Customer configures their read-data MCP and uses our product for all model calls, native context management/compression and memory management, with comparable interaction to Claude Code. Inspect and clean up incomplete work from the superseded API approach before continuing.
 0b. [DONE] Finish simple Client MCP onboarding/import, connection testing, tool selection and assistant use. Acceptance: real browser configures synthetic read-data MCP without editing SDK/runtime files; credentials remain server-side.
@@ -178,3 +261,11 @@ User requested continued work after0.1.0 delivery. Preserve the released archive
 - [DONE] Added [the remote handoff](HANDOFF_REMOTE_2026-11-06.md) and [the remote agent prompt](../REMOTE_AGENT_PROMPT.md).
 - [DONE] The remote agent completed the requirements audit, provider-fingerprint fixture correction, server/client regression, and consistency fixes directly on the Tencent host. See [requirements audit](verification/REQUIREMENTS_AUDIT_NOTES.md), [server evidence](evidence/SERVER_REGRESSION_2026-11-06.md), and [client evidence](evidence/CLIENT_REGRESSION_2026-11-06.md).
 - [TODO] Production restart or deployment remains a separate, explicitly approved step with a tested rollback plan.
+
+## HippoRAG 官方快照适配增量 - 2026-11-10
+
+- [DONE, development slice] 新增 `server/app/hipporag.py`，只适配官方接口和本地来源，不复制图算法；精确授权快照、重复文本一对多来源、原子 ready 清单、结果校验和串行访问已有合同测试。
+- [DONE, development slice] 知识服务显式注入预构建索引，复用证据卡和聊天引用；检索及线程交接之后复核账号/助手/文档权限、版本与纯图片证据；官方失败明确回退。
+- [DONE, development slice] 前端区分官方与本地算法、展示受限来源统计和可理解回退原因，不把候选图种子当作已核验实体关系。
+- [DONE, development verification] 固定官方源码、隔离依赖、合成模型下真实 OpenIE/事实筛选/同义边/PageRank 验证通过。整套服务端 820 项通过/6 项跳过，显式启用上游运行时后补测 15 项全部通过；按编号合并覆盖当前全部 832 项，前端 122 项及类型检查通过。详见 `docs/evidence/HIPPORAG_OFFICIAL_2026-11-10.md`，不将重叠测试直接相加或称为真实质量验收。
+- [TODO] 进程级超时/取消、可信索引恢复、官方模型配置与运营启用、公开工业标注评测、多模态语义 passage 融合及供应商验收。默认不切换，不因此宣称可交付。

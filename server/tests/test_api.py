@@ -47,7 +47,9 @@ class FakeRuntime:
 
 @pytest.fixture
 def configured(tmp_path):
-    return Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",), mcp_hosts=("localhost", "127.0.0.1"), idle_seconds=60, approval_seconds=3)
+    # Legacy workflow contract tests opt in explicitly; product deployments
+    # keep the retired workflow surface disabled by default.
+    return Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",), mcp_hosts=("localhost", "127.0.0.1"), idle_seconds=60, approval_seconds=3, workflows_enabled=True)
 
 
 @pytest.fixture
@@ -277,6 +279,36 @@ def test_cancel_during_startup_never_sends_a_model_query(configured):
         assert client.post(f"/api/v1/runs/{run['run_id']}/cancel").status_code == 200
         assert poll(client, run["run_id"])["status"] == "cancelled"
         assert executed == []
+
+
+def test_cancel_during_startup_does_not_poison_the_next_run(configured):
+    executed = []
+
+    class SlowConnect(FakeRuntime):
+        async def connect(self):
+            await asyncio.sleep(0.25)
+
+        async def execute(self, run, message):
+            executed.append(run["id"])
+            if self.stopped.is_set():
+                raise asyncio.CancelledError()
+            await self.emit("message.delta", {"message_id": run["assistant_message_id"], "text": "恢复成功"})
+
+    app = create_app(configured, SlowConnect)
+    with TestClient(app) as client:
+        app.state.service.create_user({"username": "admin", "display_name": "Admin", "password": PASSWORD, "role": "admin"})
+        login(client)
+        cid = conversation(client)["id"]
+        first = send(client, cid, "cancel during connect", request_id="cancel-startup-1")
+        time.sleep(0.05)
+        assert client.post(f"/api/v1/runs/{first['run_id']}/cancel").status_code == 200
+        assert poll(client, first["run_id"])["status"] == "cancelled"
+
+        second = send(client, cid, "run after cancellation", request_id="cancel-startup-2")
+        result = poll(client, second["run_id"])
+
+        assert result["status"] == "succeeded", result
+        assert executed == [second["run_id"]]
 
 
 def test_chunked_upload_limited_before_multipart_parsing(configured):

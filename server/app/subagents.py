@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .db import dump, now, uid
+from .db import dump, now, offload, offload_write, uid
 from .security import AppError
 
 
@@ -157,6 +157,15 @@ class SubagentOrchestrator:
         if depth > self.max_depth:
             raise AppError(422, "SUBAGENT_DEPTH_LIMIT", "子任务嵌套层级超过限制")
         normalized = self._normalize_tasks(tasks)
+        existing = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY created_at", (parent_run_id,))
+        if existing:
+            # Idempotent plan creation is safe only when the requested shape is
+            # identical; never create a second fan-out for the same parent.
+            requested = [_task_digest(item) for item in normalized]
+            if [row["task_digest"] for row in existing] != requested:
+                raise AppError(409, "SUBAGENT_PLAN_EXISTS", "父任务已有不同的子任务计划")
+            return self.plan_view(parent_run_id)
+
         timestamp = now()
         capability = {
             "mode": "synthetic",
@@ -170,58 +179,48 @@ class SubagentOrchestrator:
         child_root = self.service.settings.data_dir / "workspaces" / parent["conversation_id"] / "subagents"
         rows = []
         created_roots = []
-        # Check and insert under one write transaction so two concurrent
-        # submissions cannot create a duplicate fan-out for one parent.
-        with self.service.db.transaction():
-            existing = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY created_at", (parent_run_id,))
-            if existing:
-                # Idempotent plan creation is safe only when the requested
-                # shape is identical; never create a second fan-out.
-                requested = [_task_digest(item) for item in normalized]
-                if [row["task_digest"] for row in existing] != requested:
-                    raise AppError(409, "SUBAGENT_PLAN_EXISTS", "父任务已有不同的子任务计划")
-                return self.plan_view(parent_run_id)
-            try:
-                for item in normalized:
-                    child_id = uid()
-                    child_directory = child_root / child_id
-                    workspace_directory = child_directory / "workspace"
-                    memory_directory = child_directory / "memory"
-                    workspace_directory.mkdir(parents=True, exist_ok=False, mode=0o700)
-                    memory_directory.mkdir(parents=False, exist_ok=False, mode=0o700)
-                    workspace_directory.chmod(0o700)
-                    memory_directory.chmod(0o700)
-                    created_roots.append(child_directory)
-                    rows.append((
-                        child_id,
-                        parent_run_id,
-                        parent.get("root_run_id") or parent_run_id,
-                        parent["user_id"],
-                        parent["conversation_id"],
-                        depth,
-                        "synthetic_readonly",
-                        "queued",
-                        None,
-                        _task_digest(item),
-                        dump(capability),
-                        f"subagents/{child_id}/workspace",
-                        f"subagents/{child_id}/memory",
-                        0.0,
-                        dump({}),
-                        timestamp,
-                        None,
-                        None,
-                        None,
-                        None,
-                    ))
+        try:
+            for item in normalized:
+                child_id = uid()
+                child_directory = child_root / child_id
+                workspace_directory = child_directory / "workspace"
+                memory_directory = child_directory / "memory"
+                workspace_directory.mkdir(parents=True, exist_ok=False, mode=0o700)
+                memory_directory.mkdir(parents=False, exist_ok=False, mode=0o700)
+                workspace_directory.chmod(0o700)
+                memory_directory.chmod(0o700)
+                created_roots.append(child_directory)
+                rows.append((
+                    child_id,
+                    parent_run_id,
+                    parent.get("root_run_id") or parent_run_id,
+                    parent["user_id"],
+                    parent["conversation_id"],
+                    depth,
+                    "synthetic_readonly",
+                    "queued",
+                    None,
+                    _task_digest(item),
+                    dump(capability),
+                    f"subagents/{child_id}/workspace",
+                    f"subagents/{child_id}/memory",
+                    0.0,
+                    dump({}),
+                    timestamp,
+                    None,
+                    None,
+                    None,
+                    None,
+                ))
+            with self.service.db.transaction():
                 self.service.db.executemany(
                     "INSERT INTO subagent_children(child_id,parent_run_id,root_run_id,user_id,conversation_id,depth,role,status,stop_reason,task_digest,capability_snapshot,workspace_id,memory_scope_id,reserved_budget,observed_usage,created_at,started_at,completed_at,cancelled_at,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     rows,
                 )
-            except BaseException:
-                for directory in created_roots:
-                    shutil.rmtree(directory, ignore_errors=True)
-                raise
+        except BaseException:
+            for directory in created_roots:
+                shutil.rmtree(directory, ignore_errors=True)
+            raise
         self.remember_inputs(parent_run_id, normalized)
         self._emit(parent_run_id, "subagent.plan.created", {
             "plan_id": parent_run_id,
@@ -537,28 +536,32 @@ class SubagentOrchestrator:
         return self.plan_view(parent_run_id, user_id)
 
     async def cancel_plan(self, parent_run_id: str, user_id: str | None = None) -> dict:
-        self._parent(parent_run_id, user_id, allow_terminal=True)
-        rows = self.service.db.all("SELECT child_id,status FROM subagent_children WHERE parent_run_id=?", (parent_run_id,))
+        # Cancellation runs on the event loop and its SQLite work is offloaded
+        # like the parent run's own terminal transaction, so cancelling a run
+        # with synthetic children cannot stall SSE or other sessions.
+        await offload(lambda: self._parent(parent_run_id, user_id, allow_terminal=True))
+        rows = await offload(self.service.db.all, "SELECT child_id,status FROM subagent_children WHERE parent_run_id=?", (parent_run_id,))
         if not rows:
             return {"plan_id": parent_run_id, "mode": "synthetic", "children": [], "counts": {}}
         if all(row["status"] in CHILD_TERMINAL for row in rows):
-            return self.plan_view(parent_run_id, user_id)
-        if parent_run_id in self._cancelled_plans or self._plan_completed(parent_run_id):
-            return self.plan_view(parent_run_id, user_id)
+            return await offload(self.plan_view, parent_run_id, user_id)
+        if parent_run_id in self._cancelled_plans or await offload(self._plan_completed, parent_run_id):
+            return await offload(self.plan_view, parent_run_id, user_id)
         self._cancelled_plans.add(parent_run_id)
-        self.service.db.execute("UPDATE subagent_children SET status='cancelling' WHERE parent_run_id=? AND status IN ('queued','running')", (parent_run_id,))
+        await offload_write(self.service.db.execute, "UPDATE subagent_children SET status='cancelling' WHERE parent_run_id=? AND status IN ('queued','running')", (parent_run_id,))
         for task in list(self._plan_tasks.get(parent_run_id, {}).values()):
             if not task.done():
                 task.cancel()
         await asyncio.gather(*(self._plan_tasks.get(parent_run_id, {}).values()), return_exceptions=True)
-        for row in self.service.db.all("SELECT child_id,status FROM subagent_children WHERE parent_run_id=? AND status IN ('queued','running','cancelling')", (parent_run_id,)):
-            self._mark_child(row["child_id"], "cancelled", "parent_cancelled", cancelled=True)
-            self._emit_child(parent_run_id, row["child_id"], "subagent.cancelled", "parent_cancelled")
-        if not self._plan_completed(parent_run_id):
-            self._emit(parent_run_id, "subagent.plan.completed", {"plan_id": parent_run_id, "status": "cancelled", "summary": self._summary(parent_run_id)})
+        remaining = await offload(self.service.db.all, "SELECT child_id,status FROM subagent_children WHERE parent_run_id=? AND status IN ('queued','running','cancelling')", (parent_run_id,))
+        for row in remaining:
+            await offload_write(lambda row=row: self._mark_child(row["child_id"], "cancelled", "parent_cancelled", cancelled=True))
+            await offload_write(self._emit_child, parent_run_id, row["child_id"], "subagent.cancelled", "parent_cancelled")
+        if not await offload(self._plan_completed, parent_run_id):
+            await offload_write(self._emit, parent_run_id, "subagent.plan.completed", {"plan_id": parent_run_id, "status": "cancelled", "summary": await offload(self._summary, parent_run_id)})
         getattr(self, "_plan_inputs", {}).pop(parent_run_id, None)
         self._cancelled_plans.discard(parent_run_id)
-        return self.plan_view(parent_run_id, user_id)
+        return await offload(self.plan_view, parent_run_id, user_id)
 
     def _summary(self, parent_run_id: str) -> dict:
         rows = self.service.db.all("SELECT status FROM subagent_children WHERE parent_run_id=?", (parent_run_id,))

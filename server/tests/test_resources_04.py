@@ -20,11 +20,17 @@ def test_member_owns_resources_admin_does_not_inherit_private_access(client):
     member(client, "bob")
     login(client, "alice")
     connection = client.post("/api/v1/connections", json={"name": "Alice database", "url": "http://localhost/mcp", "credential": "alice-secret", "auth_type": "bearer"}).json()
+    assert connection["scope"] == "private" and connection["owner_id"] == client.app.state.service.db.one("SELECT id FROM users WHERE username='alice'")["id"]
     skill = client.post("/api/v1/skills", json={"name": "Alice process", "instructions": "Read quality records."}).json()
     assistant = client.post("/api/v1/assistants", json={"name": "Alice assistant", "skill_ids": [skill["id"]], "connections": [{"connection_id": connection["id"]}]}).json()
     assert assistant["can_edit"] and assistant["scope"] == "private"
     assert connection["owner_id"] == assistant["owner_id"]
     assert client.post("/api/v1/assistants", json={"name": "Forbidden shared", "scope": "team"}).status_code == 403
+    # Members can create private connections, but team connections remain
+    # administrator-managed and must be rejected at the API boundary.
+    forbidden_team = client.post("/api/v1/connections", json={"name": "Forbidden shared connection", "url": "http://localhost/mcp", "scope": "team"})
+    assert forbidden_team.status_code == 403
+    assert forbidden_team.json()["error"]["code"] == "ADMIN_REQUIRED"
     for other in ("bob", "admin"):
         login(client, other)
         for kind, obj in (("connections", connection), ("skills", skill), ("assistants", assistant)):

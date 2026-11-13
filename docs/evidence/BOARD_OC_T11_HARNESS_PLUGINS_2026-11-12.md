@@ -244,6 +244,8 @@ TMPDIR=/dev/shm/oc-t11-tests python -m pytest -q -p no:cacheprovider \
 
 测试环境为项目 `.venv`（Python 3.10.12，pytest 8.4.2）。`TMPDIR` 指向 `/dev/shm` 只是为了避开本机共享磁盘的高 I/O 负载，不改变被测代码或测试语义。
 
+主工作树接入后复跑同一 5 文件集合：`server/tests/test_plugins.py` 加四个 OC-T11 测试文件，`36 passed, 1 warning in 7.58s`，退出码 0；离线包摘要核验仍为两项 `verified`、`integrity.match=true`、`network_used=false`、`third_party_code_executed=false`。主工作树仍处于开发修改态，未部署或重启任何服务。
+
 覆盖矩阵：
 
 | 场景 | 覆盖位置 |

@@ -10,11 +10,12 @@ from pathlib import Path
 
 import httpx
 
-from .config import Settings
-from .db import Database, dump, now, uid
+from .config import RUNTIME_TYPES, Settings
+from .db import Database, dump, now, offload, offload_write, shielded, uid
 from .model_catalog import ModelCatalog
 from .resources import TABLES, resource_access, resource_editable, scope_fields, choose_scope
 from .security import AppError, SecretStore, password_hash, redact, tool_risk_profile, validate_mcp_url, workspace_path
+from .provider_policy import TOKENHUB_BASE_URL, provider_route
 from .subagents import SubagentOrchestrator
 from .model_approval import ModelApprovalService
 from .high_risk_approval import HighRiskApprovalService
@@ -35,8 +36,20 @@ def assistant_view(row, user=None):
     return {"id": row["id"], "name": row["name"], "description": row["description"], "instructions": row["instructions"], "enabled": bool(row["enabled"]), "access": json.loads(row["access"]), "connections": json.loads(row["connections"]), "revision": row["revision"], **scope_fields(row, user), "knowledge_base_ids": json.loads(row.get("knowledge_base_ids") or "[]"), "skill_ids": json.loads(row.get("skill_ids") or "[]"), "web_search_enabled": bool(row.get("web_search_enabled")), "default_model_id": row.get("default_model_id"), "default_reasoning_level": row.get("default_reasoning_level")}
 
 
+def conversation_runtime_type(row):
+    runtime_type = row.get("runtime_type", "claude")
+    if runtime_type not in RUNTIME_TYPES:
+        raise AppError(409, "RUNTIME_TYPE_INVALID", "会话执行器配置无效，请联系管理员")
+    return runtime_type
+
+
+def native_session_id(row):
+    key = "harness_session_id" if conversation_runtime_type(row) == "harness" else "sdk_session_id"
+    return row.get(key)
+
+
 def conversation_view(row):
-    return {**{key: bool(row[key]) if key in {"archived", "auto_model_routing"} else row[key] for key in ("id", "assistant_id", "title", "archived", "active_run_id", "created_at", "updated_at", "model_id", "model_label", "reasoning_level", "auto_model_routing")}, "has_native_session": bool(row.get("sdk_session_id")), "category": row.get("category", ""), "tags": json.loads(row.get("tags") or "[]")}
+    return {**{key: bool(row[key]) if key in {"archived", "auto_model_routing"} else row[key] for key in ("id", "assistant_id", "title", "archived", "active_run_id", "created_at", "updated_at", "model_id", "model_label", "reasoning_level", "auto_model_routing")}, "runtime_type": conversation_runtime_type(row), "has_native_session": bool(native_session_id(row)), "category": row.get("category", ""), "tags": json.loads(row.get("tags") or "[]")}
 
 
 def message_view(row):
@@ -49,8 +62,14 @@ def file_view(row):
 
 def approval_view(row):
     profile = tool_risk_profile(row["tool_name"])
+    arguments = json.loads(row["arguments"])
+    if row["tool_name"] == "mcp__workspace__memory_write":
+        from .harness_memory import public_memory_arguments
+        arguments = public_memory_arguments(arguments)
+    else:
+        arguments = redact(arguments)
     return {
-        **{key: redact(json.loads(row[key])) if key == "arguments" else row[key] for key in ("id", "run_id", "tool_name", "arguments", "status", "created_at", "expires_at")},
+        **{key: arguments if key == "arguments" else row[key] for key in ("id", "run_id", "tool_name", "arguments", "status", "created_at", "expires_at")},
         **profile,
         # The digest lets clients and audit exports prove that the approved
         # arguments are the same immutable server-side snapshot without
@@ -88,8 +107,9 @@ def approval_view(row):
 class Service:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.policy = settings.deployment_policy()
         settings.prepare()
-        self.db = Database(settings.data_dir / "app.sqlite3")
+        self.db = Database(settings.data_dir / "app.sqlite3", synchronous=settings.sqlite_synchronous)
         self.catalog = ModelCatalog(settings)
         self._migrate_model_selections()
         self.secrets = SecretStore(settings.data_dir)
@@ -132,7 +152,8 @@ class Service:
                     continue
                 run = self.db.one("SELECT execution_meta FROM runs WHERE conversation_id=? AND execution_meta IS NOT NULL ORDER BY created_at DESC,rowid DESC LIMIT 1", (row["id"],))
                 metadata = json.loads(run["execution_meta"]) if run else {}
-                selection = self.catalog.historical(metadata.get("model") or self.settings.model)
+                historical_effort = {"effort": metadata["effort"]} if "effort" in metadata else {}
+                selection = self.catalog.historical(metadata.get("model") or self.settings.model, **historical_effort)
                 self._save_model_selection(row["id"], selection)
 
     def _save_model_selection(self, conversation_id, selection):
@@ -148,6 +169,9 @@ class Service:
 
     def effective_provider(self, selection):
         provider = {**self.settings.provider_env(), **self.catalog.provider_overrides(selection)}
+        # Missing base URLs are pinned to the single approved external route;
+        # callers cannot silently fall back to the vendor default endpoint.
+        provider.setdefault("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL)
         for key in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL"):
             provider[key] = selection["upstream_model"]
         return provider
@@ -163,6 +187,14 @@ class Service:
         provider = self.effective_provider(selection)
         if selection.get("provider_fingerprint") != self.provider_fingerprint(provider):
             raise AppError(409, "MODEL_SELECTION_REQUIRED", "模型服务配置已变化，请重新选择模型后继续")
+        route = provider_route(provider)
+        # A credentialed external endpoint that is not TokenHub is never a
+        # valid production route. Reserved test domains and loopback adapters
+        # remain usable for deterministic local tests; they cannot be treated
+        # as a production readiness signal by the preflight API.
+        test_mode = bool(getattr(self.settings, "provider_test_mode", False))
+        if (provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN")) and not (route.production_ready or (test_mode and route.allowed)):
+            raise AppError(503, "TOKENHUB_ROUTE_REQUIRED", "模型服务线路未满足安全部署策略，请联系管理员")
         return provider
 
     def public_run_model(self, row):
@@ -184,6 +216,42 @@ class Service:
         row = self.require("runs", run_id)
         label = self.public_run_model(row)["model"]
         return [{**event, "data": self.public_context_data(event["data"], label)} if event["type"].startswith("context.") else event for event in self.db.events(run_id, after)]
+
+    async def public_events_async(self, run_id, after):
+        """SSE polling reads run on a worker thread, never the event loop."""
+        return await offload(self.public_events, run_id, after)
+
+    async def require_async(self, table, item_id, user=None):
+        return await offload(self.require, table, item_id, user)
+
+    async def prepare_run_async(self, conversation_id, data, user):
+        """Full prepare_run transaction off the loop.
+
+        The write is durable: if the caller is cancelled while the transaction
+        is in flight, it still completes so the run row and the conversation's
+        ``active_run_id`` stay consistent.  Delivery to the actor is handled by
+        ``prepare_and_submit_async`` (or by ``ensure_submitted`` on a retry);
+        a committed run must never be left undelivered.
+        """
+        return await offload_write(self.prepare_run, conversation_id, data, user)
+
+    async def prepare_and_submit_async(self, conversation_id, data, user):
+        """Prepare and deliver a run as one cancellation-safe unit.
+
+        ``prepare_run`` durably creates the run and claims
+        ``conversations.active_run_id``.  If cancellation landed between that
+        commit and the submit, the run would stay ``queued`` and hold the
+        conversation busy for the rest of the process lifetime.  Shielding the
+        pair keeps the submit running; ``ensure_submitted`` additionally
+        re-delivers a queued run for any duplicate request, so even a run that
+        was committed by an older process edge reaches its actor.
+        """
+        async def start():
+            result, created = await self.prepare_run_async(conversation_id, data, user)
+            await self.manager.ensure_submitted(result["run_id"])
+            return result, created
+
+        return await shielded(start())
 
     def require(self, table, item_id, user=None):
         row = self.db.one(f"SELECT * FROM {table} WHERE id=?", (item_id,))
@@ -323,8 +391,8 @@ class Service:
                 return any(unauthorized(child) for child in getattr(error, "exceptions", []))
             status = "needs_auth" if unauthorized(exc) else "failed"
             error = "认证失败，请检查凭据和业务权限" if status == "needs_auth" else "连接失败，请检查执行服务器到 MCP 的网络、地址及协议"
-        self.db.execute("UPDATE connections SET status=?,tools=?,last_error=?,last_tested_at=? WHERE id=? AND revision=?", (status, dump(tools), error, now(), item_id, row["revision"]))
-        return connection_view(self.require("connections", item_id), user)
+        await offload_write(self.db.execute, "UPDATE connections SET status=?,tools=?,last_error=?,last_tested_at=? WHERE id=? AND revision=?", (status, dump(tools), error, now(), item_id, row["revision"]))
+        return connection_view(await offload(self.require, "connections", item_id), user)
 
     def save_assistant(self, data, item_id=None, user=None):
         old_row = (self.require_resource("assistants", item_id, user, edit=True) if user else self.require("assistants", item_id)) if item_id else None
@@ -375,6 +443,7 @@ class Service:
 
     def run_view(self, row):
         result = {key: row[key] for key in ("id", "conversation_id", "status", "assistant_message_id", "error", "created_at", "completed_at")}
+        result["error_code"] = row.get("error_code")
         result["usage"] = json.loads(row["usage"]) if row["usage"] else None
         result["kind"] = row.get("kind", "chat")
         result["compaction"] = self.public_context_data(json.loads(row["compaction"]), self.public_run_model(row)["model"]) if row.get("compaction") else None
@@ -388,7 +457,23 @@ class Service:
         result["model_call_count"] = 0 if product_metadata else None
         return result
 
+    def require_trial_fields(self, *, auto_model_routing=False, auto_route=False, skill_ids=None, file_ids=None):
+        """Refuse trial-only-unsupported request fields before any side effect.
+
+        Called from the Service layer itself (not only from FastAPI/Pydantic)
+        so direct callers and internal bridges cannot bypass the boundary.
+        """
+        if not self.policy.is_trial:
+            return
+        if auto_model_routing or auto_route:
+            raise AppError(403, "FEATURE_DISABLED", "受控试用不支持自动模型路由")
+        if skill_ids:
+            raise AppError(403, "FEATURE_DISABLED", "受控试用不支持 Skills")
+        if file_ids:
+            raise AppError(403, "FEATURE_DISABLED", "受控试用不支持附件上传")
+
     def create_conversation(self, data, user):
+        self.require_trial_fields(auto_model_routing=data.get("auto_model_routing"))
         with self.db.transaction():
             return self._create_conversation(data, user)
 
@@ -401,7 +486,7 @@ class Service:
         # Keep API clients that predate task-submit routing deterministic; the
         # current client opts in explicitly on the create request.
         auto_route = bool(data.get("auto_model_routing"))
-        self.db.execute("INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,model_id,model_label,reasoning_level,model_snapshot,auto_model_routing) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (item_id, user["id"], data["assistant_id"], data["title"], timestamp, timestamp, selection["model_id"], selection["model_label"], selection["reasoning_level"], dump(selection), int(auto_route)))
+        self.db.execute("INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,model_id,model_label,reasoning_level,model_snapshot,auto_model_routing,runtime_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, user["id"], data["assistant_id"], data["title"], timestamp, timestamp, selection["model_id"], selection["model_label"], selection["reasoning_level"], dump(selection), int(auto_route), self.settings.runtime_type))
         self.memory.initialize_empty(item_id)
         self.db.execute("UPDATE conversations SET category=?,tags=? WHERE id=?", (data.get("category", ""), dump(list(dict.fromkeys(data.get("tags", [])))), item_id))
         return conversation_view(self.require("conversations", item_id, user))
@@ -419,6 +504,7 @@ class Service:
         return [conversation_view(row) for row in self.db.all("SELECT c.* FROM conversations c WHERE " + " AND ".join(clauses) + " ORDER BY c.updated_at DESC LIMIT 1000", values)]
 
     def patch_conversation(self, item_id, data, user):
+        self.require_trial_fields(auto_model_routing=data.get("auto_model_routing"))
         with self.db.transaction():
             row = self.require("conversations", item_id, user)
             if row["active_run_id"] and data.get("archived"):
@@ -433,7 +519,7 @@ class Service:
                 if not data.get("model_id"):
                     level = level or row["reasoning_level"]
                 selection = self.catalog.select(model_id, level)
-                if row["sdk_session_id"] and model_id != row["model_id"]:
+                if native_session_id(row) and model_id != row["model_id"]:
                     previous = json.loads(row["model_snapshot"])
                     if self.catalog.requires_new_conversation(previous) or self.catalog.requires_new_conversation(selection):
                         raise AppError(409, "MODEL_NEW_CONVERSATION_REQUIRED", "请新建对话使用此模型；原对话和记忆保留")
@@ -453,6 +539,25 @@ class Service:
             return conversation_view(self.require("conversations", item_id, user))
 
     def prepare_run(self, conversation_id, data, user):
+        # Trial boundary applies at the Service layer too: advanced routing,
+        # skills and attachments are refused before the run transaction can
+        # create runs/messages or call a provider.
+        self.require_trial_fields(
+            auto_route=data.get("auto_route"),
+            skill_ids=data.get("skill_ids"),
+            file_ids=data.get("file_ids"),
+        )
+        # Immutable import is completed before entering the run transaction.
+        initial = self.require("conversations", conversation_id, user)
+        prior = self.db.one("SELECT * FROM runs WHERE conversation_id=? AND client_request_id=?", (conversation_id, data["client_request_id"]))
+        if prior:
+            return {"message": message_view(self.require("messages", prior["message_id"])), "run_id": prior["id"]}, False
+        if conversation_runtime_type(initial) == "harness":
+            with self.memory.verified_for_run(user["id"], conversation_id):
+                return self._prepare_run(conversation_id, data, user)
+        return self._prepare_run(conversation_id, data, user)
+
+    def _prepare_run(self, conversation_id, data, user):
         with self.db.transaction():
             conversation = self.require("conversations", conversation_id, user)
             prior = self.db.one("SELECT * FROM runs WHERE conversation_id=? AND client_request_id=?", (conversation_id, data["client_request_id"]))
@@ -465,14 +570,18 @@ class Service:
                 raise AppError(409, "CONVERSATION_BUSY", "当前任务仍在执行，请等待或停止后重试")
             if self.manager and conversation_id in self.manager.context_requests:
                 raise AppError(409, "CONTEXT_BUSY", "正在读取原生上下文，请稍后重试")
+            if conversation_runtime_type(conversation) == "harness":
+                scope = self.db.one("SELECT mutation_id FROM conversation_memory_scopes WHERE conversation_id=?", (conversation_id,))
+                if scope and scope.get("mutation_id"):
+                    raise AppError(409, "MEMORY_BUSY", "记忆正在更新，请稍后发送")
             selection = self.catalog.validate_snapshot(json.loads(conversation["model_snapshot"]))
             route_decision = {"enabled": False, "applied": False, "mode": "manual", "reason": None}
             requested_model = data.get("model_id")
-            route_enabled = data.get("auto_route") if data.get("auto_route") is not None else bool(conversation.get("auto_model_routing"))
+            route_enabled = False if self.policy.is_trial else (data.get("auto_route") if data.get("auto_route") is not None else bool(conversation.get("auto_model_routing")))
             if requested_model:
                 # A per-request model is a bounded, explicit user override.
                 selection = self.catalog.select(requested_model, data.get("reasoning_level"))
-                if conversation["sdk_session_id"] and selection["model_id"] != conversation["model_id"]:
+                if native_session_id(conversation) and selection["model_id"] != conversation["model_id"]:
                     previous = json.loads(conversation["model_snapshot"])
                     if self.catalog.requires_new_conversation(previous) or self.catalog.requires_new_conversation(selection):
                         raise AppError(409, "MODEL_NEW_CONVERSATION_REQUIRED", "请新建对话使用此模型；原对话和记忆保留")
@@ -481,16 +590,20 @@ class Service:
             elif route_enabled:
                 route_decision = {"enabled": True, "applied": False, "mode": "bounded_local", "reason": None}
                 try:
-                    from .model_recommendation import bounded_router
+                    from .model_recommendation import _router_target, bounded_router, enrich_route_metadata
                     candidates = [item["id"] for item in self.catalog.public() if item["available"]]
-                    recommendation = bounded_router(self.catalog, data.get("text", ""), candidates)
+                    recommendation = data.get("_route_recommendation")
+                    if not isinstance(recommendation, dict):
+                        recommendation = bounded_router(self.catalog, data.get("text", ""), candidates)
+                        target_id, target_selection, target_error = _router_target(self)
+                        enrich_route_metadata(recommendation["router"], target_id, target_selection, target_error)
                     routed = self.catalog.select(recommendation["model_id"], recommendation["reasoning_level"])
                     previous = selection
-                    if routed["model_id"] != previous["model_id"] and conversation["sdk_session_id"] and (self.catalog.requires_new_conversation(previous) or self.catalog.requires_new_conversation(routed)):
+                    if routed["model_id"] != previous["model_id"] and native_session_id(conversation) and (self.catalog.requires_new_conversation(previous) or self.catalog.requires_new_conversation(routed)):
                         raise AppError(409, "MODEL_NEW_CONVERSATION_REQUIRED", "当前会话不能自动切换模型")
                     selection = self.pin_provider(routed)
                     self._save_model_selection(conversation_id, selection)
-                    route_decision.update({"applied": selection["model_id"] != previous["model_id"], "model_id": selection["model_id"], "reason": recommendation["reason"]})
+                    route_decision.update({"applied": selection["model_id"] != previous["model_id"], "model_id": selection["model_id"], "reason": recommendation["reason"], "mode": (recommendation.get("router") or {}).get("mode", route_decision["mode"]), "router": recommendation.get("router")})
                 except (AppError, ValueError, TypeError) as error:
                     # Routing is advisory: a bad summary, unavailable model or
                     # provider mismatch falls back to the pinned selection.
@@ -502,6 +615,9 @@ class Service:
                 raise AppError(422, "EMPTY_MESSAGE", "请输入消息、选择 Skill 或添加附件")
             for file_id in data["file_ids"]:
                 self.require("files", file_id, user)
+            if conversation_runtime_type(conversation) == "harness":
+                from .harness_attachments import preflight
+                preflight(self, conversation_id, user, data["file_ids"])
             from .skills import selected_skills
             skills = selected_skills(self, assistant, user, data.get("skill_ids", []))
             snapshot = assistant_view(assistant, user)
@@ -514,10 +630,15 @@ class Service:
             self.knowledge.snapshot_for_run(run_id, snapshot, user)
             from urllib.parse import urlsplit
             try:
-                provider = urlsplit(provider_env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")).hostname
+                provider = urlsplit(provider_env.get("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL)).hostname
             except Exception:
                 provider = None
-            self.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump({"model": selection["upstream_model"], "effort": selection["upstream_effort"], "provider": provider, "selection": selection, "model_routing": route_decision}), run_id))
+            route = provider_route(provider_env)
+            memory_meta = {}
+            if conversation_runtime_type(conversation) == "harness":
+                binding = self.memory.snapshot_for_run(user["id"], conversation_id)
+                memory_meta = {"memory_binding": binding, "native_epoch": binding["native_epoch"]}
+            self.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump({"model": selection["upstream_model"], "effort": selection["upstream_effort"], "provider": provider, "provider_route": route.kind, "selection": selection, "model_routing": route_decision, "runtime_type": conversation_runtime_type(conversation), **memory_meta}), run_id))
             title = data["text"].strip()[:40] if conversation["title"] == "新对话" and data["text"].strip() else conversation["title"]
             if title == "新对话" and skills:
                 title = " / ".join(skill["name"] for skill in skills)[:40]
@@ -525,16 +646,40 @@ class Service:
             return {"message": message_view(self.require("messages", message_id)), "run_id": run_id}, True
 
     def authorize_tool(self, conversation_id: str, tool_name: str, arguments: dict):
+        # Deployment boundary first: a trial deployment refuses every tool
+        # outside its allowlist before any conversation/memory/file/knowledge
+        # special case, approval row or external call can run.  Admin role has
+        # no bearing on this check.
+        self.policy.require_tool(tool_name)
         conversation = self.require("conversations", conversation_id)
         user = self.require("users", conversation["user_id"])
         if not user["enabled"]:
             raise AppError(403, "USER_DISABLED", "账号已停用")
         assistant = self.usable_assistant(conversation["assistant_id"], user)
+        if tool_name in {"mcp__workspace__memory_list", "mcp__workspace__memory_read", "mcp__workspace__memory_write"}:
+            if (conversation_runtime_type(conversation) != "harness" or conversation["archived"]
+                    or not conversation["active_run_id"]):
+                raise AppError(403, "MEMORY_RUN_REQUIRED", "记忆工具需要当前授权的 Harness 任务")
+            active = self.require("runs", conversation["active_run_id"])
+            if active["status"] not in {"running", "awaiting_approval"} or active["user_id"] != user["id"]:
+                raise AppError(403, "MEMORY_RUN_REQUIRED", "记忆任务已失效")
+            return tool_name != "mcp__workspace__memory_write"
         snapshot = None
         if conversation["active_run_id"]:
             active = self.require("runs", conversation["active_run_id"])
             snapshot = json.loads(active.get("capability_snapshot") or "null")
         root = self.settings.data_dir / "workspaces" / conversation_id
+        if tool_name in {"mcp__workspace__file_read", "mcp__workspace__file_write", "mcp__workspace__file_search"}:
+            if tool_name == "mcp__workspace__file_search":
+                query = arguments.get("query")
+                if not isinstance(query, str) or not query.strip():
+                    raise AppError(422, "FILE_ARGUMENT_INVALID", "检索词不能为空")
+                return True
+            raw = arguments.get("path")
+            if not isinstance(raw, str):
+                raise AppError(403, "PATH_DENIED", "文件路径无效")
+            workspace_path(root / "workbench", raw)
+            return tool_name == "mcp__workspace__file_read"
         if tool_name in {"Read", "Write", "Edit", "Glob", "Grep"}:
             raw = arguments.get("file_path", arguments.get("path", str(root)))
             if not isinstance(raw, str):
@@ -564,14 +709,20 @@ class Service:
                 return True
         if tool_name in {"mcp__workspace__web_search", "mcp__workspace__web_read"} and assistant.get("web_search_enabled") and (not snapshot or snapshot.get("web_search_enabled")):
             return True
-        if tool_name in {"mcp__workspace__file_read", "mcp__workspace__file_search", "mcp__workspace__file_write"}:
-            # The workbench is conversation-private. Paths that escape it are
-            # rejected before any approval prompt; only writes need approval.
-            from .file_tools import WorkspaceFiles
-            files = WorkspaceFiles(self, conversation_id, user["id"])
-            if tool_name in {"mcp__workspace__file_read", "mcp__workspace__file_write"}:
-                files.validate_path(arguments.get("path"))
-            return tool_name != "mcp__workspace__file_write"
+        if tool_name == "mcp__workspace__generate_xlsx":
+            # Local export is intentionally never auto-approved: it creates a
+            # durable user-visible artifact and must pass the normal approval
+            # strategy even though it has no external side effect.
+            return False
+        if tool_name == "mcp__workspace__generate_image":
+            from .artifacts import image_generation_capability
+            capability = image_generation_capability(self.settings, self.catalog)
+            if not capability["available"]:
+                raise AppError(503, "IMAGE_MODEL_UNAVAILABLE", capability["reason"])
+            # The adapter is deliberately fail-closed until separately
+            # reviewed; returning False keeps any future implementation on an
+            # explicit approval path.
+            return False
         for binding in json.loads(assistant["connections"]):
             connection = self.require_resource("connections", binding["connection_id"], user)
             prefix = f"mcp__c{connection['id']}__"
@@ -589,11 +740,15 @@ class Service:
 
     def runtime_config(self, conversation_id):
         conversation = self.require("conversations", conversation_id)
+        runtime_type = conversation_runtime_type(conversation)
         selection = None
         run = None
         if conversation["active_run_id"]:
             run = self.require("runs", conversation["active_run_id"])
             metadata = json.loads(run["execution_meta"] or "{}")
+            # Missing runtime metadata belongs to a pre-Harness Claude run.
+            if metadata.get("runtime_type", "claude") != runtime_type:
+                raise AppError(409, "RUNTIME_TYPE_CHANGED", "任务与会话执行器不一致，请重新创建会话")
             selection = metadata.get("selection")
         selection = self.catalog.validate_snapshot(selection or json.loads(conversation["model_snapshot"]))
         provider_env = self.validated_provider(selection)
@@ -604,8 +759,12 @@ class Service:
         assistant_snapshot = json.loads(run.get("capability_snapshot") or "null") if run else None
         assistant_snapshot = assistant_snapshot or assistant_view(assistant, user)
         skill_snapshots = json.loads(run.get("skill_snapshots") or "[]") if run else []
+        if self.policy.is_trial:
+            # Trial runs never mount business MCP servers or skills, even for
+            # historical assistants/runs that still carry those snapshots.
+            skill_snapshots = []
         servers, versions = {}, [assistant["revision"]]
-        for binding in assistant_snapshot["connections"]:
+        for binding in (() if self.policy.is_trial else assistant_snapshot["connections"]):
             connection = self.require_resource("connections", binding["connection_id"], user)
             pinned_revision = assistant_snapshot.get("connection_revisions", {}).get(connection["id"])
             if pinned_revision is not None and pinned_revision != connection["revision"]:
@@ -627,10 +786,27 @@ class Service:
             if not current["enabled"] or skill["id"] not in json.loads(assistant["skill_ids"]):
                 raise AppError(403, "SKILL_UNAVAILABLE", "所选 Skill 已停用或不再配置给此助手，请重新选择")
             versions.append(("skill", skill["id"], skill["revision"], current["enabled"], current["scope"], current["owner_id"]))
+        memory_binding = None
+        if runtime_type == "harness":
+            memory_binding = self.memory.snapshot_for_run(user["id"], conversation_id, run["id"] if run else None)
+            if run and json.loads(run.get("execution_meta") or "{}").get("memory_binding") != memory_binding:
+                raise AppError(409, "MEMORY_REVISION_CONFLICT", "任务与当前记忆版本或代次不一致")
+            versions.append(("memory", memory_binding))
+            # Snapshot import may rotate an old native session.
+            conversation = self.require("conversations", conversation_id)
+        else:
+            versions.append(("memory", conversation_id, self.memory.revision(user["id"], conversation_id)["revision"]))
         memory = self.memory.root(user["id"], conversation_id)
-        versions.append(("memory", conversation_id, self.memory.revision(user["id"], conversation_id)["revision"]))
         versions.append(("model", selection))
-        return {"conversation": conversation, "instructions": assistant_snapshot["instructions"], "mcp_servers": servers, "fingerprint": dump(versions), "memory_dir": str(memory), "assistant_snapshot": assistant_snapshot, "skill_snapshots": skill_snapshots, "user": user_view(user),
+        versions.append(("runtime", runtime_type))
+        if runtime_type == "harness":
+            versions.append(("harness_launch", self.settings.harness_node_path, self.settings.harness_source_dir))
+            versions.append(("harness_output", self.settings.harness_max_output_tokens))
+        # Keep both original columns in storage for audit/rollback. Only expose
+        # the selected executor's resume ID to the runtime configuration.
+        runtime_conversation = {**conversation, "runtime_type": runtime_type}
+        runtime_conversation["sdk_session_id" if runtime_type == "harness" else "harness_session_id"] = None
+        return {"conversation": runtime_conversation, "runtime_type": runtime_type, "native_session_id": native_session_id(conversation), "memory_binding": memory_binding, "instructions": assistant_snapshot["instructions"], "mcp_servers": servers, "fingerprint": dump(versions), "memory_dir": str(memory), "assistant_snapshot": assistant_snapshot, "skill_snapshots": skill_snapshots, "user": user_view(user),
                 "selection": selection, "public_model_id": selection["model_id"], "public_model_label": selection["model_label"],
                 "reasoning_level": selection["reasoning_level"], "upstream_model": selection["upstream_model"], "upstream_effort": selection["upstream_effort"],
                 "provider_env": provider_env}

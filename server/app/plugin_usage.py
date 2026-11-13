@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from .token_savings import TokenAccounting
+
 
 USAGE_FIELDS = ("input_tokens", "output_tokens")
 KNOWN_STAGES = frozenset({"compression", "answer"})
@@ -95,6 +97,9 @@ class UsageLedger:
     def __init__(self) -> None:
         self._stages: list[_Stage] = []
         self._warnings: list[str] = []
+        # Keep the historical two-field view above for API compatibility while
+        # recording cache fields and future stages in the new accounting view.
+        self._token_accounting = TokenAccounting()
 
     def record(
         self,
@@ -129,6 +134,13 @@ class UsageLedger:
             note=note,
         )
         self._stages.append(entry)
+        self._token_accounting.record(
+            stage,
+            usage,
+            source=source,
+            provider_call=provider_call,
+            note=note,
+        )
         return self._stage_view(entry)
 
     @staticmethod
@@ -182,8 +194,13 @@ class UsageLedger:
             "warnings": list(self._warnings),
             "measured_at": datetime.now(timezone.utc).isoformat(),
             "estimate_is_authoritative": False,
+            # New additive view. Existing consumers can continue to use the
+            # historical fields above while cost reports use this complete
+            # stage/cache-aware projection.
+            "token_accounting": self._token_accounting.summary(),
         }
 
     def reset(self) -> None:
         self._stages.clear()
         self._warnings.clear()
+        self._token_accounting.reset()

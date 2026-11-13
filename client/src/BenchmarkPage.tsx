@@ -39,6 +39,14 @@ export interface BenchmarkReport {
   passed_tasks: number;
   ablation_switches?: Record<string, Record<string, boolean>>;
   participants: BenchmarkParticipant[];
+  token_accounting?: {
+    policy: string;
+    baseline_input_tokens: number;
+    enhanced_input_tokens: number;
+    output_tokens: number;
+    compression_savings_tokens: number;
+    note: string;
+  };
   evidence_boundary: string;
   task_results?: BenchmarkTaskResult[];
 }
@@ -50,13 +58,12 @@ export interface BenchmarkReport {
  */
 export const syntheticStage0Benchmark: BenchmarkReport = {
   synthetic: true,
-  // Keep the stage-0 fixture id stable for exported reports; the report title
-  // and participant labels now make the ablation mode explicit.
-  fixture_id: 'synthetic-industrial-v1',
+  // Keep the fallback snapshot on the same fixture identity as the server API.
+  fixture_id: 'synthetic-ablation-industrial-v1',
   fixture_version: '1.1.0',
   seed: 20261107,
   generated_at: '2026-11-07T00:00:00Z',
-  comparison_key: 'eefe07d55ed7575f7cdaf496',
+  comparison_key: '8e3286feb5328ba346834160',
   task_count: 4,
   passed_tasks: 3,
   task_results: [
@@ -77,8 +84,9 @@ export const syntheticStage0Benchmark: BenchmarkReport = {
       metrics: [
         { id: 'correctness', label: '任务正确性', value: 100, unit: '%', status: 'measured', note: '3/3 已支持的离线任务通过；图片语义任务待视觉模型' },
         { id: 'source-coverage', label: '来源覆盖率', value: 100, unit: '%', status: 'measured', note: '3/3 已支持任务有合成来源；图片区域实体尚未索引' },
-        { id: 'tokens', label: '总 Token（估算）', value: 187, unit: 'tokens', status: 'measured', note: '固定文本估算；未调用模型' },
-        { id: 'input-tokens', label: '输入 Token（估算）', value: 153, unit: 'tokens', status: 'measured', note: '包含压缩后的记忆摘要与来源标记' },
+        { id: 'tokens', label: '总 Token（估算）', value: 187, unit: 'tokens', status: 'measured', note: '只计入压缩后送入模型的上下文；压缩过程不计入；未调用模型' },
+        { id: 'input-tokens', label: '输入 Token（估算）', value: 153, unit: 'tokens', status: 'measured', note: '只计入压缩后的记忆摘要与来源标记' },
+        { id: 'compression-savings', label: '上下文压缩节省 Token', value: 83, unit: 'tokens', status: 'measured', note: '固定文本中原始上下文与压缩上下文的差值；不计入总 Token' },
         { id: 'context-memory', label: '上下文记忆能力', value: 100, unit: '%', status: 'measured', note: '3 项已支持任务的记忆断言通过；图片任务未测' },
         { id: 'context-management', label: '上下文管理能力', value: 100, unit: '%', status: 'measured', note: '已支持任务的检索和来源可追溯；图片任务未测' },
         { id: 'multimodal-evidence', label: '图片语义证据', value: null, unit: '%', status: 'not_measured', note: '图片区域和实体索引需要获批视觉模型' },
@@ -93,8 +101,9 @@ export const syntheticStage0Benchmark: BenchmarkReport = {
       metrics: [
         { id: 'correctness', label: '任务正确性', value: 50, unit: '%', status: 'measured', note: '2/3 已支持的固定任务无需增强即可完成；图片语义任务待视觉模型' },
         { id: 'source-coverage', label: '来源覆盖率', value: 0, unit: '%', status: 'measured', note: '不接入知识库和图谱；图片语义任务待视觉模型' },
-        { id: 'tokens', label: '总 Token（估算）', value: 95, unit: 'tokens', status: 'measured', note: '固定文本估算；未调用模型' },
-        { id: 'input-tokens', label: '输入 Token（估算）', value: 61, unit: 'tokens', status: 'measured', note: '未包含知识检索、记忆和图谱' },
+        { id: 'tokens', label: '总 Token（估算）', value: 270, unit: 'tokens', status: 'measured', note: '同一固定任务的原始上下文未压缩；未调用模型' },
+        { id: 'input-tokens', label: '输入 Token（估算）', value: 236, unit: 'tokens', status: 'measured', note: '同一固定任务的原始上下文完整计入；未调用模型' },
+        { id: 'compression-savings', label: '上下文压缩节省 Token', value: 0, unit: 'tokens', status: 'measured', note: '基线不执行上下文压缩' },
         { id: 'context-memory', label: '上下文记忆能力', value: 25, unit: '%', status: 'measured', note: '3 项已支持任务中仅保持当前轮；跨轮记忆失败' },
         { id: 'context-management', label: '上下文管理能力', value: 30, unit: '%', status: 'measured', note: '不压缩、不分段、不管理来源；图片语义任务待视觉模型' },
         { id: 'multimodal-evidence', label: '图片语义证据', value: null, unit: '%', status: 'not_measured', note: '图片区域和实体索引需要获批视觉模型' },
@@ -118,7 +127,15 @@ export const syntheticStage0Benchmark: BenchmarkReport = {
       ],
     },
   ],
-  evidence_boundary: '仅使用 synthetic-industrial-v1 固定中文文本和本地确定性逻辑；图片任务仅登记为待测，不伪造视觉实体或关系。未连接客户系统、生产数据、模型、网络或计费服务。模型响应速度、视觉质量和真实客户助手指标仍待授权端点与同任务样例。',
+  token_accounting: {
+    policy: '总 Token 只包含任务输入（压缩后上下文）和输出；上下文压缩过程不计入。',
+    baseline_input_tokens: 236,
+    enhanced_input_tokens: 153,
+    output_tokens: 34,
+    compression_savings_tokens: 83,
+    note: '固定文本估算，不代表供应商账单；本运行器未调用模型。',
+  },
+  evidence_boundary: '仅使用 synthetic-ablation-industrial-v1 固定中文文本和本地确定性逻辑；图片任务仅登记为待测，不伪造视觉实体或关系。未连接客户系统、生产数据、模型、网络或计费服务。模型响应速度、视觉质量和真实客户助手指标仍待授权端点与同任务样例。',
 };
 
 export function serializeBenchmarkReport(report: BenchmarkReport): string {
@@ -169,7 +186,7 @@ export default function BenchmarkPage({ admin, report = syntheticStage0Benchmark
     {activeReport.ablation_switches && <div className="benchmark-switches" aria-label="消融开关"><span>增强开关</span>{Object.entries(activeReport.ablation_switches['enhanced-agent'] ?? {}).map(([name, enabled]) => <code key={name} className={enabled ? 'on' : ''}>{name}</code>)}</div>}
     <section className="benchmark-chart-card" aria-labelledby="benchmark-chart-heading">
       <header className="section-label"><span id="benchmark-chart-heading">能力指标对比</span><span>缺失数据显示“待测”</span></header>
-      <p className="section-help">本地合成消融实验，不是客户真实调用。数值只来自固定文本和确定性逻辑；模型速度没有授权端点时保持“待测”。</p>
+      <p className="section-help">本地合成消融实验，不是客户真实调用。增强方案只把压缩后的上下文计入 Token，压缩过程不计入；模型速度没有授权端点时保持“待测”。</p>
       <div className="benchmark-legend" aria-label="图例"><span><i className="benchmark-legend-swatch synthetic"/>增强方案</span><span><i className="benchmark-legend-swatch baseline"/>最简单 Agent 基线</span><span><i className="benchmark-legend-swatch pending"/>待测</span></div>
       <BenchmarkBars participants={activeReport.participants}/>
     </section>

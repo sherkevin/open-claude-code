@@ -5,7 +5,10 @@ import json
 import re
 from pathlib import Path
 
+from .provider_policy import TOKENHUB_BASE_URL, provider_route
 from .security import AppError
+
+_UNRECORDED_EFFORT = object()
 
 
 class ModelCatalog:
@@ -18,7 +21,10 @@ class ModelCatalog:
             # provider's private deployment identifier as the public product name.
             document = {"default_model_id": "legacy-model", "models": [{
                 "id": "legacy-model", "label": "默认模型", "upstream_model": settings.model,
-                "reasoning_levels": {settings.effort: settings.effort}, "default_reasoning_level": settings.effort,
+                # Keep both historical defaults selectable on upgrades and
+                # rollbacks; an explicit model catalog remains authoritative.
+                "reasoning_levels": {"medium": "medium", "high": "high", settings.effort: settings.effort},
+                "default_reasoning_level": settings.effort,
             }]}
         self.models = {}
         for value in document.get("models", []):
@@ -53,14 +59,27 @@ class ModelCatalog:
     def public(self):
         result = []
         for item in self.models.values():
-            available = bool(item.get("enabled", True) and item.get("upstream_model"))
+            try:
+                provider = {**self.settings.provider_env(), **dict(item.get("provider_env", {}))}
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                # A malformed private settings file must make the route
+                # unavailable, not turn the public catalog into a 500.
+                provider = dict(item.get("provider_env", {}))
+            provider.setdefault("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL)
+            has_credentials = bool(provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN"))
+            route = provider_route(provider)
+            test_mode = bool(getattr(self.settings, "provider_test_mode", False))
+            available = bool(item.get("enabled", True) and item.get("upstream_model")
+                            and (route.production_ready or (test_mode and route.allowed)))
             entry = {"id": item["id"], "label": item["label"], "available": available,
                      "requires_new_conversation_on_switch": item.get("requires_new_conversation_on_switch", False),
                      "capabilities": list(item.get("capabilities", [])),
                      "reasoning_levels": [{"id": level, "label": "默认" if level == "default" else level} for level in item["reasoning_levels"]],
                      "default_reasoning_level": item["default_reasoning_level"]}
             if not available:
-                entry["unavailable_reason"] = item.get("unavailable_reason") or "此模型尚未开通，请联系管理员"
+                entry["unavailable_reason"] = ("模型服务线路未满足安全部署策略"
+                                                if not route.allowed
+                                                else item.get("unavailable_reason") or "此模型尚未开通，请联系管理员")
             result.append(entry)
         return result
 
@@ -92,16 +111,22 @@ class ModelCatalog:
             raise AppError(409, "MODEL_SELECTION_REQUIRED", "模型服务配置已变化，请重新选择模型后继续")
         return selection
 
-    def historical(self, upstream_model):
+    def historical(self, upstream_model, effort=_UNRECORDED_EFFORT):
+        # A new executor's default must not rewrite pre-catalog Claude history.
+        legacy_effort = (getattr(self.settings, "legacy_effort", self.settings.effort)
+                         if effort is _UNRECORDED_EFFORT else effort)
+        if legacy_effort is not None and (not isinstance(legacy_effort, str)
+                                          or legacy_effort not in {"low", "medium", "high", "max"}):
+            raise ValueError("Invalid recorded historical reasoning effort")
         for item in self.models.values():
             if item.get("upstream_model") == upstream_model:
                 # Preserve the actual pre-migration effort as well as its route.
                 for level, effort in item["reasoning_levels"].items():
-                    if effort == self.settings.effort:
+                    if effort == legacy_effort:
                         return {"model_id": item["id"], "model_label": item["label"], "reasoning_level": level,
                                 "upstream_model": upstream_model, "upstream_effort": effort}
-        return {"model_id": "legacy-model", "model_label": "历史模型", "reasoning_level": self.settings.effort,
-                "upstream_model": upstream_model, "upstream_effort": self.settings.effort, "legacy": True}
+        return {"model_id": "legacy-model", "model_label": "历史模型", "reasoning_level": legacy_effort or "default",
+                "upstream_model": upstream_model, "upstream_effort": legacy_effort, "legacy": True}
 
     def provider_overrides(self, selection):
         item = self.models.get(selection["model_id"], {})

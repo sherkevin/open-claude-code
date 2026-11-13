@@ -1,0 +1,29 @@
+{
+  "schema_version": "industrial-visual-retrieval-1",
+  "purpose": "Small, reproducible text-to-image smoke set for local CLIP ranking; not a production benchmark.",
+  "ground_truth_status": "assistant_reviewed_demo",
+  "independent_human_gold": false,
+  "cases": [
+    {
+      "case_id": "machine-tool-photo",
+      "query": "an industrial machine tool cutting metal in a manufacturing facility",
+      "positive_asset_id": "wikimedia-industrial-machine-960",
+      "hard_negative_asset_ids": ["nist-sp80082-scada-fig2"],
+      "negative_asset_ids": ["nist-sp80082-page15"]
+    },
+    {
+      "case_id": "scada-layout",
+      "query": "a SCADA control center connected to PLC, RTU, HMI and field sites",
+      "positive_asset_id": "nist-sp80082-scada-fig2",
+      "hard_negative_asset_ids": ["nist-sp80082-page15"],
+      "negative_asset_ids": ["wikimedia-industrial-machine-960"]
+    },
+    {
+      "case_id": "nist-table-of-contents",
+      "query": "the NIST SP 800-82r3 list of tables in a technical document",
+      "positive_asset_id": "nist-sp80082-page15",
+      "hard_negative_asset_ids": ["nist-sp80082-scada-fig2"],
+      "negative_asset_ids": ["wikimedia-industrial-machine-960"]
+    }
+  ]
+}

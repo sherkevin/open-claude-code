@@ -12,7 +12,7 @@ from app.service import Service
 
 
 def test_sdk_options_fail_closed_and_stream_deduplicates(tmp_path, monkeypatch):
-    settings = Settings(data_dir=tmp_path, provider_settings="", provider_cost_reliable=True)
+    settings = Settings(data_dir=tmp_path, provider_settings="", runtime_type="claude", provider_cost_reliable=True)
     service = Service(settings)
     settings.provider_env = lambda: {"ANTHROPIC_API_KEY": "test-not-a-real-key"}
     user = service.create_user({"username": "test", "display_name": "Test", "password": "safe-test-password-123", "role": "admin"})
@@ -99,7 +99,7 @@ def test_sdk_options_fail_closed_and_stream_deduplicates(tmp_path, monkeypatch):
 
 @pytest.fixture
 def sdk_run(tmp_path):
-    settings = Settings(data_dir=tmp_path, provider_settings="", provider_cost_reliable=False)
+    settings = Settings(data_dir=tmp_path, provider_settings="", runtime_type="claude", provider_cost_reliable=False)
     settings.provider_env = lambda: {"ANTHROPIC_API_KEY": "test-not-a-real-key"}
     service = Service(settings)
     user = service.create_user({"username": "test", "display_name": "Test", "password": "safe-test-password-123", "role": "admin"})

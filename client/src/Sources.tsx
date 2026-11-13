@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { BookOpen, Database, ExternalLink, Globe } from 'lucide-react';
-import { api, errorText, timeText } from './api';
+import { api, apiURL, API_BASE, errorText, timeText } from './api';
 import { ErrorNotice, Loader, Modal } from './components';
 import { knowledgeOriginalURL } from './KnowledgePage';
 import type { EvidenceSource } from './types';
 
 export const sourceKindLabel={data:'数据来源',knowledge:'知识文件',web:'网页来源'};
-export function sourceIdFromURL(url?:string) { const match=url?.match(/^\/api\/v1\/sources\/([A-Za-z0-9_-]{1,128})$/);return match?.[1]||null; }
+const canonicalInternalPath=(value?:string)=>{if(!value)return '';if(value.startsWith('/api/v1/'))return value;if(API_BASE.startsWith('/')&&value.startsWith(`${API_BASE}/`))return `/api/v1${value.slice(API_BASE.length)}`;return '';};
+export function sourceIdFromURL(url?:string) { const match=canonicalInternalPath(url)?.match(/^\/api\/v1\/sources\/([A-Za-z0-9_-]{1,128})$/);return match?.[1]||null; }
 export function isInternalSourceURL(value?:string) {
   if(!value)return false;
   const origin=typeof window==='undefined'?'https://workspace.invalid':window.location.origin;
@@ -19,10 +20,10 @@ export function isInternalSourceURL(value?:string) {
     for(let i=0;i<4;i++){let decoded:string;try{decoded=decodeURIComponent(path);}catch{break;}if(decoded===path)break;path=decoded;}
     // A second parse removes dot segments introduced by percent decoding.
     url=new URL(path.replace(/\\/g,'/'),origin);
-    return /^\/api\/v1\/sources(?:\/|$)/i.test(url.pathname);
+    return /^\/api\/v1\/sources(?:\/|$)/i.test(canonicalInternalPath(url.pathname));
   } catch{return false;}
 }
-export function attachmentSourceURL(value?:string,page?:unknown) {if(!value||!/^\/api\/v1\/files\/[A-Za-z0-9_-]{1,128}\/content$/.test(value))return null;const number=Number(page);return value+(Number.isSafeInteger(number)&&number>0?`#page=${number}`:'');}
+export function attachmentSourceURL(value?:string,page?:unknown) {if(!value)return null;const canonical=value.startsWith('/api/v1/')?value:value.startsWith(`${API_BASE}/`)?`/api/v1${value.slice(API_BASE.length)}`:'';if(!/^\/api\/v1\/files\/[A-Za-z0-9_-]{1,128}\/content$/.test(canonical))return null;const number=Number(page);return apiURL(canonical)+(Number.isSafeInteger(number)&&number>0?`#page=${number}`:'');}
 export function publicWebURL(value?:string) {if(!value)return null;try{const url=new URL(value);return ['https:','http:'].includes(url.protocol)&&!url.username&&!url.password?url.href:null;}catch{return null;}}
 const locatorLabels:Record<string,string>={file:'文件',row_count:'记录条数',dataset_purpose:'数据集用途',dataset_version:'数据集版本',content_type:'内容类型',character_start:'起始字符位置',character_end:'结束字符位置',truncated:'是否截取',search_query:'搜索词',provider:'检索服务',extraction:'提取方式',start:'片段起始位置',end:'片段结束位置',database:'数据库',schema:'Schema',table:'表',tables:'表',fields:'字段',record_keys:'记录键',filters:'筛选条件',time_range:'数据时间范围',timezone:'时区',queried_at:'取数时间',query_time:'取数时间',aggregation:'统计口径',trace_id:'查询追踪',data_source:'数据源',source_name:'来源名称',knowledge_base:'知识库',kb_name:'知识库',document_name:'文件名',filename:'文件名',version:'文件版本',document_version:'文件版本',sha256:'文件摘要',page:'页码',pages:'页码',section:'章节',paragraph:'段落',paragraph_index:'段落',url:'网页地址',fetched_at:'访问时间',published_at:'发布时间',updated_at:'更新时间',purpose:'用途',missing_fields:'未提供的定位信息',title:'标题'};
 const renderValue=(value:unknown)=>value===null||value===''?'未提供':typeof value==='object'?JSON.stringify(value,null,2):String(value);

@@ -17,7 +17,9 @@ class DualRuntime(FakeRuntime):
 
 
 def setup_app(tmp_path):
-    settings = Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",), mcp_hosts=("localhost", "127.0.0.1"), idle_seconds=60, approval_seconds=3)
+    # Keep the approval window above the full-suite host scheduling jitter;
+    # expiry behavior is covered explicitly through manager recovery below.
+    settings = Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",), mcp_hosts=("localhost", "127.0.0.1"), idle_seconds=60, approval_seconds=30)
     app = create_app(settings, runtime_factory=DualRuntime)
     client = TestClient(app)
     client.__enter__()

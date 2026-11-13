@@ -24,7 +24,7 @@ def catalog_settings(tmp_path):
         {"id": "dano-v2.1", "label": "Dano-v2.1", "upstream_model": "private-deployment-1017", "reasoning_levels": {"light": "low", "high": "high", "max": "max"}, "default_reasoning_level": "high",
          "provider_env": {"ANTHROPIC_BASE_URL": "https://private-provider.invalid", "ANTHROPIC_API_KEY": "private-key"}},
     ]}), encoding="utf-8")
-    return Settings(data_dir=tmp_path / "data", model_catalog=str(catalog), model="previous-model", provider_settings="", origins=("http://testserver",))
+    return Settings(data_dir=tmp_path / "data", runtime_type="claude", model_catalog=str(catalog), model="previous-model", provider_settings="", origins=("http://testserver",))
 
 
 @pytest.fixture

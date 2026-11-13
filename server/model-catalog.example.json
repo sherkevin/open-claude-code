@@ -48,6 +48,16 @@
       "reasoning_levels": {"default": null},
       "default_reasoning_level": "default",
       "unavailable_reason": "管理员尚未配置此模型"
+    },
+    {
+      "id": "deepseek-v4-flash-202605",
+      "label": "DeepSeek V4 Flash 视觉",
+      "upstream_model": "",
+      "enabled": false,
+      "capabilities": ["multimodal", "entity_extraction", "relation_extraction", "industrial", "chinese"],
+      "reasoning_levels": {"default": null},
+      "default_reasoning_level": "default",
+      "unavailable_reason": "管理员尚未配置视觉模型线路"
     }
   ]
 }

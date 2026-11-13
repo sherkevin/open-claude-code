@@ -1,0 +1,19 @@
+{
+  "corpus_id": "industrial-public-v1",
+  "expected": {
+    "documents/osha-1910-212.md": [
+      {"label": "osha", "kind": "organization"},
+      {"label": "cfr 1910.212", "kind": "standard"},
+      {"label": "铣床", "kind": "equipment"},
+      {"label": "动力锯", "kind": "equipment"},
+      {"label": "冲床", "kind": "equipment"},
+      {"label": "联锁", "kind": "term"}
+    ],
+    "documents/nist-sp-800-82r3.pdf": [
+      {"label": "nist sp 800-82r3", "kind": "standard"},
+      {"label": "可编程逻辑控制器", "kind": "entity"},
+      {"label": "scada", "kind": "term"}
+    ]
+  },
+  "assertion_boundary": "Rules are deterministic entity candidates with source offsets. They do not certify semantic entity linking or relation extraction."
+}

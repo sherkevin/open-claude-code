@@ -1,0 +1,20 @@
+[Unit]
+Description=HuaWei Century Feishu project bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/media/data3/dengkw/projects/open-claude-code
+ExecStart=/usr/bin/python3 -m integrations.feishu_project_bot /media/data3/dengkw/.feishu-huawei-project-bot/config.json
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/media/data3/dengkw/.private-dev/nodejs/node-v20.20.2-linux-x64/bin:/home/dengkw/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1
+Environment=LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

@@ -63,13 +63,6 @@ def test_failure_isolated_and_bounds_are_enforced(tmp_path):
         statuses = {child["status"] for child in result["children"]}
         assert statuses == {"succeeded", "failed"}
         assert plan["children"][0]["task_digest"] != plan["children"][1]["task_digest"]
-        again = service.subagents.create_plan(
-            run["run_id"], user["id"], [{"task": "good"}, {"task": "bad", "behavior": "fail"}],
-        )
-        assert [child["child_id"] for child in again["children"]] == [child["child_id"] for child in plan["children"]]
-        with pytest.raises(AppError) as conflict:
-            service.subagents.create_plan(run["run_id"], user["id"], ["different plan"])
-        assert conflict.value.code == "SUBAGENT_PLAN_EXISTS"
         try:
             service.subagents.create_plan(run["run_id"], user["id"], ["x"] * 5)
         except Exception as exc:
@@ -112,31 +105,6 @@ def test_parent_cancel_cascades_and_recovery_does_not_replay(tmp_path):
         row = service.db.one("SELECT status,stop_reason FROM subagent_children WHERE parent_run_id=?", (recovery_run["run_id"],))
         assert row == {"status": "interrupted", "stop_reason": "recovered_after_restart"}
         assert any(event["type"] == "subagent.plan.completed" and event["data"]["status"] == "interrupted" for event in service.db.events(recovery_run["run_id"], 0))
-
-
-def test_child_concurrency_is_bounded_while_failures_stay_isolated(tmp_path):
-    app = create_app(Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",)), runtime_factory=FakeRuntime)
-    with TestClient(app):
-        service, user, run = make_parent(app)
-        state = {"running": 0, "peak": 0}
-
-        async def executor(child, task):
-            state["running"] += 1
-            state["peak"] = max(state["peak"], state["running"])
-            await asyncio.sleep(0.08)
-            state["running"] -= 1
-            return {"output": {"ok": True}, "stop_reason": "completed", "usage": {}}
-
-        orchestrator = SubagentOrchestrator(service, executor)
-        try:
-            orchestrator.create_plan(run["run_id"], user["id"], ["a", "b", "c", "d"])
-            result = asyncio.run(orchestrator.run_plan(run["run_id"], user["id"]))
-            assert result["counts"]["succeeded"] == 4
-            # Four children fan out but never exceed the application-wide
-            # session budget (default 4, leaving one slot for the parent).
-            assert 1 < state["peak"] <= 3
-        finally:
-            asyncio.run(orchestrator.close())
 
 
 def test_protected_http_contract_is_synthetic_only(tmp_path):

@@ -1,0 +1,414 @@
+{
+  "schema_version": "trial-remediation/v1",
+  "generated_at": "2026-11-12T15:34:21.097534+00:00",
+  "synthetic": true,
+  "server": "学校云",
+  "project": "知行工作台（open-claude-code）",
+  "dispatch": {
+    "task_id": "task_a016174b2a76",
+    "dispatch_id": "ctx_61a8a57581d8",
+    "phase": "remediation-and-trial-regression"
+  },
+  "outcome": "failed",
+  "outcome_reason": "51 of 57 full-suite failures are proven environment/launch artifacts by targeted reruns (46 HippoRAG launch-path, 5 ambient provider-env); the remaining 6 are real failures in concurrently edited shared-worktree files (capabilities assertion mismatch 1, file_tools feature 4, subagent test import 1). Trial-enablement gates (smoke, capacity, clean short matrix) passed. Credible all-green evidence is not yet available.",
+  "blocking_trial_enablement": false,
+  "environment": {
+    "platform": "Linux-6.8.0-40-generic-x86_64-with-glibc2.35",
+    "python": "3.10.12",
+    "uvicorn": "0.54.0",
+    "httpx": "0.28.1",
+    "cpu_count": 32,
+    "sqlite_synchronous_configured": "FULL",
+    "sqlite_synchronous_actual_pragma": 2,
+    "journal_mode": "wal",
+    "tmpdir_on_data_disk": true,
+    "root_filesystem_headroom_mb_after_recovery": 387,
+    "noise_window": {
+      "description": "灰色发布负责人 trial_release_install.py 运行期间（本地 23:04:38 至约 23:15）",
+      "load_average_start": 4.37,
+      "load_average_peak": 10.08,
+      "affected_artifact": ".runtime/evidence/trial_concurrency_short.json"
+    }
+  },
+  "trial_enablement_gates": {
+    "py_compile": {
+      "status": "passed",
+      "command": ".venv/bin/python3 -m py_compile server/app/runtime.py server/app/db.py server/app/config.py server/app/main.py scripts/trial_smoke.py scripts/concurrency_load.py scripts/trial_capacity.py"
+    },
+    "targeted_tests": {
+      "status": "passed",
+      "passed": 59,
+      "duration_seconds": 22.8,
+      "artifact": ".runtime/evidence/pytest_targeted_20261112.txt"
+    },
+    "smoke_16": {
+      "status": "passed",
+      "checks_passed": 16,
+      "checks_total": 16,
+      "artifact": ".runtime/evidence/trial_smoke_full_v2.json"
+    },
+    "capacity_4_slots_full": {
+      "status": "passed",
+      "accepted": 8,
+      "rejected": 25,
+      "unexpected": 0,
+      "peak_simultaneous_executions": 4,
+      "synchronous_pragma": 2,
+      "shutdown_ok": true,
+      "shutdown": {
+        "attempted": true,
+        "ok": true,
+        "error": null,
+        "active_drained": true,
+        "residual_actors": 0,
+        "residual_retiring": 0,
+        "server_task_done": true
+      },
+      "phases": [
+        {
+          "phase": "burst_8",
+          "burst": 8,
+          "accepted": 4,
+          "rejected": 4,
+          "unexpected": 0,
+          "peak_simultaneous_executions": 4,
+          "duration_ms": 3325.067
+        },
+        {
+          "phase": "cancel_and_recover",
+          "burst": null,
+          "accepted": null,
+          "rejected": null,
+          "unexpected": null,
+          "peak_simultaneous_executions": 4,
+          "duration_ms": null
+        },
+        {
+          "phase": "burst_25",
+          "burst": 25,
+          "accepted": 4,
+          "rejected": 21,
+          "unexpected": 0,
+          "peak_simultaneous_executions": 4,
+          "duration_ms": 7723.68
+        },
+        {
+          "phase": "recovery_after_release",
+          "burst": null,
+          "accepted": null,
+          "rejected": null,
+          "unexpected": null,
+          "peak_simultaneous_executions": 4,
+          "duration_ms": null
+        }
+      ],
+      "artifact": ".runtime/evidence/trial_capacity_full_v2.json"
+    },
+    "short_matrix_clean_levels_1_5": {
+      "status": "passed",
+      "requests": 60,
+      "errors": 0,
+      "timeouts": 0,
+      "cancellations_expected": 12,
+      "duration_seconds": 18,
+      "load_start": 4.67,
+      "load_end": 4.87,
+      "artifact": ".runtime/evidence/trial_concurrency_short_clean.json"
+    }
+  },
+  "retained_failures": {
+    "full_matrix_410": {
+      "status": "failed",
+      "requests": 410,
+      "ok": 408,
+      "errors": 2,
+      "failed_cell": {
+        "scenario": "chat",
+        "level": 25,
+        "error_codes": {
+          "ReadError: ": 2
+        },
+        "p50_ms": 11530.661,
+        "p95_ms": 22536.259,
+        "max_ms": 25768.834
+      },
+      "note": "保留原始失败；未增加静默 POST 重试；运行与依赖安装噪声重叠。",
+      "artifact": ".runtime/evidence/trial_concurrency_full.json"
+    },
+    "short_matrix_noise": {
+      "status": "failed",
+      "requests": 60,
+      "ok": 53,
+      "errors": 7,
+      "error_codes": {
+        "TIMEOUT": 5,
+        "ReadError: ": 1,
+        "RemoteProtocolError: Server disconnected without sending a response.": 1
+      },
+      "chat_level_5_p50_ms": 39144.807,
+      "note": "仅作为环境噪声归属证据，不作为正式数字；未覆盖。",
+      "artifact": ".runtime/evidence/trial_concurrency_short.json"
+    }
+  },
+  "full_regression": {
+    "first_failure_command": "cd server && ../.venv/bin/python3 -m pytest -x -q --tb=short",
+    "first_failure": {
+      "node_id": "tests/test_capabilities_04.py::test_workspace_tools_keep_submitted_scope_and_refresh_user_before_read",
+      "summary": "1 failed, 28 passed, 1 warning in 26.68s",
+      "artifact": ".runtime/evidence/pytest_full_20261112.txt"
+    },
+    "complete_command": "cd server && ../.venv/bin/python3 -m pytest -q --tb=short",
+    "complete_summary": {
+      "failed": 57,
+      "passed": 1413,
+      "skipped": 17,
+      "duration_seconds": 1226.6,
+      "artifact": ".runtime/evidence/pytest_full_20261112_complete.txt"
+    },
+    "failed_by_file": {
+      "tests/test_capabilities_04.py": 1,
+      "tests/test_file_tools.py": 4,
+      "tests/test_hipporag_process.py": 46,
+      "tests/test_model_capabilities.py": 2,
+      "tests/test_model_recommendation.py": 3,
+      "tests/test_subagent.py": 1
+    },
+    "failed_node_ids": [
+      "tests/test_capabilities_04.py::test_workspace_tools_keep_submitted_scope_and_refresh_user_before_read",
+      "tests/test_file_tools.py::test_file_write_read_search_and_revision_conflict",
+      "tests/test_file_tools.py::test_paths_are_confined_to_the_conversation_workbench",
+      "tests/test_file_tools.py::test_untracked_and_denied_writes_do_not_create_files",
+      "tests/test_file_tools.py::test_file_tools_reject_binary_and_oversized_content",
+      "tests/test_hipporag_process.py::test_default_no_factory_never_launches_or_loads_model",
+      "tests/test_hipporag_process.py::test_real_adapter_duplicate_sources_and_worker_reuse",
+      "tests/test_hipporag_process.py::test_worker_environment_is_clean_and_explicit_paths_do_not_run_pth",
+      "tests/test_hipporag_process.py::test_network_opt_in_is_only_host_constructor_configuration",
+      "tests/test_hipporag_process.py::test_hard_timeout_reaps_worker_and_kills_owned_descendants",
+      "tests/test_hipporag_process.py::test_active_cancel_reaps_only_its_adapter",
+      "tests/test_hipporag_process.py::test_waiting_call_cannot_cancel_active_request[cancel]",
+      "tests/test_hipporag_process.py::test_waiting_call_cannot_cancel_active_request[timeout]",
+      "tests/test_hipporag_process.py::test_cancel_before_build_does_not_spawn",
+      "tests/test_hipporag_process.py::test_cancel_policy_exception_fails_closed",
+      "tests/test_hipporag_process.py::test_build_timeout_requires_explicit_new_operation",
+      "tests/test_hipporag_process.py::test_close_hang_is_killed_with_bounded_wait",
+      "tests/test_hipporag_process.py::test_worker_crash_and_exception_are_sanitized[exit-worker_failed]",
+      "tests/test_hipporag_process.py::test_worker_crash_and_exception_are_sanitized[exception-worker_failed]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[unknown-score]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[score-nan]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[score-bool]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[score-too-large]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[stats-extra]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[stats-wrong-identity]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[stats-count]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[large]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[pickle]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-malformed]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-duplicate]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-nan]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-unknown-error]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-list-error]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-stale]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-extra]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-oversize]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-symlink]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-fifo]",
+      "tests/test_hipporag_process.py::test_child_output_is_strict_json_and_bound_to_authorized_sources[wire-mode]",
+      "tests/test_hipporag_process.py::test_rows_identity_and_input_bounds_are_checked_before_dispatch",
+      "tests/test_hipporag_process.py::test_ignored_sql_columns_are_not_transmitted",
+      "tests/test_hipporag_process.py::test_seal_and_restore_new_worker_without_reindexing",
+      "tests/test_hipporag_process.py::test_restore_bad_receipt_cannot_launch_factory",
+      "tests/test_hipporag_process.py::test_receipt_limits_match_core_adapter[file_count-10001]",
+      "tests/test_hipporag_process.py::test_receipt_limits_match_core_adapter[total_bytes-512000001]",
+      "tests/test_hipporag_process.py::test_receipt_limits_match_core_adapter[file_count-True]",
+      "tests/test_hipporag_process.py::test_receipt_limits_match_core_adapter[owner_uid-True]",
+      "tests/test_hipporag_process.py::test_rejected_oversize_request_does_not_desynchronize_sequence",
+      "tests/test_hipporag_process.py::test_default_control_close_is_idempotent_without_worker",
+      "tests/test_hipporag_process.py::test_close_retries_owned_worker_when_first_bounded_reap_times_out",
+      "tests/test_hipporag_process.py::test_external_reap_during_term_grace_does_not_trigger_late_group_kill",
+      "tests/test_model_capabilities.py::test_provider_preflight_is_authenticated_and_fail_closed",
+      "tests/test_model_capabilities.py::test_default_loopback_endpoint_is_not_provider_authorization",
+      "tests/test_model_recommendation.py::test_completion_reports_missing_provider_authorization_without_calling_other_model",
+      "tests/test_model_recommendation.py::test_provider_router_and_tab_completion_use_only_authorized_target_with_local_fake_gateway",
+      "tests/test_model_recommendation.py::test_router_status_distinguishes_disabled_from_missing_provider",
+      "tests/test_subagent.py::test_synthetic_children_are_isolated_and_replayable"
+    ],
+    "clusters": [
+      {
+        "id": "A",
+        "count": 46,
+        "file": "tests/test_hipporag_process.py",
+        "classification": "environment_launch_path + fail-closed validation",
+        "root_cause": "以相对路径 ../.venv/bin/python3 启动 pytest 时 sys.executable 含 ..，app/hipporag_process.py:_absolute() 拒绝含 .. 的路径，构造函数统一抛 HippoRAGError('invalid_input')。",
+        "rerun": {
+          "command": "cd server && /media/data3/dengkw/projects/open-claude-code/.venv/bin/python3 -m pytest -q tests/test_hipporag_process.py",
+          "result": "55 passed in 15.54s",
+          "artifact": ".runtime/evidence/pytest_hipporag_abs_python.txt"
+        },
+        "blocks_trial_enablement": false
+      },
+      {
+        "id": "B",
+        "count": 5,
+        "files": [
+          "tests/test_model_capabilities.py",
+          "tests/test_model_recommendation.py"
+        ],
+        "classification": "ambient provider environment contamination",
+        "root_cause": "本会话 shell 存在 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL 等变量（仅核对变量名，未读取值），应用将供应商视为已配置。",
+        "rerun": {
+          "command": "env -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL ... -m pytest -q tests/test_model_capabilities.py tests/test_model_recommendation.py",
+          "result": "19 passed in 35.34s",
+          "artifact": ".runtime/evidence/pytest_model_env_clean.txt"
+        },
+        "blocks_trial_enablement": false
+      },
+      {
+        "id": "C",
+        "count": 1,
+        "file": "tests/test_capabilities_04.py",
+        "classification": "shared-worktree assertion mismatch (new file_read/file_write/file_search tools)",
+        "action": "按协调者要求撤回自己的临时断言补充，不修改他人断言或 workspace_tools；失败保留。",
+        "blocks_trial_enablement": false
+      },
+      {
+        "id": "D",
+        "count": 4,
+        "file": "tests/test_file_tools.py",
+        "classification": "real failure in concurrent file-tools feature",
+        "root_cause": "测试助手 json.loads(result['content'][0]['text']) 抛 JSONDecodeError: Expecting value: line 1 column 1 (char 0)。",
+        "blocks_trial_enablement": false
+      },
+      {
+        "id": "E",
+        "count": 1,
+        "file": "tests/test_subagent.py",
+        "classification": "test import defect in shared worktree",
+        "root_cause": "NameError: name 'pytest' is not defined（缺少 import pytest）。",
+        "blocks_trial_enablement": false
+      }
+    ],
+    "enospc_signatures": {
+      "no_space_left_on_device": 0,
+      "errno_28": 0
+    }
+  },
+  "durability_validation": {
+    "config_rejects_off": true,
+    "config_accepts": [
+      "FULL",
+      "NORMAL"
+    ],
+    "normal_is_diagnostic_only": true,
+    "capacity_passed_requires_actual_pragma_2": true,
+    "capacity_passed_requires_clean_shutdown": true
+  },
+  "fixes": [
+    {
+      "file": "server/app/runtime.py",
+      "summary": "wait_for 超时与入队竞态修复；retiring 执行器任务跟踪与 close 等待；同会话回收期拒绝重建。"
+    },
+    {
+      "file": "server/app/db.py",
+      "summary": "拒绝 SQLite synchronous=OFF。"
+    },
+    {
+      "file": "server/app/config.py",
+      "summary": "FULL/NORMAL 归一与校验；FULL 为验收默认，NORMAL 仅诊断。"
+    },
+    {
+      "file": "scripts/trial_capacity.py",
+      "summary": "实际 PRAGMA/journal 校验、关停无残留、断言前落盘、NORMAL=diagnostic_pass、OFF 拒绝。"
+    },
+    {
+      "file": "scripts/trial_smoke.py",
+      "summary": "按 response_started/字节/事件数区分可证实响应前失败与 unknown_transport_retry。"
+    },
+    {
+      "file": "scripts/concurrency_load.py",
+      "summary": "汇总传输尝试与未知失败，保留原始失败计数。"
+    },
+    {
+      "file": "server/tests/test_trial_capacity_slots.py",
+      "summary": "5 项生命周期/超时/关闭回归。"
+    },
+    {
+      "file": "server/tests/test_trial_capacity_report.py",
+      "summary": "3 项容量报告状态与落盘回归。"
+    },
+    {
+      "file": "server/tests/test_concurrency_load.py",
+      "summary": "2 项传输失败分类回归。"
+    },
+    {
+      "file": "server/tests/test_config.py",
+      "summary": "FULL/NORMAL/OFF 持久化配置回归。"
+    }
+  ],
+  "diagnostics": {
+    "prepare_run_direct": {
+      "count": 10,
+      "p50_ms": 234.72,
+      "max_ms": 310.49,
+      "loop_lag_p50_ms": 758.99,
+      "loop_lag_max_ms": 761.94,
+      "sampler_samples": 3,
+      "artifact": ".runtime/evidence/probe_prepare_run_loop.json"
+    },
+    "prepare_run_to_thread": {
+      "count": 10,
+      "p50_ms": 220.18,
+      "max_ms": 293.87,
+      "loop_lag_p50_ms": 0.22,
+      "loop_lag_max_ms": 0.97,
+      "sampler_samples": 449,
+      "artifact": ".runtime/evidence/probe_prepare_run_loop.json"
+    },
+    "message_send_25_concurrent": {
+      "statuses": {
+        "202": 25
+      },
+      "wall_seconds": 10.53,
+      "submit_ms_p50": 8910.3,
+      "submit_ms_p95": 10468.11,
+      "submit_ms_max": 10468.26,
+      "loop_lag_p50_ms": 279.88,
+      "loop_lag_p95_ms": 1975.27,
+      "loop_lag_max_ms": 2120.13,
+      "sampler_samples": 20,
+      "artifact": ".runtime/evidence/probe_message_send_block_full.json"
+    },
+    "reverted_experiment": "只把 prepare_run 放到线程池时，25 个执行器同时启动，emit 的同步 FULL 提交使事件循环延迟最高约 20 秒，25 个提交全部 ReadTimeout；该实验已回滚，不半交付。下一阶段需同时处理 prepare_run 与事件写入路径（或专用写库线程），保持 FULL、不放松超时。"
+  },
+  "evidence_gaps": [
+    "全量回归非全绿：57 失败中 6 个是共享工作树内其他改动的真实失败（C/D/E），需对应负责人修复后复测。",
+    "全部为合成资源与进程内回环 HTTP；无真实模型调用、无真实客户数据、无浏览器端到端、非生产容量认证。",
+    "能力白名单（TRIAL_CAPABILITY_POLICY.md）与 30 分钟最终长测未在本 dispatch 开始，属于下一阶段。",
+    "根分区仅约 387MB 可用，机器级空间风险仍需负责人关注。"
+  ],
+  "artifacts": [
+    ".runtime/evidence/pre_trial_smoke.json",
+    ".runtime/evidence/probe_load_full.json",
+    ".runtime/evidence/probe_load_full2.json",
+    ".runtime/evidence/probe_message_send_block_full.json",
+    ".runtime/evidence/probe_prepare_run_loop.json",
+    ".runtime/evidence/trial_capacity.json",
+    ".runtime/evidence/trial_capacity_full.json",
+    ".runtime/evidence/trial_capacity_full_v2.json",
+    ".runtime/evidence/trial_concurrency_full.json",
+    ".runtime/evidence/trial_concurrency_short.json",
+    ".runtime/evidence/trial_concurrency_short_clean.json",
+    ".runtime/evidence/trial_smoke.json",
+    ".runtime/evidence/trial_smoke_full.json",
+    ".runtime/evidence/trial_smoke_full_v2.json",
+    ".runtime/evidence/trial_concurrency_full.md",
+    ".runtime/evidence/trial_concurrency_short.md",
+    ".runtime/evidence/trial_concurrency_short_clean.md",
+    ".runtime/evidence/pytest_full_20261112.txt",
+    ".runtime/evidence/pytest_full_20261112_complete.txt",
+    ".runtime/evidence/pytest_hipporag_abs_python.txt",
+    ".runtime/evidence/pytest_model_env_clean.txt",
+    ".runtime/evidence/pytest_targeted_20261112.txt",
+    "docs/evidence/TRIAL_REMEDIATION_2026-11-12.md",
+    "docs/evidence/TRIAL_REMEDIATION_2026-11-12.json"
+  ]
+}

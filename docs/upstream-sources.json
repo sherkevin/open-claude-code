@@ -1,0 +1,67 @@
+{
+  "schema": "reviewed-upstream-sources/v1",
+  "reviewed_on": "2026-11-10",
+  "sources": [
+    {
+      "name": "DeepSeek Harness",
+      "url": "https://github.com/deepseek-ai/deepseek-harness",
+      "commit": "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159",
+      "license": "MIT",
+      "license_file_sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+      "local_checkout": ".runtime/third_party/deepseek-harness",
+      "runtime_installed": true,
+      "runtime_mode": "isolated-source-profile",
+      "node_version": "24.9.0",
+      "pnpm_version": "11.28.5",
+      "runtime_adapter_available": true,
+      "application_runtime_enabled": true,
+      "application_runtime_enabled_scope": "development adapter; not a deployment claim",
+      "application_default_runtime": "harness",
+      "application_default_runtime_scope": "development code for new conversations; existing conversations retain stored runtime",
+      "shared_service_switched_by_this_work": false,
+      "integration_status_as_of": "2026-11-11"
+    },
+    {
+      "name": "HippoRAG",
+      "url": "https://github.com/OSU-NLP-Group/HippoRAG",
+      "commit": "d5c8329422e0a0b834a15874545cb6a74b4f9b26",
+      "license": "MIT",
+      "license_file_sha256": "93b43d692b033b76129504448695bfe76ef22d18b11e51352bfab4b5622e5aaa",
+      "local_checkout": ".runtime/third_party/HippoRAG",
+      "runtime_installed": true,
+      "application_runtime_enabled": false,
+      "runtime_mode": "isolated-source-synthetic-verification",
+      "runtime_adapter_available": true,
+      "application_default_retrieval": "hybrid",
+      "real_model_acceptance": false,
+      "distribution_review": "pending: igraph graph dependency uses GPL; isolated development only"
+    },
+    {
+      "name": "MCP Python SDK",
+      "url": "https://github.com/modelcontextprotocol/python-sdk",
+      "version": "1.30.0",
+      "license": "MIT",
+      "license_file_sha256": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d",
+      "integration": "Python-host-only Harness business MCP adapter",
+      "verified_on": "2026-11-10"
+    },
+    {
+      "name": "jsonschema",
+      "url": "https://github.com/python-jsonschema/jsonschema",
+      "version": "4.26.0",
+      "license": "MIT",
+      "license_file_sha256": "4f92a015a13c4d1a040bef018aa13430b4f1bc73b41b16bb846c346766de7439",
+      "integration": "Python-host-only Harness business MCP adapter",
+      "verified_on": "2026-11-10"
+    },
+    {
+      "name": "referencing",
+      "url": "https://github.com/python-jsonschema/referencing",
+      "version": "0.37.0",
+      "license": "MIT",
+      "license_file_sha256": "42dcd63495f87b4eb7c7757afa379bb55a53f94afd7a5f657d9adf57236e515c",
+      "integration": "Python-host-only Harness business MCP adapter",
+      "verified_on": "2026-11-10"
+    }
+  ]
+}

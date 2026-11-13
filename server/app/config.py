@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .deployment_policy import CAPABILITIES, DEFAULT_TRIAL_CAPABILITIES, DeploymentPolicy, valid_deployment_mode
+
 
 # No hooks, permissions, proxy configuration, MCP commands or arbitrary env imports.
 PROVIDER_KEYS = {
@@ -14,15 +16,50 @@ PROVIDER_KEYS = {
     "API_TIMEOUT_MS", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 }
 DEFAULT_MODEL = "deepseek-v4.1-flash-1017"
+RUNTIME_TYPES = frozenset({"claude", "harness"})
+
+
+def _trial_capabilities_from_env() -> tuple[str, ...] | None:
+    """Explicit trial capability selection; unset means the documented default."""
+    raw = os.getenv("AGENT_TRIAL_CAPABILITIES")
+    if raw is None:
+        return None
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
 @dataclass
 class Settings:
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("AGENT_DATA_DIR", "./data")).resolve())
+    # New conversations use Harness; explicit claude remains a rollback option.
+    # Existing conversations keep their stored runtime and separate resume ID.
+    runtime_type: str = field(default_factory=lambda: os.getenv("AGENT_RUNTIME_TYPE", "harness"))
+    # Deployment-level capability boundary.  ``normal`` keeps every existing
+    # feature; ``trial`` is an explicit allowlist and refuses unknown values at
+    # startup instead of silently widening access.
+    deployment_mode: str = field(default_factory=lambda: os.getenv("AGENT_DEPLOYMENT_MODE", "normal"))
+    trial_capabilities: tuple[str, ...] | None = field(default_factory=_trial_capabilities_from_env)
+    # The low-code workflow surface is retired from the product UI. Keep its
+    # schema and implementation for migration compatibility, but expose the
+    # API only when an operator explicitly enables the legacy surface.
+    workflows_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_WORKFLOWS_ENABLED", "false").lower() == "true")
+    # Server-owned launch configuration; never accepted from conversation input.
+    harness_node_path: str = field(default_factory=lambda: os.getenv("AGENT_HARNESS_NODE_PATH", "").strip())
+    harness_source_dir: str = field(default_factory=lambda: os.getenv("AGENT_HARNESS_SOURCE_DIR", "").strip())
+    # Per model response limit; independent of goal budgets and turn limits.
+    harness_max_output_tokens: int = field(default_factory=lambda: int(os.getenv("AGENT_HARNESS_MAX_OUTPUT_TOKENS", "8192")))
+    # One owned Node process executes a manual compaction, including its
+    # auxiliary model request. Timeout closes and reaps that process; it never
+    # manufactures a completed summary.
+    harness_compaction_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_HARNESS_COMPACTION_TIMEOUT_SECONDS", "600")))
     brand_name: str = field(default_factory=lambda: os.getenv("AGENT_BRAND_NAME", "知行工作台"))
     model: str = field(default_factory=lambda: os.getenv("AGENT_MODEL", ""))
-    effort: str = field(default_factory=lambda: os.getenv("AGENT_EFFORT", "medium"))
+    effort: str | None = field(default_factory=lambda: os.getenv("AGENT_EFFORT"))
+    legacy_effort: str = field(init=False)
     provider_settings: str = field(default_factory=lambda: os.getenv("AGENT_PROVIDER_SETTINGS", ""))
+    # Synthetic/loopback model gateways are test-only and never count as a
+    # production TokenHub route. This flag is server-side and must remain false
+    # in deployed environments.
+    provider_test_mode: bool = field(default_factory=lambda: os.getenv("AGENT_PROVIDER_TEST_MODE", "false").lower() == "true")
     model_catalog: str = field(default_factory=lambda: os.getenv("AGENT_MODEL_CATALOG", ""))
     default_model_id: str = field(default_factory=lambda: os.getenv("AGENT_DEFAULT_MODEL_ID", ""))
     origins: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().rstrip("/") for x in os.getenv("AGENT_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if x.strip()))
@@ -32,6 +69,11 @@ class Settings:
     session_hours: int = 24
     idle_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_IDLE_SECONDS", "600")))
     approval_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_APPROVAL_SECONDS", "600")))
+    # SQLite durability. FULL (the default) fsyncs every commit and is the
+    # deployment and trial-acceptance setting. NORMAL exists only to diagnose
+    # fsync cost on a slow measurement disk; it is never acceptance evidence
+    # for the enterprise stability/capacity gate. OFF is rejected outright.
+    sqlite_synchronous: str = field(default_factory=lambda: os.getenv("AGENT_SQLITE_SYNCHRONOUS", "FULL"))
     max_turns: int = field(default_factory=lambda: int(os.getenv("AGENT_MAX_TURNS", "30")))
     max_budget_usd: float = field(default_factory=lambda: float(os.getenv("AGENT_MAX_BUDGET_USD", "5")))
     max_active_sessions: int = field(default_factory=lambda: int(os.getenv("AGENT_MAX_ACTIVE_SESSIONS", "4")))
@@ -39,18 +81,114 @@ class Settings:
     # The fitness router is opt-in. Disabled deployments never make an extra
     # provider call and use the bounded local scorer instead.
     model_router_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_MODEL_ROUTER_ENABLED", "false").lower() == "true")
+    # Public catalog id used for fitness recommendations. Deployments may pin
+    # an exact authorized route (for example a 1007 deployment); an unavailable
+    # id is reported as evidence gap and never fabricated.
+    model_router_model_id: str = field(default_factory=lambda: os.getenv("AGENT_MODEL_ROUTER_MODEL_ID", "deepseek-v4.1-flash-1007"))
+    # Tab completion is an independent low-risk route. It must not silently
+    # reuse the fitness router target because the two authorizations can differ.
+    tab_completion_model_id: str = field(default_factory=lambda: os.getenv("AGENT_TAB_COMPLETION_MODEL_ID", "deepseek-v4.1-flash-1017"))
+    # Tab has its own admission switch.  It defaults on so a deployment with
+    # an explicitly authorized 1017 target is usable without also enabling
+    # the Fitness router; provider/target/budget checks still fail closed.
+    tab_completion_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_TAB_COMPLETION_ENABLED", "true").lower() == "true")
+    # Knowledge model roles are independent from the chat and Tab routes.  An
+    # Empty role IDs use only an explicitly capability-declared catalog entry;
+    # the server must not infer a visual/entity/relation model from generic
+    # chat capability.
+    knowledge_embedding_model_id: str = field(default_factory=lambda: os.getenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL_ID", ""))
+    knowledge_vision_model_id: str = field(default_factory=lambda: os.getenv("AGENT_KNOWLEDGE_VISION_MODEL_ID", "deepseek-v4-flash-202605"))
+    knowledge_entity_model_id: str = field(default_factory=lambda: os.getenv("AGENT_KNOWLEDGE_ENTITY_MODEL_ID", ""))
+    knowledge_relation_model_id: str = field(default_factory=lambda: os.getenv("AGENT_KNOWLEDGE_RELATION_MODEL_ID", ""))
+    # The verified school-cloud visual adapter is OpenAI Chat Completions
+    # compatible. It remains opt-in so indexing cannot unexpectedly incur a
+    # paid request; the local proxy has no credential in this process.
+    # All external model roles use Tencent TokenHub. A loopback URL remains
+    # valid only when an operator intentionally runs a controlled TokenHub
+    # bridge for local development.
+    knowledge_vision_base_url: str = field(default_factory=lambda: os.getenv("AGENT_KNOWLEDGE_VISION_BASE_URL", "https://tokenhub.tencentmaas.com/v1").rstrip("/"))
+    knowledge_vision_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_KNOWLEDGE_VISION_ENABLED", "false").lower() == "true")
+    knowledge_vision_timeout_seconds: float = field(default_factory=lambda: float(os.getenv("AGENT_KNOWLEDGE_VISION_TIMEOUT_SECONDS", "30")))
     model_router_timeout_seconds: float = field(default_factory=lambda: float(os.getenv("AGENT_MODEL_ROUTER_TIMEOUT_SECONDS", "5")))
     model_router_max_output_tokens: int = field(default_factory=lambda: int(os.getenv("AGENT_MODEL_ROUTER_MAX_OUTPUT_TOKENS", "256")))
     model_router_budget_usd: float = field(default_factory=lambda: float(os.getenv("AGENT_MODEL_ROUTER_BUDGET_USD", "0.02")))
+    # Image generation is a separately gated capability. A generic chat route
+    # is never treated as an image endpoint and no provider is called by
+    # default.
+    image_generation_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_IMAGE_GENERATION_ENABLED", "false").lower() == "true")
+    image_model_id: str = field(default_factory=lambda: os.getenv("AGENT_IMAGE_MODEL_ID", ""))
+    image_generator_url: str = field(default_factory=lambda: os.getenv("AGENT_IMAGE_GENERATOR_URL", ""))
+    # The Feishu bridge is deliberately a separate process.  The API server
+    # only accepts its loopback requests when a dedicated bridge token is
+    # configured; no Feishu credential is ever returned by this object.
+    feishu_bridge_token: str = field(default_factory=lambda: os.getenv("AGENT_FEISHU_BRIDGE_TOKEN", ""))
+    feishu_bridge_token_file: str = field(default_factory=lambda: os.getenv("AGENT_FEISHU_BRIDGE_TOKEN_FILE", ""))
+    feishu_user_id: str = field(default_factory=lambda: os.getenv("AGENT_FEISHU_USER_ID", ""))
+    feishu_username: str = field(default_factory=lambda: os.getenv("AGENT_FEISHU_USERNAME", ""))
+    feishu_assistant_id: str = field(default_factory=lambda: os.getenv("AGENT_FEISHU_ASSISTANT_ID", ""))
+    feishu_allowed_open_ids: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in os.getenv("AGENT_FEISHU_ALLOWED_OPEN_IDS", "").split(",") if x.strip()))
+    feishu_allowed_chat_ids: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in os.getenv("AGENT_FEISHU_ALLOWED_CHAT_IDS", "").split(",") if x.strip()))
+    feishu_allow_group_chats: bool = field(default_factory=lambda: os.getenv("AGENT_FEISHU_ALLOW_GROUP_CHATS", "false").lower() == "true")
+    # The Feishu bridge and the H5 web application are separate custom apps.
+    # Keep their credentials in separate fields so enabling the workbench
+    # cannot silently change or reuse the bot identity.
+    feishu_h5_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_FEISHU_H5_ENABLED", "false").lower() == "true")
+    feishu_app_id: str = field(default_factory=lambda: os.getenv("FEISHU_APP_ID", "").strip())
+    feishu_app_secret: str = field(default_factory=lambda: os.getenv("FEISHU_APP_SECRET", "").strip())
+    feishu_h5_app_id: str = field(default_factory=lambda: os.getenv("FEISHU_H5_APP_ID", "").strip())
+    feishu_h5_app_secret: str = field(default_factory=lambda: os.getenv("FEISHU_H5_APP_SECRET", "").strip())
+    feishu_api_base: str = field(default_factory=lambda: os.getenv("FEISHU_API_BASE_URL", "https://open.feishu.cn").rstrip("/"))
+    feishu_h5_allowed_open_ids: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in os.getenv("AGENT_FEISHU_H5_ALLOWED_OPEN_IDS", os.getenv("AGENT_FEISHU_ALLOWED_OPEN_IDS", "")).split(",") if x.strip()))
+    feishu_h5_user_map: str = field(default_factory=lambda: os.getenv("AGENT_FEISHU_H5_USER_MAP", "").strip())
 
     def __post_init__(self) -> None:
+        if not isinstance(self.runtime_type, str) or self.runtime_type.strip().lower() not in RUNTIME_TYPES:
+            raise ValueError("AGENT_RUNTIME_TYPE must be claude or harness")
+        self.runtime_type = self.runtime_type.strip().lower()
+        self.deployment_mode = valid_deployment_mode(self.deployment_mode)
+        if self.trial_capabilities is not None:
+            if type(self.trial_capabilities) is not tuple or any(not isinstance(item, str) for item in self.trial_capabilities):
+                raise ValueError("AGENT_TRIAL_CAPABILITIES must be a comma-separated list of capability names")
+            unknown = sorted(set(self.trial_capabilities) - CAPABILITIES)
+            if unknown:
+                raise ValueError("AGENT_TRIAL_CAPABILITIES contains unknown capability: " + ", ".join(unknown))
+            self.trial_capabilities = tuple(dict.fromkeys(self.trial_capabilities))
+        elif self.deployment_mode == "trial":
+            self.trial_capabilities = DEFAULT_TRIAL_CAPABILITIES
+        self.sqlite_synchronous = str(self.sqlite_synchronous).strip().upper()
+        if self.sqlite_synchronous not in {"FULL", "NORMAL"}:
+            raise ValueError("AGENT_SQLITE_SYNCHRONOUS must be FULL or NORMAL; OFF is not permitted")
+        # Pre-catalog Claude sessions used medium when no effort was configured.
+        self.legacy_effort = self.effort if self.effort is not None else "medium"
+        if self.effort is None:
+            self.effort = "high" if self.runtime_type == "harness" else "medium"
+        if type(self.harness_max_output_tokens) is not int or not 1 <= self.harness_max_output_tokens <= 131072:
+            raise ValueError("AGENT_HARNESS_MAX_OUTPUT_TOKENS must be an integer from 1 to 131072")
+        if type(self.harness_compaction_timeout_seconds) is not int or not 1 <= self.harness_compaction_timeout_seconds <= 3600:
+            raise ValueError("AGENT_HARNESS_COMPACTION_TIMEOUT_SECONDS must be an integer from 1 to 3600")
         if not self.model:
             self.model = self.provider_env().get("ANTHROPIC_MODEL") or DEFAULT_MODEL
+
+    def deployment_policy(self) -> DeploymentPolicy:
+        return DeploymentPolicy(self.deployment_mode, self.trial_capabilities)
 
     def prepare(self) -> None:
         for sub in ("", "files", "workspaces", "sdk-config", "logs"):
             path = self.data_dir / sub
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    def feishu_token(self) -> str:
+        """Return the bridge token without placing a file secret in logs."""
+        if self.feishu_bridge_token_file:
+            value = Path(self.feishu_bridge_token_file).read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        return self.feishu_bridge_token.strip()
+
+    @property
+    def feishu_h5_ready(self) -> bool:
+        """Whether the public client may start the H5 login handshake."""
+        return bool(self.feishu_h5_enabled and self.feishu_h5_app_id and self.feishu_h5_app_secret)
 
     def provider_env(self) -> dict[str, str]:
         result: dict[str, str] = {}

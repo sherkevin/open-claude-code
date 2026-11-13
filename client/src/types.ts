@@ -1,4 +1,13 @@
-export interface AppConfig { brand_name: string; upload_max_bytes: number; auth_types: string[]; model_label: string; default_model_id?: string; default_reasoning_level?: string; feishu_h5?: { enabled: boolean; app_id: string; path: string } }
+export interface AppConfig {
+  brand_name: string; upload_max_bytes: number; auth_types: string[]; model_label: string;
+  default_model_id?: string; default_reasoning_level?: string;
+  deployment_mode?: 'normal' | 'trial'; capabilities?: string[]; allowed_retrieval_modes?: KnowledgeRetrievalMode[];
+  feishu_h5?: { enabled: boolean; app_id: string; path: string };
+}
+
+/** Normal deployments keep their existing UI; trial deployments only expose advertised capabilities. */
+export const configAllows = (config: AppConfig, capability: string) =>
+  config.deployment_mode !== 'trial' || Boolean(config.capabilities?.includes(capability));
 export interface ModelOption { id: string; label: string; available: boolean; unavailable_reason?: string; capabilities?: string[]; reasoning_levels: Array<{ id: string; label: string }>; default_reasoning_level: string; requires_new_conversation_on_switch?: boolean }
 export interface ProviderPreflight {
   schema_version: string;
@@ -31,12 +40,14 @@ export interface MCPImportPreview {
   warnings: string[];
 }
 export interface MCPImportResult { connections: Connection[]; warnings: string[]; binding_required: true }
-export interface MemoryIndex {
+export interface MemoryMutationResult { native_epoch?: number; context_reset?: boolean; operation_id?: string; mutation_status?: string }
+export interface MemoryIndex extends MemoryMutationResult {
   conversation_id: string; assistant_id: string; scope: 'conversation'; revision: number; busy: boolean;
   files: Array<{ path: string; size: number; updated_at: string }>;
   max_file_bytes: number; max_total_bytes: number;
 }
-export interface MemoryFile { path: string; content: string; revision: number; updated_at: string }
+export interface MemoryFile extends MemoryMutationResult { path: string; content: string; revision: number; updated_at: string }
+export interface MemoryApprovalContent { conversation_id: string; old_content_sha256: string|null; content_digest: string; path: string; content: string; expected_revision: number; native_epoch: number; operation_id: string }
 export interface AssistantBinding { connection_id: string; allowed_tools: string[]; auto_approved_tools: string[] }
 export interface Assistant extends ScopedResource {
   id: string; name: string; description: string; instructions: string; enabled: boolean;
@@ -55,7 +66,7 @@ export interface WorkflowTemplate { template_id: string; name: string; descripti
 export interface WorkflowApproval { id: string; workflow_run_id: string; workflow_id: string; node_id: string; status: 'pending' | 'deciding' | 'approved' | 'rejected'; decision: 'approve' | 'reject' | null; comment: string; created_at: string; decided_at: string | null; decided_by?: string | null }
 export interface WorkflowRunSummary { id: string; workflow_id: string; version: number; status: string; synthetic: boolean; execution_mode?: 'synthetic' | 'model' | 'tool'; trace_count: number; approval_node_id?: string | null; error?: string | null; created_at: string; completed_at: string | null }
 export interface WorkflowRun { id: string; workflow_id: string; conversation_id?: string | null; version: number; graph_hash: string; permission_digest: string; permission_snapshot?: Record<string, unknown>; status: string; synthetic: boolean; execution_mode?: 'synthetic' | 'model' | 'tool'; approval?: WorkflowApproval | null; approvals?: WorkflowApproval[]; output: Record<string, unknown>; error?: string | null; tool_evidence_records?: Array<{ node_id: string; connection_id: string; tool_name: string; evidence: Array<Record<string, unknown>>; digest: string; created_at: string }>; trace: Array<{ sequence: number; node_id: string; node_type: WorkflowNodeType; status: string; external_call: boolean; approval_required: boolean; branch_skipped?: boolean; condition_result?: boolean; selected_targets?: string[]; model_id?: string; model_label?: string; reasoning_level?: string; role?: string; model_attempts?: number; model_retries?: number; model_retry_trace?: Array<{ attempt: number; status: string; error_code?: string; duration_ms?: number; retry_backoff_ms?: number }>; duration_ms?: number; input_bindings?: Array<{ key: string; source: string }>; structured_output?: boolean; structured_fields?: string[]; tool_call?: boolean; tool_name?: string; connection_id?: string; evidence_count?: number; output_preview?: string; error_code?: string }>; created_at: string; completed_at: string | null }
-export interface Conversation { id: string; assistant_id: string; title: string; archived: boolean; active_run_id: string | null; created_at: string; updated_at: string; model_id: string; model_label: string; reasoning_level: string; auto_model_routing?: boolean; has_native_session?: boolean; category?: string; tags?: string[] }
+export interface Conversation { id: string; assistant_id: string; title: string; archived: boolean; active_run_id: string | null; created_at: string; updated_at: string; model_id: string; model_label: string; reasoning_level: string; runtime_type?: 'claude' | 'harness'; auto_model_routing?: boolean; has_native_session?: boolean; category?: string; tags?: string[] }
 export interface Message { id: string; conversation_id: string; role: 'user' | 'assistant'; text: string; file_ids: string[]; run_id: string | null; created_at: string; citations?: EvidenceSource[]; skills?: Array<{id:string;name:string;revision:number}> }
 export interface Skill extends ScopedResource { id: string; name: string; description: string; instructions: string; enabled: boolean; revision: number; required_tools: string[]; resources?: Record<string,string> }
 export type PluginPermission = 'workspace.files.read' | 'workspace.files.write' | 'knowledge.read' | 'web.read' | 'mcp.connection.read' | 'artifact.write' | 'memory.read';
@@ -67,11 +78,44 @@ export interface KnowledgeImageRegion { id:string; document_id:string; version:n
 export interface KnowledgeImageAsset { width:number; height:number; bytes:number; thumbnail_width:number; thumbnail_height:number; thumbnail_url:string; region_count?:number; regions_url?:string; grid?:{rows:number;columns:number;max_regions:number}; regions?:KnowledgeImageRegion[]; metadata:Record<string,unknown>; ocr_status:string; visual_index_status:string; evidence_boundary?:string }
 export interface KnowledgePagePreview { page:number; width:number; height:number; thumbnail_url:string }
 export interface KnowledgeDocument { id:string; kb_id:string; name:string; mime_type:string; version:number; sha256:string; status:string; error?:string|null; page_count:number; chunk_count:number; embedding_model?:string; created_at:string; image?:KnowledgeImageAsset; page_previews?:KnowledgePagePreview[] }
-export type KnowledgeRetrievalMode = 'hybrid' | 'bm25' | 'vector';
-export interface KnowledgeRetrieval { mode:KnowledgeRetrievalMode; available_modes?:KnowledgeRetrievalMode[]; lexical:string; vector_model:string; semantic:boolean; execution:string; visual_embedding?:Record<string,unknown> }
+export type KnowledgeRetrievalMode = 'hybrid' | 'bm25' | 'vector' | 'hipporag';
+export interface KnowledgeRetrievalTrace {
+  algorithm?: string;
+  source_count?: number;
+  unique_text_count?: number;
+  returned_count?: number;
+  graph_seed_count?: number;
+  damping?: number;
+  max_hops?: number;
+  seed_nodes?: string[];
+  seed_count?: number;
+  node_count?: number;
+  edge_count?: number;
+  visited_node_count?: number;
+  score_count?: number;
+  fallback?: string | null;
+  seed_entities?: Array<{ id?: string; label?: string; kind?: string; score?: number }>;
+  expanded_entities?: Array<{ id?: string; label?: string; kind?: string; score?: number }>;
+  paths?: Array<{ source?: string; target?: string; relation?: string; score?: number }>;
+  iterations?: number;
+  restart_probability?: number;
+  truncated?: boolean;
+}
+export interface KnowledgeSeedEvidence {
+  document_id?: string;
+  version?: number;
+  page?: number | null;
+  chunk_id?: string;
+  title?: string;
+  label?: string;
+  excerpt?: string;
+  score?: number;
+  content_url?: string;
+}
+export interface KnowledgeRetrieval { mode:KnowledgeRetrievalMode; available_modes?:KnowledgeRetrievalMode[]; lexical:string; vector_model:string; semantic:boolean; execution:string; visual_embedding?:Record<string,unknown>; algorithm?:string; backend?:string; fallback?:string; graph_trace?:KnowledgeRetrievalTrace; seed_evidence?:KnowledgeSeedEvidence[] }
 export interface KnowledgeSearchResponse { results:KnowledgeHit[]; retrieval:KnowledgeRetrieval; context:{text:string;characters:number;truncated:boolean} }
 export interface KnowledgeMediaEvidence { kind:'image'|'page_preview'; document_id:string; version:number; sha256:string; mime_type?:string; width:number|null; height:number|null; page?:number|null; thumbnail_url:string|null; regions?:KnowledgeImageRegion[]; ocr_status?:string; visual_index_status:string; evidence_boundary:string }
-export interface KnowledgeHit { document_id:string; name?:string; title?:string; text?:string; excerpt?:string; page?:number; section?:string; version?:number; score?:number; rank?:number; lexical_score?:number; vector_score?:number; retrieval_mode?:KnowledgeRetrievalMode; url?:string; original_url?:string; source_url?:string; locator?:Record<string,unknown>; media?:KnowledgeMediaEvidence }
+export interface KnowledgeHit { document_id:string; name?:string; title?:string; text?:string; excerpt?:string; page?:number; section?:string; version?:number; score?:number; rank?:number; lexical_score?:number; vector_score?:number; graph_score?:number; graph_trace?:KnowledgeRetrievalTrace; retrieval_algorithm?:string; evidence_type?:string; retrieval_mode?:KnowledgeRetrievalMode; url?:string; original_url?:string; source_url?:string; locator?:Record<string,unknown>; content_url?:string; media?:KnowledgeMediaEvidence }
 export interface KnowledgeGraph { versioned:boolean; source:string; query:string; nodes:Array<{id:string;label:string;kind:string;confidence?:number;evidence_boundary?:string;source:{document_id:string;version:number;page:number|null;paragraph:number|null;start:number|null;end:number|null;region_id?:string|null}}> ; edges:Array<{id:string;source:string;target:string;relation:string;confidence?:number;evidence_boundary?:string;provenance:{document_id:string;version:number;page:number|null;paragraph:number|null;start:number|null;end:number|null;region_id?:string|null}}>; multimodal?:{images:Array<{document_id:string;version:number;name:string;width:number;height:number;thumbnail_width:number;thumbnail_height:number;ocr_status:string;visual_index_status:string;region_count?:number;regions_url?:string;regions?:KnowledgeImageRegion[]}>;visual_embedding:string;entity_extraction:string;region_segmentation?:string;evidence_boundary:string} }
 export interface EvidenceSource { id:string; number?:number; kind:'data'|'knowledge'|'web'; title:string; locator:Record<string,unknown>; excerpt:string; created_at:string; original_url?:string; document_id?:string; document_version?:number; content_url?:string }
 export interface RunTimings { runtime_ready_ms?:number; first_model_event_ms?:number; first_text_ms?:number; total_ms?:number }
@@ -81,10 +125,16 @@ export interface ModelApprovalPolicy { assistant_id: string; enabled: boolean; r
 export interface HighRiskApprovalPolicy { assistant_id: string; enabled: boolean; policy_id: string; allowed_tools: string[]; admin_allowlist: string[]; required_approvals: 2; revision: number; updated_at?: string | null; updated_by?: string | null }
 export type RunStatus = 'queued' | 'running' | 'awaiting_approval' | 'cancelling' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export interface NativeContext {
-  source: 'native_runtime'; status: 'available' | 'unavailable' | 'not_measured';
+  source: 'native_runtime' | 'harness_token_meter'; status: 'available' | 'partial' | 'unavailable' | 'not_measured';
   total_tokens: number | null; max_tokens: number | null; percentage: number | null;
   auto_compact_enabled: boolean | null; auto_compact_threshold: number | null;
   model: string | null; measured_at: string | null; cached: boolean; error: string | null;
+  precision?: 'native_reported' | 'estimated' | 'unknown';
+  baseline_kind?: 'usage' | 'estimated' | 'none' | null;
+  observed_prompt_tokens?: number | null; observed_at?: string | null;
+  stale?: boolean; stale_reason?: 'route_changed' | 'request_unobserved' | 'snapshot_expired' | null;
+  projection_seq?: number | null; manual_compact_available?: boolean;
+  breakdown?: { system_tokens: number | null; tools_tokens: number | null; message_tokens: number | null } | null;
   last_compaction?: { run_id: string; status: CompactionStatus; trigger: string | null; pre_tokens: number | null; created_at: string; error?: string | null; followup_status?: string | null } | null;
 }
 export type CompactionStatus = 'started' | 'completed' | 'not_needed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown';

@@ -1,0 +1,423 @@
+{
+  "schema": "trial-release-acceptance/v1",
+  "source_tree_sha256": "871060968c542a0b267c04e29374e7e07343d4eabaec4327dca69a286bc7eb0d",
+  "status": "PASS",
+  "claim_scope": "integrity_verified_staging",
+  "release_claim": "STAGING_ONLY",
+  "release_ready": false,
+  "publishable": false,
+  "product_runtime_verified": false,
+  "client_trial_package_ready": false,
+  "scope": "学校云原生 staging 包的完整性校验、F1 至 F5 整改、复制后目标逐字节复验，以及全新私有目录中的真实 Node/Harness 零供应商握手与假对端 SDK 协议验证。只验证 Harness/Node/SDK 握手范围，不包含 FastAPI 产品运行时、浏览器验收、容量压测或真实模型调用；本包不是可发布版本，也不是可交给客户的试用包。",
+  "environment": {
+    "server": "学校云",
+    "provider_calls": 0,
+    "tencent_cloud_contact": false,
+    "publishing_performed": false,
+    "customer_data_used": false,
+    "paid_model_used": false,
+    "network_scope": "仅由目标隔离 venv 的 pip 下载版本和 SHA-256 均固定的 pydantic 握手 wheel；Harness、Node、pnpm 输入均为本地已校验缓存"
+  },
+  "package": {
+    "path": "/media/data3/dengkw/projects/open-claude-code/.runtime/trial-release-staging/final-20261112-v3",
+    "stage": "staging",
+    "status": "integrity-verified-staging",
+    "manifest_sha256": "16240ff7e86e236c9bce9751391704906c7b8e65c3485e1d3e2ece814b9eb751",
+    "file_count": 329,
+    "source_control": {
+      "head": "38c0a04",
+      "head_full": "38c0a04478da94ae83e507ae4183476995c1fc79",
+      "branch": "main",
+      "dirty": true,
+      "dirty_entry_count": 250
+    },
+    "pinned": {
+      "harness_commit": "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159",
+      "node_version": "24.9.0",
+      "node_sha256": "f52ec50e959d72d5c680d9731420b2661cd2a8070e94c7369b6ddfcd8b7278be",
+      "pnpm_version": "11.28.5",
+      "pnpm_sha512": "SEVj0wtMKtJ8tIqpT/KzAtvOvI/2vyiBbCWJiG4UbOf3bzVPO8GkOOb16XaMMCqgpvet2CMpA81M+BQmy8FNng==",
+      "harness_license_sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+      "hipporag_license_sha256": "93b43d692b033b76129504448695bfe76ef22d18b11e51352bfab4b5622e5aaa"
+    },
+    "capabilities": {
+      "schema": "trial-capability-candidates/v1",
+      "candidate_count": 8,
+      "disabled_count": 17,
+      "policy_sha256": "108f0f5300381f1e982ab5f88d09c5992a5a81d57ba93d86921186d82bae9f0d",
+      "release_open": [],
+      "runtime_state": "unverified",
+      "runtime_enforcement_verified": false
+    },
+    "staging_notice": {
+      "historical_documents_modified": false,
+      "historical_final_documents": [
+        "docs/DELIVERY_VERIFICATION.md",
+        "docs/verification/DELIVERY_0_1_0.md",
+        "docs/verification/DELIVERY_0_2_0.md",
+        "docs/verification/DELIVERY_0_3_0.md",
+        "docs/verification/DELIVERY_0_4_0.md",
+        "docs/verification/DELIVERY_0_4_1.md"
+      ],
+      "note": "The generated staging notice is the package-level cover. Historical DELIVERY_* documents are preserved byte-for-byte; any FINAL wording inside them describes a past version and is not a conclusion about this staging candidate.",
+      "path": "STAGING_README.md",
+      "product_runtime_verified": false,
+      "publishable": false,
+      "release_ready": false,
+      "sha256": "a43f461438d4cacdea8bcfca90ab2a505790f2567c3da3b8e72d54b96992ff03",
+      "stage_claim": "integrity-verified-staging"
+    },
+    "build_environment": {
+      "deterministic": "sorted paths, fixed JSON ordering and no wall-clock timestamps",
+      "harness_commit": "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159",
+      "node_version": "24.9.0",
+      "pnpm_version": "11.28.5",
+      "private_runtime_access_scope": "license_text_only",
+      "private_runtime_code_or_data_copied": false,
+      "private_runtime_code_or_data_read": false,
+      "private_runtime_credentials_used": false,
+      "private_runtime_license_inputs": [
+        ".runtime/third_party/HippoRAG/LICENSE",
+        ".runtime/third_party/deepseek-harness/LICENSE"
+      ],
+      "private_runtime_note": "The packager reads only the two pinned MIT LICENSE text files from .runtime/third_party for license evidence; it does not read or copy private code, account databases, administrator passwords, provider settings, tokens, customer data or model weights.",
+      "product_runtime_installed": false,
+      "python_requires": ">=3.10",
+      "python_runtime_scope": "setup_harness_runtime.py uses the system Python standard library; verify_harness_runtime.py runs in an isolated target venv containing only pinned pydantic handshake wheels; the FastAPI product runtime is not installed or verified",
+      "server_dependency_pins": "server/pyproject.toml"
+    },
+    "acceptance_binding_at_build": {
+      "bound": false,
+      "report_packaged": false,
+      "default_report": "docs/evidence/TRIAL_PACKAGE_2026-11-12.json",
+      "reason": "构建 v3 时该路径上的报告仍绑定旧源码树摘要 91db207b...；打包器按失败关闭规则跳过未绑定当前源码树的报告。",
+      "effect": "advisory_only; 本报告是构建后的外部审计证据，不会使 release_ready 或 publishable 为真"
+    }
+  },
+  "review_fixes": [
+    {
+      "item": "F1 历史 FINAL 文档不得误导 staging 包",
+      "status": "PASS",
+      "detail": "包内新增生成的 STAGING_README.md staging 封面，明确 release_ready=false、publishable=false、product_runtime_verified=false，并列出 docs/DELIVERY_VERIFICATION.md 与 docs/verification/DELIVERY_0_1_0/0_2_0/0_3_0/0_4_0/0_4_1.md 等历史 FINAL 文档。历史文档字节原样保留，manifest 记录 historical_documents_modified=false；验证器重算清单并拒绝篡改或缺失的封面。"
+    },
+    {
+      "item": "F2 private_runtime_used=false 与读取 .runtime 许可证矛盾",
+      "status": "PASS",
+      "detail": "删除 private_runtime_used=false，改为 private_runtime_access_scope=license_text_only、private_runtime_license_inputs、private_runtime_credentials_used=false、private_runtime_code_or_data_read=false、private_runtime_code_or_data_copied=false，并说明只读取两个固定 MIT 许可证文本。验证器拒绝任何自相矛盾的 private_runtime_used=true 或错误字段。"
+    },
+    {
+      "item": "F3 venv 证据记录未 resolve 的解释器并证明隔离",
+      "status": "PASS",
+      "detail": "安装器记录未解引用的 .runtime/venv/bin/python，以及解引用结果、sys.prefix、sys.base_prefix、sys.executable；只有 sys.prefix 等于目标 venv、sys.base_prefix 不同、且安装后 pydantic 从目标 venv 导入才判定隔离。实测 interpreter 为目标 venv 路径、interpreter_resolved=/usr/bin/python3.10、sys_prefix 为目标 venv、pydantic 2.14.2 来自目标 venv，isolation_verified=true。"
+    },
+    {
+      "item": "F4 pnpm store 来源钉死并校验内容寻址文件",
+      "status": "PASS",
+      "detail": "新增必填 --pnpm-store-expected-manifest-sha256；缺少摘要、格式错误、摘要不符或提供摘要却没有 store 都失败关闭。复制前后重算内容清单摘要，并逐个校验内容寻址名与内容摘要一致：64 位十六进制名按 SHA-256，128 位十六进制名按 SHA-512。pnpm v11 实际 store 使用 SHA-512 布局，本轮 67,815 个内容文件全部通过校验；projects/ 注册表不复制。"
+    },
+    {
+      "item": "F5 目标执行禁止写 pyc 并记录执行前后摘要",
+      "status": "PASS",
+      "detail": "每次目标 Python 执行显式设置 PYTHONDONTWRITEBYTECODE=1，包括握手、可选插件校验和 SDK 协议验证。安装器执行后重新测量 .runtime 之外的源码树，记录 target_source_tree_sha256_after_execution、target_tree_unchanged_after_execution 和 target_after_execution；出现任何 .pyc 或其他漂移都失败关闭。本轮执行前后摘要均为 87106096...，bytecode_files=[]，漂移为零。"
+    }
+  ],
+  "tests": [
+    {
+      "name": "trial_release_contract_tests",
+      "status": "PASS",
+      "command": "TMPDIR=\"$PWD/.runtime/tmp\" .venv/bin/python -m pytest server/tests/test_trial_release_manifest.py -q",
+      "exit_code": 0,
+      "detail": "28 passed；覆盖构建排除、秘密/数据库不打包、缺依赖/错哈希/未绑定验收失败关闭、manifest 稳定性与源码变更失效、可发布声明拒绝、运行时状态拒绝、目标复制复验、pnpm store 负向校验，以及 F1 至 F5 新增测试。"
+    },
+    {
+      "name": "existing_build_release_check",
+      "status": "PASS",
+      "command": "TMPDIR=\"$PWD/.runtime/tmp\" .venv/bin/python scripts/build_release.py --check-only",
+      "exit_code": 0,
+      "detail": "现有 build_release 选择逻辑保持可用；server/build/lib 等构建副本被排除，client/dist 保留。"
+    },
+    {
+      "name": "staging_package_verification",
+      "status": "PASS",
+      "command": "TMPDIR=\"$PWD/.runtime/tmp\" .venv/bin/python scripts/trial_release_manifest.py verify --package .runtime/trial-release-staging/final-20261112-v3 --expected-source-tree-sha256 871060968c542a0b267c04e29374e7e07343d4eabaec4327dca69a286bc7eb0d",
+      "exit_code": 0,
+      "detail": "status=PASS；329 个列出文件；source_tree_sha256 与可信摘要一致；claim_scope=integrity_verified_staging；release_ready=false，publishable=false；STAGING_README.md 封面与历史 FINAL 文档清单校验通过。"
+    },
+    {
+      "name": "clean_directory_install",
+      "status": "PASS",
+      "command": "TMPDIR=\"$PWD/.runtime/tmp\" .venv/bin/python scripts/trial_release_install.py --package .runtime/trial-release-staging/final-20261112-v3 --target /media/data3/dengkw/projects/open-claude-code-trial-install-20261112f --harness-source .runtime/third_party/deepseek-harness --toolchain-cache .runtime/harness-toolchain/downloads --pnpm-store .runtime/harness-toolchain/pnpm-store --pnpm-store-expected-manifest-sha256 2e097236c48cccb3040ac04e0217f9dbc97bd9a5783475412eff530eed825b89 --expected-source-tree-sha256 871060968c542a0b267c04e29374e7e07343d4eabaec4327dca69a286bc7eb0d --run-plugin-verify --execute",
+      "exit_code": 0,
+      "detail": "全新目标目录；复制后目标复验 PASS（330 个文件条目、额外文件 0、符号链接 0）；pnpm store 摘要钉死与内容寻址校验 PASS；venv 隔离证据 PASS；执行前后源码树摘要一致；install_scope=harness_handshake_only，product_runtime_verified=false。"
+    },
+    {
+      "name": "real_harness_zero_provider_handshake",
+      "status": "PASS",
+      "command": "<目标>/.runtime/venv/bin/python scripts/verify_harness_runtime.py",
+      "exit_code": 0,
+      "detail": "status=PASS；source_commit=fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159；real_runtime_started=true；provider_requests=0；真实 Node 为目标内 v24.9.0。"
+    },
+    {
+      "name": "sdk_protocol_fake_peer",
+      "status": "PASS",
+      "command": "<目标>/.runtime/venv/bin/python scripts/verify_harness_sdk_protocol.py",
+      "exit_code": 0,
+      "detail": "status=PASS；scope=fake-runtime-only；source.commit=fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159；model_calls=0；real_runtime_started=false；执行后源码树 unchanged=true、bytecode_files=[]。"
+    },
+    {
+      "name": "post_execution_source_tree_unchanged",
+      "status": "PASS",
+      "command": "安装器内部 compare_target_after_execution",
+      "exit_code": 0,
+      "detail": "执行前后 target source tree 摘要均为 871060968c...；missing/changed/extra 均为空；bytecode_files=[]。"
+    },
+    {
+      "name": "f1_f5_targeted_contract_tests",
+      "status": "PASS",
+      "command": "pytest server/tests/test_trial_release_manifest.py -q（F1 至 F5 新增用例）",
+      "exit_code": 0,
+      "detail": "覆盖 staging 封面与历史 FINAL 不改写、封面篡改拒绝、license-only 私有运行时字段、矛盾声明拒绝、venv 未解引用路径与 sys.prefix 隔离证明、非隔离解释器拒绝、pnpm store 摘要钉死与内容寻址不一致拒绝、PYTHONDONTWRITEBYTECODE=1 与 .pyc 漂移检测。"
+    }
+  ],
+  "fresh_install": {
+    "target": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f",
+    "evidence": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/install-evidence.json",
+    "sdk_protocol_evidence": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/sdk-protocol-evidence.json",
+    "status": "PASS",
+    "started_at": "2026-11-12T15:24:29.784996+00:00",
+    "finished_at": "2026-11-12T15:28:38.569094+00:00",
+    "package_source_tree_sha256": "871060968c542a0b267c04e29374e7e07343d4eabaec4327dca69a286bc7eb0d",
+    "expected_source_tree_sha256": "871060968c542a0b267c04e29374e7e07343d4eabaec4327dca69a286bc7eb0d",
+    "target_source_tree_sha256": "871060968c542a0b267c04e29374e7e07343d4eabaec4327dca69a286bc7eb0d",
+    "target_source_tree_sha256_after_execution": "871060968c542a0b267c04e29374e7e07343d4eabaec4327dca69a286bc7eb0d",
+    "target_tree_unchanged_after_execution": true,
+    "target_pre_execution_verified": true,
+    "target_copy_verification": {
+      "verified_file_count": 330,
+      "extra_files": 0,
+      "symlinks_in_target": 0
+    },
+    "install_scope": "harness_handshake_only",
+    "product_runtime_verified": false,
+    "private_runtime_copied": false,
+    "environment_switch_performed": false,
+    "checks": [
+      {
+        "name": "target_copy_verified_before_execution",
+        "status": "PASS"
+      },
+      {
+        "name": "python_runtime_scope",
+        "status": "PASS"
+      },
+      {
+        "name": "harness_worktree_pin",
+        "status": "PASS"
+      },
+      {
+        "name": "toolchain_cache_verified",
+        "status": "PASS"
+      },
+      {
+        "name": "pnpm_store_seeded",
+        "status": "PASS"
+      },
+      {
+        "name": "isolated_handshake_venv",
+        "status": "PASS"
+      },
+      {
+        "name": "handshake_wheels_verified",
+        "status": "PASS"
+      },
+      {
+        "name": "handshake_pydantic_import",
+        "status": "PASS"
+      },
+      {
+        "name": "real_harness_zero_provider_handshake",
+        "status": "PASS"
+      },
+      {
+        "name": "plugin_verification_execution",
+        "status": "BLOCKED"
+      },
+      {
+        "name": "post_execution_source_tree_unchanged",
+        "status": "PASS"
+      }
+    ],
+    "steps": [
+      {
+        "name": "clone_harness",
+        "exit_code": 0
+      },
+      {
+        "name": "checkout_pin",
+        "exit_code": 0
+      },
+      {
+        "name": "create_handshake_venv",
+        "exit_code": 0
+      },
+      {
+        "name": "download_handshake_wheels",
+        "exit_code": 0
+      },
+      {
+        "name": "install_handshake_wheels",
+        "exit_code": 0
+      },
+      {
+        "name": "check_handshake_pydantic",
+        "exit_code": 0
+      },
+      {
+        "name": "freeze_handshake_environment",
+        "exit_code": 0
+      },
+      {
+        "name": "setup_harness_runtime",
+        "exit_code": 0
+      },
+      {
+        "name": "verify_harness_runtime",
+        "exit_code": 0
+      },
+      {
+        "name": "verify_harness_plugins",
+        "exit_code": 1
+      }
+    ],
+    "handshake_environment": {
+      "bootstrap": {
+        "host_home": "/home/dengkw",
+        "module": "virtualenv",
+        "pythonpath": "/media/data3/dengkw/runtime/home/.local/lib/python3.10/site-packages",
+        "scope": "host build tool used only to create the isolated target venv; target contents come from pinned verified wheels",
+        "source_project_venv_used": false
+      },
+      "requirements": [
+        "annotated-types==0.8.0",
+        "pydantic==2.14.2",
+        "pydantic-core==2.50.2",
+        "typing-extensions==4.16.0",
+        "typing-inspection==0.4.5"
+      ],
+      "venv": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/venv",
+      "virtualenv": "/home/dengkw/.local/bin/virtualenv"
+    },
+    "handshake_python_runtime": {
+      "interpreter": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/venv/bin/python",
+      "interpreter_resolved": "/usr/bin/python3.10",
+      "isolated_virtual_environment": true,
+      "isolation_verified": true,
+      "product_runtime_verified": false,
+      "pydantic_file": null,
+      "pydantic_import_error": "ModuleNotFoundError",
+      "pydantic_version": null,
+      "scope": "isolated handshake environment with pinned pydantic wheels; the FastAPI product runtime is not installed",
+      "server_dependencies_installed": false,
+      "source_project_venv_used": false,
+      "sys_base_prefix": "/usr",
+      "sys_executable": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/venv/bin/python",
+      "sys_executable_resolves_to_requested": true,
+      "sys_prefix": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/venv",
+      "version": "3.10.12"
+    },
+    "handshake_python_runtime_after_install": {
+      "interpreter": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/venv/bin/python",
+      "interpreter_resolved": "/usr/bin/python3.10",
+      "isolation_verified": true,
+      "pydantic_file": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/venv/lib/python3.10/site-packages/pydantic/__init__.py",
+      "pydantic_version": "2.14.2",
+      "sys_base_prefix": "/usr",
+      "sys_executable": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/venv/bin/python",
+      "sys_prefix": "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/.runtime/venv"
+    },
+    "pnpm_store": {
+      "content_address_algorithms": {
+        "sha256": 0,
+        "sha512": 67815
+      },
+      "content_address_verified_files": 67815,
+      "content_file_count": 67815,
+      "expected_manifest_sha256": "2e097236c48cccb3040ac04e0217f9dbc97bd9a5783475412eff530eed825b89",
+      "index_files": [
+        "index.db",
+        "index.db-shm",
+        "index.db-wal"
+      ],
+      "layout": "v11/files + v11/index.db*",
+      "manifest_match": true,
+      "manifest_pin_bound": true,
+      "manifest_sha256": "2e097236c48cccb3040ac04e0217f9dbc97bd9a5783475412eff530eed825b89",
+      "mode": "validated_read_only_seed_then_private_writes",
+      "path": "/media/data3/dengkw/projects/open-claude-code/.runtime/harness-toolchain/pnpm-store",
+      "path_resolved": "/media/data3/dengkw/projects/open-claude-code/.runtime/harness-toolchain/pnpm-store",
+      "projects_registry_copied": false,
+      "symlinks_in_payload": 0,
+      "total_bytes": 1983899699,
+      "version": "v11"
+    },
+    "bytecode_policy": {
+      "applies_to": "setup_harness_runtime.py, verify_harness_runtime.py, optional verify_harness_plugins.py and every other target Python execution",
+      "effect": "target execution may write only under .runtime; the staged source tree outside .runtime is re-measured after execution and any .pyc or other drift fails closed",
+      "environment_variable": "PYTHONDONTWRITEBYTECODE=1"
+    },
+    "plugin_verification": {
+      "bytecode_environment": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "command": [
+        "/usr/bin/python3",
+        "/media/data3/dengkw/projects/open-claude-code-trial-install-20261112f/scripts/verify_harness_plugins.py",
+        "--offline"
+      ],
+      "exit_code": 1,
+      "note": "Plugin verification imports the server package. It runs with PYTHONDONTWRITEBYTECODE=1 so it cannot write .pyc into the staged source tree; a missing FastAPI product dependency is recorded as a known gap, not hidden.",
+      "status": "BLOCKED_PRODUCT_RUNTIME_DEPENDENCY"
+    },
+    "sdk_protocol": {
+      "status": "PASS",
+      "scope": "fake-runtime-only",
+      "source": {
+        "commit": "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159",
+        "sdk_source_sha256": "d6940b2646e46aa991908a93691dddbe62b7690879b4629ea5bb38553e2e38b5",
+        "sdk_source_files": 6
+      },
+      "model_calls": 0,
+      "real_runtime_started": false,
+      "bytecode_environment": {
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "post_execution_unchanged": true,
+      "bytecode_files": []
+    }
+  },
+  "known_gaps": [
+    "产品运行时未安装：目标目录没有 FastAPI、数据库驱动等 server/pyproject.toml 完整依赖，未启动产品，未做浏览器/接口验收；product_runtime_verified=false。",
+    "不是客户试用包：本包只完成 staging 完整性和零供应商握手，不是可交付客户的试用包。",
+    "插件校验失败：verify_harness_plugins.py 退出码 1，缺少 fastapi；已用 PYTHONDONTWRITEBYTECODE=1 执行，未产生 .pyc，也未造成目标源码树漂移；记录为 BLOCKED，不冒称通过。",
+    "构建时验收报告未绑定：v3 构建时默认报告仍绑定旧源码树摘要 91db207b...，manifest 为 acceptance.bound=false、reports=[]；本文件是构建后的外部审计证据，不随包分发，也不产生发布效果。",
+    "完整产品运行时验收聚合合同未实现：打包器永远不生成 final/publishable，release_ready 和 publishable 恒为 false。",
+    "运行时能力封禁未验证：候选清单只是范围记录，runtime_state=unverified，没有验证实际接口是否被封禁。",
+    "真实模型、容量和浏览器验收未执行：需要单独授权、供应商调用和证据，不在本次零供应商握手范围内。",
+    "目标安装完成后如果被人工再次执行且没有沿用 PYTHONDONTWRITEBYTECODE=1，仍可能自然漂移；对目标做额外验证时必须使用同一变量。"
+  ],
+  "modified_files": [
+    "scripts/trial_release_manifest.py",
+    "scripts/trial_release_install.py",
+    "server/tests/test_trial_release_manifest.py",
+    "docs/design/TRIAL_NATIVE_RELEASE.md",
+    "docs/evidence/TRIAL_PACKAGE_2026-11-12.md",
+    "docs/evidence/TRIAL_PACKAGE_2026-11-12.json"
+  ],
+  "generated_at": "2026-11-12T15:28:38.569094+00:00",
+  "notes": [
+    "本文件只对 v3 包和源码树摘要 871060968c542a0b267c04e29374e7e07343d4eabaec4327dca69a286bc7eb0d 成立；旧的 final-20261112-v2 包保留但不代表新源码。",
+    "历史 DELIVERY_VERIFICATION 0.4.2 FINAL 与 docs/verification/DELIVERY_0_*.md 保持字节原样；STAGING_README.md 是唯一包级 staging 封面，历史 FINAL 不是本次结论。",
+    "pnpm v11 的真实 store 使用 SHA-512 内容寻址名（files/<前2位>/<后126位>），因此安装器按名字长度选择 SHA-256 或 SHA-512；本轮 67,815 个内容文件全部通过。",
+    "本轮只在学校云操作，未接触腾讯云，未发布，未使用客户数据/凭据/付费模型，未切换现有服务或入口。"
+  ]
+}

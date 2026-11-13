@@ -1,0 +1,2630 @@
+{
+  "schema_version": "trial-final-acceptance/v1",
+  "generated_at": "2026-11-13T00:40:36.451050+00:00",
+  "task": "OC-T13",
+  "server": "学校云",
+  "project": "open-claude-code（知行工作台）",
+  "execution_window": {
+    "timezone": "Asia/Shanghai",
+    "final_reruns": "2026-11-13 07:00:00..2026-11-13 08:40:00",
+    "control_20_users": "2026-11-13 06:20:00..2026-11-13 06:31:00"
+  },
+  "git": {
+    "head": "38c0a04478da94ae83e507ae4183476995c1fc79",
+    "branch": "main",
+    "dirty": true,
+    "tracked_modified": 65,
+    "untracked": 206,
+    "source_tree_sha256": "8134c5891edc34404dec693b03cab06bdaea7ccdd4fe4af17fbced639d8314e2",
+    "source_tree_hash_scope": [
+      "server/app",
+      "server/tests",
+      "client/src",
+      "scripts"
+    ],
+    "source_tree_path_count": 261,
+    "source_tree_file_count": 260,
+    "source_tree_missing_paths": [
+      "server/tests/test_subagents.py"
+    ],
+    "source_tree_count_note": "Git lists 261 paths; server/tests/test_subagents.py is an indexed deletion and does not exist, so 260 actual files enter the digest. The old test was replaced/integrated by server/tests/test_subagent.py and is not an accidental deletion.",
+    "source_tree_hash_record": ".runtime/evidence/oc_t13_final_source_tree_summary_20261113.txt"
+  },
+  "verdict": {
+    "t13_execution_scope": "passed",
+    "release_ready": false,
+    "publishable": false,
+    "task_board_updated": false,
+    "statement": "本轮学校云功能、回归、浏览器、容量和长稳执行范围通过；最终发布仍受 v4、固定运行时、真实模型/客户数据、最终独立审核和腾讯云入口阻塞。"
+  },
+  "modifications": [
+    {
+      "file": "server/app/runtime.py",
+      "reason": "修复启动阶段取消后旧 stopped runtime 污染下一运行的真实缺陷。",
+      "sha256": "dae57983dc5a421daffe91e7c592da11be39064835071df69f5f9f7e1f0ed836"
+    },
+    {
+      "file": "server/tests/test_api.py",
+      "reason": "新增启动阶段取消不污染下一条运行的回归。",
+      "sha256": "68194f36ce26be16f06d615637af8ff47d05a37c5821e1776bfaafb4f2426f94"
+    },
+    {
+      "file": "scripts/trial_smoke.py",
+      "reason": "扩展 21 项 trial 烟囱和 DeploymentPolicy 反向边界。",
+      "sha256": "77905911436c82db619867b43091c8560e772cd02fda71f333e43a9bc4cd8be1"
+    },
+    {
+      "file": "scripts/concurrency_load.py",
+      "reason": "显式部署槽输入、默认 4、执行层容量拒绝分类和 SSE 终态检查。",
+      "sha256": "0a6067cb7669f8fce33ce089357ef57a4c73c239bbc9dc2218f4ee7aeacc3811"
+    },
+    {
+      "file": "scripts/trial_capacity.py",
+      "reason": "固定默认四槽、8/25 突发、FULL、取消释放和恢复。",
+      "sha256": "beb044735603d766751a3cacd8709938340c7d38e75192c63fc447ccb137d31d"
+    },
+    {
+      "file": "scripts/trial_soak.py",
+      "reason": "新增 20 用户控制面、SSE 重放和 30 分钟 soak 工具。",
+      "sha256": "bfc0722ad1ec882bd76306fa82d3c34c38d64ab58698a40dd3532f377f41628a"
+    },
+    {
+      "file": "scripts/trial_browser_acceptance.py",
+      "reason": "新增隔离回环、生产构建和真实 Chromium 验收编排。",
+      "sha256": "2a487a174f35eb418b380c81693403d64edb42a04c35fc0b0f3ccff57ff8bc0d"
+    },
+    {
+      "file": "scripts/browser_acceptance.mjs",
+      "reason": "新增桌面/窄屏关键路径、截图和控制台/网络错误采集。",
+      "sha256": "d46fb59d59a0ba24909d2658ebbcda0a98504023173e23d437ebe818080b43dd"
+    },
+    {
+      "file": "server/tests/test_concurrency_load.py",
+      "reason": "新增容量、SSE 重放、烟囱合同和短长稳回归。",
+      "sha256": "0f3fd115b0d304afdef9d228ff7a09ef175060e9486f742393fff7d841c1f20b"
+    }
+  ],
+  "commands": [
+    {
+      "name": "targeted_regression",
+      "command": ".venv/bin/python -m pytest -p no:cacheprovider --basetemp=... -q server/tests/test_concurrency_load.py",
+      "exit_code": 0,
+      "result": {
+        "passed": 8,
+        "failed": 0,
+        "duration_seconds": 29.34
+      },
+      "log": ".runtime/evidence/oc_t13_final_targeted2_20261113.log"
+    },
+    {
+      "name": "trial_smoke",
+      "command": ".venv/bin/python scripts/trial_smoke.py --report .runtime/evidence/oc_t13_final_trial_smoke_20261113.json --timeout 90",
+      "exit_code": 0,
+      "result": {
+        "passed": 21,
+        "failed": 0,
+        "total": 21,
+        "model_calls": 0
+      },
+      "log": ".runtime/evidence/oc_t13_final_trial_smoke_20261113.log",
+      "report": ".runtime/evidence/oc_t13_final_trial_smoke_20261113.json"
+    },
+    {
+      "name": "default_capacity",
+      "command": ".venv/bin/python scripts/trial_capacity.py --json-out .runtime/evidence/oc_t13_final_trial_capacity_20261113.json --timeout 90",
+      "exit_code": 0,
+      "result": {
+        "status": "passed",
+        "phases": 4,
+        "accepted": 13,
+        "rejected": 25,
+        "unexpected": 0,
+        "peak_simultaneous_executions": 4,
+        "synchronous_pragma": 2,
+        "shutdown_ok": true
+      },
+      "log": ".runtime/evidence/oc_t13_final_trial_capacity_20261113.log",
+      "report": ".runtime/evidence/oc_t13_final_trial_capacity_20261113.json"
+    },
+    {
+      "name": "concurrency_matrix",
+      "command": ".venv/bin/python scripts/concurrency_load.py --levels 1,5,10,25 --iterations 2 --scenarios chat,sse,retrieval,attachment,cancel --timeout 20 --sample-interval 0.05 --max-active-sessions 4 --execution-hold-ms 350 --json-out .runtime/evidence/oc_t13_final_concurrency_matrix_20261113.json --markdown-out .runtime/evidence/oc_t13_final_concurrency_matrix_20261113.md",
+      "exit_code": 0,
+      "result": {
+        "status": "passed",
+        "matrix_rows": 20,
+        "requests": 410,
+        "ok": 410,
+        "errors": 0,
+        "capacity_rejections": 168,
+        "completed": 78,
+        "execution_gap": [],
+        "timeouts": 0,
+        "cancellations": 26,
+        "sse_reconnects": 0,
+        "stale_connection_retries": 0,
+        "unknown_transport_retries": 0,
+        "transport_failures": 0,
+        "model_calls": 0,
+        "provider_calls": 0,
+        "capacity_script": "scripts/trial_capacity.py"
+      },
+      "log": ".runtime/evidence/oc_t13_final_concurrency_matrix_20261113.log",
+      "report": ".runtime/evidence/oc_t13_final_concurrency_matrix_20261113.json"
+    },
+    {
+      "name": "client_vitest",
+      "command": "cd client && npm test -- --run",
+      "exit_code": 0,
+      "result": {
+        "test_files_passed": 22,
+        "tests_passed": 147,
+        "failed": 0
+      },
+      "log": ".runtime/evidence/oc_t13_final_client_test_20261113.log"
+    },
+    {
+      "name": "client_typescript",
+      "command": "cd client && ./node_modules/.bin/tsc --noEmit --pretty false",
+      "exit_code": 0,
+      "result": {
+        "errors": 0,
+        "output_bytes": 0
+      },
+      "log": ".runtime/evidence/oc_t13_final_client_tsc_20261113.log"
+    },
+    {
+      "name": "client_build",
+      "command": "cd client && npm run build",
+      "exit_code": 0,
+      "result": {
+        "modules_transformed": 3116,
+        "built": true,
+        "large_chunk_warnings": 2
+      },
+      "log": ".runtime/evidence/oc_t13_final_client_build_20261113.log"
+    },
+    {
+      "name": "full_backend_regression",
+      "command": "env -i HOME=\"$HOME\" PATH=\"$PATH\" TMPDIR=\"$TMPBASE\" PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -p no:cacheprovider --basetemp=\"$TMPBASE/pytest\" --junitxml=\"$TMPBASE/junit.xml\" -ra server/tests",
+      "exit_code": 0,
+      "result": {
+        "passed": 1524,
+        "skipped": 17,
+        "failed": 0,
+        "duration_seconds": 1180.42,
+        "junit_cases": 1541
+      },
+      "log": ".runtime/evidence/oc_t13_final_full_backend2_20261113.log",
+      "junit": ".runtime/evidence/oc_t13_final_full_backend2_20261113_junit.xml"
+    },
+    {
+      "name": "browser_acceptance",
+      "command": ".venv/bin/python scripts/trial_browser_acceptance.py --report .runtime/evidence/oc_t13_final_browser_acceptance_20261113.json --output-dir .runtime/evidence/oc_t13_browser_final_20261113",
+      "exit_code": 0,
+      "result": {
+        "status": "passed",
+        "modes": 2,
+        "failed_modes": [],
+        "model_calls": 0
+      },
+      "log": ".runtime/evidence/oc_t13_final_browser_acceptance_20261113.log",
+      "report": ".runtime/evidence/oc_t13_final_browser_acceptance_20261113.json"
+    },
+    {
+      "name": "control_20_users_600s",
+      "command": ".venv/bin/python scripts/trial_soak.py --profile control --duration 600 --virtual-users 20 --streams 4 --pace 1.0 --json-out .runtime/evidence/oc_t13_control_20u_600s_20261113.json --markdown-out .runtime/evidence/oc_t13_control_20u_600s_20261113.md",
+      "exit_code": 0,
+      "result": {
+        "requests": 35841,
+        "success_rate_pct": 100.0,
+        "latency_ms": {
+          "count": 35841,
+          "p50": 124.47,
+          "p95": 274.034,
+          "p99": 419.579,
+          "max": 16266.014
+        },
+        "status": "passed"
+      },
+      "log": ".runtime/evidence/oc_t13_control_20u_600s_20261113.log",
+      "report": ".runtime/evidence/oc_t13_control_20u_600s_20261113.json"
+    },
+    {
+      "name": "soak_20_users_1800s",
+      "command": ".venv/bin/python scripts/trial_soak.py --profile soak --duration 1800 --virtual-users 20 --streams 2 --pace 1.0 --json-out .runtime/evidence/oc_t13_final_soak_1800s_20261113.json --markdown-out .runtime/evidence/oc_t13_final_soak_1800s_20261113.md",
+      "exit_code": 0,
+      "result": {
+        "requests": 100766,
+        "success_rate_pct": 100.0,
+        "latency_ms": {
+          "count": 100766,
+          "p50": 94.335,
+          "p95": 238.142,
+          "p99": 369.666,
+          "max": 21754.317
+        },
+        "status": "passed"
+      },
+      "log": ".runtime/evidence/oc_t13_final_soak_1800s_20261113.log",
+      "report": ".runtime/evidence/oc_t13_final_soak_1800s_20261113.json"
+    }
+  ],
+  "full_backend": {
+    "exit_code": 0,
+    "passed": 1524,
+    "skipped": 17,
+    "failed": 0,
+    "junit_cases": 1541,
+    "warnings": 9,
+    "duration_seconds": 1180.42,
+    "skip_groups": [
+      {
+        "count": 1,
+        "location": "server/tests/test_harness_context.py:350",
+        "condition": "requires explicitly installed pinned Harness runtime",
+        "rationale": "真实上游 Harness 上下文集成；当前候选未安装固定运行时，不能用合成运行时冒充。",
+        "owner": "v4/T14"
+      },
+      {
+        "count": 3,
+        "location": "server/tests/test_harness_context.py:434",
+        "condition": "requires explicitly installed pinned Harness runtime",
+        "rationale": "真实 Harness 恢复、路由和零额外模型调用场景需要固定运行时。",
+        "owner": "v4/T14"
+      },
+      {
+        "count": 1,
+        "location": "server/tests/test_harness_memory_runtime.py:270",
+        "condition": "requires explicitly installed fixed Harness runtime",
+        "rationale": "真实 Node 记忆审批、提交和拒绝需要固定运行时；其他记忆合同测试已运行。",
+        "owner": "v4/T14"
+      },
+      {
+        "count": 4,
+        "location": "server/tests/test_harness_real_mcp.py",
+        "condition": "requires explicitly installed pinned Harness runtime",
+        "rationale": "真实 MCP 握手、撤权、超时和审批不能用合成 fixture 替代。",
+        "owner": "v4/客户 MCP"
+      },
+      {
+        "count": 4,
+        "location": "server/tests/test_harness_real_runtime.py",
+        "condition": "requires explicitly installed pinned Harness runtime",
+        "rationale": "真实 Harness 文本/图片、工具审批、取消和压缩需要固定运行时。",
+        "owner": "v4/T14"
+      },
+      {
+        "count": 4,
+        "location": "server/tests/test_hipporag_public_models.py:373",
+        "condition": "could not import 'torch': No module named 'torch'",
+        "rationale": "可选 HippoRAG 公共模型质量诊断；不属于本轮 BM25/hybrid 合成协议路径，明确 skip，不伪造质量通过。",
+        "owner": "真实模型质量专项"
+      }
+    ],
+    "skip_policy": "13 个固定 Harness runtime skip 和 4 个 torch skip 均为显式环境合同；未用 xfail、未删断言、未伪造真实资源通过。"
+  },
+  "trial_smoke": {
+    "status": "passed",
+    "summary": {
+      "passed": 21,
+      "failed": 0,
+      "total": 21
+    },
+    "checks": [
+      {
+        "name": "health_live",
+        "status": "passed",
+        "duration_ms": 125.424,
+        "detail": {
+          "status": "ok"
+        }
+      },
+      {
+        "name": "health_ready",
+        "status": "passed",
+        "duration_ms": 4.239,
+        "detail": {
+          "status": "ready",
+          "model_configured": false
+        }
+      },
+      {
+        "name": "login_admin",
+        "status": "passed",
+        "duration_ms": 162.535,
+        "detail": {
+          "user_id": "78d9d96f51e0441fb8b3ee1f31f0b4d9",
+          "role": "admin"
+        }
+      },
+      {
+        "name": "model_catalog",
+        "status": "passed",
+        "duration_ms": 7.642,
+        "detail": {
+          "models": 1,
+          "available": 1
+        }
+      },
+      {
+        "name": "create_knowledge_base",
+        "status": "passed",
+        "duration_ms": 418.646,
+        "detail": {
+          "kb_id": "4fec5b32312942c5989e6e2ce8de3d40"
+        }
+      },
+      {
+        "name": "upload_synthetic_document",
+        "status": "passed",
+        "duration_ms": 191.203,
+        "detail": {
+          "document_id": "448112a7fdb246afa7271a26ff067fed",
+          "chunks": 6,
+          "status": "ready"
+        }
+      },
+      {
+        "name": "retrieval_bm25",
+        "status": "passed",
+        "duration_ms": 17.876,
+        "detail": {
+          "results": 5,
+          "top_chunk": "4ce2cc73d082417da9195dce9af6ab78",
+          "context_characters": 245
+        }
+      },
+      {
+        "name": "create_assistant",
+        "status": "passed",
+        "duration_ms": 49.226,
+        "detail": {
+          "assistant_id": "cfe005e344d94010be186d308263457a"
+        }
+      },
+      {
+        "name": "upload_attachment",
+        "status": "passed",
+        "duration_ms": 72.377,
+        "detail": {
+          "file_id": "cfd5d5489dfd49d3b3ca532fd604e98e",
+          "bytes": 65536,
+          "hash_verified": true
+        }
+      },
+      {
+        "name": "create_conversation",
+        "status": "passed",
+        "duration_ms": 52.929,
+        "detail": {
+          "conversation_id": "1a55b6344ab1422d83f39e69e8f8bb84",
+          "model": "legacy-model"
+        }
+      },
+      {
+        "name": "chat_with_attachment",
+        "status": "passed",
+        "duration_ms": 1056.225,
+        "detail": {
+          "run_id": "edbf6794b18c4ee7b96823f53da3187a",
+          "duration_ms": 1033.272,
+          "events": 12
+        }
+      },
+      {
+        "name": "sse_stream",
+        "status": "passed",
+        "duration_ms": 436.586,
+        "detail": {
+          "first_byte_ms": 45.04,
+          "total_ms": 393.72,
+          "events": 12,
+          "connections": 1
+        }
+      },
+      {
+        "name": "cancel_run",
+        "status": "passed",
+        "duration_ms": 780.839,
+        "detail": {
+          "run_id": "2bd51b2063e041f9a0ed2c90fa4b45fa",
+          "cancel_ms": 83.473,
+          "reusable": true
+        }
+      },
+      {
+        "name": "conversation_isolation",
+        "status": "passed",
+        "duration_ms": 899.317,
+        "detail": {
+          "conversation_a": "1a55b6344ab1422d83f39e69e8f8bb84",
+          "conversation_b": "472f45f69c1649aeaa67db756a7f06c0",
+          "marker_visible_in_a": false,
+          "marker_visible_in_b": true,
+          "run_ids_disjoint": true
+        }
+      },
+      {
+        "name": "usage_endpoint",
+        "status": "passed",
+        "duration_ms": 10.874,
+        "detail": {
+          "total_runs": 5,
+          "successful_runs": 4,
+          "input_tokens": 48
+        }
+      },
+      {
+        "name": "member_isolation",
+        "status": "passed",
+        "duration_ms": 418.326,
+        "detail": {
+          "private_kb_hidden": true,
+          "search_denied": true
+        }
+      },
+      {
+        "name": "logout_admin",
+        "status": "passed",
+        "duration_ms": 49.168,
+        "detail": {
+          "status": 401
+        }
+      },
+      {
+        "name": "trial_deployment_policy",
+        "status": "passed",
+        "duration_ms": 6.658,
+        "detail": {
+          "deployment_mode": "trial",
+          "capabilities": 15,
+          "allowed_retrieval_modes": [
+            "bm25",
+            "hybrid"
+          ]
+        }
+      },
+      {
+        "name": "trial_allowed_reads_and_chat",
+        "status": "passed",
+        "duration_ms": 709.372,
+        "detail": {
+          "conversation_id": "f91a71721311403ab24b89dcd3d6eeb6",
+          "run_id": "a0a3868e86d1475d85a0e7771b2afd66"
+        }
+      },
+      {
+        "name": "trial_bm25_and_hybrid",
+        "status": "passed",
+        "duration_ms": 35.591,
+        "detail": {
+          "results_by_mode": {
+            "bm25": 4,
+            "hybrid": 4
+          }
+        }
+      },
+      {
+        "name": "trial_reverse_boundaries",
+        "status": "passed",
+        "duration_ms": 83.012,
+        "detail": {
+          "denied_route_or_mode_variants": 9,
+          "denied_message_fields": 3,
+          "denied_conversation_field": 1,
+          "side_effects": 0
+        }
+      }
+    ],
+    "runtime": {
+      "connects": 4,
+      "executions": 6,
+      "model_calls": 0,
+      "phases": {
+        "normal": {
+          "connects": 3,
+          "executions": 5,
+          "model_calls": 0
+        },
+        "trial": {
+          "connects": 1,
+          "executions": 1,
+          "model_calls": 0
+        }
+      }
+    },
+    "environment": {
+      "platform": "Linux-6.8.0-40-generic-x86_64-with-glibc2.35",
+      "python": "3.10.12",
+      "cpu_count": 32,
+      "uvicorn": "0.54.0",
+      "httpx": "0.28.1",
+      "sqlite_synchronous": "FULL",
+      "acceptance_durability": true,
+      "note": "FULL 为部署与验收默认；NORMAL 仅用于定位 fsync 成本，不作为门禁证据。"
+    },
+    "external_validation_limits": [
+      "真实模型推理质量、真实首字延迟、Token 吞吐与费用：本烟囱注入确定性合成运行时，model_calls 始终为 0。",
+      "真实客户 MCP 工具、真实业务系统与真实客户数据：未配置、未调用任何真实连接或客户样本。",
+      "真实文档解析质量（PDF、DOCX、XLSX、图片 OCR、视觉嵌入）与知识图谱语义效果：只上传一小段合成 Markdown，并使用本地词法向量。",
+      "联网网页搜索、真实网络错误、带宽限制和跨公网延迟：未发起任何外网请求。",
+      "多进程或多 worker、容器、反向代理、TLS 与学校云实际部署容量：只在 127.0.0.1 回环启动单进程临时服务。",
+      "长时间稳定性、内存泄漏和跨进程 SQLite 锁竞争：本烟囱不执行 soak 或分布式压测。",
+      "真实客户权限矩阵、业务正确率和原方案基线：需要客户授权、真实样本和标准答案。",
+      "浏览器端渲染、交互和页面性能：本烟囱只验证服务端 HTTP 与 SSE 协议；SSE 的 Last-Event-ID 断点续传由压测脚本覆盖。",
+      "模型是否按提示实际使用检索结果：检索接口和证据链已验证，但合成运行时不会消费 RAG 上下文。"
+    ]
+  },
+  "deployment_policy_gate": {
+    "trial_deployment_policy": {
+      "deployment_mode": "trial",
+      "capabilities": 15,
+      "allowed_retrieval_modes": [
+        "bm25",
+        "hybrid"
+      ]
+    },
+    "trial_reverse_boundaries": {
+      "denied_route_or_mode_variants": 9,
+      "denied_message_fields": 3,
+      "denied_conversation_field": 1,
+      "side_effects": 0
+    },
+    "trial_allowed_reads_and_chat": {
+      "conversation_id": "f1b6c561bbd1404a98e5bd537e58cf1a",
+      "run_id": "41f4a2de63044c48897189534189ac82"
+    },
+    "trial_bm25_and_hybrid": {
+      "results_by_mode": {
+        "bm25": 4,
+        "hybrid": 4
+      }
+    }
+  },
+  "browser": {
+    "status": "passed",
+    "summary": {
+      "status": "passed",
+      "modes": 2,
+      "failed_modes": [],
+      "model_calls": 0
+    },
+    "modes": {
+      "trial": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "trial_login_and_preloaded_assistant",
+            "status": "passed",
+            "duration_ms": 1379,
+            "detail": {
+              "assistant_cards": 1
+            }
+          },
+          {
+            "name": "trial_start_preloaded_conversation",
+            "status": "passed",
+            "duration_ms": 550,
+            "detail": null
+          },
+          {
+            "name": "trial_enter_submission_reaches_server",
+            "status": "passed",
+            "duration_ms": 1447,
+            "detail": {
+              "run_id": "4e8f58bed5084e4d89f9b6b91772f51f",
+              "status": "succeeded"
+            }
+          },
+          {
+            "name": "trial_send_button_submission",
+            "status": "passed",
+            "duration_ms": 1148,
+            "detail": {
+              "run_id": "1aca68b251ee4805be67dceabe9273dc"
+            }
+          },
+          {
+            "name": "trial_stream_is_incremental",
+            "status": "passed",
+            "duration_ms": 1795,
+            "detail": {
+              "stream_samples": [
+                15,
+                15,
+                8,
+                8,
+                8,
+                13
+              ],
+              "run_id": "d3b89d583e114bf5801f11da1e109833"
+            }
+          },
+          {
+            "name": "trial_cancel_and_terminal_state",
+            "status": "passed",
+            "duration_ms": 707,
+            "detail": {
+              "run_id": "ec51eda312a44680bacf2ae340741d9c",
+              "status": "cancelled"
+            }
+          },
+          {
+            "name": "trial_knowledge_evidence_card",
+            "status": "passed",
+            "duration_ms": 2695,
+            "detail": {
+              "run_id": "9dec281c93ff4caead83b70d0bd75964",
+              "source_cards": 1,
+              "excerpt": "泵站阀门编号 P-101，维护周期为每周一次。\n本文件只用于学校云真实浏览器验收，不包含客户资料。"
+            }
+          },
+          {
+            "name": "trial_knowledge_search_and_document_access",
+            "status": "passed",
+            "duration_ms": 527,
+            "detail": {
+              "modes": [
+                "bm25",
+                "hybrid"
+              ],
+              "hits": 2,
+              "document_status": 200
+            }
+          },
+          {
+            "name": "trial_image_lightbox",
+            "status": "passed",
+            "duration_ms": 102,
+            "detail": {
+              "width": 96,
+              "height": 64,
+              "src": "http://127.0.0.1:39773/api/v1/knowledge-documents/44ac041abc614b569d163f9f9af03c01/content?version=1"
+            }
+          },
+          {
+            "name": "trial_production_static_assets",
+            "status": "passed",
+            "duration_ms": 10,
+            "detail": {
+              "scripts": [
+                "http://127.0.0.1:39773/assets/index-DTEQHx1m.js"
+              ],
+              "performance": {
+                "dcl": 158,
+                "load": 159
+              }
+            }
+          },
+          {
+            "name": "trial_narrow_viewport_submission",
+            "status": "passed",
+            "duration_ms": 2145,
+            "detail": {
+              "overflow": 0,
+              "run_id": "e8fb8d381d714153a2f1b304429e6cf7",
+              "viewport": {
+                "width": 390,
+                "height": 844
+              }
+            }
+          }
+        ],
+        "console_errors": [
+          {
+            "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+            "location": {
+              "url": "http://127.0.0.1:39773/api/v1/auth/me",
+              "line": 0,
+              "column": 0,
+              "lineNumber": 0,
+              "columnNumber": 0
+            }
+          }
+        ],
+        "page_errors": [],
+        "request_failures": [
+          {
+            "url": "http://127.0.0.1:39773/api/v1/runs/ec51eda312a44680bacf2ae340741d9c/events?after=0",
+            "method": "GET",
+            "failure": "net::ERR_ABORTED"
+          },
+          {
+            "url": "http://127.0.0.1:39773/api/v1/runs/9dec281c93ff4caead83b70d0bd75964/events?after=0",
+            "method": "GET",
+            "failure": "net::ERR_ABORTED"
+          },
+          {
+            "url": "http://127.0.0.1:39773/api/v1/runs/9dec281c93ff4caead83b70d0bd75964/events?after=0",
+            "method": "GET",
+            "failure": "net::ERR_ABORTED"
+          }
+        ],
+        "http_errors": [
+          {
+            "url": "http://127.0.0.1:39773/api/v1/auth/me",
+            "method": "GET",
+            "status": 401
+          }
+        ],
+        "issues": [],
+        "screenshots": [
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-trial/trial-00-login.png",
+            "bytes": 6489,
+            "sha256": "cb9c3b8047859412e8abcaed51ad9ecefb4bd820c8849af4992e593d500d1836"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-trial/trial-01-workspace-desktop.png",
+            "bytes": 82665,
+            "sha256": "c94c069ce1234c0063e032191c244ce62566363d8fffd4576ff4034b952b9847"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-trial/trial-02-enter-submission.png",
+            "bytes": 56162,
+            "sha256": "5fcb9344ca9ba43306e150f7a991f12fefa7df32a4f1463e0a83679f956544b8"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-trial/trial-03-cancel.png",
+            "bytes": 76724,
+            "sha256": "659f73bfb07f09e1f4e9ddaaab3ac7d8c532f37f8d254e23b8c002365b139c96"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-trial/trial-04-evidence-card.png",
+            "bytes": 125502,
+            "sha256": "4301e40f72656686bf6debd8d75d42432213c3d503b6ff771b221962d2fce4c5"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-trial/trial-05-image-lightbox.png",
+            "bytes": 143606,
+            "sha256": "61f05ed41f27a9e1388feb75dfb42683f6f2f7308c562102f86ab0f310c502de"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-trial/trial-06-narrow-chat.png",
+            "bytes": 48363,
+            "sha256": "f3c15ecd446b929fd04753be16459435ae58bffa5cb5fd9f25bd963a0cf304d4"
+          }
+        ],
+        "runtime": {
+          "executions": 5,
+          "model_calls": 0
+        }
+      },
+      "normal": {
+        "status": "passed",
+        "checks": [
+          {
+            "name": "normal_login_and_start_conversation",
+            "status": "passed",
+            "duration_ms": 2211,
+            "detail": null
+          },
+          {
+            "name": "normal_human_approval",
+            "status": "passed",
+            "duration_ms": 2165,
+            "detail": {
+              "run_id": "1d6d07d00dec4e79883366731ead5663",
+              "status": "succeeded",
+              "arguments": "{\n  \"path\": \"browser-approval.txt\",\n  \"content\": \"approved\"\n}"
+            }
+          },
+          {
+            "name": "normal_excel_artifact_download",
+            "status": "passed",
+            "duration_ms": 2322,
+            "detail": {
+              "run_id": "f077225c0cb649e795e7ae144262e448",
+              "suggested_filename": "browser-acceptance.xlsx",
+              "bytes": 1658,
+              "saved_path": "/media/data3/dengkw/projects/open-claude-code/.runtime/evidence/oc_t13_browser_final2_20261113/screenshots-normal/browser-acceptance-downloaded.xlsx"
+            }
+          },
+          {
+            "name": "normal_approval_queue_page",
+            "status": "passed",
+            "duration_ms": 132,
+            "detail": {
+              "queue": "empty_after_decision"
+            }
+          }
+        ],
+        "console_errors": [
+          {
+            "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+            "location": {
+              "url": "http://127.0.0.1:39525/api/v1/auth/me",
+              "line": 0,
+              "column": 0,
+              "lineNumber": 0,
+              "columnNumber": 0
+            }
+          }
+        ],
+        "page_errors": [],
+        "request_failures": [],
+        "http_errors": [
+          {
+            "url": "http://127.0.0.1:39525/api/v1/auth/me",
+            "method": "GET",
+            "status": 401
+          }
+        ],
+        "issues": [],
+        "screenshots": [
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-normal/normal-00-login.png",
+            "bytes": 6489,
+            "sha256": "cb9c3b8047859412e8abcaed51ad9ecefb4bd820c8849af4992e593d500d1836"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-normal/normal-01-approval.png",
+            "bytes": 105056,
+            "sha256": "0fb39c3c93435d0af55bc9c1b1a5a5f3d8011de174847a37ff08708c8f3e33eb"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-normal/normal-02-excel-preview.png",
+            "bytes": 141076,
+            "sha256": "c7f856e620f55fafc7a0bc2dac62c8ddd4e3a012e4cbfc0f789003ae777f5d30"
+          },
+          {
+            "path": ".runtime/evidence/oc_t13_browser_final2_20261113/screenshots-normal/normal-03-approval-queue.png",
+            "bytes": 56773,
+            "sha256": "9877e3da3b2dffdf8513edb4420d376b30b779cbc13daf58470db5de9172780b"
+          }
+        ],
+        "runtime": {
+          "executions": 2,
+          "model_calls": 0
+        }
+      }
+    },
+    "error_interpretation": "登录前 /auth/me 的 401 是未登录探测；原始 JSON 记录 trial 3 条、normal 0 条 net::ERR_ABORTED，均为受控 SSE 关闭；页面性能实测 trial DCL=158ms、load=159ms；page_errors=[]、issues=[]。trial 不开放审批、Excel 或上传，normal 结果不表示 trial 已开放。"
+  },
+  "capacity": {
+    "status": "passed",
+    "config": {
+      "sessions": 4,
+      "bursts": [
+        8,
+        25
+      ],
+      "timeout_seconds": 90.0,
+      "classify_timeout_seconds": 30.0
+    },
+    "summary": {
+      "status": "passed",
+      "phases": 4,
+      "accepted": 13,
+      "rejected": 25,
+      "unexpected": 0,
+      "peak_simultaneous_executions": 4,
+      "synchronous_pragma": 2,
+      "shutdown_ok": true
+    },
+    "environment": {
+      "platform": "Linux-6.8.0-40-generic-x86_64-with-glibc2.35",
+      "python": "3.10.12",
+      "cpu_count": 32,
+      "uvicorn": "0.54.0",
+      "httpx": "0.28.1",
+      "sqlite_synchronous": "FULL",
+      "acceptance_durability": true,
+      "note": "FULL 为部署与验收默认；NORMAL 仅用于定位 fsync 成本，不作为门禁证据。",
+      "synchronous_pragma": 2,
+      "journal_mode": "wal"
+    },
+    "phases": [
+      {
+        "phase": "burst_8",
+        "burst": 8,
+        "configured_sessions": 4,
+        "duration_ms": 3343.435,
+        "accepted": 4,
+        "rejected": 4,
+        "unexpected": 0,
+        "unexpected_detail": [],
+        "accepted_run_ids": [
+          "6e9ba288e3bf465caad26a58c4743a35",
+          "3d2002c5acd64517bae3f2c9c7cb31f6",
+          "18c8fffda08a41d8822cd1ca9cd5c16c",
+          "4aa33664d54a41d296502dd70175d6d1"
+        ],
+        "rejected_run_ids": [
+          "50d81d3af4f342678d60fcac022da86e",
+          "a1ac5af457654ab58366faf3cc965684",
+          "033c7fc31c474a66915cf7375496b3a9",
+          "91a6518f327c4d2aade96f04f3d82b96"
+        ],
+        "peak_simultaneous_executions": 4,
+        "observed_active": 4,
+        "runtime_started": 4,
+        "submissions": [
+          {
+            "conversation_id": "9bf2a3f5c1d14553968e44c25247a138",
+            "http_status": 202,
+            "run_id": "6e9ba288e3bf465caad26a58c4743a35",
+            "outcome": "accepted",
+            "status": "running",
+            "error_code": null
+          },
+          {
+            "conversation_id": "cfefd49d77ed4d57bbc44ecd6765485e",
+            "http_status": 202,
+            "run_id": "3d2002c5acd64517bae3f2c9c7cb31f6",
+            "outcome": "accepted",
+            "status": "running",
+            "error_code": null
+          },
+          {
+            "conversation_id": "22f14c126e7d4aeab1557e1b81cad4e2",
+            "http_status": 202,
+            "run_id": "50d81d3af4f342678d60fcac022da86e",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "23a2c136f73646d58f4b4d8714d552c3",
+            "http_status": 202,
+            "run_id": "18c8fffda08a41d8822cd1ca9cd5c16c",
+            "outcome": "accepted",
+            "status": "running",
+            "error_code": null
+          },
+          {
+            "conversation_id": "34e42026e7824bcf89b33a3a1d5b07f6",
+            "http_status": 202,
+            "run_id": "4aa33664d54a41d296502dd70175d6d1",
+            "outcome": "accepted",
+            "status": "running",
+            "error_code": null
+          },
+          {
+            "conversation_id": "08e57edada2b4c9a826aa2954041129c",
+            "http_status": 202,
+            "run_id": "a1ac5af457654ab58366faf3cc965684",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "22c3f3263d394ab9adc98c89a544595f",
+            "http_status": 202,
+            "run_id": "033c7fc31c474a66915cf7375496b3a9",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "2834e66935a34daf939d8e37bff59808",
+            "http_status": 202,
+            "run_id": "91a6518f327c4d2aade96f04f3d82b96",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          }
+        ]
+      },
+      {
+        "phase": "cancel_and_recover",
+        "cancelled_run": "6e9ba288e3bf465caad26a58c4743a35",
+        "status": "passed",
+        "active_after_cancel": 3,
+        "replacement_run": "b95b40142ce24383a477a595bacaaccd",
+        "accepted": 1,
+        "rejected": 0,
+        "unexpected": 0,
+        "slot_reused": true,
+        "peak_simultaneous_executions": 4,
+        "outcomes": [
+          {
+            "run_id": "6e9ba288e3bf465caad26a58c4743a35",
+            "status": "cancelled"
+          },
+          {
+            "run_id": "3d2002c5acd64517bae3f2c9c7cb31f6",
+            "status": "succeeded"
+          },
+          {
+            "run_id": "18c8fffda08a41d8822cd1ca9cd5c16c",
+            "status": "succeeded"
+          },
+          {
+            "run_id": "4aa33664d54a41d296502dd70175d6d1",
+            "status": "succeeded"
+          },
+          {
+            "run_id": "b95b40142ce24383a477a595bacaaccd",
+            "status": "succeeded"
+          }
+        ]
+      },
+      {
+        "phase": "burst_25",
+        "burst": 25,
+        "configured_sessions": 4,
+        "duration_ms": 5902.778,
+        "accepted": 4,
+        "rejected": 21,
+        "unexpected": 0,
+        "unexpected_detail": [],
+        "accepted_run_ids": [
+          "63f3406469e4424ea3699304a4e540e7",
+          "b4f2ec1769ab4761bc346d9b325ef7d8",
+          "e7feccee63294c29bc413cdeec2ec269",
+          "9417a038c2564669b4635d7891501e19"
+        ],
+        "rejected_run_ids": [
+          "326917de6e7f4d379a0ad05665bbfa31",
+          "49a125f9b3e4412a8076fe0c9a5da013",
+          "d274277615144b2986f13994893d1743",
+          "a3f11fef905545df85e2bb2bdadc4bf3",
+          "a66e31e5b62b40a7adfaac61f44b6348",
+          "92e7de4f15b24485b653f20ac0c1bc94",
+          "a2bee4e0ad284377a3d278862d6522ca",
+          "e04b7632571e4e3789766e80c8182e31",
+          "0a1eb8145ad24200a51196d0917775e4",
+          "14ff857be76041dfa3afd249d17a2c3f",
+          "76df81fd42a842c293a6949b4dbb0ce5",
+          "eec9757219744551baa37d1a3a46c883",
+          "f8c7d9f2563a45ccb77577be5e5de58a",
+          "299adde2b98b40c9b14cfd382b1c26c7",
+          "c7096f06daa44994b9ce038b2ca5b093",
+          "0edf81b0e70d466fab567370f39b4560",
+          "be3d08431b264dd39868d7a12ea19a9e",
+          "65105d63d39b4874b4c0b968a9b9e9db",
+          "b5bad76511e146f3ba0fb207584655a2",
+          "b2d38d1c67ad4bdfa9aa455e115340e4",
+          "e07c0de2ffa04f13b2d9f500341db1fc"
+        ],
+        "peak_simultaneous_executions": 4,
+        "observed_active": 4,
+        "runtime_started": 4,
+        "submissions": [
+          {
+            "conversation_id": "b8cab738dc2f4c32a7c99f850c4ff794",
+            "http_status": 202,
+            "run_id": "326917de6e7f4d379a0ad05665bbfa31",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "5080872321c54c8d8611af511cfd1cb8",
+            "http_status": 202,
+            "run_id": "49a125f9b3e4412a8076fe0c9a5da013",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "122dab42b82940aea8d6c239c86fd685",
+            "http_status": 202,
+            "run_id": "d274277615144b2986f13994893d1743",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "c9dc49ec13dd4185ad38700264f1f90a",
+            "http_status": 202,
+            "run_id": "a3f11fef905545df85e2bb2bdadc4bf3",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "4bf3917a09034ca6bab7e0358033eca7",
+            "http_status": 202,
+            "run_id": "63f3406469e4424ea3699304a4e540e7",
+            "outcome": "accepted",
+            "status": "running",
+            "error_code": null
+          },
+          {
+            "conversation_id": "9d1c6b7ba5d74708a01abbe4ae18d72b",
+            "http_status": 202,
+            "run_id": "b4f2ec1769ab4761bc346d9b325ef7d8",
+            "outcome": "accepted",
+            "status": "running",
+            "error_code": null
+          },
+          {
+            "conversation_id": "ed90893794964a88984261c9d1d1168c",
+            "http_status": 202,
+            "run_id": "e7feccee63294c29bc413cdeec2ec269",
+            "outcome": "accepted",
+            "status": "running",
+            "error_code": null
+          },
+          {
+            "conversation_id": "7e21c47b3e754b1a8cee4ada706b7d46",
+            "http_status": 202,
+            "run_id": "9417a038c2564669b4635d7891501e19",
+            "outcome": "accepted",
+            "status": "running",
+            "error_code": null
+          },
+          {
+            "conversation_id": "f2fe5dcc063e41f1aeb3a8c79d8bb8f2",
+            "http_status": 202,
+            "run_id": "a66e31e5b62b40a7adfaac61f44b6348",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "1d5f82fbe24e4b3dad450a9d4b477a9b",
+            "http_status": 202,
+            "run_id": "92e7de4f15b24485b653f20ac0c1bc94",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "6d9de00fc77a456495f81f2d83d7fb53",
+            "http_status": 202,
+            "run_id": "a2bee4e0ad284377a3d278862d6522ca",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "3216a57b0e94445e98f4ed13cacdd184",
+            "http_status": 202,
+            "run_id": "e04b7632571e4e3789766e80c8182e31",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "9805b24784fd479b9cf060cea00849dd",
+            "http_status": 202,
+            "run_id": "0a1eb8145ad24200a51196d0917775e4",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "1051685ba0154e8ab096306c223ab29a",
+            "http_status": 202,
+            "run_id": "14ff857be76041dfa3afd249d17a2c3f",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "de509c4a6a1741e8814124f588dbef19",
+            "http_status": 202,
+            "run_id": "76df81fd42a842c293a6949b4dbb0ce5",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "c0ca0ad4387e41f7b7690e9e3b1e414a",
+            "http_status": 202,
+            "run_id": "eec9757219744551baa37d1a3a46c883",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "8a6c0678a7584883b3e08ce38fe42acc",
+            "http_status": 202,
+            "run_id": "f8c7d9f2563a45ccb77577be5e5de58a",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "176f575b4d274581a8e9ad16e1640f4b",
+            "http_status": 202,
+            "run_id": "299adde2b98b40c9b14cfd382b1c26c7",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "3f39cd04856a41df8a4941b700904fd1",
+            "http_status": 202,
+            "run_id": "c7096f06daa44994b9ce038b2ca5b093",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "376eca4c84b543c0a5ac0a9068e3ce08",
+            "http_status": 202,
+            "run_id": "0edf81b0e70d466fab567370f39b4560",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "b38df18aac314ebe840b28fe8adae1df",
+            "http_status": 202,
+            "run_id": "be3d08431b264dd39868d7a12ea19a9e",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "44d74dc0c6b145309491fd8f32f0e3aa",
+            "http_status": 202,
+            "run_id": "65105d63d39b4874b4c0b968a9b9e9db",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "da7a829573774a0e872e1ec314ad6002",
+            "http_status": 202,
+            "run_id": "b5bad76511e146f3ba0fb207584655a2",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "98d7c261117a4daf82f3d7a7920e26f9",
+            "http_status": 202,
+            "run_id": "b2d38d1c67ad4bdfa9aa455e115340e4",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          },
+          {
+            "conversation_id": "12ce0ac264814ee7a6753af239af1206",
+            "http_status": 202,
+            "run_id": "e07c0de2ffa04f13b2d9f500341db1fc",
+            "outcome": "rejected",
+            "status": "failed",
+            "error_code": "EXECUTION_CAPACITY"
+          }
+        ]
+      },
+      {
+        "phase": "recovery_after_release",
+        "sessions": 4,
+        "status": "passed",
+        "succeeded": 4,
+        "accepted": 4,
+        "rejected": 0,
+        "unexpected": 0,
+        "peak_simultaneous_executions": 2,
+        "outcomes": [
+          {
+            "run_id": "3eb29fbf125b42ecb8893c9c08ad5fc4",
+            "status": "succeeded"
+          },
+          {
+            "run_id": "7f2650a18d594bd7b1c4e47ab39d091c",
+            "status": "succeeded"
+          },
+          {
+            "run_id": "b006658920704b799acd17479079120a",
+            "status": "succeeded"
+          },
+          {
+            "run_id": "6e4858444c43470eb392b80b753884ad",
+            "status": "succeeded"
+          }
+        ]
+      }
+    ],
+    "shutdown": {
+      "attempted": true,
+      "ok": true,
+      "error": null,
+      "active_drained": true,
+      "residual_actors": 0,
+      "residual_retiring": 0,
+      "server_task_done": true
+    }
+  },
+  "concurrency_matrix": {
+    "status": "passed",
+    "config": {
+      "levels": [
+        1,
+        5,
+        10,
+        25
+      ],
+      "iterations": 2,
+      "scenarios": [
+        "chat",
+        "sse",
+        "retrieval",
+        "attachment",
+        "cancel"
+      ],
+      "timeout_seconds": 20.0,
+      "sample_interval_seconds": 0.05,
+      "seed": 20261112,
+      "max_active_sessions": 4,
+      "execution_hold_ms": 350,
+      "execution_slots_are_deployment_input": true,
+      "capacity_script": "scripts/trial_capacity.py"
+    },
+    "summary": {
+      "status": "passed",
+      "matrix_rows": 20,
+      "requests": 410,
+      "ok": 410,
+      "errors": 0,
+      "capacity_rejections": 168,
+      "completed": 78,
+      "execution_gap": [],
+      "timeouts": 0,
+      "cancellations": 26,
+      "sse_reconnects": 0,
+      "stale_connection_retries": 0,
+      "unknown_transport_retries": 0,
+      "transport_failures": 0,
+      "model_calls": 0,
+      "provider_calls": 0,
+      "capacity_script": "scripts/trial_capacity.py"
+    },
+    "environment": {
+      "platform": "Linux-6.8.0-40-generic-x86_64-with-glibc2.35",
+      "python": "3.10.12",
+      "cpu_count": 32,
+      "uvicorn": "0.54.0",
+      "httpx": "0.28.1",
+      "server_and_generator_share_process": true,
+      "sqlite_synchronous": "FULL",
+      "acceptance_durability": true,
+      "note": "FULL 为部署与验收默认；NORMAL 仅用于定位 fsync 成本，不作为门禁证据。"
+    },
+    "rows": [
+      {
+        "scenario": "chat",
+        "level": 1,
+        "requests": 2,
+        "completed": 2,
+        "capacity_rejected": 0,
+        "classified_executions": 2,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 2,
+          "p50": 918.909,
+          "p95": 1011.557,
+          "p99": 1019.792,
+          "max": 1021.851
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 1.075,
+        "execution_layer": true,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 154931200,
+          "rss_peak_bytes": 154931200,
+          "rss_end_bytes": 154931200,
+          "vm_hwm_bytes": 154931200,
+          "threads_peak": 66,
+          "fds_peak": 19,
+          "active_actors_peak": 1
+        }
+      },
+      {
+        "scenario": "chat",
+        "level": 5,
+        "requests": 10,
+        "completed": 8,
+        "capacity_rejected": 2,
+        "classified_executions": 10,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 10,
+          "p50": 2895.635,
+          "p95": 4150.66,
+          "p99": 4188.071,
+          "max": 4197.424
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 1.41,
+        "execution_layer": true,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 154931200,
+          "rss_peak_bytes": 155717632,
+          "rss_end_bytes": 155717632,
+          "vm_hwm_bytes": 155717632,
+          "threads_peak": 74,
+          "fds_peak": 45,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "chat",
+        "level": 10,
+        "requests": 20,
+        "completed": 8,
+        "capacity_rejected": 12,
+        "classified_executions": 20,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 20,
+          "p50": 1815.256,
+          "p95": 3863.655,
+          "p99": 3908.419,
+          "max": 3919.61
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 4.043,
+        "execution_layer": true,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 155717632,
+          "rss_peak_bytes": 156241920,
+          "rss_end_bytes": 156241920,
+          "vm_hwm_bytes": 156241920,
+          "threads_peak": 84,
+          "fds_peak": 68,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "chat",
+        "level": 25,
+        "requests": 50,
+        "completed": 8,
+        "capacity_rejected": 42,
+        "classified_executions": 50,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 50,
+          "p50": 2713.825,
+          "p95": 6099.47,
+          "p99": 6341.513,
+          "max": 6350.318
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 6.751,
+        "execution_layer": true,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 156241920,
+          "rss_peak_bytes": 159911936,
+          "rss_end_bytes": 159911936,
+          "vm_hwm_bytes": 159911936,
+          "threads_peak": 107,
+          "fds_peak": 124,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "sse",
+        "level": 1,
+        "requests": 2,
+        "completed": 2,
+        "capacity_rejected": 0,
+        "classified_executions": 2,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 2,
+          "p50": 618.108,
+          "p95": 660.072,
+          "p99": 663.802,
+          "max": 664.735
+        },
+        "first_byte_ms": {
+          "count": 2,
+          "p50": 100.466,
+          "p95": 141.011,
+          "p99": 144.615,
+          "max": 145.516
+        },
+        "throughput_rps": 1.614,
+        "execution_layer": true,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 159911936,
+          "rss_peak_bytes": 159911936,
+          "rss_end_bytes": 159911936,
+          "vm_hwm_bytes": 159911936,
+          "threads_peak": 107,
+          "fds_peak": 67,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "sse",
+        "level": 5,
+        "requests": 10,
+        "completed": 8,
+        "capacity_rejected": 2,
+        "classified_executions": 10,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 10,
+          "p50": 1004.178,
+          "p95": 1609.186,
+          "p99": 1614.92,
+          "max": 1616.354
+        },
+        "first_byte_ms": {
+          "count": 10,
+          "p50": 432.101,
+          "p95": 756.553,
+          "p99": 758.399,
+          "max": 758.861
+        },
+        "throughput_rps": 3.811,
+        "execution_layer": true,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 159911936,
+          "rss_peak_bytes": 160174080,
+          "rss_end_bytes": 160174080,
+          "vm_hwm_bytes": 160174080,
+          "threads_peak": 107,
+          "fds_peak": 81,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "sse",
+        "level": 10,
+        "requests": 20,
+        "completed": 8,
+        "capacity_rejected": 12,
+        "classified_executions": 20,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 20,
+          "p50": 1367.553,
+          "p95": 2767.04,
+          "p99": 2781.17,
+          "max": 2784.702
+        },
+        "first_byte_ms": {
+          "count": 20,
+          "p50": 1098.283,
+          "p95": 1858.665,
+          "p99": 1878.0,
+          "max": 1882.834
+        },
+        "throughput_rps": 5.335,
+        "execution_layer": true,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 160174080,
+          "rss_peak_bytes": 160436224,
+          "rss_end_bytes": 160436224,
+          "vm_hwm_bytes": 160436224,
+          "threads_peak": 107,
+          "fds_peak": 67,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "sse",
+        "level": 25,
+        "requests": 50,
+        "completed": 8,
+        "capacity_rejected": 42,
+        "classified_executions": 50,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 50,
+          "p50": 2823.604,
+          "p95": 5786.631,
+          "p99": 6189.592,
+          "max": 6356.337
+        },
+        "first_byte_ms": {
+          "count": 50,
+          "p50": 2555.457,
+          "p95": 4562.417,
+          "p99": 4783.441,
+          "max": 4893.753
+        },
+        "throughput_rps": 7.166,
+        "execution_layer": true,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 160436224,
+          "rss_peak_bytes": 162533376,
+          "rss_end_bytes": 162533376,
+          "vm_hwm_bytes": 162533376,
+          "threads_peak": 111,
+          "fds_peak": 133,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "retrieval",
+        "level": 1,
+        "requests": 2,
+        "completed": 0,
+        "capacity_rejected": 0,
+        "classified_executions": 0,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 2,
+          "p50": 16.845,
+          "p95": 19.387,
+          "p99": 19.613,
+          "max": 19.67
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 56.663,
+        "execution_layer": false,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 162533376,
+          "rss_peak_bytes": 162533376,
+          "rss_end_bytes": 162533376,
+          "vm_hwm_bytes": 162533376,
+          "threads_peak": 111,
+          "fds_peak": 13,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "retrieval",
+        "level": 5,
+        "requests": 10,
+        "completed": 0,
+        "capacity_rejected": 0,
+        "classified_executions": 0,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 10,
+          "p50": 68.385,
+          "p95": 107.54,
+          "p99": 110.688,
+          "max": 111.475
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 60.446,
+        "execution_layer": false,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 162533376,
+          "rss_peak_bytes": 162533376,
+          "rss_end_bytes": 162533376,
+          "vm_hwm_bytes": 162533376,
+          "threads_peak": 111,
+          "fds_peak": 22,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "retrieval",
+        "level": 10,
+        "requests": 20,
+        "completed": 0,
+        "capacity_rejected": 0,
+        "classified_executions": 0,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 20,
+          "p50": 111.724,
+          "p95": 214.234,
+          "p99": 230.581,
+          "max": 234.668
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 67.217,
+        "execution_layer": false,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 162533376,
+          "rss_peak_bytes": 162533376,
+          "rss_end_bytes": 162533376,
+          "vm_hwm_bytes": 162533376,
+          "threads_peak": 111,
+          "fds_peak": 32,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "retrieval",
+        "level": 25,
+        "requests": 50,
+        "completed": 0,
+        "capacity_rejected": 0,
+        "classified_executions": 0,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 50,
+          "p50": 322.577,
+          "p95": 519.901,
+          "p99": 577.39,
+          "max": 585.682
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 61.331,
+        "execution_layer": false,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 162533376,
+          "rss_peak_bytes": 162533376,
+          "rss_end_bytes": 162533376,
+          "vm_hwm_bytes": 162533376,
+          "threads_peak": 113,
+          "fds_peak": 64,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "attachment",
+        "level": 1,
+        "requests": 2,
+        "completed": 0,
+        "capacity_rejected": 0,
+        "classified_executions": 0,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 2,
+          "p50": 84.809,
+          "p95": 136.053,
+          "p99": 140.608,
+          "max": 141.747
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 11.697,
+        "execution_layer": false,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 162533376,
+          "rss_peak_bytes": 162795520,
+          "rss_end_bytes": 162795520,
+          "vm_hwm_bytes": 162795520,
+          "threads_peak": 113,
+          "fds_peak": 62,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "attachment",
+        "level": 5,
+        "requests": 10,
+        "completed": 0,
+        "capacity_rejected": 0,
+        "classified_executions": 0,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 10,
+          "p50": 130.496,
+          "p95": 159.079,
+          "p99": 163.352,
+          "max": 164.42
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 35.776,
+        "execution_layer": false,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 162795520,
+          "rss_peak_bytes": 162795520,
+          "rss_end_bytes": 162795520,
+          "vm_hwm_bytes": 162795520,
+          "threads_peak": 113,
+          "fds_peak": 62,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "attachment",
+        "level": 10,
+        "requests": 20,
+        "completed": 0,
+        "capacity_rejected": 0,
+        "classified_executions": 0,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 20,
+          "p50": 258.209,
+          "p95": 369.877,
+          "p99": 375.779,
+          "max": 377.255
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 34.661,
+        "execution_layer": false,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 162795520,
+          "rss_peak_bytes": 163319808,
+          "rss_end_bytes": 163319808,
+          "vm_hwm_bytes": 163319808,
+          "threads_peak": 113,
+          "fds_peak": 64,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "attachment",
+        "level": 25,
+        "requests": 50,
+        "completed": 0,
+        "capacity_rejected": 0,
+        "classified_executions": 0,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 50,
+          "p50": 425.303,
+          "p95": 728.072,
+          "p99": 748.554,
+          "max": 763.699
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 47.755,
+        "execution_layer": false,
+        "cancellations": 0,
+        "resources": {
+          "rss_start_bytes": 163319808,
+          "rss_peak_bytes": 164368384,
+          "rss_end_bytes": 164368384,
+          "vm_hwm_bytes": 164368384,
+          "threads_peak": 113,
+          "fds_peak": 66,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "cancel",
+        "level": 1,
+        "requests": 2,
+        "completed": 2,
+        "capacity_rejected": 0,
+        "classified_executions": 2,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 2,
+          "p50": 382.733,
+          "p95": 393.016,
+          "p99": 393.93,
+          "max": 394.159
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 1.878,
+        "execution_layer": true,
+        "cancellations": 2,
+        "resources": {
+          "rss_start_bytes": 164368384,
+          "rss_peak_bytes": 164368384,
+          "rss_end_bytes": 164368384,
+          "vm_hwm_bytes": 164368384,
+          "threads_peak": 113,
+          "fds_peak": 67,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "cancel",
+        "level": 5,
+        "requests": 10,
+        "completed": 8,
+        "capacity_rejected": 2,
+        "classified_executions": 10,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 10,
+          "p50": 365.707,
+          "p95": 704.36,
+          "p99": 892.373,
+          "max": 939.376
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 3.66,
+        "execution_layer": true,
+        "cancellations": 8,
+        "resources": {
+          "rss_start_bytes": 164368384,
+          "rss_peak_bytes": 164368384,
+          "rss_end_bytes": 164368384,
+          "vm_hwm_bytes": 164368384,
+          "threads_peak": 113,
+          "fds_peak": 90,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "cancel",
+        "level": 10,
+        "requests": 20,
+        "completed": 8,
+        "capacity_rejected": 12,
+        "classified_executions": 20,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 20,
+          "p50": 446.892,
+          "p95": 1747.48,
+          "p99": 1825.364,
+          "max": 1844.835
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 5.486,
+        "execution_layer": true,
+        "cancellations": 8,
+        "resources": {
+          "rss_start_bytes": 164368384,
+          "rss_peak_bytes": 164368384,
+          "rss_end_bytes": 164368384,
+          "vm_hwm_bytes": 164368384,
+          "threads_peak": 113,
+          "fds_peak": 91,
+          "active_actors_peak": 4
+        }
+      },
+      {
+        "scenario": "cancel",
+        "level": 25,
+        "requests": 50,
+        "completed": 8,
+        "capacity_rejected": 42,
+        "classified_executions": 50,
+        "error_count": 0,
+        "timeouts": 0,
+        "latency_ms": {
+          "count": 50,
+          "p50": 1091.561,
+          "p95": 4437.293,
+          "p99": 4572.967,
+          "max": 4620.394
+        },
+        "first_byte_ms": null,
+        "throughput_rps": 6.746,
+        "execution_layer": true,
+        "cancellations": 8,
+        "resources": {
+          "rss_start_bytes": 164368384,
+          "rss_peak_bytes": 164892672,
+          "rss_end_bytes": 164892672,
+          "vm_hwm_bytes": 164892672,
+          "threads_peak": 112,
+          "fds_peak": 127,
+          "active_actors_peak": 4
+        }
+      }
+    ],
+    "execution_slots_are_deployment_input": true,
+    "allow_errors_used": false
+  },
+  "control_20_users_600s": {
+    "status": "passed",
+    "config": {
+      "duration_seconds": 600.0,
+      "virtual_users": 20,
+      "stream_count": 4,
+      "timeout_seconds": 30.0,
+      "pace_seconds": 1.0,
+      "max_active_sessions": 4
+    },
+    "metrics": {
+      "operations": {
+        "auth_me": {
+          "requests": 7137,
+          "ok": 7137,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 7137,
+            "p50": 113.058,
+            "p95": 182.571,
+            "p99": 316.895,
+            "max": 538.279
+          },
+          "error_codes": {}
+        },
+        "conversations": {
+          "requests": 7137,
+          "ok": 7137,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 7137,
+            "p50": 129.294,
+            "p95": 199.522,
+            "p99": 259.987,
+            "max": 623.157
+          },
+          "error_codes": {}
+        },
+        "health": {
+          "requests": 7137,
+          "ok": 7137,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 7137,
+            "p50": 76.664,
+            "p95": 107.647,
+            "p99": 140.71,
+            "max": 1147.673
+          },
+          "error_codes": {}
+        },
+        "retrieval": {
+          "requests": 7137,
+          "ok": 7137,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 7137,
+            "p50": 204.173,
+            "p95": 344.397,
+            "p99": 463.029,
+            "max": 1073.392
+          },
+          "error_codes": {}
+        },
+        "run_status": {
+          "requests": 7137,
+          "ok": 7137,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 7137,
+            "p50": 146.476,
+            "p95": 252.854,
+            "p99": 350.464,
+            "max": 720.918
+          },
+          "error_codes": {}
+        },
+        "sse": {
+          "requests": 156,
+          "ok": 156,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 156,
+            "p50": 15654.352,
+            "p95": 16137.492,
+            "p99": 16220.173,
+            "max": 16266.014
+          },
+          "error_codes": {}
+        }
+      },
+      "requests": 35841,
+      "ok": 35841,
+      "failed": 0,
+      "expected_capacity": 0,
+      "success_rate_pct": 100.0,
+      "latency_ms": {
+        "count": 35841,
+        "p50": 124.47,
+        "p95": 274.034,
+        "p99": 419.579,
+        "max": 16266.014
+      },
+      "first_event_ms": {
+        "count": 156,
+        "p50": 1874.14,
+        "p95": 2749.67,
+        "p99": 2749.67,
+        "max": 2749.67
+      },
+      "error_codes": {},
+      "status_codes": {
+        "200": 35841
+      }
+    },
+    "streams": [
+      {
+        "index": 0,
+        "conversation_id": "6004fe5eb7e140e2b03735a210418c25",
+        "run_id": "7e6c163e5a4a4256b1606f23a38098a5",
+        "assistant_message_id": "0c25129b920e4ec7989f1ea1b5d25ee6",
+        "cursor": 573,
+        "events": 573,
+        "terminal_events": 1,
+        "duplicate_event_ids": 0,
+        "cross_run_events": 0,
+        "reconnects": 38,
+        "last_event_id_headers": 38,
+        "first_event_ms": 1730.265,
+        "finished_at": "2026-11-12T22:31:19.132588+00:00",
+        "terminal_status": "cancelled",
+        "terminal_count_in_trace": 1
+      },
+      {
+        "index": 1,
+        "conversation_id": "c834676f01e14509912154afa61a6122",
+        "run_id": "ee16a58f4a9642c0a1bd1e55c9ea70ac",
+        "assistant_message_id": "0dd31abade714f4a8c00bdd8b0f62476",
+        "cursor": 572,
+        "events": 572,
+        "terminal_events": 1,
+        "duplicate_event_ids": 0,
+        "cross_run_events": 0,
+        "reconnects": 38,
+        "last_event_id_headers": 38,
+        "first_event_ms": 2749.67,
+        "finished_at": "2026-11-12T22:31:19.125050+00:00",
+        "terminal_status": "cancelled",
+        "terminal_count_in_trace": 1
+      },
+      {
+        "index": 2,
+        "conversation_id": "fac30254f765406794465836f8c3b46d",
+        "run_id": "401f5380e1b34837a829887217a8fbc3",
+        "assistant_message_id": "266395d1f6d84f3190fc2c98e0cdf6dd",
+        "cursor": 572,
+        "events": 572,
+        "terminal_events": 1,
+        "duplicate_event_ids": 0,
+        "cross_run_events": 0,
+        "reconnects": 38,
+        "last_event_id_headers": 38,
+        "first_event_ms": 1713.568,
+        "finished_at": "2026-11-12T22:31:19.131165+00:00",
+        "terminal_status": "cancelled",
+        "terminal_count_in_trace": 1
+      },
+      {
+        "index": 3,
+        "conversation_id": "a4ea4e84fec54450a4a18503d6dd3ffe",
+        "run_id": "f60f44d2cc9949999ced5b0e4261f062",
+        "assistant_message_id": "5ecb9dd3a7c0484ca8f327298f5a4a97",
+        "cursor": 572,
+        "events": 572,
+        "terminal_events": 1,
+        "duplicate_event_ids": 0,
+        "cross_run_events": 0,
+        "reconnects": 38,
+        "last_event_id_headers": 38,
+        "first_event_ms": 2018.016,
+        "finished_at": "2026-11-12T22:31:19.092328+00:00",
+        "terminal_status": "cancelled",
+        "terminal_count_in_trace": 1
+      }
+    ],
+    "database": {
+      "runs": 24,
+      "events": 2529,
+      "nonterminal_runs": [],
+      "terminal_event_counts": {
+        "7e6c163e5a4a4256b1606f23a38098a5": 1,
+        "ee16a58f4a9642c0a1bd1e55c9ea70ac": 1,
+        "401f5380e1b34837a829887217a8fbc3": 1,
+        "f60f44d2cc9949999ced5b0e4261f062": 1
+      },
+      "terminal_event_anomalies": [],
+      "duplicate_terminal_runs": []
+    },
+    "resources": {
+      "samples": 123,
+      "rss_start_bytes": 486064128,
+      "rss_peak_bytes": 640466944,
+      "rss_end_bytes": 640466944,
+      "rss_growth_bytes": 154402816,
+      "threads_start": 88,
+      "threads_peak": 113,
+      "threads_end": 112,
+      "fds_start": 31,
+      "fds_peak": 61,
+      "fds_end": 11,
+      "active_actors_peak": 4,
+      "active_actors_end": 0
+    },
+    "acceptance": {
+      "status": "passed",
+      "issues": [],
+      "minimum_duration_seconds": 600,
+      "control_success_threshold_pct": 99.9,
+      "control_p95_limit_ms": 1000,
+      "control_p99_limit_ms": 2000,
+      "shutdown_ok": true,
+      "residual_actors": 0
+    },
+    "http_5xx": 0,
+    "sqlite_busy_locked": 0
+  },
+  "soak_30_minutes": {
+    "status": "passed",
+    "config": {
+      "duration_seconds": 1800.0,
+      "virtual_users": 20,
+      "stream_count": 2,
+      "timeout_seconds": 30.0,
+      "pace_seconds": 1.0,
+      "max_active_sessions": 4
+    },
+    "metrics": {
+      "operations": {
+        "auth_me": {
+          "requests": 20118,
+          "ok": 20118,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 20118,
+            "p50": 83.924,
+            "p95": 150.037,
+            "p99": 273.64,
+            "max": 626.247
+          },
+          "error_codes": {}
+        },
+        "conversations": {
+          "requests": 20118,
+          "ok": 20118,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 20118,
+            "p50": 103.525,
+            "p95": 173.858,
+            "p99": 263.128,
+            "max": 1127.588
+          },
+          "error_codes": {}
+        },
+        "health": {
+          "requests": 20118,
+          "ok": 20118,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 20118,
+            "p50": 36.552,
+            "p95": 79.812,
+            "p99": 111.537,
+            "max": 1124.169
+          },
+          "error_codes": {}
+        },
+        "retrieval": {
+          "requests": 20118,
+          "ok": 20118,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 20118,
+            "p50": 156.508,
+            "p95": 294.903,
+            "p99": 404.739,
+            "max": 868.199
+          },
+          "error_codes": {}
+        },
+        "run_status": {
+          "requests": 20118,
+          "ok": 20118,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 20118,
+            "p50": 122.703,
+            "p95": 253.614,
+            "p99": 452.253,
+            "max": 790.651
+          },
+          "error_codes": {}
+        },
+        "sse": {
+          "requests": 176,
+          "ok": 176,
+          "expected_capacity": 0,
+          "latency_ms": {
+            "count": 176,
+            "p50": 20507.097,
+            "p95": 21148.898,
+            "p99": 21324.665,
+            "max": 21754.317
+          },
+          "error_codes": {}
+        }
+      },
+      "requests": 100766,
+      "ok": 100766,
+      "failed": 0,
+      "expected_capacity": 0,
+      "success_rate_pct": 100.0,
+      "latency_ms": {
+        "count": 100766,
+        "p50": 94.335,
+        "p95": 238.142,
+        "p99": 369.666,
+        "max": 21754.317
+      },
+      "first_event_ms": {
+        "count": 176,
+        "p50": 1060.274,
+        "p95": 1779.05,
+        "p99": 1779.05,
+        "max": 1779.05
+      },
+      "error_codes": {},
+      "status_codes": {
+        "200": 100766
+      }
+    },
+    "execution_metrics": {
+      "operations": {
+        "cancel": {
+          "requests": 1064,
+          "ok": 1064,
+          "expected_capacity": 237,
+          "latency_ms": {
+            "count": 1064,
+            "p50": 189.114,
+            "p95": 1072.187,
+            "p99": 1523.443,
+            "max": 1968.238
+          },
+          "error_codes": {}
+        },
+        "submit": {
+          "requests": 3195,
+          "ok": 3195,
+          "expected_capacity": 817,
+          "latency_ms": {
+            "count": 3195,
+            "p50": 543.698,
+            "p95": 1129.375,
+            "p99": 1745.348,
+            "max": 2892.181
+          },
+          "error_codes": {}
+        }
+      },
+      "requests": 4259,
+      "ok": 4259,
+      "failed": 0,
+      "expected_capacity": 1054,
+      "success_rate_pct": 100.0,
+      "latency_ms": {
+        "count": 4259,
+        "p50": 445.155,
+        "p95": 1115.263,
+        "p99": 1709.733,
+        "max": 2892.181
+      },
+      "first_event_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null
+      },
+      "error_codes": {},
+      "status_codes": {
+        "202": 3432,
+        "200": 827
+      }
+    },
+    "streams": [
+      {
+        "index": 0,
+        "conversation_id": "cc2150e192b74f5d8722920ffa679136",
+        "run_id": "a9751dc2c63f47a59f8fb74c3cd6fffd",
+        "assistant_message_id": "ee0d33dca46545de847efb575b44c802",
+        "cursor": 1706,
+        "events": 1706,
+        "terminal_events": 1,
+        "duplicate_event_ids": 0,
+        "cross_run_events": 0,
+        "reconnects": 87,
+        "last_event_id_headers": 87,
+        "first_event_ms": 341.497,
+        "finished_at": "2026-11-13T00:01:55.833752+00:00",
+        "terminal_status": "cancelled",
+        "terminal_count_in_trace": 1
+      },
+      {
+        "index": 1,
+        "conversation_id": "e912bcbfcc7244ada7c39880a1b1efc3",
+        "run_id": "731c99fd61524041bd63765e9b63b962",
+        "assistant_message_id": "1421eef69b624f0aa65d358225b637da",
+        "cursor": 1705,
+        "events": 1705,
+        "terminal_events": 1,
+        "duplicate_event_ids": 0,
+        "cross_run_events": 0,
+        "reconnects": 87,
+        "last_event_id_headers": 87,
+        "first_event_ms": 1779.05,
+        "finished_at": "2026-11-13T00:01:55.798064+00:00",
+        "terminal_status": "cancelled",
+        "terminal_count_in_trace": 1
+      }
+    ],
+    "post_checks": {
+      "health": 200,
+      "retrieval_results": 2,
+      "submit_run_id": "505745b7ee684c8da578cb9d137bd617",
+      "submit_status": "succeeded",
+      "cancel_run_id": "d1be08e3f9d145699f771f770d08926c",
+      "cancel_status": "cancelled"
+    },
+    "database": {
+      "runs": 4280,
+      "events": 39239,
+      "nonterminal_runs": [],
+      "terminal_event_counts": {
+        "a9751dc2c63f47a59f8fb74c3cd6fffd": 1,
+        "731c99fd61524041bd63765e9b63b962": 1
+      },
+      "terminal_event_anomalies": [],
+      "duplicate_terminal_runs": []
+    },
+    "resources": {
+      "samples": 363,
+      "rss_start_bytes": 432771072,
+      "rss_peak_bytes": 608305152,
+      "rss_end_bytes": 607440896,
+      "rss_growth_bytes": 174669824,
+      "threads_start": 84,
+      "threads_peak": 104,
+      "threads_end": 103,
+      "fds_start": 28,
+      "fds_peak": 73,
+      "fds_end": 11,
+      "active_actors_peak": 4,
+      "active_actors_end": 1
+    },
+    "acceptance": {
+      "status": "passed",
+      "issues": [],
+      "minimum_duration_seconds": 1800,
+      "control_success_threshold_pct": 99.9,
+      "control_p95_limit_ms": 1000,
+      "control_p99_limit_ms": 2000,
+      "shutdown_ok": true,
+      "residual_actors": 0
+    },
+    "http_5xx": 0,
+    "sqlite_busy_locked": 0,
+    "sqlite_errors": [],
+    "external_rss_trace": {
+      "path": ".runtime/evidence/oc_t13_final_soak_1800s_rss_trace_20261113.tsv",
+      "samples": 363,
+      "five_minute_segments": [
+        {
+          "window_seconds": [
+            0,
+            300
+          ],
+          "samples": 60,
+          "rss_start_bytes": 4980736,
+          "rss_end_bytes": 541036544,
+          "rss_growth_bytes": 536055808,
+          "rss_peak_bytes": 541036544,
+          "threads_min": 1,
+          "threads_max": 102,
+          "fds_min": 3,
+          "fds_max": 72
+        },
+        {
+          "window_seconds": [
+            300,
+            600
+          ],
+          "samples": 60,
+          "rss_start_bytes": 541298688,
+          "rss_end_bytes": 550473728,
+          "rss_growth_bytes": 9175040,
+          "rss_peak_bytes": 550473728,
+          "threads_min": 96,
+          "threads_max": 103,
+          "fds_min": 54,
+          "fds_max": 66
+        },
+        {
+          "window_seconds": [
+            600,
+            900
+          ],
+          "samples": 60,
+          "rss_start_bytes": 550473728,
+          "rss_end_bytes": 560070656,
+          "rss_growth_bytes": 9596928,
+          "rss_peak_bytes": 560070656,
+          "threads_min": 98,
+          "threads_max": 103,
+          "fds_min": 52,
+          "fds_max": 61
+        },
+        {
+          "window_seconds": [
+            900,
+            1200
+          ],
+          "samples": 60,
+          "rss_start_bytes": 560332800,
+          "rss_end_bytes": 569507840,
+          "rss_growth_bytes": 9175040,
+          "rss_peak_bytes": 569507840,
+          "threads_min": 98,
+          "threads_max": 104,
+          "fds_min": 52,
+          "fds_max": 62
+        },
+        {
+          "window_seconds": [
+            1200,
+            1500
+          ],
+          "samples": 59,
+          "rss_start_bytes": 569507840,
+          "rss_end_bytes": 578420736,
+          "rss_growth_bytes": 8912896,
+          "rss_peak_bytes": 578420736,
+          "threads_min": 97,
+          "threads_max": 102,
+          "fds_min": 52,
+          "fds_max": 66
+        },
+        {
+          "window_seconds": [
+            1500,
+            1800
+          ],
+          "samples": 60,
+          "rss_start_bytes": 578420736,
+          "rss_end_bytes": 586809344,
+          "rss_growth_bytes": 8388608,
+          "rss_peak_bytes": 586809344,
+          "threads_min": 95,
+          "threads_max": 103,
+          "fds_min": 54,
+          "fds_max": 68
+        }
+      ],
+      "interpretation": "排除启动预热后，RSS 每五分钟增量约 9.18、9.60、9.18、8.91、8.39 MiB，没有加速；但同进程测试记录和客户端对象计入 RSS，不能作为纯产品泄漏结论。",
+      "metrics_record_memory_probe": {
+        "path": ".runtime/evidence/oc_t13_metrics_record_memory_probe_20261113.json",
+        "record_count": 100766,
+        "growth_mib": 37.0,
+        "limitation": "隔离记录形状估算，不是长稳进程真实堆剖析。"
+      }
+    }
+  },
+  "non_gating_diagnostic": {
+    "name": "90_second_tracemalloc",
+    "report": ".runtime/evidence/oc_t13_soak_tracemalloc_diagnostic_20261113.json",
+    "log": ".runtime/evidence/oc_t13_soak_tracemalloc_diagnostic_20261113.log",
+    "exit_code": 1,
+    "status": "failed",
+    "reason": "duration below 1800 second acceptance minimum and tracemalloc inflated latency",
+    "included_in_gate": false
+  },
+  "failures": [],
+  "known_limitations": [
+    "真实授权模型推理质量、首字延迟、供应商限流、Token 吞吐和费用未测；正式运行 model_calls=0。",
+    "真实客户数据、客户凭据、客户 MCP、业务写操作、客户角色矩阵和业务正确率未测。",
+    "当前并发和长稳为单进程同机回环；多进程、多 worker、反向代理、TLS、跨网和生产容量未测。",
+    "13 个固定 Harness runtime 测试和 4 个 torch 测试仍 skip，真实 Harness 与嵌入模型未在本候选验收。",
+    "纯产品进程内存未隔离；RSS 包含压测器明细、客户端和同进程 SQLite。",
+    "当前源码绑定的 v4 staging 候选、逐文件 manifest 和审计验收 JSON 已建立；v4 最终冻结、干净安装、固定 Node/Harness 运行和安装级回滚验证未完成。",
+    "最终候选独立审核、真实客户试用批准和腾讯云独立入口未完成。"
+  ],
+  "external_inputs_still_required": [
+    "获授权的真实模型线路、预算和小流量窗口。",
+    "华微脱敏试用数据、业务判定规则和客户角色矩阵。",
+    "固定 Harness/Node 运行时、依赖锁定和 v4 干净安装环境。",
+    "纯服务进程分进程容量/内存长稳环境。",
+    "最终候选独立审核人和腾讯云独立入口批准。"
+  ],
+  "release_decision": {
+    "can_publish": false,
+    "can_call_huawi_trial_release": false,
+    "next_steps": [
+      "停止产品代码修改并冻结当前候选。",
+      "用当前已绑定的 staging 候选在干净目录安装固定 Harness/Node 并复跑门禁，完成 v4 最终冻结。",
+      "用分进程方式复测纯服务内存与容量。",
+      "由全新独立会话审核最终候选。",
+      "取得真实授权资源和用户批准后，再评估腾讯云独立入口发布。"
+    ]
+  }
+}

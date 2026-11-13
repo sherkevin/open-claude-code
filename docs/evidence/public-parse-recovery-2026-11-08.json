@@ -1,0 +1,206 @@
+{
+  "schema_version": "public-parse-recovery-v1",
+  "generated_at": "2026-11-07T16:28:23.777541+00:00",
+  "offline_only": true,
+  "customer_data": false,
+  "external_model_calls": false,
+  "source_policy": "Existing allowlisted fixture files only; no download in this check.",
+  "summary": {
+    "parsed": 5,
+    "parsed_with_local_ocr": 3,
+    "visual_only_ocr_empty": 1
+  },
+  "accepted_for_demo": true,
+  "records": [
+    {
+      "fixture": "industrial-public-v1",
+      "path": "documents/nist-ir-8183.pdf",
+      "bytes": 1672464,
+      "sha256": "2da74974e3abc2d8b4466ef1413bd3eeebede8f000def028412dd7497c016472",
+      "expected_sha256": "2da74974e3abc2d8b4466ef1413bd3eeebede8f000def028412dd7497c016472",
+      "hash_match": true,
+      "source_url": "https://nvlpubs.nist.gov/nistpubs/ir/2017/NIST.IR.8183.pdf",
+      "license": "US government work; NIST attribution requested",
+      "page_count": 57,
+      "nonempty_pages": 57,
+      "text_chars": 121061,
+      "extraction_counts": {
+        "pdf-text": 57
+      },
+      "status": "parsed",
+      "text_searchable": true,
+      "visual_asset_valid": false
+    },
+    {
+      "fixture": "industrial-public-v1",
+      "path": "documents/nist-ir-8219.pdf",
+      "bytes": 9251449,
+      "sha256": "7247853e3246fcf8e9a7e8ca9b892fc93f93c41d1de42937608d4f6272430898",
+      "expected_sha256": "7247853e3246fcf8e9a7e8ca9b892fc93f93c41d1de42937608d4f6272430898",
+      "hash_match": true,
+      "source_url": "https://nvlpubs.nist.gov/nistpubs/ir/2020/NIST.IR.8219.pdf",
+      "license": "US government work; NIST attribution requested",
+      "page_count": 93,
+      "nonempty_pages": 93,
+      "text_chars": 152600,
+      "extraction_counts": {
+        "pdf-text": 93
+      },
+      "status": "parsed",
+      "text_searchable": true,
+      "visual_asset_valid": false
+    },
+    {
+      "fixture": "industrial-public-v1",
+      "path": "documents/nist-ir-8227.pdf",
+      "bytes": 10478234,
+      "sha256": "da070b038b7df8d1eb83f7af8bb79d8b8207c7cd8ae83ea52378228363de4731",
+      "expected_sha256": "da070b038b7df8d1eb83f7af8bb79d8b8207c7cd8ae83ea52378228363de4731",
+      "hash_match": true,
+      "source_url": "https://nvlpubs.nist.gov/nistpubs/ir/2019/NIST.IR.8227.pdf",
+      "license": "US government work; NIST attribution requested",
+      "page_count": 41,
+      "nonempty_pages": 41,
+      "text_chars": 78110,
+      "extraction_counts": {
+        "pdf-text": 41
+      },
+      "status": "parsed",
+      "text_searchable": true,
+      "visual_asset_valid": false
+    },
+    {
+      "fixture": "industrial-public-v1",
+      "path": "documents/nist-sp-800-82r3.pdf",
+      "bytes": 8584345,
+      "sha256": "608f554514d381853e24e0b33123b7080fbd757826f460032690aade63394616",
+      "expected_sha256": "608f554514d381853e24e0b33123b7080fbd757826f460032690aade63394616",
+      "hash_match": true,
+      "source_url": "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-82r3.pdf",
+      "license": "US government work; NIST attribution requested",
+      "page_count": 316,
+      "nonempty_pages": 316,
+      "text_chars": 730367,
+      "extraction_counts": {
+        "pdf-text": 316
+      },
+      "status": "parsed",
+      "text_searchable": true,
+      "visual_asset_valid": false
+    },
+    {
+      "fixture": "industrial-public-v1",
+      "path": "documents/osha-1910-212.md",
+      "bytes": 1539,
+      "sha256": "349b1e6af625804b96e47c5216a21f989cd9b09ced13d66db9b8fbf1c7767866",
+      "expected_sha256": "349b1e6af625804b96e47c5216a21f989cd9b09ced13d66db9b8fbf1c7767866",
+      "hash_match": true,
+      "source_url": "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.212",
+      "license": "US government public regulatory page; retain attribution",
+      "page_count": 1,
+      "nonempty_pages": 1,
+      "text_chars": 701,
+      "extraction_counts": {
+        "text": 1
+      },
+      "status": "parsed",
+      "text_searchable": true,
+      "visual_asset_valid": false
+    },
+    {
+      "fixture": "industrial-public-v1",
+      "path": "documents/smart-manufacturing-standards-2024.pdf",
+      "bytes": 2702030,
+      "sha256": "2c3b1ed609a623d97ea21f1e925907da5380c773bca1aa1e29ed01f66841fae8",
+      "expected_sha256": "2c3b1ed609a623d97ea21f1e925907da5380c773bca1aa1e29ed01f66841fae8",
+      "hash_match": true,
+      "source_url": "https://www.gov.cn/zhengce/zhengceku/202504/P020250423441436067725.pdf",
+      "license": "中国政府网公开政策文件；保留来源和发布日期，正式使用前核对适用性",
+      "page_count": 36,
+      "nonempty_pages": 36,
+      "text_chars": 15786,
+      "extraction_counts": {
+        "local-ocr": 1,
+        "pdf-text": 35
+      },
+      "status": "parsed_with_local_ocr",
+      "text_searchable": true,
+      "visual_asset_valid": false
+    },
+    {
+      "fixture": "industrial-public-v2",
+      "path": "images/nist-sp80082-page15.png",
+      "bytes": 184399,
+      "sha256": "e9e3cbf82016b603dc447a89c449a813c253ac2eecfc0b8648643525d0a90eb8",
+      "expected_sha256": "e9e3cbf82016b603dc447a89c449a813c253ac2eecfc0b8648643525d0a90eb8",
+      "hash_match": true,
+      "source_url": "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-82r3.pdf",
+      "license": "US government work; retain NIST attribution and original source",
+      "page_count": 1,
+      "nonempty_pages": 1,
+      "text_chars": 1524,
+      "extraction_counts": {
+        "local-ocr": 1
+      },
+      "status": "parsed_with_local_ocr",
+      "text_searchable": true,
+      "visual_asset_valid": true,
+      "image": {
+        "width": 1020,
+        "height": 1320,
+        "mode": "RGB",
+        "format": "PNG"
+      }
+    },
+    {
+      "fixture": "industrial-public-v2",
+      "path": "images/nist-sp80082-scada-fig2.png",
+      "bytes": 226358,
+      "sha256": "e18948f9f3ec5047fd1e99e8c01a809590351ef4d02be123eb0d183ec2bc7953",
+      "expected_sha256": "e18948f9f3ec5047fd1e99e8c01a809590351ef4d02be123eb0d183ec2bc7953",
+      "hash_match": true,
+      "source_url": "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-82r3.pdf",
+      "license": "US government work; retain NIST attribution and original source",
+      "page_count": 1,
+      "nonempty_pages": 1,
+      "text_chars": 1564,
+      "extraction_counts": {
+        "local-ocr": 1
+      },
+      "status": "parsed_with_local_ocr",
+      "text_searchable": true,
+      "visual_asset_valid": true,
+      "image": {
+        "width": 1020,
+        "height": 1320,
+        "mode": "RGB",
+        "format": "PNG"
+      }
+    },
+    {
+      "fixture": "industrial-public-v2",
+      "path": "images/wikimedia-industrial-machine-960.jpg",
+      "bytes": 103409,
+      "sha256": "eb0a39b9f842adfe5568be15285e8ca0917ba59ef42d2962e59334fff2e168d7",
+      "expected_sha256": "eb0a39b9f842adfe5568be15285e8ca0917ba59ef42d2962e59334fff2e168d7",
+      "hash_match": true,
+      "source_url": "https://commons.wikimedia.org/wiki/File:Industrial_machine_working_in_a_manufacturing_facility.jpg",
+      "license": "CC BY 2.0",
+      "page_count": 1,
+      "nonempty_pages": 0,
+      "text_chars": 0,
+      "extraction_counts": {
+        "local-ocr": 1
+      },
+      "status": "visual_only_ocr_empty",
+      "text_searchable": false,
+      "visual_asset_valid": true,
+      "image": {
+        "width": 960,
+        "height": 640,
+        "mode": "RGB",
+        "format": "JPEG"
+      }
+    }
+  ]
+}

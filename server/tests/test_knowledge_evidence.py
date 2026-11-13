@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import zipfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -239,6 +240,21 @@ def test_knowledge_graph_extracts_typed_entities_with_offsets(system):
     assert graph['multimodal']['entity_extraction'] == 'ocr_only'
 
 
+def test_public_osha_fixture_entities_are_source_bound(system):
+    _, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'Public industrial corpus'}, user)
+    root = Path(__file__).resolve().parents[2] / 'fixtures' / 'industrial-public-v1'
+    document = service.knowledge.upload(kb['id'], user, 'osha-1910-212.md', (root / 'documents/osha-1910-212.md').read_bytes())
+    graph = service.knowledge.graph(kb['id'], user)
+    labels = {(item['label'], item['kind']) for item in graph['nodes']}
+    assert document['status'] == 'ready'
+    assert ('osha', 'organization') in labels
+    assert ('cfr 1910.212', 'standard') in labels
+    assert ('铣床', 'equipment') in labels
+    assert all(item['source']['document_id'] == document['id'] for item in graph['nodes'])
+
+
 def test_image_upload_reports_local_ocr_requirement(system, monkeypatch):
     _, service, users = system
     user = users['owner']
@@ -248,6 +264,25 @@ def test_image_upload_reports_local_ocr_requirement(system, monkeypatch):
     monkeypatch.setattr(service.knowledge.parser, 'ocr_image', missing_ocr)
     image = service.knowledge.upload(kb['id'], user, 'nameplate.png', b'not-an-image')
     assert image['status'] == 'needs_ocr' and image['chunk_count'] == 0
+
+
+def test_textless_image_can_be_ready_from_visual_index(system, monkeypatch):
+    _, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'Textless images'}, user)
+    from PIL import Image
+    image_bytes = io.BytesIO()
+    Image.new('RGB', (320, 240), '#6b8e23').save(image_bytes, format='PNG')
+    monkeypatch.setattr(service.knowledge.parser, 'ocr_image', lambda _path: '')
+    monkeypatch.setattr(service.knowledge.vision, 'ocr_image', lambda _path: None)
+    monkeypatch.setattr(service.knowledge.vision, 'embed_image', lambda _path: {'model': 'test-clip', 'dimensions': 2, 'vector': [1.0, 0.0], 'device': 'cpu'})
+    monkeypatch.setattr(service.knowledge.vision, 'embed_text', lambda _text: {'model': 'test-clip', 'dimensions': 2, 'vector': [1.0, 0.0], 'device': 'cpu'})
+    document = service.knowledge.upload(kb['id'], user, 'photo.png', image_bytes.getvalue())
+    assert document['status'] == 'ready' and document['chunk_count'] == 0
+    assert document['image']['visual_index_status'] == 'ready'
+    result = service.knowledge.search([kb['id']], user, '绿色设备', mode='vector')
+    assert result['results'][0]['retrieval_mode'] == 'visual'
+    assert result['results'][0]['media']['kind'] == 'image'
 
 
 def test_image_asset_thumbnail_is_local_and_visual_index_is_truthful(system, monkeypatch):
@@ -309,12 +344,79 @@ def test_image_retrieval_attaches_version_bound_media_evidence(system, monkeypat
     assert media['kind'] == 'image'
     assert media['document_id'] == document['id'] and media['version'] == 1
     assert media['sha256'] == document['sha256']
-    assert media['visual_index_status'] == 'needs_model'
+    assert media['visual_index_status'] in {'ready', 'needs_model'}
     assert len(media['regions']) == 4
     assert media['evidence_boundary']
     login(client, 'owner')
     assert client.get(media['thumbnail_url']).status_code == 200
     assert client.get(media['regions'][0]['thumbnail_url']).status_code == 200
+
+
+def test_visual_only_hits_register_citations_and_honor_run_snapshot(system, monkeypatch):
+    _, service, users = system
+    user = users['owner']
+    kb = service.knowledge.save({'name': 'Visual run evidence'}, user)
+    from PIL import Image
+    image = io.BytesIO()
+    Image.new('RGB', (320, 240), '#6b8e23').save(image, format='PNG')
+    monkeypatch.setattr(service.knowledge.parser, 'ocr_image', lambda _path: '')
+    monkeypatch.setattr(service.knowledge.vision, 'ocr_image', lambda _path: None)
+    monkeypatch.setattr(service.knowledge.vision, 'embed_image', lambda _path: {'model': 'test-clip', 'dimensions': 2, 'vector': [1.0, 0.0], 'device': 'cpu'})
+    monkeypatch.setattr(service.knowledge.vision, 'embed_text', lambda _text: {'model': 'test-clip', 'dimensions': 2, 'vector': [1.0, 0.0], 'device': 'cpu'})
+    first = service.knowledge.upload(kb['id'], user, 'machine.png', image.getvalue())
+    assistant, _, run_id = setup_run(service, user, [kb['id']])
+    service.knowledge.snapshot_for_run(run_id, assistant, user)
+    second = service.knowledge.upload(kb['id'], user, 'machine.png', image.getvalue(), first['id'])
+
+    result = asyncio.run(service.knowledge.search_for_run(user, assistant, run_id, '绿色设备'))
+    assert result['results'] and result['results'][0]['retrieval_mode'] == 'visual'
+    hit = result['results'][0]
+    assert hit['version'] == 1 and hit['knowledge_base'] == 'Visual run evidence'
+    assert hit['citation'].startswith('[[source:')
+    source_id = hit['source_id']
+    source = service.evidence.get(source_id, user)
+    assert source['document_version'] == 1
+    assert source['locator']['sha256'] == first['sha256']
+    assert '图片视觉召回' in source['excerpt']
+    assert second['version'] == 2
+
+
+def test_explicit_tokenhub_visual_stage_persists_bounded_candidates(tmp_path, monkeypatch):
+    catalog = tmp_path / "models.json"
+    catalog.write_text(json.dumps({"default_model_id": "vision", "models": [
+        {"id": "vision", "label": "Vision", "upstream_model": "provider/vision", "capabilities": ["multimodal"], "reasoning_levels": {"default": None}},
+    ]}), encoding="utf-8")
+    provider = tmp_path / "provider.json"
+    provider.write_text(json.dumps({"env": {"ANTHROPIC_AUTH_TOKEN": "test-only-token", "ANTHROPIC_BASE_URL": "http://provider.test/v1"}}), encoding="utf-8")
+    from PIL import Image
+    image = io.BytesIO()
+    Image.new("RGB", (320, 240), "#dbead4").save(image, format="PNG")
+
+    async def fake_visual(**_kwargs):
+        return {"json": {"entities": [
+            {"label": "Control Server", "kind": "equipment", "confidence": 0.91},
+            {"label": "HMI", "kind": "equipment", "confidence": 0.88},
+        ], "relations": [{"source": "Control Server", "target": "HMI", "relation": "connects", "confidence": 0.82}]}, "usage": {"total_tokens": 12}}
+
+    monkeypatch.setattr("app.knowledge.call_visual_json", fake_visual)
+    app = create_app(Settings(data_dir=tmp_path / "data", model_catalog=str(catalog), provider_settings=str(provider), model="vision", knowledge_vision_model_id="vision", knowledge_vision_enabled=True))
+    with TestClient(app):
+        service = app.state.service
+        user = service.create_user({"username": "owner", "display_name": "Owner", "password": "test-password-123", "role": "admin"})
+        kb = service.knowledge.save({"name": "Provider visual"}, user)
+        # Keep this test independent from heavyweight local OCR/CLIP weights;
+        # the provider stage is the behavior under test.
+        monkeypatch.setattr(service.knowledge.parser, "ocr_image", lambda _path: "diagram Control Server HMI")
+        monkeypatch.setattr(service.knowledge.vision, "ocr_image", lambda _path: None)
+        monkeypatch.setattr(service.knowledge.vision, "embed_image", lambda _path: None)
+        document = service.knowledge.upload(kb["id"], user, "diagram.png", image.getvalue())
+        assert document["status"] == "ready"
+        rows = service.db.all("SELECT label,kind,confidence,source_text FROM knowledge_visual_entities WHERE document_id=?", (document["id"],))
+        assert {(row["label"], row["kind"]) for row in rows} == {("Control Server", "model_entity:equipment"), ("HMI", "model_entity:equipment")}
+        relation = service.db.one("SELECT relation,confidence,evidence FROM knowledge_visual_relations WHERE document_id=? AND relation='connects'", (document["id"],))
+        assert relation and relation["evidence"] == "provider_visual_candidate" and relation["confidence"] == 0.82
+        metadata = service.db.one("SELECT metadata_json FROM knowledge_image_assets WHERE document_id=?", (document["id"],))
+        assert json.loads(metadata["metadata_json"])["provider_visual"]["status"] == "ready"
 
 
 def test_data_provenance_preserves_actual_result_and_missing_fields(system):

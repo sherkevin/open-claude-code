@@ -1,0 +1,994 @@
+{
+  "annotation_provenance": "assistant-authored-preregistered-pilot",
+  "independent_human_gold": false,
+  "second_review": "assistant_source_reviewed_2026-11-10",
+  "model_calls": 0,
+  "entities": [
+    {
+      "id": "crs",
+      "canonical_name": "Collaborative Robotics System",
+      "aliases": [
+        "CRS",
+        "CRS workcell"
+      ],
+      "type": "system",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p01",
+          "char_start": 4,
+          "char_end": 16,
+          "text": "CRS workcell"
+        }
+      ]
+    },
+    {
+      "id": "crs_arms",
+      "canonical_name": "CRS robot arms",
+      "aliases": [
+        "robotic arms",
+        "robot arms",
+        "robots"
+      ],
+      "type": "equipment",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p01",
+          "char_start": 50,
+          "char_end": 62,
+          "text": "robotic arms"
+        },
+        {
+          "passage_id": "p01",
+          "char_start": 165,
+          "char_end": 171,
+          "text": "robots"
+        },
+        {
+          "passage_id": "p01",
+          "char_start": 748,
+          "char_end": 754,
+          "text": "robots"
+        },
+        {
+          "passage_id": "p01",
+          "char_start": 897,
+          "char_end": 903,
+          "text": "robots"
+        },
+        {
+          "passage_id": "p02",
+          "char_start": 23,
+          "char_end": 33,
+          "text": "robot arms"
+        },
+        {
+          "passage_id": "p03",
+          "char_start": 206,
+          "char_end": 212,
+          "text": "robots"
+        },
+        {
+          "passage_id": "p10",
+          "char_start": 150,
+          "char_end": 156,
+          "text": "robots"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 164,
+          "char_end": 170,
+          "text": "robots"
+        },
+        {
+          "passage_id": "p12",
+          "char_start": 457,
+          "char_end": 463,
+          "text": "robots"
+        }
+      ]
+    },
+    {
+      "id": "crs_plc",
+      "canonical_name": "CRS supervisory PLC",
+      "aliases": [
+        "supervisory programmable logic controller (PLC)",
+        "supervisory PLC",
+        "PLC"
+      ],
+      "type": "equipment",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p02",
+          "char_start": 433,
+          "char_end": 480,
+          "text": "supervisory\nprogrammable logic controller (PLC)"
+        },
+        {
+          "passage_id": "p03",
+          "char_start": 4,
+          "char_end": 19,
+          "text": "supervisory PLC"
+        },
+        {
+          "passage_id": "p03",
+          "char_start": 152,
+          "char_end": 155,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p03",
+          "char_start": 301,
+          "char_end": 304,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p10",
+          "char_start": 4,
+          "char_end": 19,
+          "text": "Supervisory PLC"
+        },
+        {
+          "passage_id": "p10",
+          "char_start": 242,
+          "char_end": 245,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p10",
+          "char_start": 380,
+          "char_end": 383,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p10",
+          "char_start": 480,
+          "char_end": 483,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 175,
+          "char_end": 178,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 621,
+          "char_end": 624,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 745,
+          "char_end": 748,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 916,
+          "char_end": 919,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p13",
+          "char_start": 550,
+          "char_end": 553,
+          "text": "PLC"
+        }
+      ]
+    },
+    {
+      "id": "crs_stations",
+      "canonical_name": "CRS machining stations",
+      "aliases": [
+        "machining stations",
+        "stations"
+      ],
+      "type": "equipment",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p01",
+          "char_start": 872,
+          "char_end": 880,
+          "text": "stations"
+        },
+        {
+          "passage_id": "p02",
+          "char_start": 88,
+          "char_end": 96,
+          "text": "stations"
+        },
+        {
+          "passage_id": "p02",
+          "char_start": 403,
+          "char_end": 411,
+          "text": "stations"
+        },
+        {
+          "passage_id": "p03",
+          "char_start": 117,
+          "char_end": 135,
+          "text": "machining stations"
+        },
+        {
+          "passage_id": "p07",
+          "char_start": 597,
+          "char_end": 615,
+          "text": "machining stations"
+        },
+        {
+          "passage_id": "p10",
+          "char_start": 100,
+          "char_end": 118,
+          "text": "machining stations"
+        }
+      ]
+    },
+    {
+      "id": "crs_proximity",
+      "canonical_name": "CRS proximity sensors",
+      "aliases": [
+        "proximity sensors",
+        "infrared proximity sensor"
+      ],
+      "type": "sensor",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p02",
+          "char_start": 163,
+          "char_end": 188,
+          "text": "infrared proximity sensor"
+        },
+        {
+          "passage_id": "p10",
+          "char_start": 275,
+          "char_end": 292,
+          "text": "proximity sensors"
+        }
+      ]
+    },
+    {
+      "id": "robot_controllers",
+      "canonical_name": "CRS robot controllers",
+      "aliases": [
+        "robot controllers",
+        "robot controller"
+      ],
+      "type": "software",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p11",
+          "char_start": 4,
+          "char_end": 21,
+          "text": "robot controllers"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 237,
+          "char_end": 254,
+          "text": "robot controllers"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 339,
+          "char_end": 356,
+          "text": "robot controllers"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 630,
+          "char_end": 646,
+          "text": "robot controller"
+        },
+        {
+          "passage_id": "p11",
+          "char_start": 795,
+          "char_end": 811,
+          "text": "robot controller"
+        },
+        {
+          "passage_id": "p12",
+          "char_start": 73,
+          "char_end": 89,
+          "text": "robot controller"
+        },
+        {
+          "passage_id": "p12",
+          "char_start": 224,
+          "char_end": 240,
+          "text": "robot controller"
+        },
+        {
+          "passage_id": "p12",
+          "char_start": 560,
+          "char_end": 576,
+          "text": "Robot controller"
+        }
+      ]
+    },
+    {
+      "id": "ros",
+      "canonical_name": "Robot Operating System",
+      "aliases": [
+        "Robot Operating System (ROS)",
+        "ROS"
+      ],
+      "type": "software",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p11",
+          "char_start": 51,
+          "char_end": 79,
+          "text": "Robot Operating System (ROS)"
+        }
+      ]
+    },
+    {
+      "id": "python",
+      "canonical_name": "Python",
+      "aliases": [
+        "Python"
+      ],
+      "type": "software",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p11",
+          "char_start": 98,
+          "char_end": 104,
+          "text": "Python"
+        }
+      ]
+    },
+    {
+      "id": "modbus",
+      "canonical_name": "Modbus TCP",
+      "aliases": [
+        "Modbus TCP"
+      ],
+      "type": "protocol",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p11",
+          "char_start": 685,
+          "char_end": 695,
+          "text": "Modbus TCP"
+        }
+      ]
+    },
+    {
+      "id": "kpi",
+      "canonical_name": "Key performance indicators",
+      "aliases": [
+        "Key performance indicators",
+        "KPI"
+      ],
+      "type": "metric",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p09",
+          "char_start": 0,
+          "char_end": 26,
+          "text": "Key performance indicators"
+        },
+        {
+          "passage_id": "p09",
+          "char_start": 101,
+          "char_end": 104,
+          "text": "KPI"
+        },
+        {
+          "passage_id": "p09",
+          "char_start": 401,
+          "char_end": 404,
+          "text": "KPI"
+        },
+        {
+          "passage_id": "p09",
+          "char_start": 446,
+          "char_end": 449,
+          "text": "KPI"
+        },
+        {
+          "passage_id": "p13",
+          "char_start": 989,
+          "char_end": 992,
+          "text": "KPI"
+        }
+      ]
+    },
+    {
+      "id": "tcpdump",
+      "canonical_name": "TCPDUMP",
+      "aliases": [
+        "TCPDUMP"
+      ],
+      "type": "software",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p13",
+          "char_start": 64,
+          "char_end": 71,
+          "text": "TCPDUMP"
+        }
+      ]
+    },
+    {
+      "id": "wireshark",
+      "canonical_name": "WIRESHARK",
+      "aliases": [
+        "WIRESHARK"
+      ],
+      "type": "software",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p13",
+          "char_start": 871,
+          "char_end": 880,
+          "text": "WIRESHARK"
+        }
+      ]
+    },
+    {
+      "id": "raw_traffic",
+      "canonical_name": "Raw network traffic",
+      "aliases": [
+        "raw network traffic",
+        "raw traffic"
+      ],
+      "type": "measurement",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p07",
+          "char_start": 551,
+          "char_end": 570,
+          "text": "raw network traffic"
+        },
+        {
+          "passage_id": "p13",
+          "char_start": 21,
+          "char_end": 40,
+          "text": "raw network traffic"
+        },
+        {
+          "passage_id": "p13",
+          "char_start": 950,
+          "char_end": 961,
+          "text": "raw traffic"
+        }
+      ]
+    },
+    {
+      "id": "low_baseline",
+      "canonical_name": "Low security level baseline",
+      "aliases": [
+        "Low security level baseline"
+      ],
+      "type": "measurement",
+      "source_scope": "ir8227",
+      "mentions": [
+        {
+          "passage_id": "p06",
+          "char_start": 208,
+          "char_end": 235,
+          "text": "Low security level baseline"
+        }
+      ]
+    },
+    {
+      "id": "hmi",
+      "canonical_name": "Human-machine interface",
+      "aliases": [
+        "human-machine interfaces (HMIs)",
+        "HMI"
+      ],
+      "type": "interface",
+      "source_scope": "sp80082",
+      "mentions": [
+        {
+          "passage_id": "p15",
+          "char_start": 28,
+          "char_end": 59,
+          "text": "human-machine interfaces (HMIs)"
+        },
+        {
+          "passage_id": "p15",
+          "char_start": 176,
+          "char_end": 179,
+          "text": "HMI"
+        },
+        {
+          "passage_id": "p17",
+          "char_start": 220,
+          "char_end": 223,
+          "text": "HMI"
+        },
+        {
+          "passage_id": "p17",
+          "char_start": 436,
+          "char_end": 439,
+          "text": "HMI"
+        }
+      ]
+    },
+    {
+      "id": "scada_plc",
+      "canonical_name": "PLC in the generic SCADA example",
+      "aliases": [
+        "PLCs",
+        "PLC"
+      ],
+      "type": "equipment_concept",
+      "source_scope": "sp80082",
+      "mentions": [
+        {
+          "passage_id": "p16",
+          "char_start": 255,
+          "char_end": 259,
+          "text": "PLCs"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 409,
+          "char_end": 412,
+          "text": "PLC"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 560,
+          "char_end": 564,
+          "text": "PLCs"
+        }
+      ]
+    },
+    {
+      "id": "rtu",
+      "canonical_name": "Remote terminal unit",
+      "aliases": [
+        "remote terminal units (RTUs)",
+        "RTUs",
+        "RTU"
+      ],
+      "type": "equipment_concept",
+      "source_scope": "sp80082",
+      "mentions": [
+        {
+          "passage_id": "p16",
+          "char_start": 219,
+          "char_end": 247,
+          "text": "remote terminal units (RTUs)"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 368,
+          "char_end": 371,
+          "text": "RTU"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 402,
+          "char_end": 405,
+          "text": "RTU"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 552,
+          "char_end": 556,
+          "text": "RTUs"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 895,
+          "char_end": 898,
+          "text": "RTU"
+        }
+      ]
+    },
+    {
+      "id": "control_center",
+      "canonical_name": "SCADA control center",
+      "aliases": [
+        "control center"
+      ],
+      "type": "system_concept",
+      "source_scope": "sp80082",
+      "mentions": [
+        {
+          "passage_id": "p16",
+          "char_start": 55,
+          "char_end": 69,
+          "text": "control center"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 1226,
+          "char_end": 1240,
+          "text": "control center"
+        },
+        {
+          "passage_id": "p17",
+          "char_start": 79,
+          "char_end": 93,
+          "text": "control\ncenter"
+        },
+        {
+          "passage_id": "p17",
+          "char_start": 182,
+          "char_end": 196,
+          "text": "control center"
+        },
+        {
+          "passage_id": "p17",
+          "char_start": 334,
+          "char_end": 348,
+          "text": "control center"
+        },
+        {
+          "passage_id": "p17",
+          "char_start": 496,
+          "char_end": 510,
+          "text": "control center"
+        },
+        {
+          "passage_id": "p18",
+          "char_start": 432,
+          "char_end": 446,
+          "text": "control center"
+        }
+      ]
+    },
+    {
+      "id": "field_sites",
+      "canonical_name": "SCADA field sites",
+      "aliases": [
+        "field sites"
+      ],
+      "type": "system_concept",
+      "source_scope": "sp80082",
+      "mentions": [
+        {
+          "passage_id": "p16",
+          "char_start": 191,
+          "char_end": 202,
+          "text": "field\nsites"
+        },
+        {
+          "passage_id": "p17",
+          "char_start": 395,
+          "char_end": 406,
+          "text": "field sites"
+        },
+        {
+          "passage_id": "p18",
+          "char_start": 4,
+          "char_end": 15,
+          "text": "field sites"
+        },
+        {
+          "passage_id": "p18",
+          "char_start": 87,
+          "char_end": 98,
+          "text": "Field sites"
+        },
+        {
+          "passage_id": "p18",
+          "char_start": 451,
+          "char_end": 462,
+          "text": "field sites"
+        }
+      ]
+    },
+    {
+      "id": "actuators",
+      "canonical_name": "Actuators",
+      "aliases": [
+        "Actuators",
+        "actuators"
+      ],
+      "type": "equipment_concept",
+      "source_scope": "sp80082",
+      "mentions": [
+        {
+          "passage_id": "p14",
+          "char_start": 33,
+          "char_end": 42,
+          "text": "actuators"
+        },
+        {
+          "passage_id": "p14",
+          "char_start": 420,
+          "char_end": 429,
+          "text": "actuators"
+        },
+        {
+          "passage_id": "p14",
+          "char_start": 431,
+          "char_end": 440,
+          "text": "Actuators"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 273,
+          "char_end": 282,
+          "text": "actuators"
+        },
+        {
+          "passage_id": "p18",
+          "char_start": 56,
+          "char_end": 65,
+          "text": "actuators"
+        }
+      ]
+    },
+    {
+      "id": "sensors",
+      "canonical_name": "Sensors",
+      "aliases": [
+        "sensors",
+        "sensor"
+      ],
+      "type": "sensor_concept",
+      "source_scope": "sp80082",
+      "mentions": [
+        {
+          "passage_id": "p14",
+          "char_start": 24,
+          "char_end": 31,
+          "text": "sensors"
+        },
+        {
+          "passage_id": "p14",
+          "char_start": 101,
+          "char_end": 107,
+          "text": "sensor"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 298,
+          "char_end": 305,
+          "text": "sensors"
+        },
+        {
+          "passage_id": "p16",
+          "char_start": 1041,
+          "char_end": 1048,
+          "text": "sensors"
+        },
+        {
+          "passage_id": "p18",
+          "char_start": 78,
+          "char_end": 85,
+          "text": "sensors"
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "id": "r01",
+      "subject": "crs",
+      "predicate": "contains",
+      "object": "crs_arms",
+      "evidence": {
+        "passage_id": "p01",
+        "char_start": 0,
+        "char_end": 131,
+        "quote": "The CRS workcell, shown in Figure 1, contains two robotic arms that perform a material\nhandling process called machine tending [3]."
+      }
+    },
+    {
+      "id": "r02",
+      "subject": "crs_stations",
+      "predicate": "communicate_with",
+      "object": "crs_plc",
+      "evidence": {
+        "passage_id": "p02",
+        "char_start": 399,
+        "char_end": 526,
+        "quote": "The stations communicate with the supervisory\nprogrammable logic controller (PLC) over the workcell\u2019s local area network (LAN)."
+      }
+    },
+    {
+      "id": "r03",
+      "subject": "crs_plc",
+      "predicate": "directly_connected_to",
+      "object": "crs_proximity",
+      "evidence": {
+        "passage_id": "p10",
+        "char_start": 212,
+        "char_end": 475,
+        "quote": "For measurement purposes, the PLC has direct connection\nto the proximity sensors located on each machining station (for detecting when a part is\npresent), enabling the PLC to independently capture timestamps of each individual part\nentering and exiting a station."
+      }
+    },
+    {
+      "id": "r04",
+      "subject": "robot_controllers",
+      "predicate": "uses",
+      "object": "ros",
+      "evidence": {
+        "passage_id": "p11",
+        "char_start": 0,
+        "char_end": 109,
+        "quote": "The robot controllers are drivers that utilize the Robot Operating System (ROS) [7] framework and Python [8]."
+      }
+    },
+    {
+      "id": "r05",
+      "subject": "robot_controllers",
+      "predicate": "uses",
+      "object": "python",
+      "evidence": {
+        "passage_id": "p11",
+        "char_start": 0,
+        "char_end": 109,
+        "quote": "The robot controllers are drivers that utilize the Robot Operating System (ROS) [7] framework and Python [8]."
+      }
+    },
+    {
+      "id": "r06",
+      "subject": "crs_plc",
+      "predicate": "sends_job_to",
+      "object": "robot_controllers",
+      "qualifiers": {
+        "protocol_entity": "modbus"
+      },
+      "evidence": {
+        "passage_id": "p11",
+        "char_start": 556,
+        "char_end": 696,
+        "quote": "Which job a robot is to perform at any given time\nis sent by the PLC to a robot controller using the industrial network protocol Modbus TCP."
+      }
+    },
+    {
+      "id": "r07",
+      "subject": "tcpdump",
+      "predicate": "records",
+      "object": "raw_traffic",
+      "evidence": {
+        "passage_id": "p13",
+        "char_start": 0,
+        "char_end": 168,
+        "quote": "Capture files of all raw network traffic are recorded using the TCPDUMP software [10] on\na measurement server dedicated to performing network captures and calculations."
+      }
+    },
+    {
+      "id": "r08",
+      "subject": "field_sites",
+      "predicate": "locally_control",
+      "object": "actuators",
+      "evidence": {
+        "passage_id": "p18",
+        "char_start": 0,
+        "char_end": 86,
+        "quote": "The field sites at the bottom of Fig. 2 locally control actuators and monitor sensors."
+      }
+    },
+    {
+      "id": "r09",
+      "subject": "field_sites",
+      "predicate": "monitor",
+      "object": "sensors",
+      "evidence": {
+        "passage_id": "p18",
+        "char_start": 0,
+        "char_end": 86,
+        "quote": "The field sites at the bottom of Fig. 2 locally control actuators and monitor sensors."
+      }
+    },
+    {
+      "id": "r10",
+      "subject": "control_center",
+      "predicate": "includes",
+      "object": "hmi",
+      "evidence": {
+        "passage_id": "p17",
+        "char_start": 176,
+        "char_end": 329,
+        "quote": "Other\ncontrol center components include the HMI, engineering workstations, and the data historian,\nwhich are all connected by a local area network (LAN)."
+      }
+    }
+  ],
+  "visual_annotations": [
+    {
+      "image_id": "nist-sp80082-scada-fig2",
+      "annotation_status": "assistant-visual-review-pending-second-review",
+      "coordinate_format": "xywh_pixels_on_full_1020x1320_image",
+      "entities": [
+        {
+          "id": "v-control-center",
+          "label": "Control Center",
+          "bbox": [
+            250,
+            495,
+            520,
+            141
+          ]
+        },
+        {
+          "id": "v-hmi",
+          "label": "HMI",
+          "bbox": [
+            338,
+            501,
+            82,
+            52
+          ]
+        },
+        {
+          "id": "v-field-site-1",
+          "label": "Field Site 1",
+          "bbox": [
+            250,
+            894,
+            158,
+            168
+          ]
+        },
+        {
+          "id": "v-plc",
+          "label": "PLC",
+          "bbox": [
+            257,
+            978,
+            83,
+            52
+          ]
+        },
+        {
+          "id": "v-field-site-3",
+          "label": "Field Site 3",
+          "bbox": [
+            611,
+            894,
+            159,
+            168
+          ]
+        },
+        {
+          "id": "v-rtu",
+          "label": "RTU",
+          "bbox": [
+            619,
+            978,
+            83,
+            52
+          ]
+        }
+      ],
+      "relations": [
+        {
+          "subject": "v-control-center",
+          "predicate": "depicts_inside",
+          "object": "v-hmi"
+        },
+        {
+          "subject": "v-field-site-1",
+          "predicate": "depicts_inside",
+          "object": "v-plc"
+        },
+        {
+          "subject": "v-field-site-3",
+          "predicate": "depicts_inside",
+          "object": "v-rtu"
+        }
+      ],
+      "boundary": "Diagram depiction only, not a claim about a customer installation; existing v2 boxes are not reused."
+    }
+  ],
+  "visual_negative": {
+    "image_id": "nist-sp80082-page15",
+    "expected_role": "table_of_contents_not_equipment_evidence"
+  }
+}
