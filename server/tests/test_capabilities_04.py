@@ -23,7 +23,9 @@ def test_workspace_tools_keep_submitted_scope_and_refresh_user_before_read(monke
     runtime = SimpleNamespace(service=service, conversation_id="conversation", config={"assistant_snapshot": snapshot}, current_run={"id": "run"}, check_tool=lambda *args: True)
     monkeypatch.setattr("claude_agent_sdk.create_sdk_mcp_server", lambda *args, **kwargs: kwargs["tools"])
     tools = create_workspace_tools(runtime)
-    assert {tool.name for tool in tools} == {"knowledge_search", "knowledge_read"}
+    assert {tool.name for tool in tools} == {
+        "knowledge_search", "knowledge_read", "file_read", "file_write", "file_search",
+    }
     service.role = "member"
     result = asyncio.run(next(tool for tool in tools if tool.name == "knowledge_search").handler({"query": "company", "limit": 2}))
     assert captured["assistant"]["knowledge_base_ids"] == ["old-kb"]

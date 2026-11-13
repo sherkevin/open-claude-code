@@ -97,6 +97,8 @@ def create_app(settings: Settings | None = None, runtime_factory=SDKRuntime) -> 
     app.include_router(create_import_router(svc, authenticated))
     from .skills import create_skill_router
     app.include_router(create_skill_router(svc, authenticated))
+    from .plugins import create_plugin_router
+    app.include_router(create_plugin_router(svc, admin))
     from .knowledge import create_knowledge_router
     from .evidence import create_evidence_router
     app.include_router(create_knowledge_router(svc, authenticated))

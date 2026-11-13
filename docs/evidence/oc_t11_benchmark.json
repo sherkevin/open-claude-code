@@ -1,0 +1,659 @@
+{
+  "mode": "offline",
+  "network_used": false,
+  "third_party_code_executed": false,
+  "harness_version": "0.2.1",
+  "catalog_size": 2,
+  "plugins": [
+    {
+      "name": "billion-context",
+      "version": "0.1.213",
+      "commit": "133f3525c628c4b959bb79ece82af6df82e131a3",
+      "license": "MIT",
+      "license_extra_terms": [
+        "Product surfaces must visibly credit billion-context and link to https://github.com/ranxianglei/billion-context"
+      ],
+      "source_url": "https://github.com/ranxianglei/billion-context",
+      "distribution_url": "https://registry.npmjs.org/billion-context/-/billion-context-0.1.213.tgz",
+      "package_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+      "integrity": {
+        "pinned_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+        "scope": "pinned_review_record",
+        "artifact_path": null,
+        "artifact_sha256": null,
+        "artifact_present": false,
+        "match": null
+      },
+      "permissions": {
+        "declared": [
+          "workspace.files.read",
+          "workspace.files.write",
+          "web.read",
+          "memory.read"
+        ],
+        "discovery": [
+          "workspace.files.read",
+          "web.read"
+        ],
+        "granted": [
+          "web.read",
+          "workspace.files.read"
+        ],
+        "denied": []
+      },
+      "capabilities": [
+        "context.compression.candidate",
+        "context.compression.usage_report"
+      ],
+      "harness": {
+        "requested": "0.2.1",
+        "min": null,
+        "max_tested": "0.2.0-rc.2",
+        "enforcement": "advisory",
+        "compatible": true,
+        "compatibility": "advisory",
+        "warning": "高于已验证版本 DSH 0.2.0-rc.2，需要回归"
+      },
+      "node_min_version": "20",
+      "review_status": "offline_verified",
+      "install_state": "not_installed",
+      "execution_state": "not_executed",
+      "status": "verified",
+      "reasons": []
+    }
+  ],
+  "synthetic_benchmark": {
+    "input": {
+      "context_id": "synthetic-oc-t11",
+      "characters": 18118,
+      "local_estimate": {
+        "characters": 18118,
+        "estimated_tokens": 4530,
+        "method": "chars_div_4",
+        "authoritative": false
+      },
+      "facts": [
+        "FACT-001",
+        "FACT-002"
+      ],
+      "constraints": [
+        "CONSTRAINT-A",
+        "CONSTRAINT-B"
+      ]
+    },
+    "runs": [
+      {
+        "result": {
+          "status": "ok",
+          "reason": null,
+          "context_id": "synthetic-oc-t11",
+          "used_compressed": true,
+          "context": "USER: 我们在评估合成长上下文，不包含客户数据。\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.",
+          "summary": "USER: 我们在评估合成长上下文，不包含客户数据。\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.",
+          "facts_preserved": {
+            "FACT-001": true,
+            "FACT-002": true
+          },
+          "constraints_preserved": {
+            "CONSTRAINT-A": true,
+            "CONSTRAINT-B": true
+          },
+          "cache_hit": false,
+          "elapsed_ms": 1.169,
+          "plugin": {
+            "name": "billion-context",
+            "version": "0.1.213",
+            "package_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+            "plugin_executed": false,
+            "compressor": "synthetic-extractive-v1",
+            "measurement": "synthetic_reference"
+          },
+          "tokens": {
+            "original_local_estimate": {
+              "characters": 18118,
+              "estimated_tokens": 4530,
+              "method": "chars_div_4",
+              "authoritative": false
+            },
+            "compressed_local_estimate": {
+              "characters": 300,
+              "estimated_tokens": 75,
+              "method": "chars_div_4",
+              "authoritative": false
+            },
+            "reduction_ratio": 0.983444,
+            "authoritative": false
+          },
+          "ledger": {
+            "stages": [
+              {
+                "stage": "compression",
+                "source": "synthetic-extractive-v1",
+                "provider_call": false,
+                "provider_usage": {
+                  "input_tokens": null,
+                  "output_tokens": null,
+                  "unknown_fields": [
+                    "input_tokens",
+                    "output_tokens"
+                  ],
+                  "invalid_fields": []
+                },
+                "local_estimate": {
+                  "characters": 300,
+                  "estimated_tokens": 75,
+                  "method": "chars_div_4",
+                  "authoritative": false
+                },
+                "note": "local reference compressor; no provider call"
+              }
+            ],
+            "provider_totals": {
+              "input_tokens": null,
+              "output_tokens": null
+            },
+            "known_subtotals": {
+              "input_tokens": 0,
+              "output_tokens": 0
+            },
+            "provider_usage_complete": false,
+            "unknown_stages": [
+              {
+                "stage": "compression",
+                "fields": [
+                  "input_tokens",
+                  "output_tokens"
+                ]
+              }
+            ],
+            "provider_billed_stages": [],
+            "warnings": [
+              "compression: provider usage not reported; kept unknown"
+            ],
+            "measured_at": "2026-11-12T06:42:19.538561+00:00",
+            "estimate_is_authoritative": false
+          }
+        },
+        "ledger": {
+          "stages": [
+            {
+              "stage": "compression",
+              "source": "synthetic-extractive-v1",
+              "provider_call": false,
+              "provider_usage": {
+                "input_tokens": null,
+                "output_tokens": null,
+                "unknown_fields": [
+                  "input_tokens",
+                  "output_tokens"
+                ],
+                "invalid_fields": []
+              },
+              "local_estimate": {
+                "characters": 300,
+                "estimated_tokens": 75,
+                "method": "chars_div_4",
+                "authoritative": false
+              },
+              "note": "local reference compressor; no provider call"
+            },
+            {
+              "stage": "answer",
+              "source": "synthetic_answer_stub",
+              "provider_call": true,
+              "provider_usage": {
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "unknown_fields": [],
+                "invalid_fields": []
+              },
+              "local_estimate": null,
+              "note": "synthetic answer-stage usage; not a real provider bill"
+            }
+          ],
+          "provider_totals": {
+            "input_tokens": null,
+            "output_tokens": null
+          },
+          "known_subtotals": {
+            "input_tokens": 120,
+            "output_tokens": 30
+          },
+          "provider_usage_complete": false,
+          "unknown_stages": [
+            {
+              "stage": "compression",
+              "fields": [
+                "input_tokens",
+                "output_tokens"
+              ]
+            }
+          ],
+          "provider_billed_stages": [
+            "answer"
+          ],
+          "warnings": [
+            "compression: provider usage not reported; kept unknown"
+          ],
+          "measured_at": "2026-11-12T06:42:19.538588+00:00",
+          "estimate_is_authoritative": false
+        }
+      },
+      {
+        "result": {
+          "status": "ok",
+          "reason": null,
+          "context_id": "synthetic-oc-t11",
+          "used_compressed": true,
+          "context": "USER: 我们在评估合成长上下文，不包含客户数据。\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.",
+          "summary": "USER: 我们在评估合成长上下文，不包含客户数据。\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.",
+          "facts_preserved": {
+            "FACT-001": true,
+            "FACT-002": true
+          },
+          "constraints_preserved": {
+            "CONSTRAINT-A": true,
+            "CONSTRAINT-B": true
+          },
+          "cache_hit": true,
+          "elapsed_ms": 0.0,
+          "plugin": {
+            "name": "billion-context",
+            "version": "0.1.213",
+            "package_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+            "plugin_executed": false,
+            "compressor": "synthetic-extractive-v1",
+            "measurement": "synthetic_reference"
+          },
+          "tokens": {
+            "original_local_estimate": {
+              "characters": 18118,
+              "estimated_tokens": 4530,
+              "method": "chars_div_4",
+              "authoritative": false
+            },
+            "compressed_local_estimate": {
+              "characters": 300,
+              "estimated_tokens": 75,
+              "method": "chars_div_4",
+              "authoritative": false
+            },
+            "reduction_ratio": 0.983444,
+            "authoritative": false
+          },
+          "ledger": {
+            "stages": [
+              {
+                "stage": "compression",
+                "source": "synthetic-extractive-v1",
+                "provider_call": false,
+                "provider_usage": {
+                  "input_tokens": null,
+                  "output_tokens": null,
+                  "unknown_fields": [
+                    "input_tokens",
+                    "output_tokens"
+                  ],
+                  "invalid_fields": []
+                },
+                "local_estimate": {
+                  "characters": 300,
+                  "estimated_tokens": 75,
+                  "method": "chars_div_4",
+                  "authoritative": false
+                },
+                "note": "local reference compressor; no provider call"
+              }
+            ],
+            "provider_totals": {
+              "input_tokens": null,
+              "output_tokens": null
+            },
+            "known_subtotals": {
+              "input_tokens": 0,
+              "output_tokens": 0
+            },
+            "provider_usage_complete": false,
+            "unknown_stages": [
+              {
+                "stage": "compression",
+                "fields": [
+                  "input_tokens",
+                  "output_tokens"
+                ]
+              }
+            ],
+            "provider_billed_stages": [],
+            "warnings": [
+              "compression: provider usage not reported; kept unknown"
+            ],
+            "measured_at": "2026-11-12T06:42:19.539033+00:00",
+            "estimate_is_authoritative": false
+          }
+        },
+        "ledger": {
+          "stages": [
+            {
+              "stage": "compression",
+              "source": "synthetic-extractive-v1",
+              "provider_call": false,
+              "provider_usage": {
+                "input_tokens": null,
+                "output_tokens": null,
+                "unknown_fields": [
+                  "input_tokens",
+                  "output_tokens"
+                ],
+                "invalid_fields": []
+              },
+              "local_estimate": {
+                "characters": 300,
+                "estimated_tokens": 75,
+                "method": "chars_div_4",
+                "authoritative": false
+              },
+              "note": "local reference compressor; no provider call"
+            },
+            {
+              "stage": "answer",
+              "source": "synthetic_answer_stub",
+              "provider_call": true,
+              "provider_usage": {
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "unknown_fields": [],
+                "invalid_fields": []
+              },
+              "local_estimate": null,
+              "note": "synthetic answer-stage usage; not a real provider bill"
+            }
+          ],
+          "provider_totals": {
+            "input_tokens": null,
+            "output_tokens": null
+          },
+          "known_subtotals": {
+            "input_tokens": 120,
+            "output_tokens": 30
+          },
+          "provider_usage_complete": false,
+          "unknown_stages": [
+            {
+              "stage": "compression",
+              "fields": [
+                "input_tokens",
+                "output_tokens"
+              ]
+            }
+          ],
+          "provider_billed_stages": [
+            "answer"
+          ],
+          "warnings": [
+            "compression: provider usage not reported; kept unknown"
+          ],
+          "measured_at": "2026-11-12T06:42:19.539052+00:00",
+          "estimate_is_authoritative": false
+        }
+      },
+      {
+        "result": {
+          "status": "ok",
+          "reason": null,
+          "context_id": "synthetic-oc-t11",
+          "used_compressed": true,
+          "context": "USER: 我们在评估合成长上下文，不包含客户数据。\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.",
+          "summary": "USER: 我们在评估合成长上下文，不包含客户数据。\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.",
+          "facts_preserved": {
+            "FACT-001": true,
+            "FACT-002": true
+          },
+          "constraints_preserved": {
+            "CONSTRAINT-A": true,
+            "CONSTRAINT-B": true
+          },
+          "cache_hit": true,
+          "elapsed_ms": 0.0,
+          "plugin": {
+            "name": "billion-context",
+            "version": "0.1.213",
+            "package_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+            "plugin_executed": false,
+            "compressor": "synthetic-extractive-v1",
+            "measurement": "synthetic_reference"
+          },
+          "tokens": {
+            "original_local_estimate": {
+              "characters": 18118,
+              "estimated_tokens": 4530,
+              "method": "chars_div_4",
+              "authoritative": false
+            },
+            "compressed_local_estimate": {
+              "characters": 300,
+              "estimated_tokens": 75,
+              "method": "chars_div_4",
+              "authoritative": false
+            },
+            "reduction_ratio": 0.983444,
+            "authoritative": false
+          },
+          "ledger": {
+            "stages": [
+              {
+                "stage": "compression",
+                "source": "synthetic-extractive-v1",
+                "provider_call": false,
+                "provider_usage": {
+                  "input_tokens": null,
+                  "output_tokens": null,
+                  "unknown_fields": [
+                    "input_tokens",
+                    "output_tokens"
+                  ],
+                  "invalid_fields": []
+                },
+                "local_estimate": {
+                  "characters": 300,
+                  "estimated_tokens": 75,
+                  "method": "chars_div_4",
+                  "authoritative": false
+                },
+                "note": "local reference compressor; no provider call"
+              }
+            ],
+            "provider_totals": {
+              "input_tokens": null,
+              "output_tokens": null
+            },
+            "known_subtotals": {
+              "input_tokens": 0,
+              "output_tokens": 0
+            },
+            "provider_usage_complete": false,
+            "unknown_stages": [
+              {
+                "stage": "compression",
+                "fields": [
+                  "input_tokens",
+                  "output_tokens"
+                ]
+              }
+            ],
+            "provider_billed_stages": [],
+            "warnings": [
+              "compression: provider usage not reported; kept unknown"
+            ],
+            "measured_at": "2026-11-12T06:42:19.539483+00:00",
+            "estimate_is_authoritative": false
+          }
+        },
+        "ledger": {
+          "stages": [
+            {
+              "stage": "compression",
+              "source": "synthetic-extractive-v1",
+              "provider_call": false,
+              "provider_usage": {
+                "input_tokens": null,
+                "output_tokens": null,
+                "unknown_fields": [
+                  "input_tokens",
+                  "output_tokens"
+                ],
+                "invalid_fields": []
+              },
+              "local_estimate": {
+                "characters": 300,
+                "estimated_tokens": 75,
+                "method": "chars_div_4",
+                "authoritative": false
+              },
+              "note": "local reference compressor; no provider call"
+            },
+            {
+              "stage": "answer",
+              "source": "synthetic_answer_stub",
+              "provider_call": true,
+              "provider_usage": {
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "unknown_fields": [],
+                "invalid_fields": []
+              },
+              "local_estimate": null,
+              "note": "synthetic answer-stage usage; not a real provider bill"
+            }
+          ],
+          "provider_totals": {
+            "input_tokens": null,
+            "output_tokens": null
+          },
+          "known_subtotals": {
+            "input_tokens": 120,
+            "output_tokens": 30
+          },
+          "provider_usage_complete": false,
+          "unknown_stages": [
+            {
+              "stage": "compression",
+              "fields": [
+                "input_tokens",
+                "output_tokens"
+              ]
+            }
+          ],
+          "provider_billed_stages": [
+            "answer"
+          ],
+          "warnings": [
+            "compression: provider usage not reported; kept unknown"
+          ],
+          "measured_at": "2026-11-12T06:42:19.539502+00:00",
+          "estimate_is_authoritative": false
+        }
+      }
+    ],
+    "repeatable": true,
+    "failure": {
+      "status": "failed",
+      "reason": "compressor_error:RuntimeError",
+      "context_id": "synthetic-oc-t11",
+      "used_compressed": false,
+      "context": "USER: 我们在评估合成长上下文，不包含客户数据。\nfiller line 1: repeated background text used only for compression sizing\nfiller line 2: repeated background text used only for compression sizing\nfiller line 3: repeated background text used only for compression sizing\nfiller line 4: repeated background text used only for compression sizing\nfiller line 5: repeated background text used only for compression sizing\nfiller line 6: repeated background text used only for compression sizing\nfiller line 7: repeated background text used only for compression sizing\nfiller line 8: repeated background text used only for compression sizing\nfiller line 9: repeated background text used only for compression sizing\nfiller line 10: repeated background text used only for compression sizing\nfiller line 11: repeated background text used only for compression sizing\nfiller line 12: repeated background text used only for compression sizing\nfiller line 13: repeated background text used only for compression sizing\nfiller line 14: repeated background text used only for compression sizing\nfiller line 15: repeated background text used only for compression sizing\nfiller line 16: repeated background text used only for compression sizing\nfiller line 17: repeated background text used only for compression sizing\nfiller line 18: repeated background text used only for compression sizing\nfiller line 19: repeated background text used only for compression sizing\nfiller line 20: repeated background text used only for compression sizing\nfiller line 21: repeated background text used only for compression sizing\nfiller line 22: repeated background text used only for compression sizing\nfiller line 23: repeated background text used only for compression sizing\nfiller line 24: repeated background text used only for compression sizing\nfiller line 25: repeated background text used only for compression sizing\nfiller line 26: repeated background text used only for compression sizing\nfiller line 27: repeated background text used only for compression sizing\nfiller line 28: repeated background text used only for compression sizing\nfiller line 29: repeated background text used only for compression sizing\nfiller line 30: repeated background text used only for compression sizing\nfiller line 31: repeated background text used only for compression sizing\nfiller line 32: repeated background text used only for compression sizing\nfiller line 33: repeated background text used only for compression sizing\nfiller line 34: repeated background text used only for compression sizing\nfiller line 35: repeated background text used only for compression sizing\nfiller line 36: repeated background text used only for compression sizing\nfiller line 37: repeated background text used only for compression sizing\nfiller line 38: repeated background text used only for compression sizing\nfiller line 39: repeated background text used only for compression sizing\nfiller line 40: repeated background text used only for compression sizing\nfiller line 41: repeated background text used only for compression sizing\nfiller line 42: repeated background text used only for compression sizing\nfiller line 43: repeated background text used only for compression sizing\nfiller line 44: repeated background text used only for compression sizing\nfiller line 45: repeated background text used only for compression sizing\nfiller line 46: repeated background text used only for compression sizing\nfiller line 47: repeated background text used only for compression sizing\nfiller line 48: repeated background text used only for compression sizing\nfiller line 49: repeated background text used only for compression sizing\nfiller line 50: repeated background text used only for compression sizing\nfiller line 51: repeated background text used only for compression sizing\nfiller line 52: repeated background text used only for compression sizing\nfiller line 53: repeated background text used only for compression sizing\nfiller line 54: repeated background text used only for compression sizing\nfiller line 55: repeated background text used only for compression sizing\nfiller line 56: repeated background text used only for compression sizing\nfiller line 57: repeated background text used only for compression sizing\nfiller line 58: repeated background text used only for compression sizing\nfiller line 59: repeated background text used only for compression sizing\nfiller line 60: repeated background text used only for compression sizing\nfiller line 61: repeated background text used only for compression sizing\nfiller line 62: repeated background text used only for compression sizing\nfiller line 63: repeated background text used only for compression sizing\nfiller line 64: repeated background text used only for compression sizing\nfiller line 65: repeated background text used only for compression sizing\nfiller line 66: repeated background text used only for compression sizing\nfiller line 67: repeated background text used only for compression sizing\nfiller line 68: repeated background text used only for compression sizing\nfiller line 69: repeated background text used only for compression sizing\nfiller line 70: repeated background text used only for compression sizing\nfiller line 71: repeated background text used only for compression sizing\nfiller line 72: repeated background text used only for compression sizing\nfiller line 73: repeated background text used only for compression sizing\nfiller line 74: repeated background text used only for compression sizing\nfiller line 75: repeated background text used only for compression sizing\nfiller line 76: repeated background text used only for compression sizing\nfiller line 77: repeated background text used only for compression sizing\nfiller line 78: repeated background text used only for compression sizing\nfiller line 79: repeated background text used only for compression sizing\nfiller line 80: repeated background text used only for compression sizing\nfiller line 81: repeated background text used only for compression sizing\nfiller line 82: repeated background text used only for compression sizing\nfiller line 83: repeated background text used only for compression sizing\nfiller line 84: repeated background text used only for compression sizing\nfiller line 85: repeated background text used only for compression sizing\nfiller line 86: repeated background text used only for compression sizing\nfiller line 87: repeated background text used only for compression sizing\nfiller line 88: repeated background text used only for compression sizing\nfiller line 89: repeated background text used only for compression sizing\nfiller line 90: repeated background text used only for compression sizing\nfiller line 91: repeated background text used only for compression sizing\nfiller line 92: repeated background text used only for compression sizing\nfiller line 93: repeated background text used only for compression sizing\nfiller line 94: repeated background text used only for compression sizing\nfiller line 95: repeated background text used only for compression sizing\nfiller line 96: repeated background text used only for compression sizing\nfiller line 97: repeated background text used only for compression sizing\nfiller line 98: repeated background text used only for compression sizing\nfiller line 99: repeated background text used only for compression sizing\nfiller line 100: repeated background text used only for compression sizing\nfiller line 101: repeated background text used only for compression sizing\nfiller line 102: repeated background text used only for compression sizing\nfiller line 103: repeated background text used only for compression sizing\nfiller line 104: repeated background text used only for compression sizing\nfiller line 105: repeated background text used only for compression sizing\nfiller line 106: repeated background text used only for compression sizing\nfiller line 107: repeated background text used only for compression sizing\nfiller line 108: repeated background text used only for compression sizing\nfiller line 109: repeated background text used only for compression sizing\nfiller line 110: repeated background text used only for compression sizing\nfiller line 111: repeated background text used only for compression sizing\nfiller line 112: repeated background text used only for compression sizing\nfiller line 113: repeated background text used only for compression sizing\nfiller line 114: repeated background text used only for compression sizing\nfiller line 115: repeated background text used only for compression sizing\nfiller line 116: repeated background text used only for compression sizing\nfiller line 117: repeated background text used only for compression sizing\nfiller line 118: repeated background text used only for compression sizing\nfiller line 119: repeated background text used only for compression sizing\nfiller line 120: repeated background text used only for compression sizing\nfiller line 121: repeated background text used only for compression sizing\nfiller line 122: repeated background text used only for compression sizing\nfiller line 123: repeated background text used only for compression sizing\nfiller line 124: repeated background text used only for compression sizing\nfiller line 125: repeated background text used only for compression sizing\nfiller line 126: repeated background text used only for compression sizing\nfiller line 127: repeated background text used only for compression sizing\nfiller line 128: repeated background text used only for compression sizing\nfiller line 129: repeated background text used only for compression sizing\nfiller line 130: repeated background text used only for compression sizing\nfiller line 131: repeated background text used only for compression sizing\nfiller line 132: repeated background text used only for compression sizing\nfiller line 133: repeated background text used only for compression sizing\nfiller line 134: repeated background text used only for compression sizing\nfiller line 135: repeated background text used only for compression sizing\nfiller line 136: repeated background text used only for compression sizing\nfiller line 137: repeated background text used only for compression sizing\nfiller line 138: repeated background text used only for compression sizing\nfiller line 139: repeated background text used only for compression sizing\nfiller line 140: repeated background text used only for compression sizing\nfiller line 141: repeated background text used only for compression sizing\nfiller line 142: repeated background text used only for compression sizing\nfiller line 143: repeated background text used only for compression sizing\nfiller line 144: repeated background text used only for compression sizing\nfiller line 145: repeated background text used only for compression sizing\nfiller line 146: repeated background text used only for compression sizing\nfiller line 147: repeated background text used only for compression sizing\nfiller line 148: repeated background text used only for compression sizing\nfiller line 149: repeated background text used only for compression sizing\nfiller line 150: repeated background text used only for compression sizing\nfiller line 151: repeated background text used only for compression sizing\nfiller line 152: repeated background text used only for compression sizing\nfiller line 153: repeated background text used only for compression sizing\nfiller line 154: repeated background text used only for compression sizing\nfiller line 155: repeated background text used only for compression sizing\nfiller line 156: repeated background text used only for compression sizing\nfiller line 157: repeated background text used only for compression sizing\nfiller line 158: repeated background text used only for compression sizing\nfiller line 159: repeated background text used only for compression sizing\nfiller line 160: repeated background text used only for compression sizing\nfiller line 161: repeated background text used only for compression sizing\nfiller line 162: repeated background text used only for compression sizing\nfiller line 163: repeated background text used only for compression sizing\nfiller line 164: repeated background text used only for compression sizing\nfiller line 165: repeated background text used only for compression sizing\nfiller line 166: repeated background text used only for compression sizing\nfiller line 167: repeated background text used only for compression sizing\nfiller line 168: repeated background text used only for compression sizing\nfiller line 169: repeated background text used only for compression sizing\nfiller line 170: repeated background text used only for compression sizing\nfiller line 171: repeated background text used only for compression sizing\nfiller line 172: repeated background text used only for compression sizing\nfiller line 173: repeated background text used only for compression sizing\nfiller line 174: repeated background text used only for compression sizing\nfiller line 175: repeated background text used only for compression sizing\nfiller line 176: repeated background text used only for compression sizing\nfiller line 177: repeated background text used only for compression sizing\nfiller line 178: repeated background text used only for compression sizing\nfiller line 179: repeated background text used only for compression sizing\nfiller line 180: repeated background text used only for compression sizing\nfiller line 181: repeated background text used only for compression sizing\nfiller line 182: repeated background text used only for compression sizing\nfiller line 183: repeated background text used only for compression sizing\nfiller line 184: repeated background text used only for compression sizing\nfiller line 185: repeated background text used only for compression sizing\nfiller line 186: repeated background text used only for compression sizing\nfiller line 187: repeated background text used only for compression sizing\nfiller line 188: repeated background text used only for compression sizing\nfiller line 189: repeated background text used only for compression sizing\nfiller line 190: repeated background text used only for compression sizing\nfiller line 191: repeated background text used only for compression sizing\nfiller line 192: repeated background text used only for compression sizing\nfiller line 193: repeated background text used only for compression sizing\nfiller line 194: repeated background text used only for compression sizing\nfiller line 195: repeated background text used only for compression sizing\nfiller line 196: repeated background text used only for compression sizing\nfiller line 197: repeated background text used only for compression sizing\nfiller line 198: repeated background text used only for compression sizing\nfiller line 199: repeated background text used only for compression sizing\nfiller line 200: repeated background text used only for compression sizing\nfiller line 201: repeated background text used only for compression sizing\nfiller line 202: repeated background text used only for compression sizing\nfiller line 203: repeated background text used only for compression sizing\nfiller line 204: repeated background text used only for compression sizing\nfiller line 205: repeated background text used only for compression sizing\nfiller line 206: repeated background text used only for compression sizing\nfiller line 207: repeated background text used only for compression sizing\nfiller line 208: repeated background text used only for compression sizing\nfiller line 209: repeated background text used only for compression sizing\nfiller line 210: repeated background text used only for compression sizing\nfiller line 211: repeated background text used only for compression sizing\nfiller line 212: repeated background text used only for compression sizing\nfiller line 213: repeated background text used only for compression sizing\nfiller line 214: repeated background text used only for compression sizing\nfiller line 215: repeated background text used only for compression sizing\nfiller line 216: repeated background text used only for compression sizing\nfiller line 217: repeated background text used only for compression sizing\nfiller line 218: repeated background text used only for compression sizing\nfiller line 219: repeated background text used only for compression sizing\nfiller line 220: repeated background text used only for compression sizing\nfiller line 221: repeated background text used only for compression sizing\nfiller line 222: repeated background text used only for compression sizing\nfiller line 223: repeated background text used only for compression sizing\nfiller line 224: repeated background text used only for compression sizing\nfiller line 225: repeated background text used only for compression sizing\nfiller line 226: repeated background text used only for compression sizing\nfiller line 227: repeated background text used only for compression sizing\nfiller line 228: repeated background text used only for compression sizing\nfiller line 229: repeated background text used only for compression sizing\nfiller line 230: repeated background text used only for compression sizing\nfiller line 231: repeated background text used only for compression sizing\nfiller line 232: repeated background text used only for compression sizing\nfiller line 233: repeated background text used only for compression sizing\nfiller line 234: repeated background text used only for compression sizing\nfiller line 235: repeated background text used only for compression sizing\nfiller line 236: repeated background text used only for compression sizing\nfiller line 237: repeated background text used only for compression sizing\nfiller line 238: repeated background text used only for compression sizing\nfiller line 239: repeated background text used only for compression sizing\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.\n",
+      "summary": null,
+      "facts_preserved": {},
+      "constraints_preserved": {},
+      "cache_hit": false,
+      "elapsed_ms": 0.23,
+      "plugin": {
+        "name": "billion-context",
+        "version": "0.1.213",
+        "package_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+        "plugin_executed": false,
+        "compressor": "synthetic-failing",
+        "measurement": "synthetic_reference"
+      },
+      "tokens": {
+        "original_local_estimate": {
+          "characters": 18118,
+          "estimated_tokens": 4530,
+          "method": "chars_div_4",
+          "authoritative": false
+        },
+        "compressed_local_estimate": null,
+        "reduction_ratio": null,
+        "authoritative": false
+      },
+      "ledger": null
+    },
+    "timeout": {
+      "status": "timeout",
+      "reason": "compression_timeout_0.05s",
+      "context_id": "synthetic-oc-t11",
+      "used_compressed": false,
+      "context": "USER: 我们在评估合成长上下文，不包含客户数据。\nfiller line 1: repeated background text used only for compression sizing\nfiller line 2: repeated background text used only for compression sizing\nfiller line 3: repeated background text used only for compression sizing\nfiller line 4: repeated background text used only for compression sizing\nfiller line 5: repeated background text used only for compression sizing\nfiller line 6: repeated background text used only for compression sizing\nfiller line 7: repeated background text used only for compression sizing\nfiller line 8: repeated background text used only for compression sizing\nfiller line 9: repeated background text used only for compression sizing\nfiller line 10: repeated background text used only for compression sizing\nfiller line 11: repeated background text used only for compression sizing\nfiller line 12: repeated background text used only for compression sizing\nfiller line 13: repeated background text used only for compression sizing\nfiller line 14: repeated background text used only for compression sizing\nfiller line 15: repeated background text used only for compression sizing\nfiller line 16: repeated background text used only for compression sizing\nfiller line 17: repeated background text used only for compression sizing\nfiller line 18: repeated background text used only for compression sizing\nfiller line 19: repeated background text used only for compression sizing\nfiller line 20: repeated background text used only for compression sizing\nfiller line 21: repeated background text used only for compression sizing\nfiller line 22: repeated background text used only for compression sizing\nfiller line 23: repeated background text used only for compression sizing\nfiller line 24: repeated background text used only for compression sizing\nfiller line 25: repeated background text used only for compression sizing\nfiller line 26: repeated background text used only for compression sizing\nfiller line 27: repeated background text used only for compression sizing\nfiller line 28: repeated background text used only for compression sizing\nfiller line 29: repeated background text used only for compression sizing\nfiller line 30: repeated background text used only for compression sizing\nfiller line 31: repeated background text used only for compression sizing\nfiller line 32: repeated background text used only for compression sizing\nfiller line 33: repeated background text used only for compression sizing\nfiller line 34: repeated background text used only for compression sizing\nfiller line 35: repeated background text used only for compression sizing\nfiller line 36: repeated background text used only for compression sizing\nfiller line 37: repeated background text used only for compression sizing\nfiller line 38: repeated background text used only for compression sizing\nfiller line 39: repeated background text used only for compression sizing\nfiller line 40: repeated background text used only for compression sizing\nfiller line 41: repeated background text used only for compression sizing\nfiller line 42: repeated background text used only for compression sizing\nfiller line 43: repeated background text used only for compression sizing\nfiller line 44: repeated background text used only for compression sizing\nfiller line 45: repeated background text used only for compression sizing\nfiller line 46: repeated background text used only for compression sizing\nfiller line 47: repeated background text used only for compression sizing\nfiller line 48: repeated background text used only for compression sizing\nfiller line 49: repeated background text used only for compression sizing\nfiller line 50: repeated background text used only for compression sizing\nfiller line 51: repeated background text used only for compression sizing\nfiller line 52: repeated background text used only for compression sizing\nfiller line 53: repeated background text used only for compression sizing\nfiller line 54: repeated background text used only for compression sizing\nfiller line 55: repeated background text used only for compression sizing\nfiller line 56: repeated background text used only for compression sizing\nfiller line 57: repeated background text used only for compression sizing\nfiller line 58: repeated background text used only for compression sizing\nfiller line 59: repeated background text used only for compression sizing\nfiller line 60: repeated background text used only for compression sizing\nfiller line 61: repeated background text used only for compression sizing\nfiller line 62: repeated background text used only for compression sizing\nfiller line 63: repeated background text used only for compression sizing\nfiller line 64: repeated background text used only for compression sizing\nfiller line 65: repeated background text used only for compression sizing\nfiller line 66: repeated background text used only for compression sizing\nfiller line 67: repeated background text used only for compression sizing\nfiller line 68: repeated background text used only for compression sizing\nfiller line 69: repeated background text used only for compression sizing\nfiller line 70: repeated background text used only for compression sizing\nfiller line 71: repeated background text used only for compression sizing\nfiller line 72: repeated background text used only for compression sizing\nfiller line 73: repeated background text used only for compression sizing\nfiller line 74: repeated background text used only for compression sizing\nfiller line 75: repeated background text used only for compression sizing\nfiller line 76: repeated background text used only for compression sizing\nfiller line 77: repeated background text used only for compression sizing\nfiller line 78: repeated background text used only for compression sizing\nfiller line 79: repeated background text used only for compression sizing\nfiller line 80: repeated background text used only for compression sizing\nfiller line 81: repeated background text used only for compression sizing\nfiller line 82: repeated background text used only for compression sizing\nfiller line 83: repeated background text used only for compression sizing\nfiller line 84: repeated background text used only for compression sizing\nfiller line 85: repeated background text used only for compression sizing\nfiller line 86: repeated background text used only for compression sizing\nfiller line 87: repeated background text used only for compression sizing\nfiller line 88: repeated background text used only for compression sizing\nfiller line 89: repeated background text used only for compression sizing\nfiller line 90: repeated background text used only for compression sizing\nfiller line 91: repeated background text used only for compression sizing\nfiller line 92: repeated background text used only for compression sizing\nfiller line 93: repeated background text used only for compression sizing\nfiller line 94: repeated background text used only for compression sizing\nfiller line 95: repeated background text used only for compression sizing\nfiller line 96: repeated background text used only for compression sizing\nfiller line 97: repeated background text used only for compression sizing\nfiller line 98: repeated background text used only for compression sizing\nfiller line 99: repeated background text used only for compression sizing\nfiller line 100: repeated background text used only for compression sizing\nfiller line 101: repeated background text used only for compression sizing\nfiller line 102: repeated background text used only for compression sizing\nfiller line 103: repeated background text used only for compression sizing\nfiller line 104: repeated background text used only for compression sizing\nfiller line 105: repeated background text used only for compression sizing\nfiller line 106: repeated background text used only for compression sizing\nfiller line 107: repeated background text used only for compression sizing\nfiller line 108: repeated background text used only for compression sizing\nfiller line 109: repeated background text used only for compression sizing\nfiller line 110: repeated background text used only for compression sizing\nfiller line 111: repeated background text used only for compression sizing\nfiller line 112: repeated background text used only for compression sizing\nfiller line 113: repeated background text used only for compression sizing\nfiller line 114: repeated background text used only for compression sizing\nfiller line 115: repeated background text used only for compression sizing\nfiller line 116: repeated background text used only for compression sizing\nfiller line 117: repeated background text used only for compression sizing\nfiller line 118: repeated background text used only for compression sizing\nfiller line 119: repeated background text used only for compression sizing\nfiller line 120: repeated background text used only for compression sizing\nfiller line 121: repeated background text used only for compression sizing\nfiller line 122: repeated background text used only for compression sizing\nfiller line 123: repeated background text used only for compression sizing\nfiller line 124: repeated background text used only for compression sizing\nfiller line 125: repeated background text used only for compression sizing\nfiller line 126: repeated background text used only for compression sizing\nfiller line 127: repeated background text used only for compression sizing\nfiller line 128: repeated background text used only for compression sizing\nfiller line 129: repeated background text used only for compression sizing\nfiller line 130: repeated background text used only for compression sizing\nfiller line 131: repeated background text used only for compression sizing\nfiller line 132: repeated background text used only for compression sizing\nfiller line 133: repeated background text used only for compression sizing\nfiller line 134: repeated background text used only for compression sizing\nfiller line 135: repeated background text used only for compression sizing\nfiller line 136: repeated background text used only for compression sizing\nfiller line 137: repeated background text used only for compression sizing\nfiller line 138: repeated background text used only for compression sizing\nfiller line 139: repeated background text used only for compression sizing\nfiller line 140: repeated background text used only for compression sizing\nfiller line 141: repeated background text used only for compression sizing\nfiller line 142: repeated background text used only for compression sizing\nfiller line 143: repeated background text used only for compression sizing\nfiller line 144: repeated background text used only for compression sizing\nfiller line 145: repeated background text used only for compression sizing\nfiller line 146: repeated background text used only for compression sizing\nfiller line 147: repeated background text used only for compression sizing\nfiller line 148: repeated background text used only for compression sizing\nfiller line 149: repeated background text used only for compression sizing\nfiller line 150: repeated background text used only for compression sizing\nfiller line 151: repeated background text used only for compression sizing\nfiller line 152: repeated background text used only for compression sizing\nfiller line 153: repeated background text used only for compression sizing\nfiller line 154: repeated background text used only for compression sizing\nfiller line 155: repeated background text used only for compression sizing\nfiller line 156: repeated background text used only for compression sizing\nfiller line 157: repeated background text used only for compression sizing\nfiller line 158: repeated background text used only for compression sizing\nfiller line 159: repeated background text used only for compression sizing\nfiller line 160: repeated background text used only for compression sizing\nfiller line 161: repeated background text used only for compression sizing\nfiller line 162: repeated background text used only for compression sizing\nfiller line 163: repeated background text used only for compression sizing\nfiller line 164: repeated background text used only for compression sizing\nfiller line 165: repeated background text used only for compression sizing\nfiller line 166: repeated background text used only for compression sizing\nfiller line 167: repeated background text used only for compression sizing\nfiller line 168: repeated background text used only for compression sizing\nfiller line 169: repeated background text used only for compression sizing\nfiller line 170: repeated background text used only for compression sizing\nfiller line 171: repeated background text used only for compression sizing\nfiller line 172: repeated background text used only for compression sizing\nfiller line 173: repeated background text used only for compression sizing\nfiller line 174: repeated background text used only for compression sizing\nfiller line 175: repeated background text used only for compression sizing\nfiller line 176: repeated background text used only for compression sizing\nfiller line 177: repeated background text used only for compression sizing\nfiller line 178: repeated background text used only for compression sizing\nfiller line 179: repeated background text used only for compression sizing\nfiller line 180: repeated background text used only for compression sizing\nfiller line 181: repeated background text used only for compression sizing\nfiller line 182: repeated background text used only for compression sizing\nfiller line 183: repeated background text used only for compression sizing\nfiller line 184: repeated background text used only for compression sizing\nfiller line 185: repeated background text used only for compression sizing\nfiller line 186: repeated background text used only for compression sizing\nfiller line 187: repeated background text used only for compression sizing\nfiller line 188: repeated background text used only for compression sizing\nfiller line 189: repeated background text used only for compression sizing\nfiller line 190: repeated background text used only for compression sizing\nfiller line 191: repeated background text used only for compression sizing\nfiller line 192: repeated background text used only for compression sizing\nfiller line 193: repeated background text used only for compression sizing\nfiller line 194: repeated background text used only for compression sizing\nfiller line 195: repeated background text used only for compression sizing\nfiller line 196: repeated background text used only for compression sizing\nfiller line 197: repeated background text used only for compression sizing\nfiller line 198: repeated background text used only for compression sizing\nfiller line 199: repeated background text used only for compression sizing\nfiller line 200: repeated background text used only for compression sizing\nfiller line 201: repeated background text used only for compression sizing\nfiller line 202: repeated background text used only for compression sizing\nfiller line 203: repeated background text used only for compression sizing\nfiller line 204: repeated background text used only for compression sizing\nfiller line 205: repeated background text used only for compression sizing\nfiller line 206: repeated background text used only for compression sizing\nfiller line 207: repeated background text used only for compression sizing\nfiller line 208: repeated background text used only for compression sizing\nfiller line 209: repeated background text used only for compression sizing\nfiller line 210: repeated background text used only for compression sizing\nfiller line 211: repeated background text used only for compression sizing\nfiller line 212: repeated background text used only for compression sizing\nfiller line 213: repeated background text used only for compression sizing\nfiller line 214: repeated background text used only for compression sizing\nfiller line 215: repeated background text used only for compression sizing\nfiller line 216: repeated background text used only for compression sizing\nfiller line 217: repeated background text used only for compression sizing\nfiller line 218: repeated background text used only for compression sizing\nfiller line 219: repeated background text used only for compression sizing\nfiller line 220: repeated background text used only for compression sizing\nfiller line 221: repeated background text used only for compression sizing\nfiller line 222: repeated background text used only for compression sizing\nfiller line 223: repeated background text used only for compression sizing\nfiller line 224: repeated background text used only for compression sizing\nfiller line 225: repeated background text used only for compression sizing\nfiller line 226: repeated background text used only for compression sizing\nfiller line 227: repeated background text used only for compression sizing\nfiller line 228: repeated background text used only for compression sizing\nfiller line 229: repeated background text used only for compression sizing\nfiller line 230: repeated background text used only for compression sizing\nfiller line 231: repeated background text used only for compression sizing\nfiller line 232: repeated background text used only for compression sizing\nfiller line 233: repeated background text used only for compression sizing\nfiller line 234: repeated background text used only for compression sizing\nfiller line 235: repeated background text used only for compression sizing\nfiller line 236: repeated background text used only for compression sizing\nfiller line 237: repeated background text used only for compression sizing\nfiller line 238: repeated background text used only for compression sizing\nfiller line 239: repeated background text used only for compression sizing\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.\n",
+      "summary": null,
+      "facts_preserved": {},
+      "constraints_preserved": {},
+      "cache_hit": false,
+      "elapsed_ms": 50.465,
+      "plugin": {
+        "name": "billion-context",
+        "version": "0.1.213",
+        "package_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+        "plugin_executed": false,
+        "compressor": "synthetic-slow",
+        "measurement": "synthetic_reference"
+      },
+      "tokens": {
+        "original_local_estimate": {
+          "characters": 18118,
+          "estimated_tokens": 4530,
+          "method": "chars_div_4",
+          "authoritative": false
+        },
+        "compressed_local_estimate": null,
+        "reduction_ratio": null,
+        "authoritative": false
+      },
+      "ledger": null
+    },
+    "cancelled": {
+      "status": "cancelled",
+      "reason": "cancelled_before_start",
+      "context_id": "synthetic-oc-t11",
+      "used_compressed": false,
+      "context": "USER: 我们在评估合成长上下文，不包含客户数据。\nfiller line 1: repeated background text used only for compression sizing\nfiller line 2: repeated background text used only for compression sizing\nfiller line 3: repeated background text used only for compression sizing\nfiller line 4: repeated background text used only for compression sizing\nfiller line 5: repeated background text used only for compression sizing\nfiller line 6: repeated background text used only for compression sizing\nfiller line 7: repeated background text used only for compression sizing\nfiller line 8: repeated background text used only for compression sizing\nfiller line 9: repeated background text used only for compression sizing\nfiller line 10: repeated background text used only for compression sizing\nfiller line 11: repeated background text used only for compression sizing\nfiller line 12: repeated background text used only for compression sizing\nfiller line 13: repeated background text used only for compression sizing\nfiller line 14: repeated background text used only for compression sizing\nfiller line 15: repeated background text used only for compression sizing\nfiller line 16: repeated background text used only for compression sizing\nfiller line 17: repeated background text used only for compression sizing\nfiller line 18: repeated background text used only for compression sizing\nfiller line 19: repeated background text used only for compression sizing\nfiller line 20: repeated background text used only for compression sizing\nfiller line 21: repeated background text used only for compression sizing\nfiller line 22: repeated background text used only for compression sizing\nfiller line 23: repeated background text used only for compression sizing\nfiller line 24: repeated background text used only for compression sizing\nfiller line 25: repeated background text used only for compression sizing\nfiller line 26: repeated background text used only for compression sizing\nfiller line 27: repeated background text used only for compression sizing\nfiller line 28: repeated background text used only for compression sizing\nfiller line 29: repeated background text used only for compression sizing\nfiller line 30: repeated background text used only for compression sizing\nfiller line 31: repeated background text used only for compression sizing\nfiller line 32: repeated background text used only for compression sizing\nfiller line 33: repeated background text used only for compression sizing\nfiller line 34: repeated background text used only for compression sizing\nfiller line 35: repeated background text used only for compression sizing\nfiller line 36: repeated background text used only for compression sizing\nfiller line 37: repeated background text used only for compression sizing\nfiller line 38: repeated background text used only for compression sizing\nfiller line 39: repeated background text used only for compression sizing\nfiller line 40: repeated background text used only for compression sizing\nfiller line 41: repeated background text used only for compression sizing\nfiller line 42: repeated background text used only for compression sizing\nfiller line 43: repeated background text used only for compression sizing\nfiller line 44: repeated background text used only for compression sizing\nfiller line 45: repeated background text used only for compression sizing\nfiller line 46: repeated background text used only for compression sizing\nfiller line 47: repeated background text used only for compression sizing\nfiller line 48: repeated background text used only for compression sizing\nfiller line 49: repeated background text used only for compression sizing\nfiller line 50: repeated background text used only for compression sizing\nfiller line 51: repeated background text used only for compression sizing\nfiller line 52: repeated background text used only for compression sizing\nfiller line 53: repeated background text used only for compression sizing\nfiller line 54: repeated background text used only for compression sizing\nfiller line 55: repeated background text used only for compression sizing\nfiller line 56: repeated background text used only for compression sizing\nfiller line 57: repeated background text used only for compression sizing\nfiller line 58: repeated background text used only for compression sizing\nfiller line 59: repeated background text used only for compression sizing\nfiller line 60: repeated background text used only for compression sizing\nfiller line 61: repeated background text used only for compression sizing\nfiller line 62: repeated background text used only for compression sizing\nfiller line 63: repeated background text used only for compression sizing\nfiller line 64: repeated background text used only for compression sizing\nfiller line 65: repeated background text used only for compression sizing\nfiller line 66: repeated background text used only for compression sizing\nfiller line 67: repeated background text used only for compression sizing\nfiller line 68: repeated background text used only for compression sizing\nfiller line 69: repeated background text used only for compression sizing\nfiller line 70: repeated background text used only for compression sizing\nfiller line 71: repeated background text used only for compression sizing\nfiller line 72: repeated background text used only for compression sizing\nfiller line 73: repeated background text used only for compression sizing\nfiller line 74: repeated background text used only for compression sizing\nfiller line 75: repeated background text used only for compression sizing\nfiller line 76: repeated background text used only for compression sizing\nfiller line 77: repeated background text used only for compression sizing\nfiller line 78: repeated background text used only for compression sizing\nfiller line 79: repeated background text used only for compression sizing\nfiller line 80: repeated background text used only for compression sizing\nfiller line 81: repeated background text used only for compression sizing\nfiller line 82: repeated background text used only for compression sizing\nfiller line 83: repeated background text used only for compression sizing\nfiller line 84: repeated background text used only for compression sizing\nfiller line 85: repeated background text used only for compression sizing\nfiller line 86: repeated background text used only for compression sizing\nfiller line 87: repeated background text used only for compression sizing\nfiller line 88: repeated background text used only for compression sizing\nfiller line 89: repeated background text used only for compression sizing\nfiller line 90: repeated background text used only for compression sizing\nfiller line 91: repeated background text used only for compression sizing\nfiller line 92: repeated background text used only for compression sizing\nfiller line 93: repeated background text used only for compression sizing\nfiller line 94: repeated background text used only for compression sizing\nfiller line 95: repeated background text used only for compression sizing\nfiller line 96: repeated background text used only for compression sizing\nfiller line 97: repeated background text used only for compression sizing\nfiller line 98: repeated background text used only for compression sizing\nfiller line 99: repeated background text used only for compression sizing\nfiller line 100: repeated background text used only for compression sizing\nfiller line 101: repeated background text used only for compression sizing\nfiller line 102: repeated background text used only for compression sizing\nfiller line 103: repeated background text used only for compression sizing\nfiller line 104: repeated background text used only for compression sizing\nfiller line 105: repeated background text used only for compression sizing\nfiller line 106: repeated background text used only for compression sizing\nfiller line 107: repeated background text used only for compression sizing\nfiller line 108: repeated background text used only for compression sizing\nfiller line 109: repeated background text used only for compression sizing\nfiller line 110: repeated background text used only for compression sizing\nfiller line 111: repeated background text used only for compression sizing\nfiller line 112: repeated background text used only for compression sizing\nfiller line 113: repeated background text used only for compression sizing\nfiller line 114: repeated background text used only for compression sizing\nfiller line 115: repeated background text used only for compression sizing\nfiller line 116: repeated background text used only for compression sizing\nfiller line 117: repeated background text used only for compression sizing\nfiller line 118: repeated background text used only for compression sizing\nfiller line 119: repeated background text used only for compression sizing\nfiller line 120: repeated background text used only for compression sizing\nfiller line 121: repeated background text used only for compression sizing\nfiller line 122: repeated background text used only for compression sizing\nfiller line 123: repeated background text used only for compression sizing\nfiller line 124: repeated background text used only for compression sizing\nfiller line 125: repeated background text used only for compression sizing\nfiller line 126: repeated background text used only for compression sizing\nfiller line 127: repeated background text used only for compression sizing\nfiller line 128: repeated background text used only for compression sizing\nfiller line 129: repeated background text used only for compression sizing\nfiller line 130: repeated background text used only for compression sizing\nfiller line 131: repeated background text used only for compression sizing\nfiller line 132: repeated background text used only for compression sizing\nfiller line 133: repeated background text used only for compression sizing\nfiller line 134: repeated background text used only for compression sizing\nfiller line 135: repeated background text used only for compression sizing\nfiller line 136: repeated background text used only for compression sizing\nfiller line 137: repeated background text used only for compression sizing\nfiller line 138: repeated background text used only for compression sizing\nfiller line 139: repeated background text used only for compression sizing\nfiller line 140: repeated background text used only for compression sizing\nfiller line 141: repeated background text used only for compression sizing\nfiller line 142: repeated background text used only for compression sizing\nfiller line 143: repeated background text used only for compression sizing\nfiller line 144: repeated background text used only for compression sizing\nfiller line 145: repeated background text used only for compression sizing\nfiller line 146: repeated background text used only for compression sizing\nfiller line 147: repeated background text used only for compression sizing\nfiller line 148: repeated background text used only for compression sizing\nfiller line 149: repeated background text used only for compression sizing\nfiller line 150: repeated background text used only for compression sizing\nfiller line 151: repeated background text used only for compression sizing\nfiller line 152: repeated background text used only for compression sizing\nfiller line 153: repeated background text used only for compression sizing\nfiller line 154: repeated background text used only for compression sizing\nfiller line 155: repeated background text used only for compression sizing\nfiller line 156: repeated background text used only for compression sizing\nfiller line 157: repeated background text used only for compression sizing\nfiller line 158: repeated background text used only for compression sizing\nfiller line 159: repeated background text used only for compression sizing\nfiller line 160: repeated background text used only for compression sizing\nfiller line 161: repeated background text used only for compression sizing\nfiller line 162: repeated background text used only for compression sizing\nfiller line 163: repeated background text used only for compression sizing\nfiller line 164: repeated background text used only for compression sizing\nfiller line 165: repeated background text used only for compression sizing\nfiller line 166: repeated background text used only for compression sizing\nfiller line 167: repeated background text used only for compression sizing\nfiller line 168: repeated background text used only for compression sizing\nfiller line 169: repeated background text used only for compression sizing\nfiller line 170: repeated background text used only for compression sizing\nfiller line 171: repeated background text used only for compression sizing\nfiller line 172: repeated background text used only for compression sizing\nfiller line 173: repeated background text used only for compression sizing\nfiller line 174: repeated background text used only for compression sizing\nfiller line 175: repeated background text used only for compression sizing\nfiller line 176: repeated background text used only for compression sizing\nfiller line 177: repeated background text used only for compression sizing\nfiller line 178: repeated background text used only for compression sizing\nfiller line 179: repeated background text used only for compression sizing\nfiller line 180: repeated background text used only for compression sizing\nfiller line 181: repeated background text used only for compression sizing\nfiller line 182: repeated background text used only for compression sizing\nfiller line 183: repeated background text used only for compression sizing\nfiller line 184: repeated background text used only for compression sizing\nfiller line 185: repeated background text used only for compression sizing\nfiller line 186: repeated background text used only for compression sizing\nfiller line 187: repeated background text used only for compression sizing\nfiller line 188: repeated background text used only for compression sizing\nfiller line 189: repeated background text used only for compression sizing\nfiller line 190: repeated background text used only for compression sizing\nfiller line 191: repeated background text used only for compression sizing\nfiller line 192: repeated background text used only for compression sizing\nfiller line 193: repeated background text used only for compression sizing\nfiller line 194: repeated background text used only for compression sizing\nfiller line 195: repeated background text used only for compression sizing\nfiller line 196: repeated background text used only for compression sizing\nfiller line 197: repeated background text used only for compression sizing\nfiller line 198: repeated background text used only for compression sizing\nfiller line 199: repeated background text used only for compression sizing\nfiller line 200: repeated background text used only for compression sizing\nfiller line 201: repeated background text used only for compression sizing\nfiller line 202: repeated background text used only for compression sizing\nfiller line 203: repeated background text used only for compression sizing\nfiller line 204: repeated background text used only for compression sizing\nfiller line 205: repeated background text used only for compression sizing\nfiller line 206: repeated background text used only for compression sizing\nfiller line 207: repeated background text used only for compression sizing\nfiller line 208: repeated background text used only for compression sizing\nfiller line 209: repeated background text used only for compression sizing\nfiller line 210: repeated background text used only for compression sizing\nfiller line 211: repeated background text used only for compression sizing\nfiller line 212: repeated background text used only for compression sizing\nfiller line 213: repeated background text used only for compression sizing\nfiller line 214: repeated background text used only for compression sizing\nfiller line 215: repeated background text used only for compression sizing\nfiller line 216: repeated background text used only for compression sizing\nfiller line 217: repeated background text used only for compression sizing\nfiller line 218: repeated background text used only for compression sizing\nfiller line 219: repeated background text used only for compression sizing\nfiller line 220: repeated background text used only for compression sizing\nfiller line 221: repeated background text used only for compression sizing\nfiller line 222: repeated background text used only for compression sizing\nfiller line 223: repeated background text used only for compression sizing\nfiller line 224: repeated background text used only for compression sizing\nfiller line 225: repeated background text used only for compression sizing\nfiller line 226: repeated background text used only for compression sizing\nfiller line 227: repeated background text used only for compression sizing\nfiller line 228: repeated background text used only for compression sizing\nfiller line 229: repeated background text used only for compression sizing\nfiller line 230: repeated background text used only for compression sizing\nfiller line 231: repeated background text used only for compression sizing\nfiller line 232: repeated background text used only for compression sizing\nfiller line 233: repeated background text used only for compression sizing\nfiller line 234: repeated background text used only for compression sizing\nfiller line 235: repeated background text used only for compression sizing\nfiller line 236: repeated background text used only for compression sizing\nfiller line 237: repeated background text used only for compression sizing\nfiller line 238: repeated background text used only for compression sizing\nfiller line 239: repeated background text used only for compression sizing\nFACT-001: the approved release is billion-context 0.1.213.\nFACT-002: the package SHA-256 must match the pinned review record.\nCONSTRAINT-A: never send credentials or customer data to the compressor.\nCONSTRAINT-B: a failed compression must fall back to the original context.\n",
+      "summary": null,
+      "facts_preserved": {},
+      "constraints_preserved": {},
+      "cache_hit": false,
+      "elapsed_ms": 0.0,
+      "plugin": {
+        "name": "billion-context",
+        "version": "0.1.213",
+        "package_sha256": "e3dab47c9e2cbbe67b541190188a3217571c10cb3ea771ab7c04b1301251df98",
+        "plugin_executed": false,
+        "compressor": null,
+        "measurement": "synthetic_reference"
+      },
+      "tokens": {
+        "original_local_estimate": {
+          "characters": 18118,
+          "estimated_tokens": 4530,
+          "method": "chars_div_4",
+          "authoritative": false
+        },
+        "compressed_local_estimate": null,
+        "reduction_ratio": null,
+        "authoritative": false
+      },
+      "ledger": null
+    },
+    "plugin_executed": false,
+    "measurement": "synthetic_reference",
+    "real_plugin_measurement": "not_measured"
+  },
+  "ok": true
+}

@@ -77,13 +77,13 @@ def tool_risk_profile(tool_name: str) -> dict[str, object]:
     external tools default to the stricter profile so a newly discovered tool
     cannot accidentally inherit a read-only policy.
     """
-    if tool_name in {"Read", "Glob", "Grep", "mcp__workspace__knowledge_search", "mcp__workspace__knowledge_read", "mcp__workspace__web_search", "mcp__workspace__web_read"}:
+    if tool_name in {"Read", "Glob", "Grep", "mcp__workspace__knowledge_search", "mcp__workspace__knowledge_read", "mcp__workspace__web_search", "mcp__workspace__web_read", "mcp__workspace__file_read", "mcp__workspace__file_search"}:
         return {
             "risk_level": "low",
             "approval_policy": "safe_read",
             "impact": "只读取当前会话已授权的数据，不修改工作区或外部系统",
         }
-    if tool_name in {"Write", "Edit"}:
+    if tool_name in {"Write", "Edit", "mcp__workspace__file_write"}:
         return {
             "risk_level": "medium",
             "approval_policy": "user_confirmation",
