@@ -6,3 +6,9 @@
 - [DONE] [31 regression tests](../server/tests/test_web_tools.py) pass locally (`pytest tests/test_web_tools.py -q --basetemp=../.runtime/web-test-03 -p no:cacheprovider`) and against the private candidate module on Tencent Python 3.10 (`.runtime/knowledge-04-install/run-web-candidate-tests.py`, 31 passed, one harmless assertion-rewrite warning caused by explicit module loading). They cover real fake-IP shape, IP pinning, private/mixed/metadata/multicast rejection, response bounds, resolver redirects and overall timeouts. Root owns deployment and the later paid model rerun; the earlier failed end-to-end report remains unchanged.
 
 The fallback sends only the user-requested public hostname to Cloudflare or Google DNS-over-HTTPS. It does not send the search text, webpage body, company documents or credentials to the resolver. The ordinary search request separately sends the intended query to Bing. Primary endpoint references: [Cloudflare JSON API](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/), [Google JSON API](https://developers.google.com/speed/public-dns/docs/doh/json).
+
+### 多源搜索和研究增强（2026-11-13）
+
+- [DONE] 保留 Bing RSS 作为默认且无需额外凭据的检索线路；增加显式环境变量控制的公共 SearXNG 和 Brave provider。没有 endpoint 或授权密钥时不会调用对应 provider；可选线路失败时默认回退 Bing，实际 provider、请求 provider、回退状态和每条来源均返回并登记。
+- [DONE] 对搜索结果执行公开地址规范化和去重，移除跟踪查询参数与片段；每次最多 8 条结果、搜索响应最多 500 KB，页面正文仍受 2 MB 和 40 秒边界约束。Brave key 仅放在服务端请求头，不进入 URL、来源定位或客户端响应。
+- [DONE] 回归覆盖 SearXNG 去重与来源标记、无配置回退、Brave 请求头脱敏以及原有网络安全边界；WebTools 与 workspace tests 共 50 项通过。未执行真实可选 provider 调用，未配置客户数据或付费模型。

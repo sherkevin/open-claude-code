@@ -216,7 +216,9 @@ PDF 由服务器本地提取文本，扫描页由 RapidOCR 识别，向量由本
 
 ### 搜索、来源和故障定位
 
-网页搜索由助手开关控制，当前搜索端使用公开Bing RSS，网页读取使用受限HTTP客户端。仅允许公开地址与文本内容，对DNS、重定向、响应大小和耗时进行检查。网页网络可用性与TokenHub模型线路独立；不要通过放开内网地址来解决搜索失败。知识OCR与向量计算本地完成，网页检索只应发送必要关键词，不发送凭据或企业文档全文。
+网页搜索由助手开关控制，默认使用公开 Bing RSS，网页读取使用受限 HTTP 客户端。服务端还支持显式配置的公共 SearXNG 或 Brave provider：将 `AGENT_WEB_SEARCH_PROVIDER` 设置为 `searxng` 时必须同时提供 `AGENT_WEB_SEARCH_SEARXNG_URL`；设置为 `brave` 时必须同时提供 `AGENT_WEB_SEARCH_BRAVE_API_KEY`（可用 `AGENT_WEB_SEARCH_BRAVE_URL` 覆盖默认接口）。未配置这些变量时不会偷偷调用可选 provider，仍只走 Bing；可选 provider 失败时默认回退 Bing，可用 `AGENT_WEB_SEARCH_FALLBACK_BING=false` 关闭回退。
+
+每次搜索最多返回 8 个结果，结果按规范化公开地址去重（移除 `utm_*`、`gclid` 等跟踪参数和片段），搜索响应上限 500 KB，页面读取上限 2 MB，网络超时与公开 DNS、重定向、响应大小检查保持不变。返回结果明确记录请求 provider、实际 provider 和是否回退；每个摘要和正文仍通过受权限校验的 source 标记引用。搜索只发送必要关键词，不发送凭据、企业文档全文或内部地址。网页网络可用性与 TokenHub 模型线路独立；不要通过放开内网地址来解决搜索失败。知识 OCR 与向量计算本地完成。
 
 MCP应按 [来源契约](MCP_SOURCE_CONTRACT.md) 返回取数依据。页面中的逻辑数据库说明不会代替真实查询中的字段、筛选、时间和汇总口径。缺失来源字段保持缺失，不应通过角色提示词猜测补全。
 

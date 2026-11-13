@@ -65,6 +65,106 @@ def test_search_uses_real_response_sources_and_current_assistant_flag(monkeypatc
     asyncio.run(scenario())
 
 
+def test_search_deduplicates_canonical_urls_and_marks_provider(monkeypatch):
+    class Evidence:
+        def __init__(self):
+            self.items = []
+        def register(self, *args, **kwargs):
+            self.items.append((args, kwargs))
+            return {"id": f"source-{len(self.items)}"}
+    class Service:
+        evidence = Evidence()
+        settings = None
+        def usable_assistant(self, assistant_id, user):
+            return {"id": assistant_id, "web_search_enabled": True}
+    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "searxng")
+    monkeypatch.setenv("AGENT_WEB_SEARCH_SEARXNG_URL", "https://search.example/search")
+    fetch = AsyncMock(return_value=("https://search.example/search", "application/json", json_bytes({
+        "results": [
+            {"title": "First", "url": "https://example.com/report/?utm_source=x", "content": "a"},
+            {"title": "Duplicate", "url": "https://EXAMPLE.com/report", "content": "b"},
+            {"title": "Second", "url": "https://example.org/other", "content": "c"},
+        ]
+    })))
+    monkeypatch.setattr("app.web_tools.fetch_public", fetch)
+    async def scenario():
+        result = await WebTools(Service()).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query", limit=5)
+        assert result["provider"] == "searxng" and result["fallback"] is False
+        assert [item["url"] for item in result["results"]] == ["https://example.com/report", "https://example.org/other"]
+        assert all(item["provider"] == "searxng" for item in result["results"])
+        assert len(Service.evidence.items) == 2
+    asyncio.run(scenario())
+
+
+def test_optional_provider_without_endpoint_falls_back_to_bing(monkeypatch):
+    class Evidence:
+        def register(self, *args, **kwargs):
+            return {"id": "source"}
+    class Service:
+        evidence = Evidence()
+        settings = None
+        def usable_assistant(self, assistant_id, user):
+            return {"id": assistant_id, "web_search_enabled": True}
+    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "searxng")
+    monkeypatch.delenv("AGENT_WEB_SEARCH_SEARXNG_URL", raising=False)
+    monkeypatch.setattr(WebTools, "_bing", AsyncMock(return_value=[{"title": "Fallback", "url": "https://example.com", "excerpt": "ok"}]))
+    async def scenario():
+        result = await WebTools(Service()).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query")
+        assert result["provider"] == "bing_rss" and result["requested_provider"] == "searxng"
+        assert result["fallback"] is True
+    asyncio.run(scenario())
+
+
+def test_optional_provider_transport_failure_falls_back_without_leaking_error(monkeypatch):
+    class Evidence:
+        def register(self, *args, **kwargs):
+            return {"id": "source"}
+    class Service:
+        evidence = Evidence()
+        settings = None
+        def usable_assistant(self, assistant_id, user):
+            return {"id": assistant_id, "web_search_enabled": True}
+    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "searxng")
+    monkeypatch.setenv("AGENT_WEB_SEARCH_SEARXNG_URL", "https://search.example/search")
+    monkeypatch.setattr("app.web_tools.fetch_public", AsyncMock(side_effect=httpx.ConnectError("offline")))
+    monkeypatch.setattr(WebTools, "_bing", AsyncMock(return_value=[{"title": "Fallback", "url": "https://example.com", "excerpt": "ok"}]))
+    async def scenario():
+        result = await WebTools(Service()).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query")
+        assert result["provider"] == "bing_rss" and result["fallback"] is True
+    asyncio.run(scenario())
+
+
+def test_brave_provider_uses_header_without_putting_key_in_url(monkeypatch):
+    class Evidence:
+        def register(self, *args, **kwargs):
+            return {"id": "source"}
+    class Service:
+        evidence = Evidence()
+        settings = None
+        def usable_assistant(self, assistant_id, user):
+            return {"id": assistant_id, "web_search_enabled": True}
+    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "brave")
+    monkeypatch.setenv("AGENT_WEB_SEARCH_BRAVE_URL", "https://api.search.brave.com/res/v1/web/search")
+    monkeypatch.setenv("AGENT_WEB_SEARCH_BRAVE_API_KEY", "secret-key")
+    fetch = AsyncMock(return_value=("https://api.search.brave.com/res/v1/web/search", "application/json", json_bytes({
+        "web": {"results": [{"title": "Brave result", "url": "https://example.com", "description": "ok"}]}
+    })))
+    monkeypatch.setattr("app.web_tools.fetch_public_headers", fetch)
+    async def scenario():
+        result = await WebTools(Service()).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query")
+        assert result["provider"] == "brave"
+        called_url = fetch.await_args.args[0]
+        assert "secret-key" not in called_url
+        assert fetch.await_args.kwargs["headers"]["X-Subscription-Token"] == "secret-key"
+    asyncio.run(scenario())
+
+
+def json_bytes(value):
+    """Keep provider fixture payloads compact while preserving Unicode support."""
+    import json
+    return json.dumps(value).encode("utf-8")
+
+
 def test_fake_ip_dns_uses_independent_public_dns_and_pins_answer(monkeypatch):
     async def scenario():
         backend = PublicNetworkBackend()

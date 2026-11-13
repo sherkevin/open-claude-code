@@ -112,6 +112,14 @@ class Settings:
     model_router_timeout_seconds: float = field(default_factory=lambda: float(os.getenv("AGENT_MODEL_ROUTER_TIMEOUT_SECONDS", "5")))
     model_router_max_output_tokens: int = field(default_factory=lambda: int(os.getenv("AGENT_MODEL_ROUTER_MAX_OUTPUT_TOKENS", "256")))
     model_router_budget_usd: float = field(default_factory=lambda: float(os.getenv("AGENT_MODEL_ROUTER_BUDGET_USD", "0.02")))
+    # Web search remains Bing RSS by default.  Additional providers are
+    # opt-in and require an explicit endpoint (and, for Brave, a key); an
+    # absent configuration never causes a hidden external request.
+    web_search_provider: str = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_PROVIDER", "bing_rss").strip().lower())
+    web_search_searxng_url: str = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_SEARXNG_URL", "").strip())
+    web_search_brave_url: str = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_BRAVE_URL", "https://api.search.brave.com/res/v1/web/search").strip())
+    web_search_brave_api_key: str = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_BRAVE_API_KEY", "").strip(), repr=False)
+    web_search_fallback_bing: bool = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_FALLBACK_BING", "true").lower() == "true")
     # Image generation is a separately gated capability. A generic chat route
     # is never treated as an image endpoint and no provider is called by
     # default.
@@ -146,6 +154,9 @@ class Settings:
             raise ValueError("AGENT_RUNTIME_TYPE must be claude or harness")
         self.runtime_type = self.runtime_type.strip().lower()
         self.deployment_mode = valid_deployment_mode(self.deployment_mode)
+        self.web_search_provider = str(self.web_search_provider).strip().lower()
+        if self.web_search_provider not in {"bing_rss", "searxng", "brave"}:
+            raise ValueError("AGENT_WEB_SEARCH_PROVIDER must be bing_rss, searxng or brave")
         if self.trial_capabilities is not None:
             if type(self.trial_capabilities) is not tuple or any(not isinstance(item, str) for item in self.trial_capabilities):
                 raise ValueError("AGENT_TRIAL_CAPABILITIES must be a comma-separated list of capability names")

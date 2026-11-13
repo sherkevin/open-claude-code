@@ -8,7 +8,7 @@ import re
 import socket
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpcore
 import httpx
@@ -22,6 +22,10 @@ PROXY_FAKE_IPS = ipaddress.ip_network("198.18.0.0/15")
 # Fixed public-IP HTTPS endpoints avoid resolving the resolver through fake DNS.
 # TLS certificates are verified against each literal endpoint address.
 DOH_ENDPOINTS = ("https://1.1.1.1/dns-query", "https://8.8.8.8/resolve")
+SEARCH_PROVIDERS = {"bing_rss", "searxng", "brave"}
+TRACKING_QUERY_KEYS = frozenset({"fbclid", "gclid", "dclid", "mc_cid", "mc_eid"})
+MAX_SEARCH_RESULTS = 8
+MAX_SEARCH_RESPONSE_BYTES = 500_000
 
 
 def global_unicast(value):
@@ -173,6 +177,39 @@ async def fetch_public(url: str, *, max_bytes: int = 2_000_000) -> tuple[str, st
         raise AppError(504, "WEB_TIMEOUT", "网页读取超时，请尝试其他来源") from None
 
 
+async def fetch_public_headers(url: str, *, headers: dict[str, str], max_bytes: int = MAX_SEARCH_RESPONSE_BYTES) -> tuple[str, str, bytes]:
+    """Fetch a public URL with bounded headers and the same SSRF checks.
+
+    Brave requires an authentication header, so it cannot use ``fetch_public``
+    directly.  This helper deliberately shares the pinned public transport and
+    never follows a redirect without validating the next URL first.
+    """
+    try:
+        with anyio.fail_after(40):
+            url = public_url(url)
+            transport = httpx.AsyncHTTPTransport(retries=0)
+            transport._pool._network_backend = PublicNetworkBackend()
+            safe_headers = {str(key): str(value)[:4096] for key, value in headers.items()}
+            async with httpx.AsyncClient(transport=transport, trust_env=False, timeout=15,
+                                        follow_redirects=False, headers=safe_headers) as client:
+                for _ in range(5):
+                    async with client.stream("GET", url) as response:
+                        if response.status_code in {301, 302, 303, 307, 308}:
+                            url = public_url(urljoin(url, response.headers.get("location", "")))
+                            continue
+                        if response.status_code >= 400:
+                            raise AppError(502, "WEB_SEARCH_PROVIDER_FAILED", f"搜索服务返回 HTTP {response.status_code}")
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > max_bytes:
+                                raise AppError(422, "WEB_SEARCH_RESPONSE_TOO_LARGE", "搜索服务返回内容过大")
+                        return url, response.headers.get("content-type", ""), bytes(body)
+            raise AppError(422, "WEB_REDIRECT_LIMIT", "搜索服务重定向次数过多")
+    except TimeoutError:
+        raise AppError(504, "WEB_SEARCH_TIMEOUT", "搜索服务响应超时，请稍后重试") from None
+
+
 async def _fetch_public(url: str, *, max_bytes: int) -> tuple[str, str, bytes]:
     url = public_url(url)
     transport = httpx.AsyncHTTPTransport(retries=0)
@@ -196,9 +233,119 @@ async def _fetch_public(url: str, *, max_bytes: int) -> tuple[str, str, bytes]:
     raise AppError(422, "WEB_REDIRECT_LIMIT", "网页重定向次数过多")
 
 
+def canonical_result_url(value: str) -> str | None:
+    """Normalize a result URL for safe deterministic de-duplication."""
+    try:
+        value = public_url(value)
+        parts = urlsplit(value)
+        pairs = [(key, item) for key, item in parse_qsl(parts.query, keep_blank_values=True)
+                 if not key.lower().startswith("utm_") and key.lower() not in TRACKING_QUERY_KEYS]
+        path = parts.path or "/"
+        if path != "/":
+            path = path.rstrip("/") or "/"
+        return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, urlencode(pairs), ""))
+    except (AppError, ValueError, TypeError):
+        return None
+
+
+def _result_item(raw: dict, *, fallback_title: str = "") -> dict | None:
+    """Convert provider-specific result fields into a small trusted shape."""
+    if not isinstance(raw, dict):
+        return None
+    url = canonical_result_url(raw.get("url") or raw.get("link") or "")
+    if not url:
+        return None
+    title = str(raw.get("title") or raw.get("name") or fallback_title or url)[:500]
+    excerpt = str(raw.get("excerpt") or raw.get("snippet") or raw.get("content") or "")[:3000]
+    published = raw.get("published_at") or raw.get("publishedDate") or raw.get("date")
+    return {"title": title, "url": url, "excerpt": excerpt,
+            "published_at": str(published)[:100] if published else None}
+
+
 class WebTools:
     def __init__(self, service):
         self.service = service
+
+    def _provider_config(self) -> tuple[str, str, str, str, bool]:
+        settings = getattr(self.service, "settings", None)
+        provider = getattr(settings, "web_search_provider", None) or "bing_rss"
+        searx_url = getattr(settings, "web_search_searxng_url", "") or ""
+        brave_url = getattr(settings, "web_search_brave_url", "") or ""
+        brave_key = getattr(settings, "web_search_brave_api_key", "") or ""
+        fallback = bool(getattr(settings, "web_search_fallback_bing", True))
+        if not settings:
+            # Lightweight test doubles do not carry Settings; environment
+            # lookup is intentionally limited to this provider boundary.
+            import os
+            provider = os.getenv("AGENT_WEB_SEARCH_PROVIDER", provider).strip().lower()
+            searx_url = os.getenv("AGENT_WEB_SEARCH_SEARXNG_URL", searx_url).strip()
+            brave_url = os.getenv("AGENT_WEB_SEARCH_BRAVE_URL", brave_url).strip()
+            brave_key = os.getenv("AGENT_WEB_SEARCH_BRAVE_API_KEY", brave_key).strip()
+            fallback = os.getenv("AGENT_WEB_SEARCH_FALLBACK_BING", "true").lower() == "true"
+        return provider, searx_url, brave_url, brave_key, fallback
+
+    async def _bing(self, query: str) -> list[dict]:
+        url = "https://www.bing.com/search?" + urlencode({"q": query, "format": "rss"})
+        try:
+            _, _, body = await fetch_public(url, max_bytes=MAX_SEARCH_RESPONSE_BYTES)
+        except AppError:
+            raise
+        except (httpx.HTTPError, httpcore.NetworkError, OSError, TimeoutError) as exc:
+            raise AppError(502, "WEB_SEARCH_UNAVAILABLE", "搜索服务暂时不可用，请稍后重试") from exc
+        if b"<!DOCTYPE" in body.upper() or b"<!ENTITY" in body.upper():
+            raise AppError(502, "WEB_SEARCH_UNAVAILABLE", "搜索服务暂时未返回可用结果，请稍后重试")
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError:
+            raise AppError(502, "WEB_SEARCH_UNAVAILABLE", "搜索服务暂时未返回可用结果，请稍后重试") from None
+        results = []
+        for item in root.findall("./channel/item")[:MAX_SEARCH_RESULTS]:
+            parser = PageText()
+            parser.feed(item.findtext("description", ""))
+            result = _result_item({"title": item.findtext("title", ""),
+                                   "url": item.findtext("link", ""), "excerpt": parser.text})
+            if result:
+                results.append(result)
+        return results
+
+    async def _searxng(self, endpoint: str, query: str, limit: int) -> list[dict]:
+        if not endpoint:
+            raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "未配置公共 SearXNG 搜索地址")
+        endpoint = public_url(endpoint.rstrip("/"))
+        separator = "&" if "?" in endpoint else "?"
+        url = endpoint + separator + urlencode({"q": query, "format": "json", "language": "all", "safesearch": 1})
+        try:
+            _, _, body = await fetch_public(url, max_bytes=MAX_SEARCH_RESPONSE_BYTES)
+        except AppError:
+            raise
+        except (httpx.HTTPError, httpcore.NetworkError, OSError, TimeoutError) as exc:
+            raise AppError(502, "WEB_SEARCH_PROVIDER_FAILED", "SearXNG 搜索暂时不可用，请稍后重试") from exc
+        try:
+            document = json.loads(body)
+        except (TypeError, ValueError):
+            raise AppError(502, "WEB_SEARCH_PROVIDER_FAILED", "SearXNG 未返回可用结果") from None
+        rows = document.get("results", []) if isinstance(document, dict) else []
+        return [item for raw in rows[:MAX_SEARCH_RESULTS] if (item := _result_item(raw))][:limit]
+
+    async def _brave(self, endpoint: str, key: str, query: str, limit: int) -> list[dict]:
+        if not endpoint or not key:
+            raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "未配置 Brave 搜索地址或授权密钥")
+        endpoint = public_url(endpoint)
+        separator = "&" if "?" in endpoint else "?"
+        url = endpoint + separator + urlencode({"q": query, "count": limit, "safesearch": "moderate"})
+        try:
+            _, _, body = await fetch_public_headers(
+                url, headers={"Accept": "application/json", "X-Subscription-Token": key}, max_bytes=MAX_SEARCH_RESPONSE_BYTES)
+        except AppError:
+            raise
+        except (httpx.HTTPError, httpcore.NetworkError, OSError, TimeoutError) as exc:
+            raise AppError(502, "WEB_SEARCH_PROVIDER_FAILED", "Brave 搜索暂时不可用，请稍后重试") from exc
+        try:
+            document = json.loads(body)
+        except (TypeError, ValueError):
+            raise AppError(502, "WEB_SEARCH_PROVIDER_FAILED", "Brave 搜索未返回可用结果") from None
+        rows = ((document.get("web") or {}).get("results") or []) if isinstance(document, dict) else []
+        return [item for raw in rows[:MAX_SEARCH_RESULTS] if (item := _result_item(raw))][:limit]
 
     def authorize(self, user, assistant):
         current = self.service.usable_assistant(assistant["id"], user)
@@ -210,31 +357,47 @@ class WebTools:
         query = str(query).strip()
         if not query or len(query) > 500:
             raise AppError(422, "WEB_QUERY_INVALID", "搜索词长度应为 1–500 个字符")
-        url = "https://www.bing.com/search?" + urlencode({"q": query, "format": "rss"})
-        _, _, body = await fetch_public(url, max_bytes=500_000)
-        if b"<!DOCTYPE" in body.upper() or b"<!ENTITY" in body.upper():
-            raise AppError(502, "WEB_SEARCH_UNAVAILABLE", "搜索服务暂时未返回可用结果，请稍后重试")
+        limit = max(1, min(int(limit), MAX_SEARCH_RESULTS))
+        provider, searx_url, brave_url, brave_key, fallback = self._provider_config()
+        if provider not in SEARCH_PROVIDERS:
+            raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "当前网页搜索服务未配置")
+        used_provider = provider
         try:
-            root = ET.fromstring(body)
-        except ET.ParseError:
-            raise AppError(502, "WEB_SEARCH_UNAVAILABLE", "搜索服务暂时未返回可用结果，请稍后重试") from None
-        results = []
-        for item in root.findall("./channel/item")[:max(1, min(int(limit), 8))]:
-            link, title = item.findtext("link", ""), item.findtext("title", "")
-            try:
-                public_url(link)
-            except AppError:
+            if provider == "bing_rss":
+                raw_results = await self._bing(query)
+            elif provider == "searxng":
+                raw_results = await self._searxng(searx_url, query, limit)
+            else:
+                raw_results = await self._brave(brave_url, brave_key, query, limit)
+        except AppError:
+            if provider == "bing_rss" or not fallback:
+                raise
+            raw_results = await self._bing(query)
+            used_provider = "bing_rss"
+        results, seen = [], set()
+        for item in raw_results:
+            canonical = item.get("url")
+            if not canonical or canonical in seen:
                 continue
-            parser = PageText()
-            parser.feed(item.findtext("description", ""))
-            excerpt = parser.text[:3000]
+            seen.add(canonical)
+            locator = {"url": canonical, "fetched_at": now(), "search_query": query,
+                       "content_type": "search_excerpt", "provider": used_provider}
+            if item.get("published_at"):
+                locator["published_at"] = item["published_at"]
             source = self.service.evidence.register(
-                run_id, "web", title or link, {"url": link, "fetched_at": now(), "search_query": query,
-                    "content_type": "search_excerpt", "provider": "Bing"}, excerpt,
-                resource_type="web", resource_id=assistant["id"], original_url=link,
+                run_id, "web", item["title"] or canonical, locator, item["excerpt"],
+                resource_type="web", resource_id=assistant["id"], original_url=canonical,
             )
-            results.append({"title": title, "url": link, "excerpt": excerpt, "source_id": source["id"], "citation": f"[[source:{source['id']}]]"})
-        return {"results": results, "note": "这些是搜索摘要；精确引文或细节请用 web_read 读取原网页。"}
+            results.append({"title": item["title"], "url": canonical, "excerpt": item["excerpt"],
+                           "source_id": source["id"], "citation": f"[[source:{source['id']}]]",
+                           "provider": used_provider})
+            if len(results) >= limit:
+                break
+        note = "这些是搜索摘要；精确引文或细节请用 web_read 读取原网页。"
+        if used_provider != provider:
+            note += f" {provider} 暂时不可用，已回退到 Bing RSS。"
+        return {"results": results, "provider": used_provider, "requested_provider": provider,
+                "fallback": used_provider != provider, "note": note}
 
     async def read_for_run(self, user, assistant, run_id, url, query=""):
         self.authorize(user, assistant)
