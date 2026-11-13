@@ -117,6 +117,20 @@ http {{
     client_max_body_size 24m;
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy same-origin always;
+    gzip on;
+    gzip_comp_level 6;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_types
+      text/plain
+      text/css
+      text/xml
+      application/xml
+      application/json
+      application/javascript
+      text/javascript
+      application/wasm
+      image/svg+xml;
     location /api/ {{
       proxy_pass http://127.0.0.1:{API_PORT};
       proxy_http_version 1.1;
