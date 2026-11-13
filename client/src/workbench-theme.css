@@ -6,7 +6,7 @@
 @font-face {font-family:"72 Product";src:url('/fonts/72-Bold.woff2') format('woff2');font-weight:700 900;font-style:normal;font-display:swap}
 .zhixing-theme {
   --ink:#10182c;--muted:#667083;--paper:#f8f8f5;--white:#fff;--line:#e5e5e5;
-  --brand:#720b7a;--brand-soft:color-mix(in srgb,var(--brand) 6%,white);
+  --brand:#0a6e8a;--brand-soft:color-mix(in srgb,var(--brand) 7%,white);
   --green:var(--brand);--green-dark:color-mix(in srgb,var(--brand) 85%,var(--ink));--green-soft:var(--brand-soft);
   --red:#aa0808;--shadow:0 12px 36px #10182c12;--panel:#eef0f2;
   --ease:cubic-bezier(.2,0,.38,.9);--enter:cubic-bezier(0,0,.38,.9);
