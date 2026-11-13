@@ -31,6 +31,8 @@ def test_fixture_is_sanitized_and_source_manifest_is_explicit():
     assert manifest["scope"] == "team"
     assert len(manifest["documents"]) >= 18
     assert manifest["excluded"]
+    assert len(manifest["media"]) == 56
+    assert all((FIXTURE / item["path"]).is_file() for item in manifest["media"])
     for item in manifest["documents"]:
         relative = item.get("path") or item.get("text_path")
         if not relative or not relative.endswith(".md"):
