@@ -2,6 +2,14 @@
 
 状态：`candidate_preview_deployed_not_ready`（2026-11-13；单一路由门禁、当前工作树回归、固定 Harness 真实小流量烟囱和用户批准的腾讯云受控预览已记录）。本文不把受控预览升级为生产发布或客户验收。
 
+## 2026-11-13 主线合并后的受控预览更新
+
+- 学校云 `main` 已冻结为 `5ef053f6daa1fd08eee180d690626822ad80bd7c`，并与 `origin/main` 一致。该提交合入华微公司知识库脱敏 fixture；服务端全量回归为 `1562 passed / 51 skipped / 3 warnings`，客户端为 `153 passed`，生产构建通过。
+- 用户明确批准后，已将白名单源码、客户端子路径构建产物和脱敏 fixture 同步到腾讯云 `/data/dengkw/workspace/open-claude-code`，并重启本项目自有的后端和前端服务；演示 MCP 未重启。远端关键源码、构建产物和 fixture 清单的 SHA-256 与学校云一致。
+- 腾讯云项目服务 `zhixing-5400d3fe73-server.service`、`zhixing-5400d3fe73-client.service`、`zhixing-5400d3fe73-mcp.service` 均为 `active`；公网 `/zhixing/api/v1/health/ready` 返回 `status=ready`、`model_configured=true`、`model_route_ready=true`。
+- 部署前回滚包为 `/data/dengkw/workspace/open-claude-code/.runtime/backups/pre-huawi-20261113T143552Z.tar.gz`，SHA-256 为 `82cc45b83a6315f27bf8b0152cd8e2f4af18a7f5a99ed767709263760354329f`。本次没有同步原始 `huawi-source-materials/`、运行数据库、附件、凭据或模型权重，也没有把华微 fixture 导入腾讯云运行数据库；运行时仍为既有的 6 个合成知识库、23 份文档。
+- 本次仍属于受控预览，不是客户生产验收；多模态视觉向量、实体召回/噪声独立评测、真实客户 OpenClaw 接口和容量压测仍未完成。
+
 ## 2026-11-13 受控预览部署（用户已明确批准）
 
 - 学校云当前工作树已同步到腾讯云项目目录 `/data/dengkw/workspace/open-claude-code`；关键源码摘要一致（`server/app/provider_policy.py` 与 `scripts/smoke_api.py`），未同步数据库、附件、模型权重、凭据或 `.runtime`。
