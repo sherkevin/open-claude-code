@@ -261,7 +261,8 @@ def test_business_read_uses_real_transport_and_registers_revocable_sources(syste
     assert facts["returned_rows"] == 1 and facts["original_rows"] == 1
     stages = [event["data"].get("stage") for event in system.service.db.events(system.actor.current_run_id, 0)
               if event["type"] == "run.stage"]
-    assert stages[-4:] == ["scoping", "routing", "tool", "evidence"]
+    assert stages[-2:] == ["tool", "evidence"]
+    assert not {"scoping", "routing"}.intersection(stages)
     system.service.save_assistant({"connections": []}, system.assistant["id"], user=system.owner)
     with pytest.raises(AppError):
         system.service.evidence.get(sources[0]["id"], system.owner)
@@ -280,6 +281,11 @@ def test_business_write_requires_real_human_approval_before_network_call(system,
         assert bool(result.get("is_error")) is (decision == "deny")
         assert len(system.server.calls) == (1 if decision == "allow" else 0)
         assert completed(system)["success"] is (decision == "allow")
+        stages = [event["data"] for event in system.service.db.events(system.actor.current_run_id, 0)
+                  if event["type"] == "run.stage"]
+        assert [stage["stage"] for stage in stages] == ["tool", "evidence"]
+        if decision == "deny":
+            assert stages[-1]["status"] == "unknown" and stages[-1]["source_count"] == 0
 
     asyncio.run(scenario())
 
@@ -434,6 +440,10 @@ def test_business_error_result_never_registers_successful_evidence(system):
     assert len(system.server.calls) == 1
     assert not system.service.db.all("SELECT * FROM evidence_sources")
     assert completed(system)["success"] is False and completed(system)["source_ids"] == []
+    stages = [event["data"] for event in system.service.db.events(system.actor.current_run_id, 0)
+              if event["type"] == "run.stage"]
+    assert [stage["stage"] for stage in stages] == ["tool", "evidence"]
+    assert stages[-1]["status"] == "unknown" and stages[-1]["source_count"] == 0
 
 
 @pytest.mark.parametrize("fault", ["gzip", "oversize", "redirect", "malformed"])

@@ -30,11 +30,14 @@ def elapsed_ms(run):
 
 
 def save_timing(service, run_id, name, value):
-    run = service.require("runs", run_id)
-    timings = json.loads(run.get("timings") or "{}")
-    timings.setdefault(name, value)
-    service.db.execute("UPDATE runs SET timings=? WHERE id=?", (dump(timings), run_id))
-    return timings
+    # Share the same lock as event transactions so provider and concurrent
+    # tool milestones cannot overwrite one another's timing fields.
+    with service.db.lock:
+        run = service.require("runs", run_id)
+        timings = json.loads(run.get("timings") or "{}")
+        timings.setdefault(name, value)
+        service.db.execute("UPDATE runs SET timings=? WHERE id=?", (dump(timings), run_id))
+        return timings
 
 
 def tool_result_metadata(success, sources):
@@ -228,10 +231,8 @@ class SDKRuntime(WorkspaceRuntime):
                 automatic = await offload(self.check_tool, tool, arguments)
                 model_review = await offload(self.service.model_approval.requires_review, self.conversation_id, tool)
                 self.tool_started[tool_use_id] = time.monotonic()
-                # Mirror the bounded funnel used by HarnessRuntime so the
-                # enterprise UI can explain scope before a tool is called.
-                await self.emit("run.stage", {"stage": "scoping", "tool_name": tool})
-                await self.emit("run.stage", {"stage": "routing", "tool_name": tool})
+                # Record only the actual tool attempt. Scope enforcement and
+                # domain routing need their own verified implementation.
                 await self.emit("run.stage", {"stage": "tool", "tool_name": tool})
                 await self.emit("tool.started", {"tool_call_id": tool_use_id or uid(), "tool_name": tool, "arguments": redact(arguments), "requires_approval": not automatic or model_review})
                 return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow" if automatic and not model_review else "ask"}}
@@ -592,37 +593,33 @@ class SessionActor:
         await offload_write(self._emit, run_id, kind, data)
 
     def _emit(self, run_id, kind, data):
-        run = self.service.require("runs", run_id)
-        timings = json.loads(run.get("timings") or "{}")
-        timing_changed = False
-        # These timestamps are deliberately event-boundary metrics. They do
-        # not estimate provider work; they record when the user-visible
-        # execution funnel first reached each verifiable boundary.
-        if kind == "run.stage":
-            stage = data.get("stage") if isinstance(data, dict) else None
-            if "first_feedback_ms" not in timings:
-                timings["first_feedback_ms"] = elapsed_ms(run)
-                timing_changed = True
-            if stage in {"scoping", "routing", "tool"} and "first_structure_ms" not in timings:
-                timings["first_structure_ms"] = elapsed_ms(run)
-                timing_changed = True
-        elif kind == "tool.started" and "first_structure_ms" not in timings:
-            timings["first_structure_ms"] = elapsed_ms(run)
-            timing_changed = True
-        elif kind == "tool.completed" and isinstance(data, dict) and data.get("success") is not False:
-            if "first_valid_result_ms" not in timings:
-                timings["first_valid_result_ms"] = elapsed_ms(run)
-                timing_changed = True
-        if timing_changed:
-            self.service.db.execute("UPDATE runs SET timings=? WHERE id=?", (dump(timings), run_id))
-            self.service.db.event(run_id, "timing.updated", timings)
+        # Keep each observed boundary, timing update and triggering event in
+        # one transaction. Concurrent tool callbacks cannot lose milestones,
+        # and a rejected event must not leave a successful timing behind.
         with self.service.db.transaction():
+            run = self.service.require("runs", run_id)
+            timings = json.loads(run.get("timings") or "{}")
+            previous_timings = dict(timings)
+            elapsed = elapsed_ms(run)
+            has_text = kind == "message.delta" and isinstance(data.get("text"), str) and bool(data["text"].strip())
+            has_progress = kind == "run.started" or (kind == "run.stage" and isinstance(data.get("stage"), str) and bool(data["stage"].strip())) or has_text
+            if has_progress:
+                # Server emission is not browser receipt/render latency.
+                timings.setdefault("first_server_progress_ms", elapsed)
+            if kind == "tool.started":
+                # This event precedes approval; no network call is implied.
+                timings.setdefault("first_tool_attempt_ms", elapsed)
+            if kind == "tool.completed" and data.get("success") is True:
+                # Transport/tool success is not verified business correctness.
+                timings.setdefault("first_tool_success_ms", elapsed)
+            first_text = has_text and "first_text_ms" not in timings
+            if first_text:
+                timings["first_text_ms"] = elapsed
+            if timings != previous_timings:
+                self.service.db.execute("UPDATE runs SET timings=? WHERE id=?", (dump(timings), run_id))
+                self.service.db.event(run_id, "timing.updated", timings)
             if kind == "message.delta":
-                run = self.service.require("runs", run_id)
-                current_timings = json.loads(run.get("timings") or "{}")
-                if "first_text_ms" not in current_timings:
-                    timings = save_timing(self.service, run_id, "first_text_ms", elapsed_ms(run))
-                    self.service.db.event(run_id, "timing.updated", timings)
+                if first_text:
                     self.service.db.event(run_id, "run.stage", {"stage": "answering"})
                 self.service.db.execute("UPDATE messages SET text=text || ? WHERE id=?", (data["text"], data["message_id"]))
             elif kind == "usage.updated":

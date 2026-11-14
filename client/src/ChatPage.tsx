@@ -282,10 +282,11 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     </div>{!trial && showContext && <ContextDialog conversationId={conversation.id} models={models} busy={active || sending || uploading || savingModel || loading} run={run} onClose={() => setShowContext(false)} onCompact={result => { setShowContext(false); setShowFeed(true); setMessages(previous => previous.some(message => message.id === result.message.id) ? previous : [...previous, result.message]); setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', kind: 'compact', compaction: null, assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null }); void api<Run>(`/runs/${result.run_id}`).then(next => { if (mounted.current) setRun(next); }).catch(e => { if (mounted.current) setError(errorText(e)); }); onChangedRef.current(); }}/>} {preview && <FilePreview key={preview.id} file={preview} onClose={() => setPreview(null)}/>}{rename && <Modal title="重命名对话" onClose={() => { if (!savingTitle) setRename(false); }}><form onSubmit={e => { e.preventDefault(); void saveTitle(); }}><div className="modal-body"><Field label="对话名称"><input value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={savingTitle} maxLength={200} required autoFocus/></Field></div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={savingTitle} onClick={() => setRename(false)}>取消</Button><Button busy={savingTitle} disabled={!titleDraft.trim()} type="submit">保存名称</Button></footer></form></Modal>}{archive && <Modal title="归档此对话" onClose={() => setArchive(false)}><div className="modal-body"><p>归档后，对话会从最近列表中移除。对话和附件仍保存在服务端。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={() => setArchive(false)}>取消</Button><Button onClick={async () => { try { await patch(`/conversations/${conversation.id}`, { archived: true }); onChangedRef.current(); onArchived(); } catch (e) { setError(errorText(e)); setArchive(false); } }}>归档对话</Button></footer></Modal>}{recommendOpen && <Modal title="为当前任务推荐模型" onClose={() => { if (!recommendBusy) setRecommendOpen(false); }}><div className="modal-body"><p>已根据当前输入、最近用户消息和助手职责自动生成有界任务摘要；无需重新输入问题，也不会把完整历史发送给路由器。</p><div className="fitness-context" role="status"><span className="eyebrow">当前会话上下文</span><p>{recommendSummary}</p></div>{recommendation && <div className="recommendation-result"><strong>Fitness model：{recommendation.model_label} · {recommendation.reasoning_level}</strong><p>{recommendation.reason}</p><small>路由器：{recommendation.router.model_id} · 输入 {recommendation.router.input_chars} 字符 · {recommendation.router.mode === 'provider' || recommendation.router.mode === 'provider_fallback' ? '已使用授权模型路由' : recommendation.router.target_status === 'unavailable' ? `目标线路不可用（${recommendation.router.target_model_id}）` : '本地有界回退'}</small></div>}</div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={recommendBusy} onClick={() => setRecommendOpen(false)}>{recommendation ? '完成' : '关闭'}</Button></footer></Modal>}</div>;
 }
 
-function LiveActivity({ run, events, stage, connectionState }: { run: Run; events: StreamEvent[]; stage: string; connectionState: 'connected' | 'reconnecting' }) {
+export function LiveActivity({ run, events, stage, connectionState }: { run: Run; events: StreamEvent[]; stage: string; connectionState: 'connected' | 'reconnecting' }) {
   const toolFinished = new Set(events.filter(event => event.type === 'tool.completed').map(event => String(event.data.tool_call_id || event.id)));
   const pendingTool = [...events].reverse().find(event => event.type === 'tool.started' && !toolFinished.has(String(event.data.tool_call_id || event.id)));
   const latestTool = [...events].reverse().find(event => event.type === 'tool.completed');
+  const latestStage = [...events].reverse().find(event => event.type === 'run.stage' && event.data.stage === stage);
   const latestApproval = [...events].reverse().find(event => event.type === 'approval.required' || event.type === 'subagent.approval.required');
   const latestCompaction = [...events].reverse().find(event => event.type.startsWith('context.compaction'));
   let title = '正在处理当前任务';
@@ -305,12 +306,17 @@ function LiveActivity({ run, events, stage, connectionState }: { run: Run; event
     title = '正在整理上下文'; detail = '原生上下文压缩已开始，完成后会继续当前任务。'; icon = <Minimize2 size={16}/>;
   } else if (pendingTool) {
     title = `正在调用 ${toolLabel(String(pendingTool.data.tool_name || '业务工具'))}`;
-    detail = '工具请求已发出，等待返回可核验结果。'; icon = <ArrowUp size={16}/>;
+    detail = '已记录工具调用，正在核对授权或等待返回。'; icon = <ArrowUp size={16}/>;
   } else if (latestTool && stage === 'tool') {
-    title = `已取得 ${toolLabel(String(latestTool.data.tool_name || '业务工具'))} 返回`;
-    const facts = latestTool.data.result_facts && typeof latestTool.data.result_facts === 'object' ? latestTool.data.result_facts as Record<string, unknown> : {};
-    const sourceCount = Array.isArray(latestTool.data.source_ids) ? latestTool.data.source_ids.length : Number(facts.source_count || 0);
-    detail = latestTool.data.success === false ? '工具返回失败，正在整理可用信息。' : sourceCount > 0 ? `已登记 ${sourceCount} 个可核验来源，正在整理业务结论。` : '工具已返回，正在整理业务结论。'; icon = latestTool.data.success === false ? <XCircle size={16}/> : <CheckCircle2 size={16}/>;
+    const state = toolResultState(latestTool);
+    const sourceCount = reportedSourceCount(latestTool);
+    title = `${toolResultLabels[state]} · ${toolLabel(String(latestTool.data.tool_name || '业务工具'))}`;
+    detail = state === 'failed' ? '本次工具调用失败，正在整理已有信息。' : state === 'unknown' ? '未收到明确的调用结果，暂不报告业务结果。' : typeof sourceCount === 'number' && sourceCount > 0 ? `已登记 ${sourceCount} 个来源，内容仍需核对。` : '工具已返回，但未提供来源。';
+    icon = state === 'failed' ? <XCircle size={16}/> : state === 'succeeded' ? <CheckCircle2 size={16}/> : <Circle size={16}/>;
+  } else if (['scoping', 'routing', 'evidence'].includes(stage)) {
+    const presentation = runStagePresentation(latestStage?.data || { stage });
+    title = presentation.label; detail = presentation.detail;
+    icon = presentation.confirmed ? <CheckCircle2 size={16}/> : <Circle size={16}/>;
   } else if (stage === 'initializing' || run.status === 'queued') {
     title = '正在准备执行环境'; detail = '确认助手配置、会话上下文和可用能力。';
   } else if (stage === 'runtime_ready') {
@@ -322,12 +328,12 @@ function LiveActivity({ run, events, stage, connectionState }: { run: Run; event
   }
   const visible = [...events].filter(event => ['run.stage', 'tool.started', 'tool.completed', 'approval.required', 'approval.resolved', 'approval.model_decided', 'approval.dual_vote', 'memory.pending', 'memory.updated', 'memory.aborted', 'subagent.plan.created', 'subagent.started', 'subagent.progress', 'subagent.completed', 'subagent.failed', 'subagent.cancelled', 'subagent.plan.completed', 'subagent.approval.required', 'subagent.approval.denied', 'subagent.approval.resolved', 'context.compaction_started', 'context.compacted'].includes(event.type)).slice(-4);
   const eventLabel = (event: StreamEvent) => {
-    if (event.type === 'run.stage') return ({ initializing: '准备执行环境', runtime_ready: '执行环境就绪', model_started: '模型开始响应', answering: '开始生成回答', tool: '处理工具结果' } as Record<string, string>)[String(event.data.stage)] || '更新执行阶段';
+    if (event.type === 'run.stage') return runStagePresentation(event.data).label;
     if (event.type === 'memory.pending') return '记忆已暂存，等待任务成功后保存';
     if (event.type === 'memory.updated') return '记忆已正式保存';
     if (event.type === 'memory.aborted') return '记忆未保存，暂存已废弃';
     if (event.type === 'tool.started') return `调用 ${toolLabel(String(event.data.tool_name || '业务工具'))}`;
-    if (event.type === 'tool.completed') return `${event.data.success === false ? '工具失败' : '工具完成'} · ${toolLabel(String(event.data.tool_name || '业务工具'))}`;
+    if (event.type === 'tool.completed') return `${toolResultLabels[toolResultState(event)]} · ${toolLabel(String(event.data.tool_name || '业务工具'))}`;
     if (event.type === 'approval.required') return '等待操作确认';
     if (event.type === 'approval.resolved') return event.data.decision === 'allow' ? '已允许操作' : '未获授权';
     if (event.type === 'approval.model_decided') return event.data.decision === 'allow' ? '模型代审允许低风险操作' : '模型代审拒绝操作';
@@ -358,7 +364,29 @@ function ApprovalCard({ approval, busy, onDecision }: { approval: Approval; busy
   return <section className="approval-card"><div className="approval-title"><ShieldCheck size={18}/><strong>{dual ? '高风险操作需要双人管理员审批' : '请确认这项操作'}</strong></div><h3>{toolLabel(approval.tool_name)}</h3><p className="approval-impact">{riskLabel} · {approval.impact || '执行前需要服务端重新校验授权'}</p>{dual && <p className="approval-impact">管理员投票进度：{votes}/{required}（必须是两名不同管理员）</p>}<details open><summary>操作参数（不可修改）<ChevronDown size={14}/></summary><pre>{JSON.stringify(approval.arguments, null, 2)}</pre></details><p>{denyByDefault ? '此工具未通过服务端授权，系统将拒绝执行。' : expired ? '此操作的确认请求已过期。' : `有效至 ${timeText(approval.expires_at)}`}</p><div className="approval-actions"><Button variant="secondary" disabled={busy || expired} onClick={() => onDecision('deny')}><X size={15}/>拒绝</Button><Button busy={busy} disabled={expired || denyByDefault} onClick={() => onDecision('allow')}><Check size={15}/>{dual ? '管理员投票允许' : '允许执行'}</Button></div></section>;
 }
 
+type ToolResultState = 'succeeded' | 'failed' | 'unknown';
+const toolResultLabels: Record<ToolResultState, string> = { succeeded: '调用成功', failed: '调用失败', unknown: '结果未确认' };
+const toolResultState = (event?: StreamEvent): ToolResultState => event?.data.success === true ? 'succeeded' : event?.data.success === false ? 'failed' : 'unknown';
+
+export const runStagePresentation = (data: Record<string, unknown>): { label: string; detail: string; confirmed: boolean } => {
+  const stage = String(data.stage || '');
+  if (stage === 'scoping') return { label: '记录调用范围', detail: '调用前阶段记录；实际筛选范围以工具返回为准。', confirmed: false };
+  if (stage === 'routing') return { label: '记录工具选择', detail: '调用前阶段记录；不代表已完成业务路由或知识检索。', confirmed: false };
+  if (stage === 'evidence') {
+    const count = data.source_count;
+    const reported = data.status === 'reported' && typeof count === 'number' && Number.isFinite(count) && count > 0;
+    return reported
+      ? { label: '来源已登记', detail: `已登记 ${count} 个来源，内容仍需核对。`, confirmed: true }
+      : { label: '来源未提供', detail: '当前未收到明确的来源登记结果，不能据此确认业务结论。', confirmed: false };
+  }
+  const labels: Record<string, string> = { tool: '调用业务工具', initializing: '准备执行环境', runtime_ready: '执行环境就绪', model_started: '模型开始响应', answering: '开始生成回答' };
+  return { label: labels[stage] || '执行阶段更新', detail: '', confirmed: false };
+};
+
 type ExecutionEvidence = {
+  id: number | string;
+  toolName: string;
+  status: ToolResultState;
   domain: string;
   process: string;
   object: string;
@@ -369,22 +397,27 @@ type ExecutionEvidence = {
   originalRows: string;
   sourceCount: string;
   cache: string;
-  token: string;
-  latency: string;
 };
 
 const unknownFact = '未提供';
+const hasFactValue = (value: unknown): boolean => {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value.trim() !== '' && !['unknown', '未提供'].includes(value.trim().toLowerCase());
+  if (Array.isArray(value)) return value.some(hasFactValue);
+  if (typeof value === 'object') return Object.values(value).some(hasFactValue);
+  return typeof value !== 'number' || Number.isFinite(value);
+};
 const factValue = (facts: Record<string, unknown>, keys: string[]): unknown => {
   for (const key of keys) {
     const value = facts[key];
-    if (value !== undefined && value !== null && value !== '') return value;
+    if (hasFactValue(value)) return value;
   }
   return undefined;
 };
 const factText = (facts: Record<string, unknown>, keys: string[]) => {
   const value = factValue(facts, keys);
   if (value === undefined) return unknownFact;
-  if (Array.isArray(value)) return value.length ? value.map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('、') : '空';
+  if (Array.isArray(value)) return value.filter(hasFactValue).map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('、');
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 };
@@ -393,20 +426,27 @@ const factNumber = (facts: Record<string, unknown>, keys: string[]) => {
   return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('zh-CN') : unknownFact;
 };
 
-export const buildExecutionEvidence = (events: StreamEvent[], run: Run): ExecutionEvidence => {
-  const completed = [...events].reverse().find(event => event.type === 'tool.completed');
-  return buildExecutionEvidenceForTool(completed, run);
+const reportedSourceCount = (event?: StreamEvent): number | undefined => {
+  if (toolResultState(event) !== 'succeeded') return undefined;
+  if (Array.isArray(event?.data.source_ids)) return new Set(event.data.source_ids.filter(id => typeof id === 'string' && id.trim())).size;
+  const facts = event?.data.result_facts;
+  const count = facts && typeof facts === 'object' ? (facts as Record<string, unknown>).source_count : undefined;
+  return typeof count === 'number' && Number.isFinite(count) && count >= 0 ? count : undefined;
 };
 
-const buildExecutionEvidenceForTool = (completed: StreamEvent | undefined, run: Run): ExecutionEvidence => {
-  const facts = completed?.data.result_facts && typeof completed.data.result_facts === 'object' ? completed.data.result_facts as Record<string, unknown> : {};
-  const sourceCount = Array.isArray(completed?.data.source_ids) ? completed.data.source_ids.length : factValue(facts, ['source_count']);
-  const usage = run.usage || {};
-  const inputTokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : null;
-  const outputTokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : null;
-  const firstText = run.timings?.first_text_ms;
-  const totalMs = run.timings?.total_ms;
+export const buildExecutionEvidence = (events: StreamEvent[], _run: Run): ExecutionEvidence => {
+  const completed = [...events].reverse().find(event => event.type === 'tool.completed');
+  return buildExecutionEvidenceForTool(completed);
+};
+
+const buildExecutionEvidenceForTool = (completed: StreamEvent | undefined): ExecutionEvidence => {
+  const status = toolResultState(completed);
+  const facts = status === 'succeeded' && completed?.data.result_facts && typeof completed.data.result_facts === 'object' ? completed.data.result_facts as Record<string, unknown> : {};
+  const sourceCount = reportedSourceCount(completed);
   return {
+    id: completed?.id ?? 'pending',
+    toolName: toolLabel(typeof completed?.data.tool_name === 'string' && completed.data.tool_name.trim() ? completed.data.tool_name : '业务工具'),
+    status,
     domain: factText(facts, ['domain', 'business_domain', 'businessDomain']),
     process: factText(facts, ['process', 'business_process', 'businessProcess']),
     object: factText(facts, ['object', 'business_object', 'businessObject']),
@@ -417,29 +457,27 @@ const buildExecutionEvidenceForTool = (completed: StreamEvent | undefined, run: 
     originalRows: factNumber(facts, ['original_rows', 'originalRows', 'total_rows', 'totalRows']),
     sourceCount: typeof sourceCount === 'number' ? sourceCount.toLocaleString('zh-CN') : unknownFact,
     cache: typeof factValue(facts, ['cache_hit', 'cacheHit']) === 'boolean' ? (factValue(facts, ['cache_hit', 'cacheHit']) ? '命中' : '未命中') : unknownFact,
-    token: inputTokens === null && outputTokens === null ? unknownFact : `输入 ${inputTokens === null ? unknownFact : inputTokens.toLocaleString('zh-CN')} · 输出 ${outputTokens === null ? unknownFact : outputTokens.toLocaleString('zh-CN')}`,
-    latency: firstText === undefined && totalMs === undefined ? unknownFact : `首段 ${firstText === undefined ? unknownFact : `${(firstText / 1000).toFixed(2)} 秒`} · 完成 ${totalMs === undefined ? unknownFact : `${(totalMs / 1000).toFixed(2)} 秒`}`,
   };
 };
 
-export const buildExecutionEvidences = (events: StreamEvent[], run: Run): ExecutionEvidence[] =>
-  events.filter(event => event.type === 'tool.completed').map(event => buildExecutionEvidenceForTool(event, run));
+export const buildExecutionEvidences = (events: StreamEvent[], _run: Run): ExecutionEvidence[] =>
+  events.filter(event => event.type === 'tool.completed').map(event => buildExecutionEvidenceForTool(event));
 
 export function ExecutionEvidenceCard({ events, run }: { events: StreamEvent[]; run: Run }) {
   const evidences = buildExecutionEvidences(events, run);
   if (!evidences.length) return <section className="execution-evidence" aria-label="范围与证据状态"><div className="execution-evidence-heading"><div><span className="eyebrow">范围与证据</span><h3>等待工具返回后展示</h3></div><small>缺失字段保持未提供</small></div><p className="section-help">当前还没有可核验的业务工具结果。</p></section>;
-  return <section className="execution-evidence" aria-label="范围与证据状态"><div className="execution-evidence-heading"><div><span className="eyebrow">范围与证据</span><h3>先限定范围，再下钻原始记录</h3></div><small>缺失字段保持未提供 · {evidences.length} 个工具结果</small></div>{evidences.map((evidence, index) => { const cells: Array<[string, string]> = [
+  return <section className="execution-evidence" aria-label="范围与证据状态"><div className="execution-evidence-heading"><div><span className="eyebrow">范围与证据</span><h3>工具返回的范围与来源</h3></div><small>缺失字段保持未提供 · {evidences.length} 次调用</small></div>{evidences.map(evidence => { const cells: Array<[string, string]> = [
     ['业务域', evidence.domain], ['流程', evidence.process], ['对象', evidence.object], ['指标', evidence.metric],
     ['时间范围', evidence.timeRange], ['筛选条件', evidence.filters], ['返回行数', evidence.returnedRows], ['原始行数', evidence.originalRows],
-  ]; return <div className="execution-evidence-tool" key={`${evidence.domain}-${evidence.process}-${index}`}><div className="execution-evidence-tool-title">工具结果 {index + 1}</div><div className="execution-evidence-grid">{cells.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</div><div className="execution-evidence-meta"><span>证据 {evidence.sourceCount}</span><span>缓存 {evidence.cache}</span><span>Token {evidence.token}</span><span>响应 {evidence.latency}</span></div></div>; })}</section>;
+  ]; return <div className="execution-evidence-tool" key={evidence.id}><div className="execution-evidence-tool-title"><strong>{evidence.toolName}</strong><span className={`badge ${evidence.status === 'succeeded' ? 'green' : evidence.status === 'failed' ? 'amber' : ''}`}>{toolResultLabels[evidence.status]}</span></div>{evidence.status === 'succeeded' ? <><dl className="execution-evidence-grid">{cells.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="execution-evidence-meta"><span>来源 {evidence.sourceCount}</span><span>缓存 {evidence.cache}</span></div></> : <p className="execution-evidence-note">{evidence.status === 'failed' ? '本次调用失败，未展示业务结果。' : '调用结果尚未确认，业务范围与来源保持未提供。'}</p>}</div>; })}</section>;
 }
 
-function EventRow({ event }: { event: StreamEvent }) {
+export function EventRow({ event }: { event: StreamEvent }) {
   let label = ''; let detail = ''; let icon = <Circle size={14}/>;
   if (event.type === 'run.started') { label = '开始执行'; icon = <Radio size={14}/>; }
-  if (event.type === 'run.stage') { const stage = String(event.data.stage || ''); label = ({ scoping: '范围限定', routing: '业务路由', tool: '工具查询', evidence: '证据登记', initializing: '准备执行环境', runtime_ready: '执行环境就绪', model_started: '模型开始响应', answering: '开始生成回答' } as Record<string, string>)[stage] || '执行阶段更新'; detail = stage === 'evidence' ? '已尝试登记可核验来源；缺失来源会保留为未提供。' : '业务漏斗阶段已记录。'; icon = stage === 'evidence' ? <CheckCircle2 size={14}/> : <Clock3 size={14}/>; }
+  if (event.type === 'run.stage') { const presentation = runStagePresentation(event.data); label = presentation.label; detail = presentation.detail; icon = presentation.confirmed ? <CheckCircle2 size={14}/> : <Clock3 size={14}/>; }
   if (event.type === 'tool.started') { label = toolLabel(String(event.data.tool_name || '调用工具')); icon = <ArrowUpRightIcon/>; }
-  if (event.type === 'tool.completed') { label = `${event.data.success ? '完成' : '失败'} · ${toolLabel(String(event.data.tool_name || '工具调用'))}`; const facts = event.data.result_facts && typeof event.data.result_facts === 'object' ? event.data.result_facts as Record<string, unknown> : {}; const sourceCount = Array.isArray(event.data.source_ids) ? event.data.source_ids.length : Number(facts.source_count || 0); detail = sourceCount > 0 ? `已登记 ${sourceCount} 个可核验来源。` : typeof event.data.summary === 'string' ? event.data.summary : ''; icon = event.data.success ? <CheckCircle2 size={14}/> : <XCircle size={14}/>; }
+  if (event.type === 'tool.completed') { const state = toolResultState(event); const sourceCount = reportedSourceCount(event); label = `${toolResultLabels[state]} · ${toolLabel(String(event.data.tool_name || '工具调用'))}`; detail = state === 'failed' ? '未取得成功的工具结果。' : state === 'unknown' ? '未收到明确的调用结果，暂不报告业务结果。' : typeof sourceCount === 'number' && sourceCount > 0 ? `已登记 ${sourceCount} 个来源，内容仍需核对。` : '未提供来源。'; icon = state === 'succeeded' ? <CheckCircle2 size={14}/> : state === 'failed' ? <XCircle size={14}/> : <Circle size={14}/>; }
   if (event.type === 'approval.resolved') { label = event.data.decision === 'allow' ? '已允许操作' : '已拒绝操作'; const source = String(event.data.decision_source || ''); detail = source && source !== 'user' ? `决策来源：${source === 'timeout' ? '超时' : source === 'cancelled' ? '任务取消' : source === 'restart' ? '服务重启' : source === 'interrupted' ? '执行中断' : '运行结束'}` : ''; icon = <ShieldCheck size={14}/>; }
   if (event.type === 'memory.pending') { label = '记忆已暂存，尚未保存'; icon = <Clock3 size={14}/>; }
   if (event.type === 'memory.updated') { label = '记忆已正式保存'; detail = event.data.context_reset===true?'下一轮将使用新的上下文，不再自动带入旧消息、旧记忆和旧附件。':'记忆内容已确认。'; icon = <CheckCircle2 size={14}/>; }
@@ -449,21 +487,42 @@ function EventRow({ event }: { event: StreamEvent }) {
   if (event.type === 'context.compacted') { label = '已发生原生上下文压缩'; icon = <CheckCircle2 size={14}/>; }
   if (event.type === 'context.compaction_result') { label = compactionStatusLabel(event.data.status, event.data.followup_status); icon = <Minimize2 size={14}/>; }
   if (event.type === 'run.completed') { label = statusLabels[event.data.status as RunStatus] || '执行结束'; icon = event.data.status === 'succeeded' ? <CheckCircle2 size={14}/> : <Square size={12}/>; }
-  return <div className={`event-row ${event.type === 'tool.completed' && !event.data.success ? 'failed' : ''}`}><span className="event-icon">{icon}</span><div><span>{label}</span><small>{timeText(event.created_at)}</small>{detail && <details><summary>查看结果摘要<ChevronDown size={12}/></summary><pre>{detail}</pre></details>}{event.type === 'tool.started' && event.data.arguments != null && <details><summary>查看调用参数<ChevronDown size={12}/></summary><pre>{JSON.stringify(event.data.arguments, null, 2)}</pre></details>}{event.type === 'artifact.created' && typeof event.data.id === 'string' && <a className="inline-download" href={fileURL(event.data.id)} download><Download size={13}/>下载</a>}</div></div>;
+  return <div className={`event-row ${event.type === 'tool.completed' && event.data.success === false ? 'failed' : ''}`}><span className="event-icon">{icon}</span><div><span>{label}</span><small>{timeText(event.created_at)}</small>{detail && <details><summary>查看结果摘要<ChevronDown size={12}/></summary><pre>{detail}</pre></details>}{event.type === 'tool.started' && event.data.arguments != null && <details><summary>查看调用参数<ChevronDown size={12}/></summary><pre>{JSON.stringify(event.data.arguments, null, 2)}</pre></details>}{event.type === 'artifact.created' && typeof event.data.id === 'string' && <a className="inline-download" href={fileURL(event.data.id)} download><Download size={13}/>下载</a>}</div></div>;
 }
 function ArrowUpRightIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M7 17 17 7M7 7h10v10"/></svg>; }
 
 export function RunMetrics({ run }: { run: Run }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { if (!isActive(run.status)) return; const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, [run.status]);
-  const seconds = Math.max(0, Math.floor(((run.completed_at ? new Date(run.completed_at).getTime() : now) - new Date(run.created_at).getTime()) / 1000));
-  const duration = seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  const elapsedMs = (run.completed_at ? new Date(run.completed_at).getTime() : now) - new Date(run.created_at).getTime();
+  const seconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const measuredTotal = !isActive(run.status) && typeof run.timings?.total_ms === 'number' && Number.isFinite(run.timings.total_ms) && run.timings.total_ms >= 0 ? run.timings.total_ms : null;
+  const duration = measuredTotal !== null ? `${(measuredTotal / 1000).toFixed(2)} 秒` : !Number.isFinite(elapsedMs) ? '未提供' : seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
   const metadata=run.execution_kind==='product_metadata';
   const usage = run.usage;
-  const tokens = (value: unknown) => metadata?'0':typeof value === 'number' ? value.toLocaleString('zh-CN') : '未提供';
-  const cost = metadata?0:usage?.estimated_cost_usd;
-  const accounting = usage?.token_accounting && typeof usage.token_accounting === 'object' ? usage.token_accounting as Record<string, unknown> : null;
+  const tokenCount = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const accounting = usage?.token_accounting !== null && typeof usage?.token_accounting === 'object' ? record(usage.token_accounting) : null;
   const stages = accounting && Array.isArray(accounting.stages) ? accounting.stages.filter(item => item && typeof item === 'object') as Array<Record<string, unknown>> : [];
-  const stageTokens = (stage: Record<string, unknown>) => { const provider = stage.provider_usage && typeof stage.provider_usage === 'object' ? stage.provider_usage as Record<string, unknown> : {}; const value = (key: string) => typeof provider[key] === 'number' ? Number(provider[key]).toLocaleString('zh-CN') : '未提供'; return `入 ${value('input_tokens')} · 出 ${value('output_tokens')} · 缓 ${value('cache_read_input_tokens')}`; };
-  return <section className="run-metrics" aria-label="本次运行用量"><dl>{metadata&&<><dt>执行方式</dt><dd>模型信息查询</dd><dt>模型调用</dt><dd>未调用模型</dd></>}<dt>执行耗时</dt><dd>{duration}</dd>{run.timings&&Object.entries({first_feedback_ms:'首个反馈',first_structure_ms:'首个结构结果',first_valid_result_ms:'首个有效结果',runtime_ready_ms:'运行环境就绪',first_model_event_ms:'首个模型事件',first_text_ms:'首段正文'}).map(([key,label])=>{const value=run.timings?.[key as keyof typeof run.timings];return typeof value==='number'?<div className="timing-row" key={key}><dt>{label}</dt><dd>{(value/1000).toFixed(2)} 秒</dd></div>:null;})}<dt>输入 Token</dt><dd>{tokens(usage?.input_tokens)}</dd><dt>输出 Token</dt><dd>{tokens(usage?.output_tokens)}</dd><dt>缓存读取 Token</dt><dd>{tokens(usage?.cache_read_input_tokens)}</dd><dt>费用估算</dt><dd>{typeof cost === 'number' ? `$${cost.toFixed(4)}` : '未提供'}</dd>{stages.length>0&&<><dt>Token 阶段</dt><dd><div className="token-stage-list">{stages.map((stage,index)=><span key={`${String(stage.stage||'stage')}-${index}`}><strong>{String(stage.stage||'未知')}</strong> · {String(stage.source||'未知')}<small>{stageTokens(stage)}</small></span>)}</div></dd></>}</dl><a className="trace-download" href={`${API_BASE}/runs/${encodeURIComponent(run.id)}/trace`} download={`run-${run.id}.json`}><Download size={14}/>下载执行记录 JSON</a></section>;
+  const tokens = (key: string): string => {
+    if (metadata) return '0';
+    const subtotalLabel = (value: number) => `已知小计 ${value.toLocaleString('zh-CN')}，完整用量未提供`;
+    if (!accounting) {
+      const known = tokenCount(usage?.[key]);
+      return known === null ? '未提供' : subtotalLabel(known);
+    }
+    const contributions = stages.map(stage => tokenCount(record(stage.provider_usage)[key])).filter((value): value is number => value !== null);
+    const reportedTotal = tokenCount(record(accounting.provider_totals)[key]);
+    // An empty ledger initializes totals to zero; that is not a provider receipt.
+    const total = reportedTotal !== null && contributions.length > 0 ? reportedTotal : null;
+    if (run.status === 'succeeded' && total !== null) return total.toLocaleString('zh-CN');
+    // A stage-level complete flag says nothing about an interrupted call after it.
+    // Only a succeeded run can present these recorded totals as complete run usage.
+    const known = contributions.length > 0 ? tokenCount(record(accounting.known_subtotals)[key]) ?? contributions.reduce((sum, value) => sum + value, 0) : total;
+    return known === null ? '未提供' : subtotalLabel(known);
+  };
+  const cost = usage?.estimated_cost_usd;
+  const costText = metadata ? '$0.0000' : typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0 ? '未提供' : run.status === 'succeeded' && (!accounting || accounting.provider_usage_complete === true) ? `$${cost.toFixed(4)}` : `已知估算小计 $${cost.toFixed(4)}，完整费用未提供`;
+  const stageTokens = (stage: Record<string, unknown>) => { const provider = record(stage.provider_usage); const value = (key: string) => { const count = tokenCount(provider[key]); return count === null ? '未提供' : count.toLocaleString('zh-CN'); }; return `入 ${value('input_tokens')} · 出 ${value('output_tokens')} · 缓 ${value('cache_read_input_tokens')}`; };
+  return <section className="run-metrics" aria-label="本次运行用量"><dl>{metadata&&<><dt>执行方式</dt><dd>模型信息查询</dd><dt>模型调用</dt><dd>未调用模型</dd></>}<dt>{measuredTotal !== null ? '执行耗时（服务端）' : '已用时间（按时间差）'}</dt><dd>{duration}</dd>{run.timings&&Object.entries({first_server_progress_ms:'服务端首个进度',first_tool_attempt_ms:'首个工具调用尝试',first_tool_success_ms:'首个工具成功返回',runtime_ready_ms:'运行环境就绪',first_model_event_ms:'首个模型事件',first_text_ms:'首段正文'}).map(([key,label])=>{const value=run.timings?.[key as keyof typeof run.timings];return typeof value==='number'?<div className="timing-row" key={key}><dt>{label}</dt><dd>{(value/1000).toFixed(2)} 秒</dd></div>:null;})}<dt>输入 Token</dt><dd>{tokens('input_tokens')}</dd><dt>输出 Token</dt><dd>{tokens('output_tokens')}</dd><dt>缓存读取 Token</dt><dd>{tokens('cache_read_input_tokens')}</dd><dt>费用估算</dt><dd>{costText}</dd>{stages.length>0&&<><dt>Token 阶段</dt><dd><div className="token-stage-list">{stages.map((stage,index)=><span key={`${String(stage.stage||'stage')}-${index}`}><strong>{String(stage.stage||'未知')}</strong> · {String(stage.source||'未知')}<small>{stageTokens(stage)}</small></span>)}</div></dd></>}</dl><a className="trace-download" href={`${API_BASE}/runs/${encodeURIComponent(run.id)}/trace`} download={`run-${run.id}.json`}><Download size={14}/>下载执行记录 JSON</a></section>;
 }
