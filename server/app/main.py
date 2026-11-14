@@ -21,7 +21,7 @@ from .config import Settings
 from .db import dump, now, offload, offload_write, uid
 from .deployment_policy import DeploymentPolicy
 from .models import *
-from .middleware import BodyLimitMiddleware
+from .middleware import BodyLimitMiddleware, TrustedProxySchemeMiddleware
 from .runtime import RunManager
 from .security import AppError, password_hash, password_matches, safe_name, token_hash
 from .service import Service, TERMINAL, user_view, connection_view, assistant_view, conversation_view, message_view, file_view, approval_view
@@ -127,6 +127,10 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         app.router.redirect_slashes = False
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.origins), allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID"])
     app.add_middleware(BodyLimitMiddleware, maximum=settings.upload_max_bytes + 1024 * 1024)
+    # Forwarded transport is honored only from explicitly configured proxy
+    # socket addresses; application code trusts the resulting ASGI scheme.
+    if settings.trusted_proxy_peers:
+        app.add_middleware(TrustedProxySchemeMiddleware, peers=settings.trusted_proxy_peers)
 
     @app.exception_handler(AppError)
     async def app_error(request, exc):

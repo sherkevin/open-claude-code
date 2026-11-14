@@ -66,9 +66,11 @@ class Settings:
     mcp_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().lower() for x in os.getenv("AGENT_MCP_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if x.strip()))
     cookie_secure: bool = field(default_factory=lambda: os.getenv("AGENT_COOKIE_SECURE", "false").lower() == "true")
     # Credential writes require authentic transport.  Forwarded headers are
-    # only trusted when an operator explicitly declares a proxy that overwrites
-    # them; otherwise a remote HTTP request could forge its own "https" claim.
-    trust_proxy_headers: bool = field(default_factory=lambda: os.getenv("AGENT_TRUST_PROXY_HEADERS", "false").lower() == "true")
+    # only honored by a constrained middleware and only when the immediate
+    # socket peer is one of these explicitly configured proxy addresses.  An
+    # empty list means no forwarded header is ever trusted.
+    trusted_proxy_peers: tuple[str, ...] = field(default_factory=lambda: tuple(
+        item.strip() for item in os.getenv("AGENT_TRUSTED_PROXY_PEERS", "").split(",") if item.strip()))
     # Explicit local-development escape hatch.  It still requires the real
     # socket peer and request host to be loopback; it is never inferred from a
     # client-supplied Host header alone.

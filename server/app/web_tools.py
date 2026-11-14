@@ -171,11 +171,12 @@ class PageText(HTMLParser):
         return re.sub(r"\n{3,}", "\n\n", re.sub(r"[^\S\n]+", " ", "".join(self.parts))).strip()
 
 
-async def fetch_public(url: str, *, max_bytes: int = 2_000_000, deadline: float | None = None) -> tuple[str, str, bytes]:
+async def fetch_public(url: str, *, max_bytes: int = 2_000_000, deadline: float | None = None,
+                       recheck=None) -> tuple[str, str, bytes]:
     try:
         budget = 40 if deadline is None else max(0.1, deadline - time.monotonic())
         with anyio.fail_after(min(40, budget)):
-            return await _fetch_public(url, max_bytes=max_bytes)
+            return await _fetch_public(url, max_bytes=max_bytes, recheck=recheck)
     except TimeoutError:
         raise AppError(504, "WEB_TIMEOUT", "网页读取超时，请尝试其他来源") from None
 
@@ -219,7 +220,7 @@ async def fetch_public_headers(url: str, *, headers: dict[str, str], max_bytes: 
         raise AppError(504, "WEB_SEARCH_TIMEOUT", "搜索服务响应超时，请稍后重试") from None
 
 
-async def _fetch_public(url: str, *, max_bytes: int) -> tuple[str, str, bytes]:
+async def _fetch_public(url: str, *, max_bytes: int, recheck=None) -> tuple[str, str, bytes]:
     url = public_url(url)
     transport = httpx.AsyncHTTPTransport(retries=0)
     # Pinned httpx 0.28.x/httpcore 1.x integration. The pool owns TLS correctly.
@@ -227,6 +228,11 @@ async def _fetch_public(url: str, *, max_bytes: int) -> tuple[str, str, bytes]:
     async with httpx.AsyncClient(transport=transport, trust_env=False, timeout=15,
                                 headers={"User-Agent": "BetterAI-Research/0.4 (+public-page-reader)", "Accept": "text/html,application/rss+xml,text/plain"}) as client:
         for _ in range(5):
+            # The current domain/authorization policy is evaluated for every
+            # hop *before* the request leaves the process, so a redirect cannot
+            # turn an allowed first request into a denied outbound connection.
+            if recheck is not None:
+                recheck(url)
             async with client.stream("GET", url) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
                     url = public_url(urljoin(url, response.headers.get("location", "")))

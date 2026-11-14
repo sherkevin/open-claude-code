@@ -91,9 +91,10 @@ def verify_approval_receipt(service, *, run_id, tool_call_id, tool_name, argumen
 
 ## 5. 密钥、诊断、安全传输
 
-- `PUT /capability-settings/providers/{id}/credential` body `{revision, credential}`；独立 `DELETE`。仅启用的非试用管理员。数据库仅存 `SecretStore` 密文；GET 只返 `present`/`revision`；审计只记谁何时替换/清除。删除写 tombstone，不得静默恢复环境 key。
-- 安全传输：只接受服务端/中间件验证后的 `https`；`X-Forwarded-Proto` 仅在显式 `AGENT_TRUST_PROXY_HEADERS=true` 时采信；`Host` 头不能作为证据；本地开发需显式 `AGENT_CAPABILITY_LOCAL_DEV=true` 且真实 socket 对端为 loopback。远端 HTTP 伪造转发头/Host 一律拒绝。
-- 诊断：`POST /capability-settings/providers/{id}/diagnostics` 只接受 `{capability, settings_revision, provider_revision, sample_id}`，固定服务端样例；真实网络探针由 root 授权后执行；本任务只做合成测试。
+- `PUT /capability-settings/providers/{id}/credential` body `{revision, credential}`；`DELETE` 同路径 body `{revision}`。仅启用的非试用管理员。数据库仅存 `SecretStore` 密文；GET 只返 `present`/`revision`/`verified`；审计只记谁何时替换/清除。删除写 tombstone，不得静默恢复环境 key；替换或删除同时清除旧诊断状态。凭据路由在读取 body 前先校验安全传输。
+- 安全传输：`secure_transport` 只信 ASGI `scope["scheme"]`。当且仅当真实 socket 对端 IP 在 `AGENT_TRUSTED_PROXY_PEERS` 显式名单内时，`TrustedProxySchemeMiddleware` 才依据 `X-Forwarded-Proto: https` 改写 scheme；应用代码不自行读取原始转发头，`Host` 头永远不能作为证据。本地开发需显式 `AGENT_CAPABILITY_LOCAL_DEV=true` 且真实 socket 对端与请求主机都是 loopback。
+- 诊断：`POST /capability-settings/providers/{id}/diagnostics` 不接受任何目标、查询、凭据或样例字段。每项能力使用固定公共样例（搜索固定查询、读取固定 `https://example.com/`、OCR 固定合成图片），总预算 15 秒，单次尝试、不重试，只记录 `verified`/`failed`/`not_configured`/`unsupported`、耗时、sample_id 和固定错误码。图像提供方当前没有适配器，如实返回 `unsupported`，不宣称已验证。诊断不回传凭据、响应正文或供应商原始错误文本。
+- 旧知识库外部 OCR 路径（`knowledge._deepseek_ocr_pages`）额外要求全局 OCR 路由启用且 upload egress 显式为 `allow`；`approval` 不算同意，因为后台摄取没有交互审批人。凭据经 audited store 解析，tombstone 生效。
 
 ## 6. 兼容性
 
