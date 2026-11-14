@@ -251,7 +251,7 @@ class ExternalCapabilities:
                          "sha256": snapshot.sha256, "page": record["page"],
                          "pages": [record["page"]], "extraction": record["extraction"],
                          "provider": public, "character_start": 0, "character_end": len(visible),
-                         "truncated": truncated},
+                         "truncated": truncated, "complete": record["complete"]},
                         visible, resource_type="file", resource_id=snapshot.file_id,
                         tool_name=CAPABILITY_TOOLS["ocr"],
                     )

@@ -19,7 +19,7 @@ FIELDS = {
     "data": {"data_source", "database", "schema", "table", "tables", "fields", "record_keys", "filters", "time_range", "timezone", "queried_at", "aggregation", "trace_id", "dataset", "dataset_purpose", "dataset_version", "missing_fields", "row_count", "query", "tool"},
     # ``capability``/``provider`` let OCR sources be reauthorized against the
     # current capability grant instead of inheriting an old run's authority.
-    "knowledge": {"knowledge_base", "knowledge_base_id", "file", "version", "sha256", "page", "pages", "section", "paragraph", "chunk_id", "imported_at", "extraction", "start", "end", "capability", "provider"},
+    "knowledge": {"knowledge_base", "knowledge_base_id", "file", "version", "sha256", "page", "pages", "section", "paragraph", "chunk_id", "imported_at", "extraction", "start", "end", "capability", "provider", "complete", "truncated", "character_start", "character_end"},
     "web": {"url", "title", "fetched_at", "published_at", "updated_at", "search_query", "provider", "content_type", "character_start", "character_end", "truncated", "capability", "image_url", "thumbnail_url", "width", "height", "mode"},
 }
 SENSITIVE = re.compile(r"password|secret|token|authorization|api.?key|credential|internal_path|file_path", re.I)
@@ -461,7 +461,21 @@ class EvidenceService:
                                   "image_candidate": "图片检索候选，未读取网页正文"}[source["attribution"]]
                 lines.append(f"[{source['number']}] [{kind_label} · {title}{suffix}]({source['url']})")
             result = result.rstrip() + "\n\n来源\n\n" + "\n\n".join(lines)
-        return {"text": result, "citations": [{key: source.get(key) for key in ("id", "number", "kind", "title", "url", "document_id", "document_version", "attribution")} for source in citations]}
+        summaries = []
+        for source in citations:
+            summary = {key: source.get(key) for key in (
+                "id", "number", "kind", "title", "url", "document_id", "document_version", "attribution")}
+            # Cards need type/page/completeness after message persistence, but
+            # external URLs and excerpts must still be fetched with fresh ACLs.
+            display = {}
+            if source["locator"].get("capability") in {"ocr", "image_search"}:
+                display = {key: source["locator"][key] for key in (
+                    "capability", "page", "provider", "extraction", "complete", "truncated")
+                    if key in source["locator"]}
+            if display:
+                summary["locator"] = display
+            summaries.append(summary)
+        return {"text": result, "citations": summaries}
 
 
 def create_evidence_router(svc, authenticated):

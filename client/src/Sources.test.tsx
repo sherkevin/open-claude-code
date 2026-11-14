@@ -71,6 +71,13 @@ describe('verified external source visibility',()=>{
     expect(html).toContain('第 2 页');
     expect(html).not.toContain('src="https://cdn.example.com');
   });
+  it('keeps incomplete OCR visible on persisted citation cards',()=>{
+    const ocr={...source('cited','ocr-partial'),kind:'knowledge' as const,locator:{capability:'ocr',page:2,complete:false,truncated:true}} as EvidenceSource;
+    const html=renderToStaticMarkup(<AnswerMarkdown text="Partial result" citations={[ocr]}/>);
+    expect(html).toContain('该页识别不完整，请核对原件');
+    expect(html).toContain('第 2 页');
+    expect(html).not.toContain('src=');
+  });
   it('opens the registry-verified original image, not a model-supplied URL',async()=>{
     const tab={opener:{},location:{replace:vi.fn()},close:vi.fn()};
     vi.stubGlobal('window',{open:()=>tab});

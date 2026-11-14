@@ -226,6 +226,11 @@ def test_ocr_complete_result_registers_attachment_page_evidence(system, policy):
     assert view["locator"]["provider"] == "managed_ocr"
     assert view["locator"]["sha256"] == result["sha256"]
     assert view["content_url"] == f"/api/v1/files/{row['id']}/content"
+    assert view["locator"]["complete"] is True
+    summary = system.service.evidence.finalize(run["id"], page["citation"])["citations"][0]
+    assert summary["locator"]["capability"] == "ocr"
+    assert summary["locator"]["page"] == 1 and summary["locator"]["complete"] is True
+    assert "sha256" not in summary["locator"] and "content_url" not in summary
     assert policy.calls and policy.calls[0][0] == page["source_id"]
 
 
@@ -462,6 +467,10 @@ def test_ocr_returns_bounded_text_and_marks_output_truncation(system, policy):
     assert len(result["source_ids"]) == 2
     assert all(system.service.evidence.get(source, system.user)["excerpt"]
                for source in result["source_ids"])
+    for source in result["source_ids"]:
+        locator = system.service.evidence.get(source, system.user)["locator"]
+        assert locator["complete"] is False and locator["truncated"] is True
+        assert locator["character_end"] == 24000
 
 
 def test_image_domain_policy_filters_original_image_as_well_as_page(system, policy):
@@ -565,6 +574,11 @@ def test_image_evidence_finalize_keeps_candidates_visible(system, policy):
     finalized = system.service.evidence.finalize(run["id"], "answer", used_source_ids=[source_id])
     citation = next(item for item in finalized["citations"] if item["id"] == source_id)
     assert citation["attribution"] == "image_candidate"
+    assert citation["locator"]["capability"] == "image_search"
+    assert "image_url" not in citation["locator"]
+    assert "original_url" not in citation and "excerpt" not in citation
+    cited = system.service.evidence.finalize(run["id"], f"Image [[source:{source_id}]]")
+    assert cited["citations"][0]["locator"]["capability"] == "image_search"
     assert "图片检索候选" in finalized["text"]
 
 
