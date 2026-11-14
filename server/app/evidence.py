@@ -385,7 +385,8 @@ class EvidenceService:
             value = item.get("source_id")
             if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value) and value not in found:
                 found.append(value)
-            for key in ("structuredContent", "content", "result", "results"):
+            # OCR returns page-scoped source IDs, not search-style results.
+            for key in ("structuredContent", "content", "result", "results", "pages"):
                 if key in item:
                     pending.append((item[key], depth + 1))
             if item.get("type") == "text" and "text" in item:

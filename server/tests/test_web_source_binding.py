@@ -64,7 +64,7 @@ def finish(system, text='Answer without any source marker.'):
     return citations
 
 
-@pytest.mark.parametrize('shape', ['text_blocks', 'structured', 'flattened'])
+@pytest.mark.parametrize('shape', ['text_blocks', 'structured', 'flattened', 'ocr_pages'])
 def test_sdk_real_post_hook_binds_real_workspace_envelopes(system, monkeypatch, shape):
     service, _, _, run = system
     registered = source(system)
@@ -83,6 +83,10 @@ def test_sdk_real_post_hook_binds_real_workspace_envelopes(system, monkeypatch, 
         result = await tool.handler({'url': 'https://example.com/read'})
         if shape == 'structured': result = {'structuredContent': json.loads(result['content'][0]['text'])}
         if shape == 'flattened': result = {'content': result['content'][0]['text']}
+        if shape == 'ocr_pages':
+            result = {'content': [{'type': 'text', 'text': json.dumps({
+                'status': 'complete', 'pages': [{'page': 1, 'source_id': registered['id']}],
+                'source_ids': [registered['id']]})}]}
         hook = captured['options'].hooks['PostToolUse'][0].hooks[0]
         response = await hook({'tool_name': 'mcp__workspace__web_read', 'tool_response': result}, 'read-1', {})
         assert registered['id'] in response['hookSpecificOutput']['additionalContext']
@@ -187,6 +191,17 @@ def test_extractor_rejects_errors_unstructured_text_and_bounded_decode(system):
     assert evidence.source_ids_from_tool_result({'isError': True, **envelope(item['id'])}) == []
     assert evidence.source_ids_from_tool_result({'text': json.dumps({'source_id': item['id']})}) == []
     assert evidence.source_ids_from_tool_result({'content': '[[source:' + item['id'] + ']] https://example.com'}) == []
+
+
+def test_ocr_page_sources_are_hints_not_unvalidated_citations(system):
+    service, owner, _, run = system
+    item = source(system)
+    result = {'pages': [{'source_id': item['id']}, {'source_id': 'unregistered'},
+                        {'source_id': item['id']}, {'source_id': '<invalid>'}]}
+    hints = service.evidence.source_ids_from_tool_result(result)
+    assert hints == [item['id'], 'unregistered']
+    assert [row['id'] for row in service.evidence.trusted_sources(run['id'], hints, owner)] == [item['id']]
+    assert service.evidence.source_ids_from_tool_result({'isError': True, **result}) == []
 
 
 @pytest.mark.parametrize('failure', ['result_error', 'cross_run', 'revoked'])
