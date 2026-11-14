@@ -1,38 +1,41 @@
+SOURCE_COMMIT=5eed11a199d09e063292fbde1005b2f6a4b0c910
+2026-11-14T16:25:58+08:00
 
 > zhixing-client@0.4.2 test
-> vitest run
+> vitest run --run
 
 
  RUN  v3.0.5 /media/data3/dengkw/projects/open-claude-code-main-merge/client
 
- ✓ src/display.test.ts (2 tests) 5ms
- ✓ src/workflowFlowgram.test.ts (3 tests) 12ms
  ✓ src/feishu.test.ts (2 tests) 11ms
- ✓ src/api.test.ts (4 tests) 17ms
- ✓ src/stream.test.ts (7 tests) 23ms
- ✓ src/memory.test.ts (11 tests) 88ms
+ ✓ src/api.test.ts (4 tests) 16ms
+ ✓ src/display.test.ts (2 tests) 8ms
+ ✓ src/stream.test.ts (7 tests) 21ms
+ ✓ src/workflowFlowgram.test.ts (3 tests) 27ms
  ✓ src/integration.test.ts (4 tests) 20ms
+ ✓ src/memory.test.ts (11 tests) 98ms
  ✓ src/runtimeBadge.test.tsx (3 tests) 18ms
- ✓ src/approvals.test.tsx (1 test) 6ms
- ✓ src/components.test.tsx (3 tests) 26ms
- ✓ src/plugins.test.tsx (3 tests) 9ms
- ✓ src/workflow.test.tsx (38 tests) 45ms
+ ✓ src/approvals.test.tsx (1 test) 5ms
+ ✓ src/knowledgeSearch.test.ts (10 tests) 13ms
+ ✓ src/plugins.test.tsx (3 tests) 10ms
+ ✓ src/knowledgeRetrievalStatus.test.tsx (4 tests) 15ms
+ ✓ src/components.test.tsx (3 tests) 27ms
+ ✓ src/memoryApproval.test.tsx (4 tests) 83ms
  ✓ src/context.test.ts (11 tests) 75ms
- ✓ src/knowledgeSearch.test.ts (10 tests) 12ms
- ✓ src/benchmark.test.tsx (5 tests) 65ms
- ✓ src/knowledgeRetrievalStatus.test.tsx (4 tests) 14ms
- ✓ src/memoryApproval.test.tsx (4 tests) 53ms
- ✓ src/models.test.tsx (10 tests) 97ms
- ✓ src/capabilitySettings.test.tsx (6 tests) 127ms
- ✓ src/assistantConfiguration.test.tsx (9 tests) 152ms
- ✓ src/Sources.test.tsx (9 tests) 132ms
- ✓ src/chatModel.test.ts (3 tests) 7ms
- ✓ src/runMetrics.test.tsx (2 tests) 17ms
- ✓ src/deploymentPolicyRequests.test.ts (4 tests) 59ms
- ✓ src/workspace.test.tsx (10 tests) 109ms
+ ✓ src/capabilitySettings.test.tsx (6 tests) 98ms
+ ✓ src/workflow.test.tsx (38 tests) 42ms
+ ✓ src/benchmark.test.tsx (5 tests) 86ms
+ ✓ src/models.test.tsx (10 tests) 89ms
+ ✓ src/assistantConfiguration.test.tsx (9 tests) 151ms
+ ✓ src/chatModel.test.ts (3 tests) 9ms
+ ✓ src/workspace.test.tsx (10 tests) 91ms
+ ✓ src/Sources.test.tsx (9 tests) 146ms
+ ✓ src/deploymentPolicyRequests.test.ts (4 tests) 56ms
+ ✓ src/runMetrics.test.tsx (2 tests) 18ms
 
  Test Files  25 passed (25)
       Tests  168 passed (168)
-   Start at  15:39:51
-   Duration  2.59s (transform 6.08s, setup 0ms, collect 32.74s, tests 1.20s, environment 13ms, prepare 4.97s)
+   Start at  16:25:59
+   Duration  2.66s (transform 6.57s, setup 0ms, collect 32.09s, tests 1.23s, environment 10ms, prepare 5.33s)
 
+TEST_EXIT_CODE=0

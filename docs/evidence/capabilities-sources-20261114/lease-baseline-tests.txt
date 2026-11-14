@@ -1,0 +1,235 @@
+FFF                                                                      [100%]
+=================================== FAILURES ===================================
+________ test_recovered_connector_never_returns_or_audits_late_success _________
+
+connector_env = Env(service=<app.service.Service object at 0x7796cb00b5b0>, registry=<app.openclaw_connector.ConnectorRegistry object ..._id='tenant-a', principal_id='principal-a'), other=ConnectorIdentity(tenant_id='tenant-b', principal_id='principal-b'))
+
+    def test_recovered_connector_never_returns_or_audits_late_success(connector_env):
+        env = connector_env
+        async def scenario():
+            entered, release = asyncio.Event(), asyncio.Event()
+            class Executor:
+                async def call(self, server, tool, arguments, cancelled, request_id):
+                    entered.set()
+                    await release.wait()
+                    return {'ok': True}
+            active = ConnectorRegistry(env.service.db, executor=Executor(), lease_seconds=60, timeout_seconds=30)
+            observer = ConnectorRegistry(env.service.db, lease_seconds=60)
+            active.register_server(env.other, 'independent-lease', TOOLS, ALLOWED)
+            task = asyncio.create_task(active.call(env.other, 'read_ticket', {'id': 'synthetic'}))
+            await asyncio.wait_for(entered.wait(), 10)
+            request_id = next(iter(active._active))
+            env.service.db.execute('UPDATE openclaw_connector_calls SET lease_expires_at=? WHERE request_id=?', (PAST, request_id))
+            assert observer.recover_interrupted() == 1
+            preserved = env.service.db.one('SELECT * FROM openclaw_connector_calls WHERE request_id=?', (request_id,))
+            release.set()
+            outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+            assert isinstance(outcome, ConnectorError), f'Late result escaped fencing: {outcome!r}'
+            assert outcome.status == 503
+            assert env.service.db.one('SELECT * FROM openclaw_connector_calls WHERE request_id=?', (request_id,)) == preserved
+            assert not any(e['action'] == 'tool.succeeded' for e in active.audit_events(env.other))
+>       asyncio.run(scenario())
+
+../../tmp/oc-independent-source-review/test_lease_contract.py:47: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.10/asyncio/runners.py:44: in run
+    return loop.run_until_complete(main)
+/usr/lib/python3.10/asyncio/base_events.py:649: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        class Executor:
+            async def call(self, server, tool, arguments, cancelled, request_id):
+                entered.set()
+                await release.wait()
+                return {'ok': True}
+        active = ConnectorRegistry(env.service.db, executor=Executor(), lease_seconds=60, timeout_seconds=30)
+        observer = ConnectorRegistry(env.service.db, lease_seconds=60)
+        active.register_server(env.other, 'independent-lease', TOOLS, ALLOWED)
+        task = asyncio.create_task(active.call(env.other, 'read_ticket', {'id': 'synthetic'}))
+        await asyncio.wait_for(entered.wait(), 10)
+        request_id = next(iter(active._active))
+        env.service.db.execute('UPDATE openclaw_connector_calls SET lease_expires_at=? WHERE request_id=?', (PAST, request_id))
+        assert observer.recover_interrupted() == 1
+        preserved = env.service.db.one('SELECT * FROM openclaw_connector_calls WHERE request_id=?', (request_id,))
+        release.set()
+        outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+>       assert isinstance(outcome, ConnectorError), f'Late result escaped fencing: {outcome!r}'
+E       AssertionError: Late result escaped fencing: ToolCallResult(request_id='64480927352b4cfa9b60ef29bb5261c7', tool_name='read_ticket', risk='low', grant='auto', output={'ok': True}, duration_ms=456)
+E       assert False
+E        +  where False = isinstance(ToolCallResult(request_id='64480927352b4cfa9b60ef29bb5261c7', tool_name='read_ticket', risk='low', grant='auto', output={'ok': True}, duration_ms=456), ConnectorError)
+
+../../tmp/oc-independent-source-review/test_lease_contract.py:43: AssertionError
+_ test_recovered_facade_preserves_terminal_and_rejects_late_outputs[tool_result] _
+
+compat_env = Env(service=<app.service.Service object at 0x7796caf633a0>, facade=<app.openclaw_compat.OpenClawFacade object at 0x779...sgf2vXIDlOeCps+lQ826NjUR+/OpEikQo=', 'role': 'member', 'enabled': 1, 'created_at': '2026-11-14T08:13:38.551979+00:00'})
+kind = 'tool_result'
+
+    @pytest.mark.parametrize('kind', ['tool_result', 'late_error'])
+    def test_recovered_facade_preserves_terminal_and_rejects_late_outputs(compat_env, kind):
+        env = compat_env
+        async def scenario():
+            entered, release = asyncio.Event(), asyncio.Event()
+            class Executor:
+                async def execute(self, request, context, cancelled):
+                    entered.set()
+                    await release.wait()
+                    if kind == 'late_error':
+                        raise OpenClawError(429, 'SYNTHETIC_UPSTREAM', 'Synthetic unavailable')
+                    return NormalizedResult(tool_calls=(NormalizedToolCall('independent_late_call', 'lookup', {'q':'synthetic'}),), finish_reason='tool_calls')
+            active = OpenClawFacade(env.service, executor=Executor(), lease_seconds=60, executor_timeout_seconds=30)
+            observer = OpenClawFacade(env.service, lease_seconds=60)
+            principal = active.store.authenticate(auth(env.token_a))
+            payload = {'model': 'openclaw/default', 'input': 'synthetic lease', 'user':'independent-review'}
+            task = asyncio.create_task(active.execute(principal, 'responses', payload, auth(env.token_a)))
+            await asyncio.wait_for(entered.wait(), 10)
+            run_id = next(iter(active._active))
+            env.service.db.execute('UPDATE openclaw_turns SET lease_expires_at=? WHERE run_id=?', (PAST, run_id))
+            assert observer.recover_interrupted() == 1
+            preserved = env.service.db.one('SELECT * FROM openclaw_turns WHERE run_id=?', (run_id,))
+            assert json.loads(preserved['error_json'])['code'] == 'INTERRUPTED'
+            release.set()
+            outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+            assert env.service.db.one('SELECT * FROM openclaw_turns WHERE run_id=?', (run_id,)) == preserved
+            assert isinstance(outcome, OpenClawError), f'Late result escaped fencing: {outcome!r}'
+            assert outcome.status == 503
+            assert not env.service.db.all('SELECT * FROM openclaw_responses WHERE turn_id=?', (preserved['id'],))
+            assert not env.service.db.all('SELECT * FROM openclaw_tool_calls WHERE call_id=?', ('independent_late_call',))
+            assert not any(e['action'] == 'turn.completed' and e['run_id'] == run_id for e in active.audit_events())
+>       asyncio.run(scenario())
+
+../../tmp/oc-independent-source-review/test_lease_contract.py:81: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.10/asyncio/runners.py:44: in run
+    return loop.run_until_complete(main)
+/usr/lib/python3.10/asyncio/base_events.py:649: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        class Executor:
+            async def execute(self, request, context, cancelled):
+                entered.set()
+                await release.wait()
+                if kind == 'late_error':
+                    raise OpenClawError(429, 'SYNTHETIC_UPSTREAM', 'Synthetic unavailable')
+                return NormalizedResult(tool_calls=(NormalizedToolCall('independent_late_call', 'lookup', {'q':'synthetic'}),), finish_reason='tool_calls')
+        active = OpenClawFacade(env.service, executor=Executor(), lease_seconds=60, executor_timeout_seconds=30)
+        observer = OpenClawFacade(env.service, lease_seconds=60)
+        principal = active.store.authenticate(auth(env.token_a))
+        payload = {'model': 'openclaw/default', 'input': 'synthetic lease', 'user':'independent-review'}
+        task = asyncio.create_task(active.execute(principal, 'responses', payload, auth(env.token_a)))
+        await asyncio.wait_for(entered.wait(), 10)
+        run_id = next(iter(active._active))
+        env.service.db.execute('UPDATE openclaw_turns SET lease_expires_at=? WHERE run_id=?', (PAST, run_id))
+        assert observer.recover_interrupted() == 1
+        preserved = env.service.db.one('SELECT * FROM openclaw_turns WHERE run_id=?', (run_id,))
+        assert json.loads(preserved['error_json'])['code'] == 'INTERRUPTED'
+        release.set()
+        outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+>       assert env.service.db.one('SELECT * FROM openclaw_turns WHERE run_id=?', (run_id,)) == preserved
+E       assert {'completed_a...执行已终止"}', ...} == {'completed_a...执行已终止"}', ...}
+E         
+E         Omitting 15 identical items, use -vv to show
+E         Differing items:
+E         {'response_json': '{"id":"resp_25c36f7ab60971d952afac82","object":"response","created_at":1794644020,"status":"complet...esponse_id":null,"metadata":{},"incomplete_details":{"reason":"tool_calls"},"error":null,"parallel_tool_calls":false}'} != {'response_json': None}
+E         {'completed_at': '2026-11-14T08:13:40.922034+00:00'} != {'completed_at': '2026-11-14T08:13:40.753398+00:00'}
+E         {'http_status': 200} != {'http_status': 503}
+E         {'status': 'succeeded'} != {'status': 'failed'}...
+E         
+E         ...Full output truncated (2 lines hidden), use '-vv' to show
+
+../../tmp/oc-independent-source-review/test_lease_contract.py:75: AssertionError
+_ test_recovered_facade_preserves_terminal_and_rejects_late_outputs[late_error] _
+
+compat_env = Env(service=<app.service.Service object at 0x7796caed3dc0>, facade=<app.openclaw_compat.OpenClawFacade object at 0x779...sgf2vXIDlOeCps+lQ826NjUR+/OpEikQo=', 'role': 'member', 'enabled': 1, 'created_at': '2026-11-14T08:13:42.284839+00:00'})
+kind = 'late_error'
+
+    @pytest.mark.parametrize('kind', ['tool_result', 'late_error'])
+    def test_recovered_facade_preserves_terminal_and_rejects_late_outputs(compat_env, kind):
+        env = compat_env
+        async def scenario():
+            entered, release = asyncio.Event(), asyncio.Event()
+            class Executor:
+                async def execute(self, request, context, cancelled):
+                    entered.set()
+                    await release.wait()
+                    if kind == 'late_error':
+                        raise OpenClawError(429, 'SYNTHETIC_UPSTREAM', 'Synthetic unavailable')
+                    return NormalizedResult(tool_calls=(NormalizedToolCall('independent_late_call', 'lookup', {'q':'synthetic'}),), finish_reason='tool_calls')
+            active = OpenClawFacade(env.service, executor=Executor(), lease_seconds=60, executor_timeout_seconds=30)
+            observer = OpenClawFacade(env.service, lease_seconds=60)
+            principal = active.store.authenticate(auth(env.token_a))
+            payload = {'model': 'openclaw/default', 'input': 'synthetic lease', 'user':'independent-review'}
+            task = asyncio.create_task(active.execute(principal, 'responses', payload, auth(env.token_a)))
+            await asyncio.wait_for(entered.wait(), 10)
+            run_id = next(iter(active._active))
+            env.service.db.execute('UPDATE openclaw_turns SET lease_expires_at=? WHERE run_id=?', (PAST, run_id))
+            assert observer.recover_interrupted() == 1
+            preserved = env.service.db.one('SELECT * FROM openclaw_turns WHERE run_id=?', (run_id,))
+            assert json.loads(preserved['error_json'])['code'] == 'INTERRUPTED'
+            release.set()
+            outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+            assert env.service.db.one('SELECT * FROM openclaw_turns WHERE run_id=?', (run_id,)) == preserved
+            assert isinstance(outcome, OpenClawError), f'Late result escaped fencing: {outcome!r}'
+            assert outcome.status == 503
+            assert not env.service.db.all('SELECT * FROM openclaw_responses WHERE turn_id=?', (preserved['id'],))
+            assert not env.service.db.all('SELECT * FROM openclaw_tool_calls WHERE call_id=?', ('independent_late_call',))
+            assert not any(e['action'] == 'turn.completed' and e['run_id'] == run_id for e in active.audit_events())
+>       asyncio.run(scenario())
+
+../../tmp/oc-independent-source-review/test_lease_contract.py:81: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.10/asyncio/runners.py:44: in run
+    return loop.run_until_complete(main)
+/usr/lib/python3.10/asyncio/base_events.py:649: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        class Executor:
+            async def execute(self, request, context, cancelled):
+                entered.set()
+                await release.wait()
+                if kind == 'late_error':
+                    raise OpenClawError(429, 'SYNTHETIC_UPSTREAM', 'Synthetic unavailable')
+                return NormalizedResult(tool_calls=(NormalizedToolCall('independent_late_call', 'lookup', {'q':'synthetic'}),), finish_reason='tool_calls')
+        active = OpenClawFacade(env.service, executor=Executor(), lease_seconds=60, executor_timeout_seconds=30)
+        observer = OpenClawFacade(env.service, lease_seconds=60)
+        principal = active.store.authenticate(auth(env.token_a))
+        payload = {'model': 'openclaw/default', 'input': 'synthetic lease', 'user':'independent-review'}
+        task = asyncio.create_task(active.execute(principal, 'responses', payload, auth(env.token_a)))
+        await asyncio.wait_for(entered.wait(), 10)
+        run_id = next(iter(active._active))
+        env.service.db.execute('UPDATE openclaw_turns SET lease_expires_at=? WHERE run_id=?', (PAST, run_id))
+        assert observer.recover_interrupted() == 1
+        preserved = env.service.db.one('SELECT * FROM openclaw_turns WHERE run_id=?', (run_id,))
+        assert json.loads(preserved['error_json'])['code'] == 'INTERRUPTED'
+        release.set()
+        outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+>       assert env.service.db.one('SELECT * FROM openclaw_turns WHERE run_id=?', (run_id,)) == preserved
+E       assert {'completed_a...lable"}', ...} == {'completed_a...执行已终止"}', ...}
+E         
+E         Omitting 17 identical items, use -vv to show
+E         Differing items:
+E         {'http_status': 429} != {'http_status': 503}
+E         {'completed_at': '2026-11-14T08:13:44.540738+00:00'} != {'completed_at': '2026-11-14T08:13:44.389373+00:00'}
+E         {'error_json': '{"code":"SYNTHETIC_UPSTREAM","message":"Synthetic unavailable"}'} != {'error_json': '{"code":"INTERRUPTED","message":"兼容侧车实例租约过期，未完成的执行已终止"}'}
+E         Use -v to get more diff
+
+../../tmp/oc-independent-source-review/test_lease_contract.py:75: AssertionError
+=============================== warnings summary ===============================
+../open-claude-code/.venv/lib/python3.10/site-packages/fastapi/testclient.py:1
+  /media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED ../../tmp/oc-independent-source-review/test_lease_contract.py::test_recovered_connector_never_returns_or_audits_late_success
+FAILED ../../tmp/oc-independent-source-review/test_lease_contract.py::test_recovered_facade_preserves_terminal_and_rejects_late_outputs[tool_result]
+FAILED ../../tmp/oc-independent-source-review/test_lease_contract.py::test_recovered_facade_preserves_terminal_and_rejects_late_outputs[late_error]
+3 failed, 1 warning in 12.73s

@@ -1,0 +1,19 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.4.2, pluggy-1.7.0 -- /media/data3/dengkw/projects/open-claude-code/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /media/data3/dengkw/projects/open-claude-code-main-merge/server
+configfile: pyproject.toml
+plugins: anyio-4.16.0
+collecting ... collected 9 items
+
+server/tests/test_event_loop_isolation.py::test_message_send_and_actor_emit_leave_the_event_loop PASSED [ 11%]
+server/tests/test_event_loop_isolation.py::test_sse_polling_reads_leave_the_event_loop_and_keep_the_tail PASSED [ 22%]
+server/tests/test_event_loop_isolation.py::test_concurrent_submissions_do_not_block_or_queue_forever PASSED [ 33%]
+server/tests/test_event_loop_isolation.py::test_cancel_idempotency_ordering_and_shutdown_survive_offloading PASSED [ 44%]
+server/tests/test_event_loop_isolation.py::test_cancellation_between_prepare_and_submit_still_delivers_the_run PASSED [ 55%]
+server/tests/test_event_loop_isolation.py::test_retry_redelivers_an_orphaned_queued_run_exactly_once PASSED [ 66%]
+server/tests/test_event_loop_isolation.py::test_offloaded_write_is_not_abandoned_when_its_awaiter_is_cancelled PASSED [ 77%]
+server/tests/test_event_loop_isolation.py::test_offloaded_write_propagates_a_worker_failure PASSED [ 88%]
+server/tests/test_event_loop_isolation.py::test_offloaded_write_cancel_path_surfaces_a_worker_failure PASSED [100%]
+
+========================= 9 passed in 64.45s (0:01:04) =========================
