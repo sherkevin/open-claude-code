@@ -11,7 +11,7 @@ import json
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from .db import dump, now
@@ -250,23 +250,40 @@ class CapabilitySettings:
         result = []
         for name, configured in availability.items():
             modes = PROVIDER_MODES.get(name, {})
+            checks = verification.get(name, {})
             result.append({
                 "id": name,
                 "configured": bool(configured),
                 "credential_present": self._credential_present(name),
-                "verification": verification.get(name, "not_tested"),
+                "verification": self._verification_summary(checks),
+                "verification_checks": checks,
                 "capabilities": list(modes),
                 "modes": modes,
                 "revision": self._provider_revision(name),
             })
         return result
 
-    def _verification(self) -> dict[str, str]:
+    def _verification(self) -> dict[str, dict[str, str]]:
         try:
-            rows = self.service.db.all("SELECT provider_id,status FROM capability_provider_verification")
+            rows = self.service.db.all(
+                "SELECT provider_id,capability,status,checked_at FROM capability_provider_verification")
         except Exception:
             return {}
-        return {row["provider_id"]: row["status"] for row in rows}
+        result: dict[str, dict[str, str]] = {}
+        for row in rows:
+            result.setdefault(row["provider_id"], {})[row["capability"]] = row["status"]
+        return result
+
+    @staticmethod
+    def _verification_summary(checks: dict[str, str]) -> str:
+        statuses = set(checks.values())
+        if not statuses:
+            return "not_tested"
+        if statuses <= {"verified"}:
+            return "verified"
+        if statuses & {"failed", "not_configured"}:
+            return "failed"
+        return "not_tested"
 
     def _provider_revision(self, provider_id: str) -> int:
         from .capability_credentials import CapabilityCredentials
@@ -276,7 +293,8 @@ class CapabilitySettings:
         result = self.effective()
         result["providers"] = self.providers()
         result["credentials"] = {
-            item["id"]: {"present": item["credential_present"], "revision": item["revision"], "verified": False}
+            item["id"]: {"present": item["credential_present"], "revision": item["revision"],
+                         "verified": item["verification"] == "verified"}
             for item in result["providers"]
         }
         return result
@@ -372,6 +390,25 @@ class CapabilitySettings:
         return self.view()
 
 
+class CredentialUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(strict=True, ge=0)
+    credential: str = Field(min_length=1, max_length=4096)
+
+
+class CredentialDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(strict=True, ge=0)
+
+
+def _require_secure_transport(request: Request, service) -> None:
+    from .capability_credentials import secure_transport
+    if not secure_transport(request, local_dev=bool(service.settings.capability_local_dev)):
+        # The credential is write-only; refuse it before the body is consumed
+        # or persisted when the channel is not proven HTTPS.
+        raise AppError(403, "CAPABILITY_INSECURE_TRANSPORT", "凭据操作必须通过 HTTPS 或受信任的本地开发通道")
+
+
 def create_capability_settings_router(svc, admin):
     router = APIRouter(prefix="/api/v1/capability-settings")
 
@@ -382,5 +419,25 @@ def create_capability_settings_router(svc, admin):
     @router.put("")
     def update(payload: CapabilityUpdate, user=Depends(admin), service=Depends(svc)):
         return CapabilitySettings(service).save(user, payload)
+
+    @router.put("/providers/{provider_id}/credential")
+    def put_credential(provider_id: str, payload: CredentialUpdate, request: Request,
+                       user=Depends(admin), service=Depends(svc)):
+        _require_secure_transport(request, service)
+        from .capability_credentials import CapabilityCredentials
+        return CapabilityCredentials(service).put(user, provider_id, payload.revision, payload.credential)
+
+    @router.delete("/providers/{provider_id}/credential")
+    def delete_credential(provider_id: str, payload: CredentialDelete, request: Request,
+                          user=Depends(admin), service=Depends(svc)):
+        _require_secure_transport(request, service)
+        from .capability_credentials import CapabilityCredentials
+        return CapabilityCredentials(service).delete(user, provider_id, payload.revision)
+
+    @router.post("/providers/{provider_id}/diagnostics")
+    async def diagnostics(provider_id: str, request: Request, user=Depends(admin), service=Depends(svc)):
+        _require_secure_transport(request, service)
+        from .capability_diagnostics import CapabilityDiagnostics
+        return await CapabilityDiagnostics(service).run(provider_id)
 
     return router

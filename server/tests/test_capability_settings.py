@@ -435,22 +435,148 @@ def test_credential_is_write_only_revisioned_and_tombstoned(tmp_path):
     assert credentials.present("deepseek_api") is False
 
 
-def test_secure_transport_requires_https_or_explicit_local_mode():
-    class Url:
-        scheme = "http"
-        hostname = "example.com"
+def test_credential_routes_are_write_only_and_https_only(settings):
+    app = create_app(settings)
+    with TestClient(app, base_url="https://testserver") as client:
+        service = app.state.service
+        service.create_user({"username": "admin", "display_name": "admin", "role": "admin", "password": PASSWORD})
+        service.create_user({"username": "member", "display_name": "member", "role": "member", "password": PASSWORD})
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD})
+        before = client.get("/api/v1/capability-settings").json()
+        assert before["credentials"]["deepseek_api"]["present"] is False
+
+        path = "/api/v1/capability-settings/providers/deepseek_api/credential"
+        result = client.put(path, json={"revision": 0, "credential": "synthetic-secret-value"})
+        assert result.status_code == 200, result.text
+        assert result.json() == {"provider_id": "deepseek_api", "present": True, "revision": 1, "verified": False}
+        assert "synthetic-secret-value" not in result.text
+
+        after = client.get("/api/v1/capability-settings")
+        assert after.status_code == 200
+        assert after.json()["credentials"]["deepseek_api"] == {"present": True, "revision": 1, "verified": False}
+        assert "synthetic-secret-value" not in after.text
+        audit = service.db.all("SELECT provider_id,action,revision FROM capability_credential_audit")
+        assert audit == [{"provider_id": "deepseek_api", "action": "replace", "revision": 1}]
+        assert "synthetic-secret-value" not in json.dumps(audit)
+
+        # A stale revision cannot overwrite the newer secret.
+        stale = client.put(path, json={"revision": 0, "credential": "another-secret"})
+        assert stale.status_code == 409
+
+        client.post("/api/v1/auth/logout")
+        client.post("/api/v1/auth/login", json={"username": "member", "password": PASSWORD})
+        assert client.put(path, json={"revision": 1, "credential": "member-secret"}).status_code == 403
+
+        client.post("/api/v1/auth/logout")
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD})
+        deleted = client.request("DELETE", path, json={"revision": 1})
+        assert deleted.status_code == 200
+        assert deleted.json()["present"] is False
+        assert client.get("/api/v1/capability-settings").json()["credentials"]["deepseek_api"]["present"] is False
+        # The deletion keeps one tombstone row instead of reactivating an env key.
+        assert service.db.one("SELECT COUNT(*) AS n FROM capability_credentials")["n"] == 1
+
+    # Plain HTTP never proves transport just because a body was supplied.
+    with TestClient(app, base_url="http://testserver") as insecure:
+        insecure.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD})
+        denied = insecure.put(path, json={"revision": 2, "credential": "insecure-secret"})
+        assert denied.status_code == 403
+        assert denied.json()["error"]["code"] == "CAPABILITY_INSECURE_TRANSPORT"
+
+
+def test_diagnostics_use_fixed_fixtures_and_report_honestly(settings):
+    app = create_app(settings)
+    with TestClient(app, base_url="https://testserver") as client:
+        service = app.state.service
+        service.create_user({"username": "admin", "display_name": "admin", "role": "admin", "password": PASSWORD})
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": PASSWORD})
+
+        # deepseek_api is not configured in this fixture, so no provider call is
+        # attempted; the route records that state instead of faking a success.
+        result = client.post("/api/v1/capability-settings/providers/deepseek_api/diagnostics")
+        assert result.status_code == 200, result.text
+        body = result.json()
+        assert body["provider_id"] == "deepseek_api"
+        by_capability = {item["capability"]: item for item in body["results"]}
+        assert set(by_capability) == {"search", "fetch", "ocr"}
+        assert all(item["status"] == "not_configured" for item in by_capability.values())
+        assert all("secret" not in json.dumps(item).lower() for item in body["results"])
+
+        # An image provider without an adapter is reported as unsupported, not
+        # as verified.
+        image = client.post("/api/v1/capability-settings/providers/deepseek_webtools/diagnostics").json()
+        assert image["results"][0]["status"] == "unsupported"
+
+        value = client.get("/api/v1/capability-settings").json()
+        providers = {item["id"]: item for item in value["providers"]}
+        assert providers["deepseek_api"]["verification"] == "failed"
+        assert providers["deepseek_api"]["verification_checks"]["ocr"] == "not_configured"
+        assert providers["deepseek_webtools"]["verification_checks"]["image_search"] == "unsupported"
+
+        unknown = client.post("/api/v1/capability-settings/providers/unknown/diagnostics")
+        assert unknown.status_code == 422
+
+
+def test_knowledge_ocr_egress_requires_explicit_global_allow(client, settings):
+    settings.deepseek_api_enabled = True
+    settings.deepseek_api_key = "synthetic-key-for-gate"
+    settings.deepseek_api_ocr_enabled = True
+    service = client.app.state.service
+    state = payload(client)
+    for kind in CAPABILITY_KINDS:
+        if kind == "ocr":
+            state[kind] = {**state[kind], "enabled": True, "egress": {**state[kind]["egress"], "upload": "allow"}}
+        elif kind == "image_search":
+            state[kind] = {**state[kind], "enabled": False}
+    saved = client.put("/api/v1/capability-settings", json=state)
+    assert saved.status_code == 200, saved.text
+    assert CapabilitySettings(service).knowledge_ocr_egress_allowed() is True
+
+    state = payload(client)
+    state["ocr"] = {**state["ocr"], "egress": {**state["ocr"]["egress"], "upload": "approval"}}
+    saved = client.put("/api/v1/capability-settings", json=state)
+    assert saved.status_code == 200, saved.text
+    # A background ingestion path has no approver; approval mode is not consent.
+    assert CapabilitySettings(service).knowledge_ocr_egress_allowed() is False
+
+
+def test_secure_transport_uses_validated_asgi_scheme_only():
     class Request:
-        url = Url()
-        headers = {"x-forwarded-proto": "https"}
-        client = type("C", (), {"host": "10.0.0.5"})()
+        def __init__(self, scheme, peer="10.0.0.5", hostname="example.com"):
+            self.scope = {"scheme": scheme}
+            self.url = type("U", (), {"scheme": scheme, "hostname": hostname})()
+            self.headers = {"x-forwarded-proto": "https"}
+            self.client = type("C", (), {"host": peer})()
+
     # A remote HTTP request cannot prove transport by forging a header or Host.
-    assert secure_transport(Request()) is False
-    assert secure_transport(Request(), trusted_proxy=True) is True
-    Request.headers = {}
-    Request.client = type("C", (), {"host": "127.0.0.1"})()
-    Request.url = type("U", (), {"scheme": "http", "hostname": "127.0.0.1"})()
-    assert secure_transport(Request()) is False
-    assert secure_transport(Request(), local_dev=True) is True
+    assert secure_transport(Request("http")) is False
+    assert secure_transport(Request("https")) is True
+    # Local development is explicit and still requires a real loopback peer.
+    assert secure_transport(Request("http", peer="127.0.0.1", hostname="127.0.0.1"), local_dev=True) is True
+    assert secure_transport(Request("http", peer="10.0.0.5", hostname="example.com"), local_dev=True) is False
+
+
+def test_trusted_proxy_middleware_requires_configured_peer():
+    import asyncio
+
+    from app.middleware import TrustedProxySchemeMiddleware
+
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["scheme"] = scope["scheme"]
+
+    async def run(peer):
+        middleware = TrustedProxySchemeMiddleware(app, peers=["127.0.0.1"])
+        scope = {"type": "http", "client": (peer, 5000), "scheme": "http",
+                 "headers": [(b"x-forwarded-proto", b"https")]}
+        await middleware(scope, None, None)
+
+    asyncio.run(run("127.0.0.1"))
+    assert seen["scheme"] == "https"
+    # The same forged header from any other socket peer is ignored.
+    asyncio.run(run("10.0.0.5"))
+    assert seen["scheme"] == "http"
 
 
 def test_approval_receipt_is_bound_to_exact_call_and_arguments(tmp_path):

@@ -49,10 +49,20 @@ export interface MemoryIndex extends MemoryMutationResult {
 export interface MemoryFile extends MemoryMutationResult { path: string; content: string; revision: number; updated_at: string }
 export interface MemoryApprovalContent { conversation_id: string; old_content_sha256: string|null; content_digest: string; path: string; content: string; expected_revision: number; native_epoch: number; operation_id: string }
 export interface AssistantBinding { connection_id: string; allowed_tools: string[]; auto_approved_tools: string[] }
+export type AssistantCapabilityKind = 'search' | 'fetch' | 'ocr' | 'image_search';
+/** Exactly the narrowed grant object the server persists; unknown fields are kept on round-trip. */
+export interface AssistantCapabilityGrant {
+  enabled: boolean; auto_approved?: boolean;
+  domains?: {mode: 'public' | 'allowlist'; hosts: string[]};
+  egress?: {query?: 'deny' | 'approval' | 'allow'; url?: 'deny' | 'approval' | 'allow'; upload?: 'deny' | 'approval' | 'allow'};
+  limits?: {calls_per_run?: number; calls_per_day?: number; max_upload_bytes?: number};
+  max_attempts?: number;
+}
+export type AssistantCapabilities = Partial<Record<AssistantCapabilityKind, AssistantCapabilityGrant>>;
 export interface Assistant extends ScopedResource {
   id: string; name: string; description: string; instructions: string; enabled: boolean;
   access: { all_members: boolean; user_ids: string[] }; connections: AssistantBinding[]; revision: number;
-  knowledge_base_ids?: string[]; skill_ids?: string[]; web_search_enabled?: boolean; default_model_id?: string | null; default_reasoning_level?: string | null;
+  knowledge_base_ids?: string[]; skill_ids?: string[]; web_search_enabled?: boolean; capabilities?: AssistantCapabilities; default_model_id?: string | null; default_reasoning_level?: string | null;
 }
 export type WorkflowNodeType = 'input' | 'agent' | 'skill' | 'knowledge_search' | 'mcp_read' | 'condition' | 'approval' | 'artifact';
 export interface WorkflowNode { id: string; type: WorkflowNodeType; label: string; config: Record<string, unknown> }

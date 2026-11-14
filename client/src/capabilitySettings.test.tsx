@@ -1,20 +1,37 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { CapabilitySettingsView } from './CapabilitySettingsPage';
-import { capabilityInitialState, capabilityPageReducer, canManageCapabilities, loadCapabilitySettings, saveCapabilitySettings } from './capabilitySettings';
-import type { CapabilityConfiguration, CapabilityPageState } from './capabilitySettings';
+import {
+  capabilityInitialState, capabilityPageReducer, canManageCapabilities, deleteProviderCredential, loadCapabilitySettings,
+  runProviderDiagnostics, saveCapabilitySettings, saveProviderCredential,
+} from './capabilitySettings';
+import type { CapabilityConfiguration, CapabilityPageState, CapabilityRoute, ProviderView } from './capabilitySettings';
 
+const route = (overrides: Partial<CapabilityRoute> = {}): CapabilityRoute => ({
+  enabled: true, preferred: 'bing_rss', fallbacks: [], timeout_seconds: 60, max_attempts: 1,
+  domains: {mode: 'public', hosts: []}, egress: {query: 'allow', url: 'allow', upload: 'deny'},
+  limits: {calls_per_run: 50, calls_per_day: 500, max_upload_bytes: 0}, ...overrides,
+});
+const provider = (id: ProviderView['id'], overrides: Partial<ProviderView> = {}): ProviderView => ({
+  id, configured: true, credential_present: false, verification: 'not_tested', verification_checks: {},
+  capabilities: [], modes: {}, revision: 0, ...overrides,
+});
 const fixture: CapabilityConfiguration = {
-  revision: 0, origin: 'environment', updated_at: null,
-  search: {enabled: true, preferred: 'bing_rss', fallbacks: [], timeout_seconds: 60},
-  fetch: {enabled: true, preferred: 'public_http', fallbacks: [], timeout_seconds: 60},
+  revision: 0, origin: 'environment', updated_at: null, schema_version: 2,
+  search: route({preferred: 'deepseek_api'}), fetch: route({preferred: 'public_http'}), ocr: route({enabled: false, preferred: 'deepseek_api', limits: {calls_per_run: 20, calls_per_day: 100, max_upload_bytes: 20971520}}),
+  image_search: route({enabled: false, preferred: 'deepseek_webtools'}),
   providers: [
-    {id: 'bing_rss', configured: true, verification: 'not_tested', capabilities: ['search']},
-    {id: 'public_http', configured: true, verification: 'not_tested', capabilities: ['fetch']},
-    {id: 'deepseek_api', configured: false, verification: 'not_tested', capabilities: ['search','fetch']},
+    provider('bing_rss', {capabilities: ['search'], modes: {search: ['web']}}),
+    provider('public_http', {capabilities: ['fetch'], modes: {fetch: ['page']}}),
+    provider('deepseek_api', {configured: false, capabilities: ['search', 'fetch', 'ocr']}),
+    provider('deepseek_webtools', {configured: false, capabilities: ['image_search']}),
   ],
-  ocr: {status: 'not_integrated', configurable: false, knowledge_fallback_configured: false},
-  image_search: {status: 'not_integrated', configurable: false},
+  credentials: {
+    bing_rss: {present: false, revision: 0, verified: false}, searxng: {present: false, revision: 0, verified: false},
+    brave: {present: false, revision: 0, verified: false}, deepseek_api: {present: false, revision: 0, verified: false},
+    public_http: {present: false, revision: 0, verified: false}, deepseek_webtools: {present: false, revision: 0, verified: false},
+    brave_images: {present: false, revision: 0, verified: false},
+  },
 };
 const render = (state: CapabilityPageState, allowed = true) => renderToStaticMarkup(<CapabilitySettingsView state={state} allowed={allowed} onReload={()=>{}} onSave={()=>{}} onChange={()=>{}}/>);
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), {status, headers: {'Content-Type': 'application/json'}});
@@ -40,15 +57,18 @@ describe('capability settings permissions and presentation', () => {
     expect(html).not.toContain('保存并应用');
   });
 
-  it('shows configured but not verified providers and unsupported abilities honestly', () => {
+  it('shows all four capabilities, safe defaults and no secret input without the credential panel', () => {
     const html = render(capabilityPageReducer(capabilityInitialState, {type:'loaded', value:fixture}));
     expect(html).toContain('沿用部署环境默认值');
-    expect(html).toContain('已配置，待验证');
-    expect(html).toContain('DeepSeek 官方扩展服务 · 未配置');
-    expect(html).toContain('独立工具未接入');
-    expect(html).toContain('不提供无效开关');
+    expect(html).toContain('网页搜索');
+    expect(html).toContain('网页读取');
+    expect(html).toContain('文档识别');
+    expect(html).toContain('图片搜索');
+    expect(html).toContain('文件外发');
+    expect(html).toContain('已启用 · 待验证');
+    expect(html).toContain('首选服务未配置');
     expect(html).not.toContain('type="password"');
-    expect((html.match(/type="checkbox"/g)||[]).length).toBe(2);
+    expect((html.match(/type="checkbox"/g)||[]).length).toBe(4);
   });
 
   it('preserves edits after failed save and only reports success after acknowledgment', () => {
@@ -68,7 +88,7 @@ describe('capability settings permissions and presentation', () => {
 });
 
 describe('capability settings actual API requests', () => {
-  it('loads and saves only the versioned editable route fields', async () => {
+  it('loads and saves all four versioned routes without any credential value', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(response(fixture)).mockResolvedValueOnce(response({...fixture, revision:1}));
     vi.stubGlobal('fetch', fetch);
     expect(await loadCapabilitySettings()).toEqual(fixture);
@@ -77,9 +97,29 @@ describe('capability settings actual API requests', () => {
     expect(target).toBe('/api/v1/capability-settings');
     expect(options.method).toBe('PUT');
     expect(options.credentials).toBe('include');
-    expect(JSON.parse(options.body)).toEqual({revision:0, search:fixture.search, fetch:fixture.fetch});
-    expect(options.body).not.toContain('ocr');
-    expect(options.body).not.toContain('key');
+    expect(JSON.parse(options.body)).toEqual({
+      revision: 0, search: fixture.search, fetch: fixture.fetch, ocr: fixture.ocr, image_search: fixture.image_search,
+    });
+    expect(options.body).not.toContain('credential');
+  });
+
+  it('uses write-only credential and bounded diagnostic endpoints', async () => {
+    const fetch = vi.fn().mockImplementation(() => Promise.resolve(response({provider_id:'deepseek_api', present:false, revision:1, verified:false})));
+    vi.stubGlobal('fetch', fetch);
+    await saveProviderCredential('deepseek_api', 0, 'synthetic-value');
+    const [putTarget, putInit] = fetch.mock.calls[0];
+    expect(putTarget).toBe('/api/v1/capability-settings/providers/deepseek_api/credential');
+    expect(putInit.method).toBe('PUT');
+    expect(JSON.parse(putInit.body)).toEqual({revision: 0, credential: 'synthetic-value'});
+    await deleteProviderCredential('deepseek_api', 1);
+    expect(fetch.mock.calls[1][0]).toBe('/api/v1/capability-settings/providers/deepseek_api/credential');
+    expect(fetch.mock.calls[1][1].method).toBe('DELETE');
+    await runProviderDiagnostics('deepseek_api');
+    const [diagTarget, diagInit] = fetch.mock.calls[2];
+    expect(diagTarget).toBe('/api/v1/capability-settings/providers/deepseek_api/diagnostics');
+    expect(diagInit.method).toBe('POST');
+    // The diagnostic request carries no attacker-chosen target or query.
+    expect(diagInit.body).toBeUndefined();
   });
 
   it('propagates API conflict and loading failures for the visible error state', async () => {

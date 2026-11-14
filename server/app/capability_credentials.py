@@ -34,23 +34,22 @@ def _loopback(value: str | None) -> bool:
     return (value or "").strip().lower() in {"127.0.0.1", "::1"}
 
 
-def secure_transport(request, *, trusted_proxy: bool = False, local_dev: bool = False) -> bool:
+def secure_transport(request, *, local_dev: bool = False) -> bool:
     """Prove the credential write used authentic transport.
 
-    Only the server/middleware-validated scheme counts.  A client-supplied
-    ``X-Forwarded-Proto`` is accepted solely when the deployment explicitly
-    declares a trusted proxy that overwrites it.  The ``Host`` header is never
+    Only the ASGI scheme counts.  When a reverse proxy terminates TLS, the
+    constrained ``TrustedProxySchemeMiddleware`` has already rewritten
+    ``scope["scheme"]`` after checking the real socket peer against its
+    configured proxy addresses.  This function never reads a raw
+    ``X-Forwarded-Proto`` header itself, and the ``Host`` header is never
     transport evidence.  Local development is an explicit opt-in and still
-    requires the actual socket peer to be loopback.
+    requires the actual socket peer and request host to be loopback.
     """
     try:
-        if request.url.scheme == "https":
+        scheme = getattr(request, "scope", {}).get("scheme") or request.url.scheme
+        if scheme == "https":
             return True
-        if trusted_proxy:
-            forwarded = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
-            if forwarded == "https":
-                return True
-        if local_dev and request.url.scheme == "http":
+        if local_dev and scheme == "http":
             peer = getattr(getattr(request, "client", None), "host", None)
             return _loopback(peer) and _loopback(request.url.hostname)
         return False

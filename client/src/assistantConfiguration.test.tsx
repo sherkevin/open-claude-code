@@ -40,10 +40,18 @@ describe('assistant configuration safety',()=>{
     await expect(saveAssistantConfiguration(assistant.id,7,baseline,draft)).rejects.toMatchObject({status:409,code:'ASSISTANT_CONFLICT'});
     expect(fetch).toHaveBeenCalledTimes(1);const [url,request]=fetch.mock.calls[0];expect(url).toBe('/api/v1/assistants/assistant');expect(request.method).toBe('PATCH');expect(JSON.parse(request.body)).toEqual({expected_revision:7,web_search_enabled:true});expect(draft.web_search_enabled).toBe(true);expect(baseline.web_search_enabled).toBe(false);
   });
+  it('sends fine-grained capability grants and preserves narrowed fields the editor does not expose',()=>{
+    const governed={...assistant,web_search_enabled:true,capabilities:{search:{enabled:true,auto_approved:true,domains:{mode:'allowlist' as const,hosts:['example.com']},egress:{query:'approval' as const,url:'deny' as const,upload:'deny' as const},limits:{calls_per_run:5,calls_per_day:10,max_upload_bytes:0},max_attempts:1}}};
+    const baseline=assistantDraft(governed,resources);const draft=assistantDraft(governed,resources);draft.capabilities={...draft.capabilities,ocr:{enabled:true}};
+    const changes=assistantChanges(baseline,draft);expect(Object.keys(changes)).toEqual(['capabilities']);
+    expect(changes.capabilities?.search?.domains).toEqual({mode:'allowlist',hosts:['example.com']});
+    expect(changes.capabilities?.ocr).toEqual({enabled:true});
+  });
   it('renders all capabilities inline, preserves missing entries, and disables the complete form for a read-only assistant',()=>{
     const html=renderToStaticMarkup(<AssistantConfiguration value={{...assistant,can_edit:false}} resources={resources} admin inline onSaved={()=>{}} onDirtyChange={()=>{}} onSavingChange={()=>{}} onReload={()=>{}}/>);
-    for(const label of ['数据连接与工具','知识库','Skills','网页搜索'])expect(html).toContain(`aria-label="${label}"`);
-    expect(html).toContain('<fieldset class="plain-fieldset" disabled="">');expect(html).not.toContain('保存助手');expect(html).toContain('无法访问的数据连接');expect(html).toContain('无法访问的知识库');expect(html).toContain('无法访问的 Skill');expect(html).toContain('未发现的工具：missing-tool');expect(html).toContain('<details class="binding-permissions">');expect(html).not.toContain('<details class="binding-permissions" open');
+    for(const label of ['数据连接与工具','知识库','Skills','外部能力'])expect(html).toContain(`aria-label="${label}"`);
+    expect(html).toContain('<fieldset class="plain-fieldset" disabled="">');
+    expect(html).not.toContain('保存助手');expect(html).toContain('无法访问的数据连接');expect(html).toContain('无法访问的知识库');expect(html).toContain('无法访问的 Skill');expect(html).toContain('未发现的工具：missing-tool');expect(html).toContain('<details class="binding-permissions">');expect(html).not.toContain('<details class="binding-permissions" open');
   });
   it('renders administrator-only approval policy controls and keeps member view free of policy inputs',()=>{
     const adminHtml=renderToStaticMarkup(<AssistantConfiguration value={assistant} resources={resources} admin inline onSaved={()=>{}} onDirtyChange={()=>{}} onSavingChange={()=>{}} onReload={()=>{}}/>);

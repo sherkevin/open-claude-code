@@ -1174,7 +1174,17 @@ class KnowledgeService:
         if not (getattr(settings, "deepseek_api_enabled", False)
                 and getattr(settings, "deepseek_api_ocr_enabled", False)):
             raise AppError(422, "OCR_REQUIRED", "文件需要安装本地 OCR 组件后重新索引")
-        token = str(getattr(settings, "deepseek_api_key", "") or "").strip()
+        # The background ingestion path has no interactive approver, so the
+        # global capability route must explicitly allow OCR upload egress.
+        # ``approval`` mode is not permission here, and a per-assistant grant
+        # cannot widen the administrator's global decision.
+        from .capability_settings import CapabilitySettings
+        if not CapabilitySettings(self.service).knowledge_ocr_egress_allowed():
+            raise AppError(422, "OCR_REQUIRED", "文件需要安装本地 OCR 组件后重新索引")
+        # Resolve the credential through the audited store so a deletion
+        # tombstone cannot silently reactivate an environment key.
+        from .capability_credentials import CapabilityCredentials
+        token = CapabilityCredentials(self.service).get("deepseek_api")
         if not token:
             raise AppError(422, "OCR_REQUIRED", "文件需要安装本地 OCR 组件后重新索引")
         client = DeepSeekAPI(
