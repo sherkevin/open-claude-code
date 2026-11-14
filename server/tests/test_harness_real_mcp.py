@@ -147,7 +147,7 @@ def test_real_mcp_granted_tools_full_arguments_sources_and_failure(mcp_app):
     names = {tool["name"] for tool in env.model.requests[0]["tools"]}
     # This assistant has no knowledge collection binding, so no knowledge
     # retrieval tools may be advertised alongside its explicit MCP grants.
-    assert names == {"generate_xlsx", "generate_image", "memory_list", "memory_read", "memory_write", *(env.alias(name) for name in GRANTED)}
+    assert names == {"generate_xlsx", "generate_image", "file_read", "file_write", "file_search", "memory_list", "memory_read", "memory_write", *(env.alias(name) for name in GRANTED)}
     assert env.alias("hidden_admin") not in names
     assert env.mcp.calls == [{"tool": "read_assets", "arguments": READ_ARGUMENTS}]
     assert not env.service.db.all("SELECT id FROM approvals WHERE run_id=?", (read,))

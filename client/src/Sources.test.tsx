@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnswerMarkdown, openOriginalSource } from './Sources';
+import { AnswerMarkdown, openOriginalImageSource, openOriginalSource } from './Sources';
 import type { EvidenceSource } from './types';
 
 afterEach(()=>vi.unstubAllGlobals());
@@ -59,5 +59,31 @@ describe('verified external source visibility',()=>{
     vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(JSON.stringify({...source('cited'),kind:'data',original_url:'https://example.com/report'}))));
     await openOriginalSource('web-1');
     expect(tab.location.replace).toHaveBeenCalledWith('https://example.com/report');
+  });
+  it('shows image and OCR source boundaries without loading remote images',()=>{
+    const image={...source('image_candidate' as EvidenceSource['attribution'],'img-1'),locator:{capability:'image_search',image_url:'https://cdn.example.com/a.jpg',provider:'managed_image_search'}} as EvidenceSource;
+    const ocr={...source('cited','ocr-1'),kind:'knowledge' as const,title:'scan.png',locator:{capability:'ocr',page:2,extraction:'managed-ocr',provider:'managed_ocr'}} as EvidenceSource;
+    const html=renderToStaticMarkup(<AnswerMarkdown text="Answer" citations={[image,ocr]}/>);
+    expect(html).toContain('打开原始网页');
+    expect(html).toContain('打开原始图片');
+    expect(html).toContain('原网页与原始图片分别核验');
+    expect(html).toContain('附件识别文字');
+    expect(html).toContain('第 2 页');
+    expect(html).not.toContain('src="https://cdn.example.com');
+  });
+  it('opens the registry-verified original image, not a model-supplied URL',async()=>{
+    const tab={opener:{},location:{replace:vi.fn()},close:vi.fn()};
+    vi.stubGlobal('window',{open:()=>tab});
+    const payload={...source('image_candidate' as EvidenceSource['attribution'],'img-1'),locator:{capability:'image_search',image_url:'https://cdn.example.com/verified.jpg'}};
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(JSON.stringify(payload))));
+    await openOriginalImageSource('img-1');
+    expect(tab.location.replace).toHaveBeenCalledWith('https://cdn.example.com/verified.jpg');
+  });
+  it('blocks third-party markdown images but keeps authenticated attachments',()=>{
+    const remote=renderToStaticMarkup(<AnswerMarkdown text="![tracker](https://tracker.invalid/pixel.png)"/>);
+    expect(remote).toContain('外部图片已阻止自动加载');
+    expect(remote).not.toContain('tracker.invalid');
+    const local=renderToStaticMarkup(<AnswerMarkdown text="![scan](/api/v1/files/file-1/content)"/>);
+    expect(local).toContain('src="/api/v1/files/file-1/content"');
   });
 });

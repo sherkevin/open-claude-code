@@ -11,11 +11,15 @@ import re
 import time
 
 from .db import uid
+from .external_capabilities import CAPABILITY_TOOL_SHORT_NAMES, record_approval_receipt
 from .harness_bridge import _arguments as knowledge_arguments
 from .harness_memory import HarnessMemoryTools, MEMORY_NAMES
 from .mcp_tools import build_mcp_tools
 from .security import AppError, redact
-from .workspace_tools import build_workspace_tools
+from .workspace_tools import APPROVAL_ID, TOOL_CALL_ID, build_workspace_tools
+
+OCR_PURPOSES = frozenset({"text_recognition", "rich_layout_recognition"})
+IMAGE_MODES = frozenset({"text_search", "reverse_image"})
 
 
 class HarnessToolBridge:
@@ -71,9 +75,36 @@ class HarnessToolBridge:
             "file_read": {"path"},
             "file_write": {"path", "content", "expected_revision"},
             "file_search": {"query"},
+            "ocr": {"file_id"},
+            # image_search mode selects which of query/file_id is required;
+            # validated below instead of a static required set.
+            "image_search": set(),
         }[name]
         if not required <= arguments.keys():
             raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "工具缺少必要参数")
+        if name == "ocr":
+            file_id = arguments.get("file_id")
+            if not isinstance(file_id, str) or not file_id or len(file_id) > 128 or not file_id.isascii():
+                raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "附件 ID 无效")
+            purpose = arguments.get("purpose", "text_recognition")
+            if purpose not in OCR_PURPOSES:
+                raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "识别用途无效")
+        if name == "image_search":
+            mode = arguments.get("mode", "text_search")
+            if mode not in IMAGE_MODES:
+                raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "图片搜索模式无效")
+            query = arguments.get("query", "")
+            file_id = arguments.get("file_id", "")
+            if not isinstance(query, str) or not isinstance(file_id, str):
+                raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "图片搜索参数无效")
+            if mode == "text_search":
+                if not query.strip() or len(query) > 400 or file_id:
+                    raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "文字搜图需要 1–400 字符检索词且不能附带图片")
+            else:
+                if query or not file_id or len(file_id) > 128 or not file_id.isascii():
+                    raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "以图搜图需要当前会话附件且不能附带检索词")
+            if "limit" in arguments and (type(arguments["limit"]) is not int or not 1 <= arguments["limit"] <= 20):
+                raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "返回数量无效")
         if name.startswith("web_"):
             if len(arguments.get("query", "")) > 2000 or len(arguments.get("url", "")) > 8192:
                 raise AppError(422, "HARNESS_ARGUMENTS_INVALID", "检索参数过长")
@@ -155,6 +186,14 @@ class HarnessToolBridge:
             self.unchanged_policy(policies)
             if not allowed:
                 raise AppError(403, "HARNESS_APPROVAL_DENIED", "用户拒绝、审批超时或业务授权已失效")
+            # A capability call authorized by approval needs an exact one-time
+            # receipt keyed by this host call id and these public arguments.
+            # Automatic authorization has no approval row and needs none.
+            receipt_id = None
+            if name in CAPABILITY_TOOL_SHORT_NAMES and getattr(allowed, "approval_id", None):
+                receipt_id = record_approval_receipt(
+                    service, run_id=run_id, tool_call_id=call_id, tool_name=tool_name,
+                    arguments=arguments, receipt=allowed)
             def recheck():
                 self.active(run_id)
                 runtime.check_tool(tool_name, arguments)
@@ -162,7 +201,19 @@ class HarnessToolBridge:
                 if business:
                     business.current()
 
-            result = await business.invoke(arguments, recheck) if business else await self.tools[name].handler(arguments)
+            if business:
+                result = await business.invoke(arguments, recheck)
+            else:
+                # The real host callId is unique and auditable; never synthesize
+                # run+tool identity for capability execution.  The approval
+                # receipt names the exact row that authorized this call.
+                token = TOOL_CALL_ID.set(call_id)
+                approval_token = APPROVAL_ID.set(receipt_id)
+                try:
+                    result = await self.tools[name].handler(arguments)
+                finally:
+                    APPROVAL_ID.reset(approval_token)
+                    TOOL_CALL_ID.reset(token)
             recheck()
             if not result.get("is_error") and not result.get("isError"):
                 if business:

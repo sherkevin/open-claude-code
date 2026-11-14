@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,31 @@ from .security import AppError, redact
 from .service import TERMINAL, approval_view
 
 log = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class ApprovalReceipt:
+    """Outcome of one approval decision plus the exact row it authorized.
+
+    Existing callers compare the result as a boolean (``if not allowed``); the
+    receipt keeps that behavior while letting the Harness/capability bridge
+    bind an execution to the exact approval row without ever searching for
+    "the latest allowed approval".  ``source`` is the real decision source
+    (``user``/``dual``/``model``) used to build the one-time capability receipt.
+    """
+    allowed: bool
+    approval_id: str | None = None
+    source: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.allowed
+
+
+def _arguments_digest(arguments):
+    """Canonical digest used to bind approvals/nonces to exact tool input."""
+    return hashlib.sha256(json.dumps(
+        arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str,
+    ).encode("utf-8")).hexdigest()
 
 
 def elapsed_ms(run):
@@ -140,9 +166,56 @@ class WorkspaceRuntime:
 class SDKRuntime(WorkspaceRuntime):
     """Real Claude SDK transport, owned by one persistent session actor task."""
 
+    def __init__(self, service, conversation_id, config, approve, emit):
+        super().__init__(service, conversation_id, config, approve, emit)
+        # One-time, argument-bound nonce issued by the permission callback and
+        # consumed by the dedicated capability dispatch.  A ticket carries no
+        # authority the host did not already grant: it only replays the approved
+        # arguments into the handler exactly once.
+        self._capability_tickets: dict[str, dict] = {}
+        self._capability_ticket_cap = 128
+
+    def issue_capability_ticket(self, tool, arguments, context, approval_id=None):
+        """Return an opaque one-time ticket bound to this exact call, or None."""
+        now_monotonic = time.monotonic()
+        self._prune_capability_tickets(now_monotonic)
+        tool_use_id = getattr(context, "tool_use_id", None)
+        if (not isinstance(tool_use_id, str) or not tool_use_id
+                or not isinstance(arguments, dict) or len(self._capability_tickets) >= self._capability_ticket_cap):
+            return None
+        run_id = (self.current_run or {}).get("id")
+        if not isinstance(run_id, str) or not run_id:
+            return None
+        ticket = secrets.token_urlsafe(32)
+        self._capability_tickets[ticket] = {
+            "tool_name": tool,
+            "tool_use_id": tool_use_id[:200],
+            "run_id": run_id,
+            "arguments_digest": _arguments_digest(arguments),
+            "approval_id": approval_id if isinstance(approval_id, str) and approval_id else None,
+            "expires_at": now_monotonic + 120.0,
+        }
+        return ticket
+
+    def consume_capability_ticket(self, ticket, tool_name, arguments):
+        """Consume a ticket exactly once; replay or mismatch returns None."""
+        binding = self._capability_tickets.pop(ticket, None) if isinstance(ticket, str) else None
+        if binding is None or binding["expires_at"] < time.monotonic():
+            return None
+        if (binding["tool_name"] != tool_name or binding["run_id"] != (self.current_run or {}).get("id")
+                or binding["arguments_digest"] != _arguments_digest(arguments)):
+            return None
+        return binding
+
+    def _prune_capability_tickets(self, now_monotonic):
+        for key in [key for key, value in self._capability_tickets.items()
+                    if value["expires_at"] < now_monotonic]:
+            self._capability_tickets.pop(key, None)
+
     async def connect(self):
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
         from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
+        from .capabilities import CAPABILITY_TOOL_NAMES, CAPABILITY_TICKET_FIELD
 
         service, settings = self.service, self.service.settings
         root = settings.data_dir / "workspaces" / self.conversation_id
@@ -189,6 +262,27 @@ class SDKRuntime(WorkspaceRuntime):
                     allowed = automatic or await self.approve(tool, arguments, review_checked=True)
                 await offload(self.check_tool, tool, arguments)
                 if allowed:
+                    if tool in CAPABILITY_TOOL_NAMES:
+                        # The SDK's MCP layer is shared with ordinary tools and
+                        # validates arguments before the handler.  Capability
+                        # tools therefore receive a one-time host ticket here;
+                        # the dedicated dispatch consumes it, strips it, and
+                        # applies the strict public schema itself.
+                        receipt_id = None
+                        if getattr(allowed, "approval_id", None):
+                            from .external_capabilities import record_approval_receipt
+
+                            def record_receipt():
+                                return record_approval_receipt(
+                                    self.service, run_id=run["id"], tool_call_id=context.tool_use_id,
+                                    tool_name=tool, arguments=arguments, receipt=allowed)
+                            receipt_id = await offload_write(record_receipt)
+                        ticket = self.issue_capability_ticket(
+                            tool, arguments, context, receipt_id)
+                        if ticket is None:
+                            return PermissionResultDeny(message="工具调用上下文无效，已拒绝执行")
+                        return PermissionResultAllow(updated_input={
+                            **arguments, CAPABILITY_TICKET_FIELD: ticket})
                     return PermissionResultAllow(updated_input=arguments)
             except Exception:
                 pass
@@ -298,6 +392,17 @@ class SDKRuntime(WorkspaceRuntime):
             await self.emit("context.compaction_started", {"trigger": "manual"})
         root = self.service.settings.data_dir / "workspaces" / self.conversation_id
         references = []
+        raw_capabilities = (self.config.get("assistant_snapshot") or {}).get("capabilities")
+        if isinstance(raw_capabilities, str):
+            try:
+                raw_capabilities = json.loads(raw_capabilities)
+            except (TypeError, ValueError):
+                raw_capabilities = None
+
+        def capability_granted(name):
+            grant = raw_capabilities.get(name) if isinstance(raw_capabilities, dict) else None
+            return isinstance(grant, dict) and grant.get("enabled") is True
+
         for file_id in json.loads(message["file_ids"]):
             item = await offload(self.service.require, "files", file_id)
             destination = root / "uploads" / f"{file_id}-{item['name']}"
@@ -314,9 +419,26 @@ class SDKRuntime(WorkspaceRuntime):
                     self.attachment_snapshots[str(extracted.resolve())] = hashlib.sha256(extracted.read_bytes()).hexdigest()
                     references.append(f"PDF 文本附件：{extracted.relative_to(root)}（文字/OCR，保留页码；图表需以原件核对）")
                 except Exception as exc:
-                    raise AppError(422, "PDF_TEXT_UNAVAILABLE", "此 PDF 的文字或 OCR 解析未完成。原件仍可预览或下载，请检查文件后重试") from exc
+                    # A scanned PDF is still a legitimate OCR input.  When the
+                    # assistant explicitly grants the independent OCR tool, the
+                    # original file id is offered instead of failing the run;
+                    # the model still cannot read the PDF directly.
+                    if capability_granted("ocr"):
+                        references.append(
+                            f"PDF 附件（未能提取本地文字）：{destination.relative_to(root)}"
+                            f"（file_id={file_id}；可使用 ocr 工具识别，结果需按未受信任资料处理）")
+                    else:
+                        raise AppError(422, "PDF_TEXT_UNAVAILABLE", "此 PDF 的文字或 OCR 解析未完成。原件仍可预览或下载，请检查文件后重试") from exc
             elif item["mime_type"].startswith("image/"):
-                raise AppError(422, "VISION_UNAVAILABLE", "当前模型尚未启用经过验证的图片理解；图片已保存，可预览，请同时提供文字说明")
+                available = [name for name in ("ocr", "image_search") if capability_granted(name)]
+                if not available:
+                    raise AppError(422, "VISION_UNAVAILABLE", "当前模型尚未启用经过验证的图片理解；图片已保存，可预览，请同时提供文字说明")
+                # The model cannot see the image itself.  Only the opaque host
+                # file id is surfaced so it can request OCR or image search;
+                # the bytes and path stay host-side.
+                references.append(
+                    f"图片附件：{destination.relative_to(root)}"
+                    f"（file_id={file_id}；模型不能直接看图，可使用 {'、'.join(available)} 工具按 file_id 处理）")
             elif destination.suffix.lower() in {".docx", ".xlsx"}:
                 try:
                     pages = await asyncio.to_thread(self.service.knowledge.parser.parse, destination, item["name"])
@@ -544,7 +666,7 @@ class SessionActor:
 
     async def approve(self, tool, arguments, *, review=None, review_checked=False):
         if self.cancelled:
-            return False
+            return ApprovalReceipt(False)
         run = await offload(self.service.require, "runs", self.current_run_id)
         # Model-as-user approval is an explicit administrator policy.  The
         # policy evaluator is fail-closed and uses an injectable local
@@ -569,8 +691,8 @@ class SessionActor:
             )
             await self.emit("approval.model_decided", {"approval_id": approval_id, **self.service.model_approval.audit_payload(review), "decision": review.decision})
             if review.decision != "allow" or self.cancelled:
-                return False
-            return True
+                return ApprovalReceipt(False)
+            return ApprovalReceipt(True, approval_id, "model")
         dual_snapshot = await offload(self.service.high_risk_approval.request_snapshot, run, tool, arguments)
         approval_id = uid()
         expiry = (datetime.now(timezone.utc) + timedelta(seconds=self.service.settings.approval_seconds)).isoformat()
@@ -607,7 +729,7 @@ class SessionActor:
         if dual_denied:
             self.manager.approvals.pop(approval_id, None)
             await self.emit("approval.resolved", {"approval_id": approval_id, "decision": "deny", "decision_at": now(), "decided_by": None, "decision_source": "policy"})
-            return False
+            return ApprovalReceipt(False)
         await offload_write(self.service.db.execute, "UPDATE runs SET status='awaiting_approval' WHERE id=?", (run["id"],))
         required_view = await offload(lambda: approval_view(self.service.require("approvals", approval_id)))
         await self.emit("approval.required", required_view)
@@ -629,7 +751,9 @@ class SessionActor:
             approval_id, run["id"], decision, decision_source,
             dual_snapshot=dual_snapshot, run=run, tool=tool, arguments=arguments,
         )
-        return decision == "allow" and not self.cancelled
+        if decision != "allow" or self.cancelled:
+            return ApprovalReceipt(False)
+        return ApprovalReceipt(True, approval_id, "dual" if dual_snapshot is not None else "user")
 
     async def resolve_waited_approval(self, approval_id, run_id, decision, decision_source, *, dual_snapshot=None, run=None, tool=None, arguments=None):
         """Settle an approval after this waiter stopped waiting.
