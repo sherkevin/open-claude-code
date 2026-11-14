@@ -98,4 +98,6 @@ server/tests -q -ra -x -p oc_test_observer \
 
 已通过 boardctl 新增节点、验收项和进展，并更新本项目颜色分组表。boardctl 要求 running 才能 submit，但既有规范要求真实 Claude Code ST 才能 running；本轮仅有可核实的 collaboration 身份。故未伪造 start/ST，节点暂为 ready，独立结论保存在报告和验收项；需要 L1 明确此类会话的合法看板映射，项目未修改共享看板代码或状态机。
 
-独立审阅者已将两节点 IR1 标为 passed，并保守将其他验收项记为 needs_human 等待集成证据。L2 首次登记 T22-C1 时误用了两个不存在的测试文件名；已补 C3 为真实文件名，保留错误记录，不伪报原命令通过。现有 boardctl 只支持新增与设验收结果，不能修改原命令，需 L1 提供合法更正/废止途径。
+独立审阅者先将两节点 IR1 标为 passed，并保守将其他验收项记为 needs_human 等待集成证据。最终完整日志形成后，独立核验归档日志摘要、产品源码未变、逐用例记录及浏览器图片，已将 T22-C2/C3、T23-C1/C2 标为 passed。来源组 97 项和配置组 78 项属于 L2 完整回归中的实际用例，不冒称审核者另跑相同命令；见 [最终核验记录](capabilities-sources-20261114/final-acceptance-review.json)。
+
+T22-C1 仍为 needs_human：L2 首次登记时误用了两个不存在的测试文件名，已补 C3 为真实文件名，保留错误记录，不伪报原命令通过。现有 boardctl 只支持新增与设验收结果，不能修改原命令，需 L1 提供合法更正/废止途径。两节点仍为 ready，身份映射与该错误验收项更正前不伪造 start/submit/done。代码与证据已推 GitHub，不代表服务发布。
