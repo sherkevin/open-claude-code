@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ExecutionEvidenceCard, RunMetrics, buildExecutionEvidence } from './ChatPage';
+import { ExecutionEvidenceCard, RunMetrics, buildExecutionEvidence, buildExecutionEvidences } from './ChatPage';
 import type { Run, StreamEvent } from './types';
 
 const run:Run={id:'run',conversation_id:'conversation',status:'succeeded',assistant_message_id:'answer',error:null,usage:null,approvals:[],created_at:'2026-11-05T10:00:00Z',completed_at:'2026-11-05T10:00:01Z'};
@@ -20,8 +20,17 @@ describe('execution metrics boundaries',()=>{
     const html=renderToStaticMarkup(<ExecutionEvidenceCard events={events} run={{...run,usage:null}}/>);
     expect(html).toContain('证据 1');expect(html).toContain('业务域');expect(html).toContain('未提供');
   });
+  it('keeps each completed tool result visible for multi-tool business tasks',()=>{
+    const events:StreamEvent[]=[
+      {id:1,run_id:'run',type:'tool.completed',created_at:'2026-11-05T10:00:01Z',data:{success:true,tool_name:'orders',source_ids:['orders-1'],result_facts:{business_domain:'销售',process:'交付',object:'订单',returned_rows:2}}},
+      {id:2,run_id:'run',type:'tool.completed',created_at:'2026-11-05T10:00:02Z',data:{success:true,tool_name:'inventory',source_ids:['inventory-1'],result_facts:{business_domain:'库存',process:'异常',object:'物料',returned_rows:4}}},
+    ];
+    expect(buildExecutionEvidences(events,run)).toHaveLength(2);
+    const html=renderToStaticMarkup(<ExecutionEvidenceCard events={events} run={{...run,usage:null}}/>);
+    expect(html).toContain('工具结果 1');expect(html).toContain('工具结果 2');expect(html).toContain('销售');expect(html).toContain('库存');
+  });
   it('shows measured token stages only when the runtime reports them',()=>{
-    const html=renderToStaticMarkup(<RunMetrics run={{...run,usage:{input_tokens:12,output_tokens:4,token_accounting:{stages:[{stage:'answer',source:'harness_provider'}]}}}}/>);
-    expect(html).toContain('Token 阶段');expect(html).toContain('answer · harness_provider');
+    const html=renderToStaticMarkup(<RunMetrics run={{...run,usage:{input_tokens:12,output_tokens:4,token_accounting:{stages:[{stage:'answer',source:'harness_provider',provider_usage:{input_tokens:12,output_tokens:4,cache_read_input_tokens:2}}]}}}}/>);
+    expect(html).toContain('Token 阶段');expect(html).toContain('answer</strong> · harness_provider');expect(html).toContain('入 12 · 出 4 · 缓 2');
   });
 });
