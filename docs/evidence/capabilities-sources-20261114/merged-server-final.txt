@@ -1,0 +1,75 @@
+SOURCE_COMMIT=5eed11a199d09e063292fbde1005b2f6a4b0c910
+2026-11-14T16:36:09+08:00
+........................................................................ [  4%]
+........................................................................ [  8%]
+........................................................................ [ 12%]
+........................................................................ [ 16%]
+.......................................................sssssssssssss.... [ 21%]
+........................................................................ [ 25%]
+.................s...................................................... [ 29%]
+..............................................................ssssssssss [ 33%]
+sssssssss.ssssssssss.................................................... [ 37%]
+........................................................................ [ 42%]
+........................................................................ [ 46%]
+.............sss........................................................ [ 50%]
+......................................s................................. [ 54%]
+...................................................................ssss. [ 59%]
+........................................................................ [ 63%]
+........................................................................ [ 67%]
+........................................................................ [ 71%]
+........................................................................ [ 75%]
+........................................................................ [ 80%]
+........................................................................ [ 84%]
+........................................................................ [ 88%]
+........................................................................ [ 92%]
+........................................................................ [ 97%]
+...................................................                      [100%]
+=============================== warnings summary ===============================
+../open-claude-code/.venv/lib/python3.10/site-packages/fastapi/testclient.py:1
+  /media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_deployment_policy.py::test_deployment_policy_is_exact_read_only_and_fail_closed
+  /media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/fastapi/openapi/utils.py:295: UserWarning: Duplicate Operation ID disabled_api_v1_assistants__assistant_id__workflows_post for function disabled at /media/data3/dengkw/projects/open-claude-code-main-merge/server/app/workflows.py
+    warnings.warn(message, stacklevel=1)
+
+tests/test_deployment_policy.py::test_deployment_policy_is_exact_read_only_and_fail_closed
+  /media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/fastapi/openapi/utils.py:295: UserWarning: Duplicate Operation ID disabled_api_v1_workflows__workflow_id__runs_post for function disabled at /media/data3/dengkw/projects/open-claude-code-main-merge/server/app/workflows.py
+    warnings.warn(message, stacklevel=1)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] server/tests/test_harness_context.py:282: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [5] server/tests/test_harness_context.py:320: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [3] server/tests/test_harness_context.py:335: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_context.py:350: requires explicitly installed pinned Harness runtime
+SKIPPED [3] server/tests/test_harness_context.py:434: requires explicitly installed pinned Harness runtime
+SKIPPED [1] server/tests/test_harness_memory_runtime.py:270: requires explicitly installed fixed Harness runtime
+SKIPPED [1] server/tests/test_harness_profile.py:266: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:279: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:300: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:315: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:328: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:338: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:353: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:363: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [9] server/tests/test_harness_profile.py:386: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:403: Plugin guard checks require the isolated Node 24 executable
+SKIPPED [1] server/tests/test_harness_profile.py:419: Official schema projection check requires the pinned source dependencies
+SKIPPED [1] server/tests/test_harness_protocol_smoke.py:31: Pinned upstream checkout is not present
+SKIPPED [1] server/tests/test_harness_protocol_smoke.py:46: Pinned upstream checkout is not present
+SKIPPED [1] server/tests/test_harness_real_mcp.py:143: requires explicitly installed pinned Harness runtime
+SKIPPED [1] server/tests/test_harness_real_mcp.py:181: requires explicitly installed pinned Harness runtime
+SKIPPED [1] server/tests/test_harness_real_mcp.py:203: requires explicitly installed pinned Harness runtime
+SKIPPED [1] server/tests/test_harness_real_mcp.py:235: requires explicitly installed pinned Harness runtime
+SKIPPED [2] server/tests/test_harness_real_runtime.py:139: requires explicitly installed pinned Harness runtime
+SKIPPED [1] server/tests/test_harness_real_runtime.py:223: requires explicitly installed pinned Harness runtime
+SKIPPED [1] server/tests/test_harness_real_runtime.py:324: requires explicitly installed pinned Harness runtime
+SKIPPED [1] server/tests/test_hipporag_official_runtime.py:118: Pinned upstream checkout is absent
+SKIPPED [1] server/tests/test_hipporag_official_runtime.py:124: Optional isolated HippoRAG environment or source is absent
+SKIPPED [1] server/tests/test_hipporag_official_runtime.py:160: Optional isolated HippoRAG environment or source is absent
+SKIPPED [1] server/tests/test_hipporag_process_official.py:13: Optional isolated official runtime is absent
+SKIPPED [4] server/tests/test_hipporag_public_models.py:373: could not import 'torch': No module named 'torch'
+1656 passed, 51 skipped, 3 warnings in 1714.68s (0:28:34)
+TEST_EXIT_CODE=0
+2026-11-14T17:04:49+08:00

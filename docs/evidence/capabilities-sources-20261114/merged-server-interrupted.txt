@@ -1,0 +1,69 @@
+SOURCE_COMMIT=5eed11a199d09e063292fbde1005b2f6a4b0c910
+2026-11-14T16:25:40+08:00
+........................................................................ [  4%]
+........................................................................ [  8%]
+...........................F......................................Traceback (most recent call last):
+  File "/usr/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/usr/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pytest/__main__.py", line 9, in <module>
+    raise SystemExit(pytest.console_main())
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/config/__init__.py", line 201, in console_main
+    code = main()
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/config/__init__.py", line 175, in main
+    ret: ExitCode | int = config.hook.pytest_cmdline_main(config=config)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_caller.py", line 197, in __call__
+    return self._hookexec(
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_manager.py", line 183, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_execution.py", line 195, in _multicall
+    raise exception
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_execution.py", line 147, in _multicall
+    res = hook_impl.function(*args)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/main.py", line 336, in pytest_cmdline_main
+    return wrap_session(config, _main)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/main.py", line 324, in wrap_session
+    config.hook.pytest_sessionfinish(
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_caller.py", line 197, in __call__
+    return self._hookexec(
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_manager.py", line 183, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_execution.py", line 195, in _multicall
+    raise exception
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/logging.py", line 873, in pytest_sessionfinish
+    return (yield)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/terminal.py", line 936, in pytest_sessionfinish
+    result = yield
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_execution.py", line 167, in _multicall
+    teardown.throw(exception)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/warnings.py", line 119, in pytest_sessionfinish
+    return (yield)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/pluggy/_execution.py", line 147, in _multicall
+    res = hook_impl.function(*args)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/runner.py", line 111, in pytest_sessionfinish
+    session._setupstate.teardown_exact(None)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/runner.py", line 557, in teardown_exact
+    raise exceptions[0]
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/runner.py", line 546, in teardown_exact
+    fin()
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/fixtures.py", line 1069, in finish
+    raise exceptions[0]
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/fixtures.py", line 1058, in finish
+    fin()
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/fixtures.py", line 939, in _teardown_yield_fixture
+    next(it)
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/tmpdir.py", line 269, in tmp_path
+    result_dict = request.node.stash[tmppath_result_key]
+  File "/media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/_pytest/stash.py", line 84, in __getitem__
+    return cast(T, self._storage[key])
+KeyError: <_pytest.stash.StashKey object at 0x7c1ec4b8e320>
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+/media/data3/dengkw/projects/open-claude-code-main-merge/server/app/db.py:196: KeyboardInterrupt
+(to show a full traceback on KeyboardInterrupt use --full-trace)
+TEST_EXIT_CODE=1
+2026-11-14T16:33:37+08:00

@@ -1,0 +1,160 @@
+........................................................................ [  4%]
+........................................................................ [  8%]
+........................................................................ [ 12%]
+........................................................................ [ 17%]
+.......................................................sssssssssssss.... [ 21%]
+........................................................................ [ 25%]
+.................s...................................................... [ 30%]
+..............................................................ssssssssss [ 34%]
+sssssssss.ssssssssss.................................................... [ 38%]
+........................................................................ [ 42%]
+........................................................................ [ 47%]
+.............sss........................................................ [ 51%]
+......................................s................................. [ 55%]
+...................................................................ssss. [ 60%]
+........................................................................ [ 64%]
+........................................................................ [ 68%]
+........................................................................ [ 72%]
+........................................................................ [ 77%]
+........................................................................ [ 81%]
+...............................................................F........ [ 85%]
+........................................................................ [ 90%]
+........................................................................ [ 94%]
+........................................................................ [ 98%]
+.......................                                                  [100%]
+=================================== FAILURES ===================================
+________________ test_lease_expiry_and_heartbeat_drive_recovery ________________
+
+env = Env(service=<app.service.Service object at 0x785f685a26b0>, registry=<app.openclaw_connector.ConnectorRegistry object ..._id='tenant-a', principal_id='principal-a'), other=ConnectorIdentity(tenant_id='tenant-b', principal_id='principal-b'))
+
+    def test_lease_expiry_and_heartbeat_drive_recovery(env):
+        registry = ConnectorRegistry(env.service.db, executor=Executor())
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        expired_id, live_id, legacy_id = uid(), uid(), uid()
+        env.service.db.execute(
+            "INSERT INTO openclaw_connector_calls(request_id,tenant_id,principal_id,tool_name,status,owner_instance,lease_expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (expired_id, env.me.tenant_id, env.me.principal_id, "read_ticket", "running",
+             "dead-instance", past, now()),
+        )
+        env.service.db.execute(
+            "INSERT INTO openclaw_connector_calls(request_id,tenant_id,principal_id,tool_name,status,owner_instance,lease_expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (live_id, env.me.tenant_id, env.me.principal_id, "read_ticket", "running",
+             "live-instance", future, now()),
+        )
+        env.service.db.execute(
+            "INSERT INTO openclaw_connector_calls(request_id,tenant_id,principal_id,tool_name,status,created_at) VALUES(?,?,?,?,?,?)",
+            (legacy_id, env.me.tenant_id, env.me.principal_id, "read_ticket", "running", now()),
+        )
+        assert registry.recover_interrupted() == 2
+        for request_id in (expired_id, legacy_id):
+            row = env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?",
+                                     (request_id,))
+            assert row["status"] == "failed"
+            assert row["http_status"] == 503
+            assert json.loads(row["error_json"])["code"] == "INTERRUPTED"
+            assert row["lease_expires_at"] is None
+        live = env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?",
+                                  (live_id,))
+        assert live["status"] == "running"
+        assert live["lease_expires_at"] == future
+    
+        async def heartbeat_case():
+            started = asyncio.Event()
+            release = asyncio.Event()
+    
+            class Blocking:
+                async def call(self, server, tool, arguments, cancelled, request_id):
+                    started.set()
+                    await release.wait()
+                    return {"ok": True}
+    
+            active = ConnectorRegistry(env.service.db, executor=Blocking(), timeout_seconds=5,
+                                       lease_seconds=0.3)
+            active.register_server(env.other, "heartbeat", TOOLS, ALLOWED)
+            task = asyncio.create_task(active.call(env.other, "read_ticket", {"id": "T-1"}))
+            await asyncio.wait_for(started.wait(), 2)
+            request_id = next(iter(active._active))
+            first_lease = env.service.db.one(
+                "SELECT lease_expires_at FROM openclaw_connector_calls WHERE request_id=?",
+                (request_id,),
+            )["lease_expires_at"]
+            await asyncio.sleep(0.7)
+            second_lease = env.service.db.one(
+                "SELECT lease_expires_at FROM openclaw_connector_calls WHERE request_id=?",
+                (request_id,),
+            )["lease_expires_at"]
+            assert second_lease > first_lease
+            second = ConnectorRegistry(env.service.db, lease_seconds=60)
+            row = env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?",
+                                     (request_id,))
+            assert row["status"] == "running"
+            release.set()
+            await asyncio.wait_for(task, 2)
+            row = env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?",
+                                     (request_id,))
+            assert row["status"] == "succeeded"
+    
+>       asyncio.run(heartbeat_case())
+
+server/tests/test_openclaw_connector.py:629: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.10/asyncio/runners.py:44: in run
+    return loop.run_until_complete(main)
+/usr/lib/python3.10/asyncio/base_events.py:649: in run_until_complete
+    return future.result()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    async def heartbeat_case():
+        started = asyncio.Event()
+        release = asyncio.Event()
+    
+        class Blocking:
+            async def call(self, server, tool, arguments, cancelled, request_id):
+                started.set()
+                await release.wait()
+                return {"ok": True}
+    
+        active = ConnectorRegistry(env.service.db, executor=Blocking(), timeout_seconds=5,
+                                   lease_seconds=0.3)
+        active.register_server(env.other, "heartbeat", TOOLS, ALLOWED)
+        task = asyncio.create_task(active.call(env.other, "read_ticket", {"id": "T-1"}))
+        await asyncio.wait_for(started.wait(), 2)
+        request_id = next(iter(active._active))
+        first_lease = env.service.db.one(
+            "SELECT lease_expires_at FROM openclaw_connector_calls WHERE request_id=?",
+            (request_id,),
+        )["lease_expires_at"]
+        await asyncio.sleep(0.7)
+        second_lease = env.service.db.one(
+            "SELECT lease_expires_at FROM openclaw_connector_calls WHERE request_id=?",
+            (request_id,),
+        )["lease_expires_at"]
+        assert second_lease > first_lease
+        second = ConnectorRegistry(env.service.db, lease_seconds=60)
+        row = env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?",
+                                 (request_id,))
+>       assert row["status"] == "running"
+E       AssertionError: assert 'failed' == 'running'
+E         
+E         - running
+E         + failed
+
+server/tests/test_openclaw_connector.py:622: AssertionError
+=============================== warnings summary ===============================
+../open-claude-code/.venv/lib/python3.10/site-packages/fastapi/testclient.py:1
+  /media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_deployment_policy.py::test_deployment_policy_is_exact_read_only_and_fail_closed
+  /media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/fastapi/openapi/utils.py:295: UserWarning: Duplicate Operation ID disabled_api_v1_assistants__assistant_id__workflows_post for function disabled at /media/data3/dengkw/projects/open-claude-code-main-merge/server/app/workflows.py
+    warnings.warn(message, stacklevel=1)
+
+tests/test_deployment_policy.py::test_deployment_policy_is_exact_read_only_and_fail_closed
+  /media/data3/dengkw/projects/open-claude-code/.venv/lib/python3.10/site-packages/fastapi/openapi/utils.py:295: UserWarning: Duplicate Operation ID disabled_api_v1_workflows__workflow_id__runs_post for function disabled at /media/data3/dengkw/projects/open-claude-code-main-merge/server/app/workflows.py
+    warnings.warn(message, stacklevel=1)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED server/tests/test_openclaw_connector.py::test_lease_expiry_and_heartbeat_drive_recovery
+1 failed, 1627 passed, 51 skipped, 3 warnings in 1815.41s (0:30:15)
