@@ -466,7 +466,12 @@ class SDKRuntime(WorkspaceRuntime):
                 await offload_write(self.service.db.execute, "UPDATE conversations SET sdk_session_id=?,sdk_cost_total=? WHERE id=?", (session_id, max(previous, total or 0), self.conversation_id))
                 usage = event.usage or {}
                 tokens = {key: usage[key] for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens") if type(usage.get(key)) is int and usage[key] >= 0}
-                token_ledger.record("answer", usage, source="sdk_provider")
+                token_ledger.record("answer", {
+                    "input_tokens": usage.get("input_tokens"),
+                    "output_tokens": usage.get("output_tokens"),
+                    "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+                    "cache_write_input_tokens": usage.get("cache_creation_input_tokens"),
+                }, source="sdk_provider")
                 await self.emit("usage.updated", {**tokens, "estimated_cost_usd": cost, "currency": "USD",
                                                    "cost_is_estimate": True, "token_accounting": token_ledger.summary()})
                 api_status = getattr(event, "api_error_status", None)
