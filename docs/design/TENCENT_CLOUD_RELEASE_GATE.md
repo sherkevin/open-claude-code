@@ -2,6 +2,14 @@
 
 状态：`candidate_preview_deployed_not_ready`（2026-11-13；单一路由门禁、当前工作树回归、固定 Harness 真实小流量烟囱和用户批准的腾讯云受控预览已记录）。本文不把受控预览升级为生产发布或客户验收。
 
+## 2026-11-14 DeepSeek 应用能力适配后的受控预览更新
+
+- 学校云 `main` 已合并并推送提交 `2862e92d03910081e37662e4e352b06c8103f711`。本轮独立功能分支 `feature/deepseek-api-suite` 已完成验收并删除；服务端完整回归为 `1573 passed / 51 skipped / 3 warnings`，代码格式检查通过，客户端子路径生产构建通过。
+- 新增的官方 Search、Fetch、OCR 适配器默认关闭，使用独立开关和凭据；不改变 TokenHub 聊天模型线路或默认 Bing RSS 搜索，也未调用真实付费接口。没有授权密钥时会拒绝联网请求，网页结果继续使用统一的托管来源标识。
+- 用户已批准本轮受控同步后，白名单源码和 `BASE_PATH=/zhixing/` 客户端构建已同步到腾讯云 `/data/dengkw/workspace/open-claude-code`。`server/app/deepseek_api.py` 与 `client/dist/index.html` 的 SHA-256 分别为 `b427650d0fc67012a7aa531c41543e3145458e937b7a82c2d267ec82f53291d4` 和 `f34bbae6e9c3f45ac412838a980afc073d71639cbd7d16cff7aab5e3bf11ecd5`，与学校云一致。
+- 仅重启本项目自有的后端和前端服务；两者均为 `active`，演示 MCP 未重启。腾讯云本机和公网 `/zhixing/api/v1/health/ready` 均返回 `status=ready`、`model_configured=true`、`model_route_ready=true`；公网入口为 `https://119.45.112.102/zhixing/`，入口静态文件和 JavaScript 资源返回 `200`。
+- 本轮仍是受控预览，不是生产发布或客户验收。新的 DeepSeek 能力只有协议模拟测试证据，真实授权、计费、供应商配额和真实客户数据仍未验收；多模态图谱、HippoRAG 质量和容量压测门禁仍按下文保持未完成。
+
 ## 2026-11-13 主线合并后的受控预览更新
 
 - 学校云 `main` 已冻结为 `5ef053f6daa1fd08eee180d690626822ad80bd7c`，并与 `origin/main` 一致。该提交合入华微公司知识库脱敏 fixture；服务端全量回归为 `1562 passed / 51 skipped / 3 warnings`，客户端为 `153 passed`，生产构建通过。
