@@ -16,6 +16,7 @@ import anyio
 from httpcore._backends.auto import AutoBackend
 
 from .db import now
+from .deepseek_api import DeepSeekAPI, PUBLIC_PROVIDER_NAME
 from .security import AppError
 
 PROXY_FAKE_IPS = ipaddress.ip_network("198.18.0.0/15")
@@ -284,6 +285,29 @@ class WebTools:
             fallback = os.getenv("AGENT_WEB_SEARCH_FALLBACK_BING", "true").lower() == "true"
         return provider, searx_url, brave_url, brave_key, fallback
 
+    def _deepseek_client(self) -> DeepSeekAPI | None:
+        settings = getattr(self.service, "settings", None)
+        if settings is None:
+            import os
+            enabled = os.getenv("AGENT_DEEPSEEK_API_ENABLED", "false").lower() == "true"
+            base_url = os.getenv("AGENT_DEEPSEEK_API_BASE_URL", "https://api.deepseek.com").strip()
+            api_key = os.getenv("AGENT_DEEPSEEK_API_KEY", "").strip()
+            timeout = float(os.getenv("AGENT_DEEPSEEK_API_TIMEOUT_SECONDS", "30"))
+        else:
+            enabled = bool(getattr(settings, "deepseek_api_enabled", False))
+            base_url = str(getattr(settings, "deepseek_api_base_url", "https://api.deepseek.com") or "").strip()
+            api_key = str(getattr(settings, "deepseek_api_key", "") or "").strip()
+            timeout = float(getattr(settings, "deepseek_api_timeout_seconds", 30) or 30)
+        if not enabled or not api_key:
+            return None
+        return DeepSeekAPI(base_url=base_url, api_key=api_key, timeout_seconds=timeout)
+
+    async def _deepseek(self, query: str, limit: int) -> list[dict]:
+        client = self._deepseek_client()
+        if client is None:
+            raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "当前网页搜索服务未配置")
+        return await client.search(query, count=limit, need_content=False)
+
     async def _bing(self, query: str) -> list[dict]:
         url = "https://www.bing.com/search?" + urlencode({"q": query, "format": "rss"})
         try:
@@ -359,7 +383,7 @@ class WebTools:
             raise AppError(422, "WEB_QUERY_INVALID", "搜索词长度应为 1–500 个字符")
         limit = max(1, min(int(limit), MAX_SEARCH_RESULTS))
         provider, searx_url, brave_url, brave_key, fallback = self._provider_config()
-        if provider not in SEARCH_PROVIDERS:
+        if provider not in SEARCH_PROVIDERS and provider != "deepseek_api":
             raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "当前网页搜索服务未配置")
         used_provider = provider
         try:
@@ -367,8 +391,10 @@ class WebTools:
                 raw_results = await self._bing(query)
             elif provider == "searxng":
                 raw_results = await self._searxng(searx_url, query, limit)
-            else:
+            elif provider == "brave":
                 raw_results = await self._brave(brave_url, brave_key, query, limit)
+            else:
+                raw_results = await self._deepseek(query, limit)
         except AppError:
             if provider == "bing_rss" or not fallback:
                 raise
@@ -380,8 +406,9 @@ class WebTools:
             if not canonical or canonical in seen:
                 continue
             seen.add(canonical)
+            public_provider = PUBLIC_PROVIDER_NAME if used_provider == "deepseek_api" else used_provider
             locator = {"url": canonical, "fetched_at": now(), "search_query": query,
-                       "content_type": "search_excerpt", "provider": used_provider}
+                       "content_type": "search_excerpt", "provider": public_provider}
             if item.get("published_at"):
                 locator["published_at"] = item["published_at"]
             source = self.service.evidence.register(
@@ -390,28 +417,53 @@ class WebTools:
             )
             results.append({"title": item["title"], "url": canonical, "excerpt": item["excerpt"],
                            "source_id": source["id"], "citation": f"[[source:{source['id']}]]",
-                           "provider": used_provider})
+                           "provider": public_provider})
             if len(results) >= limit:
                 break
         note = "这些是搜索摘要；精确引文或细节请用 web_read 读取原网页。"
         if used_provider != provider:
-            note += f" {provider} 暂时不可用，已回退到 Bing RSS。"
-        return {"results": results, "provider": used_provider, "requested_provider": provider,
+            note += " 当前首选搜索服务暂时不可用，已回退到 Bing RSS。"
+        public_used = PUBLIC_PROVIDER_NAME if used_provider == "deepseek_api" else used_provider
+        public_requested = PUBLIC_PROVIDER_NAME if provider == "deepseek_api" else provider
+        return {"results": results, "provider": public_used, "requested_provider": public_requested,
                 "fallback": used_provider != provider, "note": note}
 
     async def read_for_run(self, user, assistant, run_id, url, query=""):
         self.authorize(user, assistant)
-        final_url, mime, body = await fetch_public(url)
-        if mime and not any(kind in mime for kind in ("text/", "xml", "json")):
-            raise AppError(422, "WEB_FORMAT_UNSUPPORTED", "此链接不是可读取的文本网页，请使用网页正文链接")
-        encoding = httpx.Response(200, headers={"content-type": mime}, content=body).encoding or "utf-8"
-        decoded = body.decode(encoding, errors="replace")
-        parser = PageText()
-        if "html" in mime or "<html" in decoded[:300].lower():
-            parser.feed(decoded)
-            text, title = parser.text, "".join(parser.title_parts).strip()
+        provider, _searx_url, _brave_url, _brave_key, fallback = self._provider_config()
+        deepseek_client = self._deepseek_client() if provider == "deepseek_api" else None
+        if deepseek_client is not None:
+            try:
+                page = await deepseek_client.fetch(url)
+                final_url, text, title = page["url"], page["content"], page["title"]
+            except AppError:
+                if not fallback:
+                    raise
+                final_url, mime, body = await fetch_public(url)
+                if mime and not any(kind in mime for kind in ("text/", "xml", "json")):
+                    raise AppError(422, "WEB_FORMAT_UNSUPPORTED", "此链接不是可读取的文本网页，请使用网页正文链接")
+                encoding = httpx.Response(200, headers={"content-type": mime}, content=body).encoding or "utf-8"
+                decoded = body.decode(encoding, errors="replace")
+                parser = PageText()
+                if "html" in mime or "<html" in decoded[:300].lower():
+                    parser.feed(decoded)
+                    text, title = parser.text, "".join(parser.title_parts).strip()
+                else:
+                    text, title = decoded, final_url
         else:
-            text, title = decoded, final_url
+            if provider == "deepseek_api" and not fallback:
+                raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "当前网页搜索服务未配置")
+            final_url, mime, body = await fetch_public(url)
+            if mime and not any(kind in mime for kind in ("text/", "xml", "json")):
+                raise AppError(422, "WEB_FORMAT_UNSUPPORTED", "此链接不是可读取的文本网页，请使用网页正文链接")
+            encoding = httpx.Response(200, headers={"content-type": mime}, content=body).encoding or "utf-8"
+            decoded = body.decode(encoding, errors="replace")
+            parser = PageText()
+            if "html" in mime or "<html" in decoded[:300].lower():
+                parser.feed(decoded)
+                text, title = parser.text, "".join(parser.title_parts).strip()
+            else:
+                text, title = decoded, final_url
         start = 0
         query = str(query).strip()[:300]
         if query:

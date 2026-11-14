@@ -62,6 +62,23 @@ def test_router_defaults_to_exact_target_and_can_only_be_overridden_explicitly(m
     assert overridden.tab_completion_enabled is False
 
 
+def test_deepseek_application_tools_are_disabled_and_key_is_separate(monkeypatch):
+    for key in ("AGENT_DEEPSEEK_API_ENABLED", "AGENT_DEEPSEEK_API_KEY", "AGENT_DEEPSEEK_API_OCR_ENABLED", "AGENT_WEB_SEARCH_PROVIDER"):
+        monkeypatch.delenv(key, raising=False)
+    settings = Settings(provider_settings="")
+    assert settings.deepseek_api_enabled is False
+    assert settings.deepseek_api_ocr_enabled is False
+    assert settings.deepseek_api_key == ""
+    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "deepseek_api")
+    monkeypatch.setenv("AGENT_DEEPSEEK_API_ENABLED", "true")
+    monkeypatch.setenv("AGENT_DEEPSEEK_API_OCR_ENABLED", "true")
+    monkeypatch.setenv("AGENT_DEEPSEEK_API_KEY", "test-only-key")
+    enabled = Settings(provider_settings="")
+    assert enabled.web_search_provider == "deepseek_api"
+    assert enabled.deepseek_api_enabled and enabled.deepseek_api_ocr_enabled
+    assert enabled.deepseek_api_key == "test-only-key"
+
+
 def test_runtime_default_and_harness_paths_are_explicit_server_configuration(monkeypatch):
     for key in ("AGENT_RUNTIME_TYPE", "AGENT_EFFORT", "AGENT_HARNESS_NODE_PATH", "AGENT_HARNESS_SOURCE_DIR", "AGENT_HARNESS_MAX_OUTPUT_TOKENS", "AGENT_HARNESS_COMPACTION_TIMEOUT_SECONDS"):
         monkeypatch.delenv(key, raising=False)

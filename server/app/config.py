@@ -113,13 +113,22 @@ class Settings:
     model_router_max_output_tokens: int = field(default_factory=lambda: int(os.getenv("AGENT_MODEL_ROUTER_MAX_OUTPUT_TOKENS", "256")))
     model_router_budget_usd: float = field(default_factory=lambda: float(os.getenv("AGENT_MODEL_ROUTER_BUDGET_USD", "0.02")))
     # Web search remains Bing RSS by default.  Additional providers are
-    # opt-in and require an explicit endpoint (and, for Brave, a key); an
-    # absent configuration never causes a hidden external request.
+    # opt-in and require explicit endpoints and authorization; an absent
+    # configuration never causes a hidden external request.  The managed
+    # application-tools route is separate from the TokenHub chat route.
     web_search_provider: str = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_PROVIDER", "bing_rss").strip().lower())
     web_search_searxng_url: str = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_SEARXNG_URL", "").strip())
     web_search_brave_url: str = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_BRAVE_URL", "https://api.search.brave.com/res/v1/web/search").strip())
     web_search_brave_api_key: str = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_BRAVE_API_KEY", "").strip(), repr=False)
     web_search_fallback_bing: bool = field(default_factory=lambda: os.getenv("AGENT_WEB_SEARCH_FALLBACK_BING", "true").lower() == "true")
+    # Official Search/Fetch/OCR are disabled unless an operator explicitly
+    # enables the capability and supplies its separate key.  This key is
+    # never read from provider-settings.json or returned in public metadata.
+    deepseek_api_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_DEEPSEEK_API_ENABLED", "false").lower() == "true")
+    deepseek_api_base_url: str = field(default_factory=lambda: os.getenv("AGENT_DEEPSEEK_API_BASE_URL", "https://api.deepseek.com").strip().rstrip("/"))
+    deepseek_api_key: str = field(default_factory=lambda: os.getenv("AGENT_DEEPSEEK_API_KEY", "").strip(), repr=False)
+    deepseek_api_timeout_seconds: float = field(default_factory=lambda: float(os.getenv("AGENT_DEEPSEEK_API_TIMEOUT_SECONDS", "30")))
+    deepseek_api_ocr_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_DEEPSEEK_API_OCR_ENABLED", "false").lower() == "true")
     # Image generation is a separately gated capability. A generic chat route
     # is never treated as an image endpoint and no provider is called by
     # default.
@@ -155,8 +164,10 @@ class Settings:
         self.runtime_type = self.runtime_type.strip().lower()
         self.deployment_mode = valid_deployment_mode(self.deployment_mode)
         self.web_search_provider = str(self.web_search_provider).strip().lower()
-        if self.web_search_provider not in {"bing_rss", "searxng", "brave"}:
-            raise ValueError("AGENT_WEB_SEARCH_PROVIDER must be bing_rss, searxng or brave")
+        if self.web_search_provider not in {"bing_rss", "searxng", "brave", "deepseek_api"}:
+            raise ValueError("AGENT_WEB_SEARCH_PROVIDER must be bing_rss, searxng, brave or deepseek_api")
+        if type(self.deepseek_api_timeout_seconds) not in {int, float} or not 1 <= float(self.deepseek_api_timeout_seconds) <= 180:
+            raise ValueError("AGENT_DEEPSEEK_API_TIMEOUT_SECONDS must be between 1 and 180")
         if self.trial_capabilities is not None:
             if type(self.trial_capabilities) is not tuple or any(not isinstance(item, str) for item in self.trial_capabilities):
                 raise ValueError("AGENT_TRIAL_CAPABILITIES must be a comma-separated list of capability names")
