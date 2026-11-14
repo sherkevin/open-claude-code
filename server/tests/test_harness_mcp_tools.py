@@ -115,7 +115,14 @@ def mcp_server():
                     record["description"] = f"Remote echo: Bearer {SYNTHETIC_CREDENTIAL}"
                     record["api_token"] = SYNTHETIC_CREDENTIAL
                     source["excerpt"] += f" {SYNTHETIC_CREDENTIAL}"
-                body = {"record": record, "sources": [source]}
+                body = {"record": record, "sources": [source],
+                        "business_domain": "制造运营", "business_process": "库存异常分析",
+                        "business_object": "压力记录", "metrics": ["pressure"],
+                        "fields": ["record_id", "pressure"],
+                        "filters": {"record_id": "P-900"}, "time_range": "2026-11-10",
+                        "aggregation": "latest", "row_count": 1, "page": 1,
+                        "page_size": 1, "cache_hit": False, "returned_rows": 1,
+                        "original_rows": 1}
                 result = {"content": [{"type": "text", "text": dump(body)}], "structuredContent": body,
                           "isError": state.fail}
                 if state.response_fault == "oversize":
@@ -248,6 +255,13 @@ def test_business_read_uses_real_transport_and_registers_revocable_sources(syste
     registered = system.service.db.one("SELECT * FROM evidence_sources WHERE id=?", (sources[0]["id"],))
     assert registered["resource_id"] == system.connection["id"]
     assert registered["tool_name"] == "read_records"
+    facts = completed(system)["result_facts"]
+    assert facts["business_domain"] == "制造运营"
+    assert facts["business_process"] == "库存异常分析"
+    assert facts["returned_rows"] == 1 and facts["original_rows"] == 1
+    stages = [event["data"].get("stage") for event in system.service.db.events(system.actor.current_run_id, 0)
+              if event["type"] == "run.stage"]
+    assert stages[-4:] == ["scoping", "routing", "tool", "evidence"]
     system.service.save_assistant({"connections": []}, system.assistant["id"], user=system.owner)
     with pytest.raises(AppError):
         system.service.evidence.get(sources[0]["id"], system.owner)
