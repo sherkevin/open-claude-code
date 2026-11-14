@@ -155,8 +155,6 @@ class HarnessToolBridge:
             self.unchanged_policy(policies)
             if not allowed:
                 raise AppError(403, "HARNESS_APPROVAL_DENIED", "用户拒绝、审批超时或业务授权已失效")
-            before = {row["id"] for row in service.db.all("SELECT id FROM evidence_sources WHERE run_id=?", (run_id,))}
-
             def recheck():
                 self.active(run_id)
                 runtime.check_tool(tool_name, arguments)
@@ -177,7 +175,11 @@ class HarnessToolBridge:
                     # Attribute only this result's sources, including reused IDs.
                     sources = [source["id"] for source in registered][:30]
                 else:
-                    sources = [row["id"] for row in service.db.all("SELECT id FROM evidence_sources WHERE run_id=?", (run_id,)) if row["id"] not in before][:30]
+                    # Bind this exact result, not concurrent inserts or only newly
+                    # created rows: repeated reads may reuse a registered source.
+                    candidates = service.evidence.source_ids_from_tool_result(result)
+                    user = service.require("users", run["user_id"])
+                    sources = [source["id"] for source in service.evidence.trusted_sources(run_id, candidates, user)]
                 success = True
             return result
         except asyncio.CancelledError:

@@ -657,3 +657,17 @@ def test_actual_sdk_flattened_mcp_result_registers_evidence(system, shape):
 def test_mcp_normalizer_ignores_error_malformed_or_oversized_results(result):
     from app.evidence import mcp_payloads
     assert mcp_payloads(result) == []
+
+
+def test_web_source_original_url_endpoint_rechecks_revocation(system):
+    client, service, users = system
+    assistant, _, run_id = setup_run(service, users['owner'], web=True)
+    source = _web_source(service, assistant, run_id)
+    login(client, 'owner')
+    first = client.get(source['url'])
+    assert first.status_code == 200
+    assert first.json()['original_url'] == 'https://example.com/industrial'
+    service.save_assistant({'web_search_enabled': False}, assistant['id'], user=users['owner'])
+    denied = client.get(source['url'])
+    assert denied.status_code == 404
+    assert 'original_url' not in denied.text
