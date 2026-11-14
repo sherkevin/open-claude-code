@@ -422,6 +422,8 @@ class Service:
             allowed, automatic = set(binding["allowed_tools"]), set(binding["auto_approved_tools"])
             if not automatic <= allowed or not allowed <= discovered:
                 raise AppError(422, "INVALID_TOOL_SELECTION", "请先测试连接，再从工具清单选择允许及自动批准的工具")
+            from .tool_constraints import validate_definitions
+            validate_definitions(binding, row, self.secrets.decrypt(row.get("secret")) if binding.get("argument_constraints") else None)
         for user_id in merged["access"]["user_ids"]:
             self.require("users", user_id)
         for field, table in (("knowledge_base_ids", "knowledge_bases"), ("skill_ids", "skills")):
@@ -622,6 +624,13 @@ class Service:
             skills = selected_skills(self, assistant, user, data.get("skill_ids", []))
             snapshot = assistant_view(assistant, user)
             snapshot["connection_revisions"] = {binding["connection_id"]: self.require_resource("connections", binding["connection_id"], user)["revision"] for binding in snapshot["connections"]}
+            from .tool_constraints import validate_definitions
+            snapshot["argument_constraint_schemas"] = {}
+            for binding in (() if self.policy.is_trial else snapshot["connections"]):
+                connection = self.require_resource("connections", binding["connection_id"], user)
+                schemas = validate_definitions(binding, connection, self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)
+                if schemas:
+                    snapshot["argument_constraint_schemas"][connection["id"]] = schemas
             message_id, assistant_message_id, run_id, timestamp = uid(), uid(), uid(), now()
             self.db.execute("INSERT INTO messages(id,conversation_id,role,text,file_ids,run_id,created_at,skills) VALUES(?,?,?,?,?,?,?,?)", (message_id, conversation_id, "user", data["text"], dump(data["file_ids"]), run_id, timestamp, dump([{key: skill[key] for key in ("id", "name", "revision")} for skill in skills])))
             self.db.execute("INSERT INTO messages(id,conversation_id,role,text,file_ids,run_id,created_at) VALUES(?,?,?,?,?,?,?)", (assistant_message_id, conversation_id, "assistant", "", "[]", run_id, timestamp))
@@ -723,6 +732,24 @@ class Service:
             # reviewed; returning False keeps any future implementation on an
             # explicit approval path.
             return False
+        automatic, binding, connection = self._business_tool_access(conversation_id, tool_name)
+        from .tool_constraints import validate_arguments
+        prefix = f"mcp__c{connection['id']}__"
+        validate_arguments(binding, connection, tool_name[len(prefix):], arguments, self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)
+        return automatic
+
+    def _business_tool_access(self, conversation_id, tool_name):
+        """Resolve current and pinned permissions, without executing a tool."""
+        self.policy.require_tool(tool_name)
+        conversation = self.require("conversations", conversation_id)
+        user = self.require("users", conversation["user_id"])
+        if not user["enabled"]:
+            raise AppError(403, "USER_DISABLED", "账号已停用")
+        assistant = self.usable_assistant(conversation["assistant_id"], user)
+        snapshot = None
+        if conversation["active_run_id"]:
+            active = self.require("runs", conversation["active_run_id"])
+            snapshot = json.loads(active.get("capability_snapshot") or "null")
         for binding in json.loads(assistant["connections"]):
             connection = self.require_resource("connections", binding["connection_id"], user)
             prefix = f"mcp__c{connection['id']}__"
@@ -734,9 +761,28 @@ class Service:
                     prior_binding = next((item for item in snapshot["connections"] if item["connection_id"] == connection["id"]), None)
                     if not prior_binding or name not in prior_binding["allowed_tools"]:
                         break
+                    from .tool_constraints import assert_snapshot
+                    assert_snapshot(binding, prior_binding, connection,
+                                    snapshot.get("argument_constraint_schemas", {}).get(connection["id"]),
+                                    self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)
+                else:
+                    from .tool_constraints import validate_definitions
+                    validate_definitions(binding, connection, self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)
                 validate_mcp_url(connection["url"], self.settings.mcp_hosts)
-                return name in binding["auto_approved_tools"] and (not snapshot or name in prior_binding["auto_approved_tools"])
+                automatic = name in binding["auto_approved_tools"] and (not snapshot or name in prior_binding["auto_approved_tools"])
+                return automatic, binding, connection
         raise AppError(403, "TOOL_DENIED", "此工具未获授权或连接已经停用")
+
+    def inspect_business_tool_authorization(self, conversation_id, tool_name):
+        """Permission metadata for workflow planning; never call a transport.
+
+        Real execution must still call authorize_tool with its exact arguments.
+        Separating inspection avoids a skip-validation flag in that method.
+        """
+        automatic, binding, connection = self._business_tool_access(conversation_id, tool_name)
+        from .tool_constraints import binding_digest
+        return {"automatic": automatic,
+                "argument_constraints_digest": binding_digest(binding, connection, self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)}
 
     def runtime_config(self, conversation_id):
         conversation = self.require("conversations", conversation_id)

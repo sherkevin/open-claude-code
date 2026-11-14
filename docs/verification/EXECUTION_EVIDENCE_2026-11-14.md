@@ -28,3 +28,17 @@ The knowledge hierarchy (external knowledge, internal knowledge, SOP, tools) and
 ## Not yet accepted
 
 Customer MCP and field contracts, actual scope/paging/aggregation enforcement, complete context-token breakdown, customer p50/p95, browser first feedback, validated first result, partial retry/refresh and production acceptance remain open. No customer savings or ROI is asserted by this patch.
+
+## Follow-up: bounded MCP requests and duplicate representation
+
+The assistant editor now supports optional per-tool argument constraints, enforced by the shared authorization path. Existing discovered parameter names must be used; the host does not invent fields, fill defaults or silently trim requests. Constraint/schema changes invalidate prepared tasks and persisted workflow approval snapshots. This is request enforcement, not validation of the returned business data. See [the contract and limits](../business-tool-argument-constraints.md).
+
+Harness no longer appends a second complete JSON copy into model-visible text. Warnings, structured content and sources remain; [projection evidence](mcp-payload-projection.md) records the exact boundary and same-payload byte measurements.
+
+- Client: 190 tests in 27 files; production build passed. Existing bundle-size warning remains.
+- Constraints/API/workflow/Harness regression group: 125 passed. Tests neutralized only the test process's ambient model overrides; no application settings or provider accounts changed.
+- Strict payload and actual local HTTP-to-plugin replay: 28 passed. These counts are not a full server suite or a live customer acceptance run.
+- Browser component replay: malformed JSON and valid unapplied edits block saving; apply/save, discard and remove/save preserve explicit intent and revision checks. Save uses a browser-only fake response. Desktop viewport 1440×1000 CSS, DPR2; two native 2880×2000 screenshots individually reviewed. A 390px viewport check found no document-level horizontal overflow; this is not full mobile acceptance.
+- Independent review corrected complex constraint validation, undeclared object-constant fields and missing schema digests during approval recovery.
+
+Release blocker retained: existing workflow `mcp_read` selection equates allowed/auto-approved with read-only. The new request constraints do not establish read-only behavior. Resolve this before enabling production workflow tool execution; no production rollout was performed here.

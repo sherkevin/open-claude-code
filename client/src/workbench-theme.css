@@ -325,6 +325,63 @@
 .token-stage-list { display:flex; flex-wrap:wrap; gap:4px 6px; }
 .token-stage-list span { display:inline-flex; flex-direction:column; gap:3px; padding:5px 8px; border:1px solid #e1e8e6; border-radius:7px; color:var(--muted); font-size:12px; line-height:1.5; font-weight:500; }
 .token-stage-list span small { color:var(--ink); font-size:12px; line-height:1.5; font-weight:500; font-variant-numeric:tabular-nums; }
+
+/* Assistant configuration uses the same workbench tokens; technical editing stays local. */
+.zhixing-theme .assistant-configuration { color:var(--ink); font-size:14px; line-height:1.6; }
+.zhixing-theme .assistant-configuration .configuration-savebar strong,
+.zhixing-theme .assistant-configuration .configuration-section h2,
+.zhixing-theme .assistant-configuration .configuration-section h3 { color:var(--ink); font-size:16px; line-height:1.5; font-weight:600; }
+.zhixing-theme .assistant-configuration .configuration-section,
+.zhixing-theme .assistant-configuration .configuration-secondary,
+.zhixing-theme .assistant-configuration .resource-advanced,
+.zhixing-theme .assistant-configuration .tool-detail,
+.zhixing-theme .assistant-configuration .approval-policy-card { background:var(--paper); border-color:var(--line); min-width:0; }
+.zhixing-theme .assistant-configuration .capability-section-icon { background:var(--panel); color:var(--brand); }
+.zhixing-theme .assistant-configuration .configuration-savebar small,
+.zhixing-theme .assistant-configuration .configuration-section header p,
+.zhixing-theme .assistant-configuration .configuration-count,
+.zhixing-theme .assistant-configuration .configuration-footer>span,
+.zhixing-theme .assistant-configuration .section-help,
+.zhixing-theme .assistant-configuration small { color:var(--muted); font-size:12px; line-height:1.6; }
+.zhixing-theme .assistant-configuration .checkbox-row,
+.zhixing-theme .assistant-configuration .web-toggle,
+.zhixing-theme .assistant-configuration .field-label,
+.zhixing-theme .assistant-configuration .configuration-secondary>summary,
+.zhixing-theme .assistant-configuration .resource-advanced>summary,
+.zhixing-theme .assistant-configuration .tool-detail summary { color:var(--ink); font-size:14px; line-height:1.6; }
+.zhixing-theme .assistant-configuration .checkbox-row input,
+.zhixing-theme .assistant-configuration .web-toggle input { accent-color:var(--brand); }
+.zhixing-theme .assistant-configuration .binding-group,
+.zhixing-theme .assistant-configuration .tool-selection-header,
+.zhixing-theme .assistant-configuration .tool-selection-row,
+.zhixing-theme .assistant-configuration .resource-option,
+.zhixing-theme .assistant-configuration .member-picker,
+.zhixing-theme .assistant-configuration .checkbox-row.separated { border-color:var(--line); }
+.zhixing-theme .assistant-configuration .binding-heading { background:var(--panel); }
+.zhixing-theme .assistant-configuration .binding-heading>svg { color:var(--muted); }
+.zhixing-theme .assistant-configuration .binding-heading>.scope-badge { flex:0 0 auto; margin-left:auto; width:auto; max-width:100%; }
+.zhixing-theme .assistant-configuration .scope-badge { background:var(--paper); color:var(--muted); font-size:12px; }
+.zhixing-theme .assistant-configuration .binding-permissions>summary { background:var(--paper); border-color:var(--line); color:var(--ink); font-size:14px; }
+.zhixing-theme .assistant-configuration .binding-permissions>summary>span,
+.zhixing-theme .assistant-configuration .tool-selection-header { color:var(--muted); font-size:12px; }
+.zhixing-theme .assistant-configuration .tool-selection-row>.checkbox-row,
+.zhixing-theme .assistant-configuration .tool-selection-header .checkbox-row { font-size:14px; }
+.zhixing-theme .assistant-configuration .auto-approval-toggle span { background:var(--line); }
+.zhixing-theme .assistant-configuration .auto-approval-toggle input:checked+span { background:var(--brand); }
+.zhixing-theme .assistant-configuration .field :is(input,select,textarea) { color:var(--ink); background:var(--paper); border-color:var(--line); font-size:14px; line-height:1.6; }
+.zhixing-theme .assistant-configuration .field :is(input,select,textarea):disabled { color:var(--muted); background:var(--panel); }
+.zhixing-theme .assistant-configuration .field :is(input,textarea)::placeholder { color:var(--muted); }
+.zhixing-theme .assistant-configuration .field :is(input,textarea):focus { border-color:var(--brand); box-shadow:none; }
+.zhixing-theme .assistant-configuration .resource-advanced textarea,
+.zhixing-theme .assistant-configuration .tool-detail pre { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:14px; line-height:1.6; white-space:pre; overflow-wrap:normal; word-break:normal; overflow-x:auto; max-width:100%; tab-size:2; }
+.zhixing-theme .assistant-configuration .tool-detail pre { color:var(--ink); background:var(--panel); border-color:var(--line); }
+.zhixing-theme .assistant-configuration .tool-detail strong { color:var(--ink); font-size:14px; }
+.zhixing-theme .assistant-configuration .missing-binding { color:var(--ink); background:var(--panel); border-color:var(--line); }
+.zhixing-theme .assistant-configuration .missing-binding strong { color:var(--ink); font-size:14px; }
+.zhixing-theme .assistant-configuration .missing-binding .button,
+.zhixing-theme .assistant-configuration .form-note { font-size:12px; color:var(--muted); }
+.zhixing-theme .assistant-configuration .configuration-conflict { color:var(--ink); font-size:14px; }
+
 @media(max-width:760px) {
   .zhixing-theme .workspace-heading { align-items:flex-start; padding-top:8px; }
   .zhixing-theme .workspace-heading h1 { font-size:25px; }

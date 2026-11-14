@@ -48,7 +48,7 @@ export interface MemoryIndex extends MemoryMutationResult {
 }
 export interface MemoryFile extends MemoryMutationResult { path: string; content: string; revision: number; updated_at: string }
 export interface MemoryApprovalContent { conversation_id: string; old_content_sha256: string|null; content_digest: string; path: string; content: string; expected_revision: number; native_epoch: number; operation_id: string }
-export interface AssistantBinding { connection_id: string; allowed_tools: string[]; auto_approved_tools: string[] }
+export interface AssistantBinding { connection_id: string; allowed_tools: string[]; auto_approved_tools: string[]; argument_constraints?: Record<string, Record<string, unknown>> }
 export interface Assistant extends ScopedResource {
   id: string; name: string; description: string; instructions: string; enabled: boolean;
   access: { all_members: boolean; user_ids: string[] }; connections: AssistantBinding[]; revision: number;

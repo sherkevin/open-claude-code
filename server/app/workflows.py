@@ -1032,9 +1032,11 @@ def _workflow_tool_scope(service, assistant: dict, user: dict, conversation: dic
             raise AppError(403, "TOOL_DENIED", "只读工具不在助手的授权工具清单中")
         if server_tool not in binding.get("auto_approved_tools", []):
             raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "工作流实时只读工具必须在助手中标记为自动批准")
-        # authorize_tool applies the conversation's pinned capability snapshot
-        # when one exists, so a workflow cannot widen an already-running chat.
-        if service.authorize_tool(conversation["id"], tool_name, {}) is not True:
+        # This is permission discovery, not execution: required request fields
+        # do not exist until the argument template is rendered. Execution below
+        # always validates the exact arguments through authorize_tool.
+        authorization = service.inspect_business_tool_authorization(conversation["id"], tool_name)
+        if authorization["automatic"] is not True:
             raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "当前会话未自动批准此只读工具")
         try:
             discovered = json.loads(connection.get("tools") or "[]")
@@ -1048,6 +1050,7 @@ def _workflow_tool_scope(service, assistant: dict, user: dict, conversation: dic
             "server_tool": server_tool,
             "connection_id": connection_id,
             "connection_revision": connection["revision"],
+            "argument_constraints_digest": authorization["argument_constraints_digest"],
         }
     return scope
 
@@ -1119,11 +1122,18 @@ async def _run_mcp_read(service, user: dict, conversation: dict | None, node: di
     if not scope:
         raise AppError(409, "WORKFLOW_TOOL_SCOPE_INVALID", "实时工具节点权限快照不存在")
     arguments = _tool_arguments(node, safe_input, outputs, structured_outputs)
-    if service.authorize_tool(conversation["id"], scope["tool_name"], arguments) is not True:
-        raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "当前会话未自动批准此只读工具")
-    connection = service.require_resource("connections", scope["connection_id"], user)
-    if connection["revision"] != scope["connection_revision"] or not connection["enabled"]:
-        raise AppError(409, "WORKFLOW_TOOL_CONFIG_CHANGED", "工具连接配置已改变，请重新运行工作流")
+    def recheck():
+        if service.authorize_tool(conversation["id"], scope["tool_name"], arguments) is not True:
+            raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "当前会话未自动批准此只读工具")
+        authorization = service.inspect_business_tool_authorization(conversation["id"], scope["tool_name"])
+        if authorization["argument_constraints_digest"] != scope.get("argument_constraints_digest"):
+            raise AppError(409, "TOOL_CONSTRAINT_CHANGED", "工具请求约束或参数定义已变化，请重新运行工作流")
+        connection = service.require_resource("connections", scope["connection_id"], user)
+        if connection["revision"] != scope["connection_revision"] or not connection["enabled"]:
+            raise AppError(409, "WORKFLOW_TOOL_CONFIG_CHANGED", "工具连接配置已改变，请重新运行工作流")
+        return connection
+
+    connection = recheck()
     from .security import validate_mcp_url
     validate_mcp_url(connection["url"], service.settings.mcp_hosts)
     headers = {}
@@ -1138,6 +1148,7 @@ async def _run_mcp_read(service, user: dict, conversation: dict | None, node: di
             async with streamable_http_client(connection["url"], http_client=http) as streams:
                 async with ClientSession(streams[0], streams[1]) as session:
                     await session.initialize()
+                    recheck()
                     result = await session.call_tool(scope["server_tool"], arguments=arguments, read_timeout_seconds=timedelta(seconds=timeout))
     except AppError:
         raise
@@ -1145,6 +1156,7 @@ async def _run_mcp_read(service, user: dict, conversation: dict | None, node: di
         raise AppError(502, "WORKFLOW_TOOL_FAILED", "实时只读工具暂时无法连接，请检查连接或稍后重试") from error
     if getattr(result, "isError", False):
         raise AppError(502, "WORKFLOW_TOOL_FAILED", "实时只读工具返回了错误")
+    recheck()
     body = _tool_result_body(result)
     sources = _tool_sources(body)
     payload = {"kind": "mcp_read", "status": "completed", "tool_name": scope["tool_name"], "connection_id": scope["connection_id"], "result": body, "evidence": sources}
@@ -1744,7 +1756,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
     if tool_scope:
         _ensure_workflow_runtime_schema(service)
     public_models = [{key: selection[key] for key in ("model_id", "model_label", "reasoning_level")} for selection in selections.values()]
-    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision")} for item in tool_scope.values()]
+    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision", "argument_constraints_digest")} for item in tool_scope.values()]
     permission_payload = {"assistant_id": assistant["id"], "assistant_revision": assistant["revision"], "workflow_revision": row["revision"], "conversation_id": conversation["id"] if conversation else None, "user_id": user["id"], "models": public_models, "knowledge_bases": knowledge_scope, "tools": public_tools, "mode": "model"}
     permission_digest = hashlib.sha256(json.dumps(permission_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     permission_snapshot = {
@@ -1951,7 +1963,7 @@ async def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, re
     tool_scope = _workflow_tool_scope(service, assistant, user, conversation, tool_nodes)
     if tool_scope:
         _ensure_workflow_runtime_schema(service)
-    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision")} for item in tool_scope.values()]
+    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision", "argument_constraints_digest")} for item in tool_scope.values()]
     permission_payload = {
         "assistant_id": assistant["id"],
         "assistant_revision": assistant["revision"],

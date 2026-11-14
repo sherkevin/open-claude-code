@@ -60,6 +60,7 @@ class Binding(InputModel):
     connection_id: str
     allowed_tools: list[str] = Field(default_factory=list, max_length=1000)
     auto_approved_tools: list[str] = Field(default_factory=list, max_length=1000)
+    argument_constraints: dict[str, dict] = Field(default_factory=dict, max_length=64)
 
 
 class AssistantCreate(InputModel):
