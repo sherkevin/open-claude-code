@@ -15,9 +15,11 @@ import BenchmarkPage from './BenchmarkPage';
 import NewSession from './NewSession';
 import AssistantDetailPage from './AssistantDetailPage';
 import WorkspacePage from './WorkspacePage';
+import CapabilitySettingsPage from './CapabilitySettingsPage';
+import { canManageCapabilities } from './capabilitySettings';
 import { isFeishuEmbed, requestFeishuCode } from './feishu';
 
-type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'assistants' | 'knowledge' | 'skills' | 'users' | 'usage' | 'memory' | 'benchmark' | 'approvals';
+type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'assistants' | 'knowledge' | 'skills' | 'users' | 'usage' | 'memory' | 'benchmark' | 'approvals' | 'capability-settings';
 const fallbackConfig: AppConfig = { brand_name: '知行工作台', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
 function Brand({ name, compact = false }: { name: string; compact?: boolean }) { return <div className={`brand ${compact ? 'compact' : ''}`}><span className="brand-symbol" aria-hidden="true"><svg viewBox="0 0 40 40"><path d="M10 11h20L12 29h18M10 20h20"/></svg></span><span>{name}<small>让知识，付诸行动</small></span></div>; }
 
@@ -56,6 +58,7 @@ export default function App() {
     ...(canManageAssistants?[{id:'assistants' as View,label:'助手设置',icon:<Settings2 size={18}/>}]:[]),
     ...(configAllows(config,'knowledge.read')?[{id:'knowledge' as View,label:'知识库',icon:<BookOpen size={18}/>}]:[]),
     ...(configAllows(config,'connections.write')?[{id:'connections' as View,label:'业务连接',icon:<Network size={18}/>}]:[]),
+    ...(canManageCapabilities(admin,config)?[{id:'capability-settings' as View,label:'能力与来源',icon:<Settings2 size={18}/>}]:[]),
     ...(configAllows(config,'skills.write')?[{id:'skills' as View,label:'Skills',icon:<Sparkles size={18}/>}]:[]),
     ...(configAllows(config,'memory.write')?[{id:'memory' as View,label:'记忆',icon:<BookOpen size={18}/>}]:[]),
     ...(configAllows(config,'usage.read')?[{id:'usage' as View,label:'用量记录',icon:<ChartNoAxesCombined size={18}/>}]:[]),
@@ -69,6 +72,7 @@ export default function App() {
     {view==='assistant-detail'&&assistantDetail&&<AssistantDetailPage key={assistantDetail.id} assistantId={assistantDetail.id} assistants={assistants} admin={admin} onOpen={openConversation} onNew={newChat} onChanged={refresh} onSnapshot={snapshotAssistant} onDirtyChange={setAssistantDirty} onSavingChange={changeAssistantSaving} requestNavigation={protectMemory} draftEpoch={draftEpoch}/>}
     {view==='sessions'&&<SessionsPage assistants={assistants} onOpen={openConversation} onNew={newChat} onChanged={refresh}/>}
     {view==='connections'&&<ConnectionsPage admin={admin} onConfigureAssistant={()=>navigate('assistants')}/>}
+    {view==='capability-settings'&&canManageCapabilities(admin,config)&&<CapabilitySettingsPage admin={admin} config={config}/>}
     {view==='assistants'&&<AssistantsPage admin={admin} onChanged={refresh} onOpen={openAssistant} onDirtyChange={setAssistantDirty} onSavingChange={changeAssistantSaving} requestNavigation={protectMemory} draftEpoch={draftEpoch}/>}
     {view==='knowledge'&&<KnowledgePage admin={admin} maxUploadBytes={config.upload_max_bytes} readOnly={!configAllows(config,'knowledge.write')} allowedRetrievalModes={config.allowed_retrieval_modes}/>}{view==='skills'&&canManageAssistants&&<SkillsPage admin={admin}/>} {view==='benchmark'&&admin&&configAllows(config,'benchmark.read')&&<BenchmarkPage admin={admin}/>}
     {view==='users'&&admin&&canManageUsers&&<UsersPage currentUser={user}/>} {view==='approvals'&&admin&&configAllows(config,'approvals.read')&&<ApprovalsPage/>} {view==='memory'&&configAllows(config,'memory.write')&&<MemoryPage key={memoryEpoch} assistants={assistants} onDirtyChange={setMemoryDirty} onSavingChange={changeMemorySaving}/>} {view==='usage'&&configAllows(config,'usage.read')&&<UsagePage admin={admin}/>}

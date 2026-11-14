@@ -708,6 +708,8 @@ class Service:
             if authorized:
                 return True
         if tool_name in {"mcp__workspace__web_search", "mcp__workspace__web_read"} and assistant.get("web_search_enabled") and (not snapshot or snapshot.get("web_search_enabled")):
+            from .capability_settings import CapabilitySettings
+            CapabilitySettings(self).require_enabled("search" if tool_name.endswith("web_search") else "fetch")
             return True
         if tool_name == "mcp__workspace__generate_xlsx":
             # Local export is intentionally never auto-approved: it creates a
