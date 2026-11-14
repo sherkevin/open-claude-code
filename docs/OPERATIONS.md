@@ -218,6 +218,8 @@ PDF 由服务器本地提取文本，扫描页由 RapidOCR 识别，向量由本
 
 网页搜索由助手开关控制，默认使用公开 Bing RSS，网页读取使用受限 HTTP 客户端。服务端还支持显式配置的公共 SearXNG 或 Brave provider：将 `AGENT_WEB_SEARCH_PROVIDER` 设置为 `searxng` 时必须同时提供 `AGENT_WEB_SEARCH_SEARXNG_URL`；设置为 `brave` 时必须同时提供 `AGENT_WEB_SEARCH_BRAVE_API_KEY`（可用 `AGENT_WEB_SEARCH_BRAVE_URL` 覆盖默认接口）。未配置这些变量时不会偷偷调用可选 provider，仍只走 Bing；可选 provider 失败时默认回退 Bing，可用 `AGENT_WEB_SEARCH_FALLBACK_BING=false` 关闭回退。
 
+可选的官方应用能力适配器使用 `AGENT_WEB_SEARCH_PROVIDER=deepseek_api`，并且必须同时设置 `AGENT_DEEPSEEK_API_ENABLED=true` 与独立的 `AGENT_DEEPSEEK_API_KEY`。它调用官方 Search/Fetch 接口；对外返回统一的托管搜索标识，不暴露上游名称或密钥。`AGENT_DEEPSEEK_API_OCR_ENABLED=true` 只允许在本地 OCR 抛出 `OCR_REQUIRED` 时作为扫描文档的有界后备；正常上传不会因此产生外部请求。缺少开关或密钥时 fail-closed，可选搜索失败默认回退 Bing。官方接口请求遵循查询 128 字符、获取地址 8192 字符、OCR 文件 100 MiB/1000 页和有限重试边界。
+
 每次搜索最多返回 8 个结果，结果按规范化公开地址去重（移除 `utm_*`、`gclid` 等跟踪参数和片段），搜索响应上限 500 KB，页面读取上限 2 MB，网络超时与公开 DNS、重定向、响应大小检查保持不变。返回结果明确记录请求 provider、实际 provider 和是否回退；每个摘要和正文仍通过受权限校验的 source 标记引用。搜索只发送必要关键词，不发送凭据、企业文档全文或内部地址。网页网络可用性与 TokenHub 模型线路独立；不要通过放开内网地址来解决搜索失败。知识 OCR 与向量计算本地完成。
 
 MCP应按 [来源契约](MCP_SOURCE_CONTRACT.md) 返回取数依据。页面中的逻辑数据库说明不会代替真实查询中的字段、筛选、时间和汇总口径。缺失来源字段保持缺失，不应通过角色提示词猜测补全。
@@ -232,7 +234,7 @@ MCP应按 [来源契约](MCP_SOURCE_CONTRACT.md) 返回取数依据。页面中�
 | 语义检索未启用 | 检查检索metadata的semantic/vector_model以及启动环境和固定模型路径。 |
 | 来源无法打开 | 原件或连接是否删除、助手是否解绑、工具权限是否撤回、当前账号是否拥有原运行。 |
 | 当前会话提示忙 | 当前会话仍有任务或统计操作；可等待或停止该任务，其它会话可独立执行。若出现旧版“此助手的另一个会话”提示，检查前后端是否均已升级至0.4.2。 |
-| 搜索失败 | 搜索或源网站连通性、文本格式、重定向与公网地址校验，和模型健康分别排查。 |
+| 搜索失败 | 搜索或源网站连通性、文本格式、重定向与公网地址校验，和模型健康分别排查。若启用托管搜索，先确认独立开关与独立授权存在；不要把聊天 TokenHub 凭据填入应用能力变量。 |
 
 `timings` 是从任务进入服务起计算的观察值，不等于供应商内部排队或纯推理时间；未测阶段留空。服务自动恢复不重放业务写操作，也不会自动同意旧审批。TokenHub按量续费、券抵扣和余额属于提供方账号配置，不由本应用健康接口证明。
 

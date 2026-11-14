@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .db import dump, now, uid
+from .deepseek_api import DeepSeekAPI
 from .openai_visual import MAX_IMAGE_BYTES, call_visual_json
 from .provider_policy import classify_provider_url
 from .security import AppError, safe_name
@@ -1125,7 +1126,15 @@ class KnowledgeService:
 
     def _index(self, document_id, version, path, name):
         try:
-            pages = self.parser.parse(path, name)
+            try:
+                pages = self.parser.parse(path, name)
+            except AppError as exc:
+                # Local OCR remains the default.  The official OCR capability
+                # is an explicit, bounded fallback for scanned files only; it
+                # never runs when disabled or when no separate key is present.
+                if exc.code != "OCR_REQUIRED":
+                    raise
+                pages = self._deepseek_ocr_pages(path, name)
             chunks = chunk_pages(pages)
             is_image = Path(name).suffix.lower() in IMAGE_SUFFIXES
             # A diagram or photograph can be a valid knowledge asset even when
@@ -1158,6 +1167,34 @@ class KnowledgeService:
             self.db.execute("UPDATE knowledge_versions SET status=?,error=? WHERE document_id=? AND version=?", ("needs_ocr" if isinstance(exc, AppError) and exc.code == "OCR_REQUIRED" else "failed", message, document_id, version))
             if Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
                 self.db.execute("UPDATE knowledge_image_assets SET ocr_status=? WHERE document_id=? AND version=?", ("needs_ocr" if isinstance(exc, AppError) and exc.code == "OCR_REQUIRED" else "failed", document_id, version))
+
+    def _deepseek_ocr_pages(self, path, name):
+        """Run the opt-in external OCR fallback and return parser-compatible pages."""
+        settings = self.service.settings
+        if not (getattr(settings, "deepseek_api_enabled", False)
+                and getattr(settings, "deepseek_api_ocr_enabled", False)):
+            raise AppError(422, "OCR_REQUIRED", "文件需要安装本地 OCR 组件后重新索引")
+        token = str(getattr(settings, "deepseek_api_key", "") or "").strip()
+        if not token:
+            raise AppError(422, "OCR_REQUIRED", "文件需要安装本地 OCR 组件后重新索引")
+        client = DeepSeekAPI(
+            base_url=str(getattr(settings, "deepseek_api_base_url", "") or ""),
+            api_key=token,
+            timeout_seconds=float(getattr(settings, "deepseek_api_timeout_seconds", 30) or 30),
+        )
+        try:
+            result = asyncio.run(client.ocr(path, filename=name, purpose="rich_layout_recognition"))
+        except RuntimeError as exc:
+            # ``_index`` normally runs in a worker thread.  If a caller invokes
+            # it from an active event loop, fail closed instead of nesting one.
+            if "asyncio.run() cannot be called" in str(exc):
+                raise AppError(503, "OCR_UNAVAILABLE", "外部识别服务暂时不可用") from exc
+            raise
+        pages = [{"page": item["page"], "text": item["text"], "extraction": item["extraction"]}
+                 for item in result.get("pages", []) if isinstance(item, dict)]
+        if not pages or not any(str(item.get("text") or "").strip() for item in pages):
+            raise AppError(422, "EMPTY_DOCUMENT", "外部识别未提取到可检索文本")
+        return pages
 
     def _build_graph(self, document_id, version, chunks):
         """Build a deterministic, source-linked graph with explainable entities.
