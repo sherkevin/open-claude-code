@@ -158,6 +158,83 @@ def test_forged_cross_conversation_and_revoked_sources(system):
     assert service.evidence.finalize(second_run, f"Revoked[[source:{source_id}]]")['citations'] == []
 
 
+def _web_source(service, assistant, run_id, *, content_type="page_text", provider="bing_rss"):
+    return service.evidence.register(
+        run_id, "web", "公开网页证据",
+        {"url": "https://example.com/industrial", "fetched_at": now(),
+         "content_type": content_type, "provider": provider},
+        "公开网页摘录", resource_type="web", resource_id=assistant["id"],
+        original_url="https://example.com/industrial",
+    )
+
+
+def test_web_tool_ledger_auto_attaches_external_link_when_model_omits_marker(system):
+    _, service, users = system
+    assistant, _, run_id = setup_run(service, users["owner"], web=True)
+    source = _web_source(service, assistant, run_id)
+    service.db.event(run_id, "tool.completed", {"tool_name": "mcp__workspace__web_read", "success": True, "source_ids": [source["id"]]})
+
+    final = service.evidence.finalize(run_id, "这是一个没有显式引用标记的回答。")
+    assert [item["id"] for item in final["citations"]] == [source["id"]]
+    assert "网页正文" in final["text"]
+    assert "https://example.com/industrial" not in final["text"]
+    assert f"/api/v1/sources/{source['id']}" in final["text"]
+
+
+def test_web_and_internal_sources_are_kept_together_with_candidate_label(system):
+    _, service, users = system
+    user = users["owner"]
+    kb = service.knowledge.save({"name": "混合来源"}, user)
+    service.knowledge.upload(kb["id"], user, "manual.txt", "内部工艺规定：压力为 7 bar。".encode())
+    assistant, _, run_id = setup_run(service, user, [kb["id"]], web=True)
+    internal = asyncio.run(service.knowledge.search_for_run(user, assistant, run_id, "压力"))["results"][0]
+    web = _web_source(service, assistant, run_id, content_type="search_excerpt")
+    service.db.event(run_id, "tool.completed", {"tool_name": "mcp__workspace__web_search", "success": True, "source_ids": [web["id"]]})
+
+    final = service.evidence.finalize(run_id, "内部结论[[source:%s]]，外部搜索未逐页读取。" % internal["source_id"])
+    assert {item["id"] for item in final["citations"]} == {internal["source_id"], web["id"]}
+    assert "外部检索候选" in final["text"]
+
+
+def test_no_web_tool_usage_does_not_fabricate_external_citations(system):
+    _, service, users = system
+    assistant, _, run_id = setup_run(service, users["owner"], web=True)
+    # A registered but unconsumed source is not in the run's tool ledger.
+    source = _web_source(service, assistant, run_id)
+    final = service.evidence.finalize(run_id, "没有网页工具完成事件。")
+    assert final["citations"] == []
+    assert source["id"] not in final["text"]
+
+
+def test_cross_run_or_revoked_web_source_is_not_auto_attached(system):
+    _, service, users = system
+    user = users["owner"]
+    assistant, conversation, first_run = setup_run(service, user, web=True)
+    source = _web_source(service, assistant, first_run)
+    service.db.event(first_run, "tool.completed", {"tool_name": "mcp__workspace__web_read", "success": True, "source_ids": [source["id"]]})
+    second_run = uid()
+    service.db.execute(
+        "INSERT INTO runs(id,conversation_id,user_id,client_request_id,message_id,status,created_at) VALUES(?,?,?,?,?,'running',?)",
+        (second_run, conversation["id"], user["id"], uid(), uid(), now()),
+    )
+    # A forged event carrying another run's ID is rejected by same_run=True.
+    service.db.event(second_run, "tool.completed", {"tool_name": "mcp__workspace__web_read", "success": True, "source_ids": [source["id"]]})
+    assert service.evidence.finalize(second_run, "跨运行来源不应出现。")["citations"] == []
+    service.save_assistant({"web_search_enabled": False}, assistant["id"], user=user)
+    assert service.evidence.finalize(first_run, "权限已撤销。 ")["citations"] == []
+
+
+def test_search_fallback_source_keeps_provider_link_and_candidate_label(system):
+    _, service, users = system
+    assistant, _, run_id = setup_run(service, users["owner"], web=True)
+    source = _web_source(service, assistant, run_id, content_type="search_excerpt", provider="bing_rss")
+    service.db.event(run_id, "tool.completed", {"tool_name": "mcp__workspace__web_search", "success": True, "source_ids": [source["id"]]})
+    final = service.evidence.finalize(run_id, "搜索摘要足以说明方向，但没有逐页读取。")
+    assert final["citations"][0]["id"] == source["id"]
+    assert "外部检索候选" in final["text"]
+    assert service.evidence.get(source["id"], users["owner"])["original_url"] == "https://example.com/industrial"
+
+
 def test_bad_documents_are_not_empty_ready_indices(system, monkeypatch):
     _, service, users = system
     user = users['owner']
