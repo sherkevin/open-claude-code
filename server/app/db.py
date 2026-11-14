@@ -422,6 +422,15 @@ CREATE TABLE IF NOT EXISTS plugin_catalog_events(
 CREATE INDEX IF NOT EXISTS plugin_catalog_events_created ON plugin_catalog_events(created_at,id);
 -- Capability governance: one logical call, one row per actual provider attempt.
 -- Credentials are stored only as SecretStore ciphertext; no plaintext column.
+CREATE TABLE IF NOT EXISTS capability_dispatch_claims(
+    run_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments_digest TEXT NOT NULL,
+    owner_token TEXT NOT NULL UNIQUE,
+    started_at TEXT NOT NULL,
+    PRIMARY KEY(run_id,tool_call_id)
+);
 CREATE TABLE IF NOT EXISTS capability_calls(
     call_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,

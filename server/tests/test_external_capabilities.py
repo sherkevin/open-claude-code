@@ -416,6 +416,23 @@ def test_webtools_parser_accepts_real_probe_fixture_without_opaque_content():
     assert not any("evil.example" in item["page_url"] for item in parsed["results"])
 
 
+def test_official_text_image_search_uses_correlated_images_and_no_upload(system, policy):
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "reverse_image_response.json").read_text())
+    run = system.run_with([])
+    requests = []
+    external = ExternalCapabilities(system.service, executor=FakeExecutor("deepseek_webtools"),
+                                    webtools_transport=transport_for([httpx.Response(200, json=fixture)], requests))
+    result = asyncio.run(external.image_search_for_run(context_for(system, run),
+                                                      mode="text_search", query="ABB robot", limit=3))
+    assert result["status"] == "results" and len(result["results"]) == 3
+    payload = json.loads(requests[0].content)
+    assert len(requests) == 1 and "/anthropic/v1/messages" in str(requests[0].url)
+    content = payload["messages"][0]["content"]
+    assert all(block["type"] == "text" for block in content)
+    assert "ABB robot" in content[0]["text"]
+    assert external.executor().calls[0]["external_upload"] is False
+
+
 # --------------------------------------------------------------------------
 # Image execution and evidence
 # --------------------------------------------------------------------------

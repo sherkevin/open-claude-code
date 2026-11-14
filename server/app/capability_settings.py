@@ -36,7 +36,7 @@ PROVIDER_MODES: dict[str, dict[str, list[str]]] = {
         "search": ["web"], "fetch": ["page"],
         "ocr": ["text_recognition", "rich_layout_recognition"],
     },
-    "deepseek_webtools": {"image_search": ["reverse_image"]},
+    "deepseek_webtools": {"image_search": ["text_search", "reverse_image"]},
     "brave_images": {"image_search": ["text_search"]},
 }
 
@@ -148,7 +148,7 @@ def normalize_route(capability: str, route: dict, defaults: dict | None = None) 
         # The official OCR images continue remotely after a local cancel, so
         # automatic retry/fallback would duplicate upload/steps and charges.
         max_attempts = 1
-    if capability == "ocr":
+    if capability in {"ocr", "image_search"}:
         fallbacks = []
     if max_attempts < 1 + len(fallbacks):
         raise AppError(422, "CAPABILITY_ROUTE_INVALID", "总尝试次数必须至少覆盖首选与回退提供方")
@@ -266,11 +266,14 @@ class CapabilitySettings:
     def _verification(self) -> dict[str, dict[str, str]]:
         try:
             rows = self.service.db.all(
-                "SELECT provider_id,capability,status,checked_at FROM capability_provider_verification")
+                "SELECT * FROM capability_provider_verification")
         except Exception:
             return {}
         result: dict[str, dict[str, str]] = {}
+        revision = self.effective()["revision"]
         for row in rows:
+            if row["settings_revision"] != revision or row["provider_revision"] != self._provider_revision(row["provider_id"]):
+                continue
             result.setdefault(row["provider_id"], {})[row["capability"]] = row["status"]
         return result
 

@@ -8,15 +8,13 @@ attempt under a hard deadline with no retry, records only a status code and
 timing, and never returns or logs a credential, response body or provider
 error text.
 
-Image-search providers have no adapter in this tree yet, so their diagnostics
-honestly report ``unsupported`` instead of pretending the route was verified.
+Successful diagnostics prove only a fixed sample, not general task accuracy.
 """
 from __future__ import annotations
 
 import asyncio
-import tempfile
+import io
 import time
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from .capability_credentials import CapabilityCredentials
@@ -30,6 +28,7 @@ FIXED_FETCH_URL = "https://example.com/"
 FIXED_OCR_SAMPLE_ID = "fixed-ocr-text-v1"
 FIXED_SEARCH_SAMPLE_ID = "fixed-search-query-v1"
 FIXED_FETCH_SAMPLE_ID = "fixed-fetch-url-v1"
+FIXED_IMAGE_SAMPLE_ID = "fixed-public-image-search-v1"
 
 # Adapter support is explicit: (provider, capability) pairs without an entry
 # are reported as unsupported rather than probed or claimed as verified.
@@ -41,6 +40,8 @@ SUPPORTED = {
     ("deepseek_api", "fetch"),
     ("deepseek_api", "ocr"),
     ("public_http", "fetch"),
+    ("deepseek_webtools", "image_search"),
+    ("brave_images", "image_search"),
 }
 
 
@@ -69,14 +70,14 @@ class CapabilityDiagnostics:
         )
 
     @staticmethod
-    def _ocr_fixture(directory: str) -> Path:
-        from PIL import Image, ImageDraw
+    def _ocr_fixture() -> bytes:
+        from PIL import Image, ImageDraw, ImageFont
 
-        image = Image.new("RGB", (128, 64), "white")
-        ImageDraw.Draw(image).text((12, 20), "A1", fill="black")
-        path = Path(directory) / "capability-diagnostic.png"
-        image.save(path, format="PNG")
-        return path
+        image = Image.new("RGB", (180, 80), "white")
+        ImageDraw.Draw(image).text((12, 20), "A1", font=ImageFont.load_default(size=28), fill="black")
+        output = io.BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
 
     async def _probe(self, provider_id: str, capability: str, deadline: float) -> str:
         from .web_tools import WebTools, fetch_public
@@ -104,19 +105,31 @@ class CapabilityDiagnostics:
                                    timeout=max(0.1, deadline - time.monotonic()))
         elif (provider_id, capability) == ("deepseek_api", "ocr"):
             client = self._deepseek_client()
-            with tempfile.TemporaryDirectory(prefix="capability-diagnostic-") as directory:
-                path = self._ocr_fixture(directory)
-                await asyncio.wait_for(
-                    client.ocr(path, filename="capability-diagnostic.png", purpose="text_recognition"),
-                    timeout=max(0.1, deadline - time.monotonic()))
+            result = await client.ocr_bytes(self._ocr_fixture(), filename="capability-diagnostic.png",
+                                            mime_type="image/png", purpose="text_recognition", deadline=deadline)
+            text = " ".join(str(page.get("text") or "") for page in result.get("pages", []))
+            if result.get("empty") or result.get("partial") or "A1" not in text:
+                raise AppError(502, "CAPABILITY_DIAGNOSTIC_QUALITY_FAILED", "固定识别样例未通过")
+        elif capability == "image_search":
+            from .external_capabilities import ExternalCapabilities
+            adapters = ExternalCapabilities(self.service)
+            client = adapters.webtools_client() if provider_id == "deepseek_webtools" else adapters.brave_images_client()
+            if client is None:
+                raise AppError(503, "CAPABILITY_PROVIDER_UNCONFIGURED", "提供方尚未配置")
+            result = await client.search("ABB industrial robot", limit=3, deadline=deadline)
+            if result.get("status") != "results" or not result.get("results"):
+                raise AppError(502, "CAPABILITY_DIAGNOSTIC_QUALITY_FAILED", "固定图片检索样例未返回可核验图片")
         else:
             raise AppError(409, "CAPABILITY_DIAGNOSTIC_UNSUPPORTED", "当前提供方尚无诊断适配器")
         return "verified"
 
     def _record(self, provider_id: str, capability: str, status: str, *,
                 latency_ms: int | None, sample_id: str, error_code: str | None,
-                provider_revision: int, settings_revision: int) -> None:
+                provider_revision: int, settings_revision: int) -> bool:
         with self.service.db.transaction():
+            if (CapabilityCredentials(self.service).revision(provider_id) != provider_revision
+                    or CapabilitySettings(self.service).effective()["revision"] != settings_revision):
+                return False
             self.service.db.execute(
                 "INSERT INTO capability_provider_verification(provider_id,capability,status,checked_at,"
                 "provider_revision,settings_revision,latency_ms,sample_id,error_code) VALUES(?,?,?,?,?,?,?,?,?) "
@@ -126,6 +139,7 @@ class CapabilityDiagnostics:
                 "sample_id=excluded.sample_id,error_code=excluded.error_code",
                 (provider_id, capability, status, now(), provider_revision, settings_revision,
                  latency_ms, sample_id, error_code))
+        return True
 
     @staticmethod
     def _sample_id(capability: str) -> str:
@@ -133,6 +147,8 @@ class CapabilityDiagnostics:
             return FIXED_SEARCH_SAMPLE_ID
         if capability == "fetch":
             return FIXED_FETCH_SAMPLE_ID
+        if capability == "image_search":
+            return FIXED_IMAGE_SAMPLE_ID
         return FIXED_OCR_SAMPLE_ID
 
     async def run(self, provider_id: str) -> dict:
@@ -146,17 +162,26 @@ class CapabilityDiagnostics:
         deadline = time.monotonic() + DIAGNOSTIC_TIMEOUT_SECONDS
         for capability in PROVIDER_MODES.get(provider_id, {}):
             sample_id = self._sample_id(capability)
-            if (provider_id, capability) not in SUPPORTED:
+            if (CapabilityCredentials(self.service).revision(provider_id) != provider_revision
+                    or settings_api.effective()["revision"] != settings_revision):
+                status, error_code, latency = "failed", "CAPABILITY_CHANGED", None
+            elif (provider_id, capability) not in SUPPORTED:
                 status, error_code, latency = "unsupported", "CAPABILITY_DIAGNOSTIC_UNSUPPORTED", None
             elif not provider["configured"]:
                 status, error_code, latency = "not_configured", "CAPABILITY_PROVIDER_UNCONFIGURED", None
             else:
                 started = time.monotonic()
                 try:
-                    status = await self._probe(provider_id, capability, deadline)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError()
+                    status = await asyncio.wait_for(self._probe(provider_id, capability, deadline), timeout=remaining)
                     error_code = None
                 except asyncio.CancelledError:
-                    status, error_code = "failed", "cancelled"
+                    self._record(provider_id, capability, "failed", latency_ms=None,
+                                 sample_id=sample_id, error_code="cancelled",
+                                 provider_revision=provider_revision, settings_revision=settings_revision)
+                    raise
                 except (TimeoutError, asyncio.TimeoutError):
                     status, error_code = "failed", "CAPABILITY_DIAGNOSTIC_TIMEOUT"
                 except AppError as exc:
@@ -164,9 +189,14 @@ class CapabilityDiagnostics:
                 except Exception:
                     status, error_code = "failed", "CAPABILITY_DIAGNOSTIC_FAILED"
                 latency = int((time.monotonic() - started) * 1000)
-            self._record(provider_id, capability, status, latency_ms=latency,
-                         sample_id=sample_id, error_code=error_code,
-                         provider_revision=provider_revision, settings_revision=settings_revision)
+            if (CapabilityCredentials(self.service).revision(provider_id) != provider_revision
+                    or settings_api.effective()["revision"] != settings_revision):
+                status, error_code = "failed", "CAPABILITY_CHANGED"
+            recorded = self._record(provider_id, capability, status, latency_ms=latency,
+                                    sample_id=sample_id, error_code=error_code,
+                                    provider_revision=provider_revision, settings_revision=settings_revision)
+            if not recorded:
+                status, error_code = "failed", "CAPABILITY_CHANGED"
             results.append({
                 "capability": capability, "status": status, "error_code": error_code,
                 "latency_ms": latency, "sample_id": sample_id, "checked_at": now(),

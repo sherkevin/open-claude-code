@@ -13,6 +13,10 @@ import type { AppConfig } from './types';
 import './capability-settings.css';
 
 const KINDS: CapabilityKind[] = ['search', 'fetch', 'ocr', 'image_search'];
+const PROVIDERS_BY_KIND: Record<CapabilityKind, ProviderId[]> = {
+  search: ['bing_rss', 'searxng', 'brave', 'deepseek_api'], fetch: ['public_http', 'deepseek_api'],
+  ocr: ['deepseek_api'], image_search: ['deepseek_webtools', 'brave_images'],
+};
 const EGRESS_OPTIONS: Array<{value: EgressMode; label: string}> = [
   {value: 'deny', label: '禁止外发'}, {value: 'approval', label: '每次人工审批'}, {value: 'allow', label: '允许'},
 ];
@@ -45,15 +49,16 @@ export default function CapabilitySettingsPage({admin, config}: {admin: boolean;
 function RouteEditor({kind, value, busy, onEdit}: {kind: CapabilityKind; value: CapabilityRoute; busy: boolean; onEdit: (route: CapabilityRoute) => void}) {
   const route = value;
   const edit = (patch: Partial<CapabilityRoute>) => onEdit({...route, ...patch});
-  const fixedRetry = kind === 'ocr';
+  const fixedRetry = kind === 'ocr' || kind === 'image_search';
+  const providers = Object.entries(providerLabels).filter(([id]) => PROVIDERS_BY_KIND[kind].includes(id as ProviderId));
   return <fieldset disabled={busy}>
     <label className="checkbox-row"><input type="checkbox" checked={route.enabled} onChange={e => edit({enabled: e.target.checked})}/>允许此能力</label>
     <Field label="首选提供方"><select value={route.preferred} onChange={e => edit({preferred: e.target.value as ProviderId, fallbacks: route.fallbacks.filter(id => id !== e.target.value)})}>
-      {Object.entries(providerLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+      {providers.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
     </select></Field>
     <Field label="回退服务" hint="仅服务故障或限流时回退；权限、域名、审批或安全拒绝不会触发回退。">
-      <select value={route.fallbacks[0] || ''} onChange={e => edit({fallbacks: e.target.value ? [e.target.value as ProviderId] : []})}>
-        <option value="">不回退</option>{Object.entries(providerLabels).filter(([id]) => id !== route.preferred).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+      <select disabled={fixedRetry} value={fixedRetry ? '' : route.fallbacks[0] || ''} onChange={e => edit({fallbacks: e.target.value ? [e.target.value as ProviderId] : []})}>
+        <option value="">不回退</option>{providers.filter(([id]) => id !== route.preferred).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
       </select>
     </Field>
     <div className="two-col">

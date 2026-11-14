@@ -264,15 +264,26 @@ def test_web_tools_hides_upstream_name_in_evidence_for_enabled_route(monkeypatch
     assert "deepseek" not in json.dumps(result).lower() and "deepseek" not in json.dumps(service.evidence.last).lower()
 
 
-def test_knowledge_ocr_fallback_is_explicit_and_parser_compatible(tmp_path, monkeypatch):
+def test_knowledge_ocr_fallback_is_explicit_and_parser_compatible(tmp_path, monkeypatch, request):
+    from app.capability_settings import CAPABILITY_KINDS, CapabilitySettings, CapabilityUpdate
+    from app.config import Settings
+    from app.service import Service
     source = tmp_path / "scan.pdf"
     source.write_bytes(b"sample")
-    settings = SimpleNamespace(
+    settings = Settings(data_dir=tmp_path / "data", provider_settings="",
         deepseek_api_enabled=True, deepseek_api_ocr_enabled=True,
         deepseek_api_key="test-key", deepseek_api_base_url="https://api.deepseek.com",
         deepseek_api_timeout_seconds=30,
     )
-    service = SimpleNamespace(settings=settings)
+    service = Service(settings)
+    request.addfinalizer(service.db.close)
+    admin = service.create_user({"username": "ocr-admin", "display_name": "OCR admin", "role": "admin",
+                                 "password": "Synthetic-pass-for-test-123"})
+    api = CapabilitySettings(service)
+    data = {key: api.effective()[key] for key in ("revision", *CAPABILITY_KINDS)}
+    data["ocr"]["enabled"] = True
+    data["ocr"]["egress"]["upload"] = "allow"
+    api.save(admin, CapabilityUpdate(**data))
     knowledge = KnowledgeService.__new__(KnowledgeService)
     knowledge.service = service
     seen = {}

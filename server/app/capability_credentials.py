@@ -75,6 +75,11 @@ class CapabilityCredentials:
     def present(self, provider_id: str) -> bool:
         return bool(self.get(provider_id))
 
+    def snapshot(self, provider_id: str) -> tuple[str | None, int]:
+        """Read a credential and its generation under the same database lock."""
+        with self.db.transaction():
+            return self.get(provider_id), self.revision(provider_id)
+
     def revision(self, provider_id: str) -> int:
         row = self._row(provider_id)
         if row:

@@ -61,6 +61,8 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
             except (TypeError, ValueError):
                 raw = None
         grant = raw.get(name) if isinstance(raw, dict) else None
+        if not raw and name in {"search", "fetch"}:
+            return bool(assistant.get("web_search_enabled"))
         return isinstance(grant, dict) and grant.get("enabled") is True
 
     def context():
@@ -137,18 +139,20 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
             WorkspaceTool("knowledge_search", "检索当前助手授权的公司及业务知识库，返回文件、页码、摘录和真实 source 引用标记。关于 Better AI 的问题先检索公司资料。", {"query": str, "limit": int}, True, search),
             WorkspaceTool("knowledge_read", "按文件 ID 和页码读取授权的知识库原文。document_id 来自检索结果，page 为页码；0 表示读取文件开头。返回可引用 source 标记。", {"document_id": str, "page": int}, True, read),
         ])
-    if assistant.get("web_search_enabled"):
+    if capability_enabled("search") or capability_enabled("fetch"):
         async def search_web(arguments):
             return await invoke("web_search", arguments, lambda active, current_user, run_id:
-                web.search_for_run(current_user, active, run_id, arguments["query"], limit=arguments.get("limit", 5)))
+                web.search_for_run(current_user, active, run_id, arguments["query"], limit=arguments.get("limit", 5),
+                                   call_id=TOOL_CALL_ID.get(), approval_id=APPROVAL_ID.get()))
 
         async def read_web(arguments):
             return await invoke("web_read", arguments, lambda active, current_user, run_id:
-                web.read_for_run(current_user, active, run_id, arguments["url"], query=arguments.get("query", "")))
-        tools.extend([
-            WorkspaceTool("web_search", "搜索公开互联网信息，返回原网页链接、搜索摘要及 source 标记。仅用公开检索词，不发送内部文档、凭据或个人敏感数据。", {"query": str, "limit": int}, True, search_web),
-            WorkspaceTool("web_read", "读取公开网页正文并生成可核验来源。url 是原网页；query 可用于定位正文，不需要时传空字符串。", {"url": str, "query": str}, True, read_web),
-        ])
+                web.read_for_run(current_user, active, run_id, arguments["url"], query=arguments.get("query", ""),
+                                 call_id=TOOL_CALL_ID.get(), approval_id=APPROVAL_ID.get()))
+        if capability_enabled("search"):
+            tools.append(WorkspaceTool("web_search", "搜索公开互联网信息，返回原网页链接、搜索摘要及 source 标记。仅用公开检索词，不发送内部文档、凭据或个人敏感数据。", {"query": str, "limit": int}, True, search_web))
+        if capability_enabled("fetch"):
+            tools.append(WorkspaceTool("web_read", "读取公开网页正文并生成可核验来源。url 是原网页；query 可用于定位正文，不需要时传空字符串。", {"url": str, "query": str}, True, read_web))
 
     if capability_enabled("ocr"):
         async def ocr(arguments):

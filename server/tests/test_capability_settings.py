@@ -319,7 +319,10 @@ def test_each_actual_attempt_is_counted_and_retry_budget_is_not_multiplied(tmp_p
     with pytest.raises(AppError):
         asyncio.run(CapabilityExecutor(service).execute_for_run(context, "search", {"query": "q"}, operation))
     assert calls == ["searxng", "bing_rss"]  # two attempts, not two providers x two retries
-    rows = service.db.all("SELECT * FROM capability_attempts WHERE call_id='call-budget' ORDER BY attempt_index")
+    claim = service.db.one("SELECT * FROM capability_dispatch_claims WHERE run_id=? AND tool_call_id=?",
+                           (run_id, "call-budget"))
+    rows = service.db.all("SELECT * FROM capability_attempts WHERE call_id=? ORDER BY attempt_index",
+                          (claim["owner_token"],))
     assert [row["attempt_index"] for row in rows] == [0, 1]
     assert all(row["state"] == "failed" for row in rows)
 
@@ -502,16 +505,15 @@ def test_diagnostics_use_fixed_fixtures_and_report_honestly(settings):
         assert all(item["status"] == "not_configured" for item in by_capability.values())
         assert all("secret" not in json.dumps(item).lower() for item in body["results"])
 
-        # An image provider without an adapter is reported as unsupported, not
-        # as verified.
+        # The adapter exists, but missing credentials must not become verified.
         image = client.post("/api/v1/capability-settings/providers/deepseek_webtools/diagnostics").json()
-        assert image["results"][0]["status"] == "unsupported"
+        assert image["results"][0]["status"] == "not_configured"
 
         value = client.get("/api/v1/capability-settings").json()
         providers = {item["id"]: item for item in value["providers"]}
         assert providers["deepseek_api"]["verification"] == "failed"
         assert providers["deepseek_api"]["verification_checks"]["ocr"] == "not_configured"
-        assert providers["deepseek_webtools"]["verification_checks"]["image_search"] == "unsupported"
+        assert providers["deepseek_webtools"]["verification_checks"]["image_search"] == "not_configured"
 
         unknown = client.post("/api/v1/capability-settings/providers/unknown/diagnostics")
         assert unknown.status_code == 422

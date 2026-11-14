@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .authorized_uploads import AuthorizedUploads
+from .capability_credentials import CapabilityCredentials
 from .db import now, uid
 from .deepseek_api import DeepSeekAPI, OCR_PURPOSES
 from .image_search_adapters import BraveImagesAPI, DeepSeekWebToolsAPI
@@ -27,10 +28,10 @@ CAPABILITY_TOOLS = {
     "ocr": "mcp__workspace__ocr",
     "image_search": "mcp__workspace__image_search",
 }
-CAPABILITY_TOOL_SHORT_NAMES = frozenset(CAPABILITY_TOOLS)
+CAPABILITY_TOOL_SHORT_NAMES = frozenset({"ocr", "image_search", "web_search", "web_read"})
 OCR_PROVIDERS = frozenset({"deepseek_api"})
 REVERSE_IMAGE_PROVIDERS = frozenset({"deepseek_webtools"})
-TEXT_IMAGE_PROVIDERS = frozenset({"brave_images"})
+TEXT_IMAGE_PROVIDERS = frozenset({"brave_images", "deepseek_webtools"})
 PUBLIC_PROVIDER_NAMES = {
     "deepseek_api": "managed_ocr",
     "deepseek_webtools": "managed_image_search",
@@ -122,7 +123,7 @@ class ExternalCapabilities:
         settings = getattr(self.service, "settings", None)
         if settings is None or not getattr(settings, "deepseek_api_enabled", False):
             return None
-        key = str(getattr(settings, "deepseek_api_key", "") or "").strip()
+        key = CapabilityCredentials(self.service).get("deepseek_api")
         if not key:
             return None
         return DeepSeekAPI(
@@ -138,7 +139,7 @@ class ExternalCapabilities:
             return None
         # Fixed official endpoint; there is no user-editable provider URL.  An
         # existing web-search key means "configured", never "Images verified".
-        key = str(getattr(settings, "web_search_brave_api_key", "") or "").strip()
+        key = CapabilityCredentials(self.service).get("brave_images")
         if not key:
             return None
         return BraveImagesAPI(api_key=key,
@@ -149,7 +150,7 @@ class ExternalCapabilities:
         settings = getattr(self.service, "settings", None)
         if settings is None or not getattr(settings, "deepseek_api_enabled", False):
             return None
-        key = str(getattr(settings, "deepseek_api_key", "") or "").strip()
+        key = CapabilityCredentials(self.service).get("deepseek_webtools")
         if not key:
             return None
         return DeepSeekWebToolsAPI(
@@ -304,7 +305,7 @@ class ExternalCapabilities:
             async def operation(provider: str, deadline: float, recheck: Callable[[], None]):
                 if provider not in TEXT_IMAGE_PROVIDERS:
                     raise AppError(503, "IMAGE_SEARCH_PROVIDER_UNAVAILABLE", "当前未配置文字图片搜索服务")
-                client = self.brave_images_client()
+                client = self.webtools_client() if provider == "deepseek_webtools" else self.brave_images_client()
                 if client is None:
                     raise AppError(503, "IMAGE_SEARCH_PROVIDER_UNAVAILABLE", "当前未配置文字图片搜索服务")
                 recheck()

@@ -25,7 +25,8 @@ from .capability_policy import (
     classify_error,
     required_egress,
 )
-from .capability_receipts import claim_approval_receipt, verify_approval_receipt
+from .capability_credentials import CapabilityCredentials, KNOWN_PROVIDERS
+from .capability_receipts import arguments_digest, claim_approval_receipt, verify_approval_receipt
 from .capability_usage import CapabilityUsage
 from .db import uid
 from .security import AppError
@@ -85,15 +86,16 @@ class CapabilityExecutor:
     def __init__(self, service):
         self.service = service
         self.usage = CapabilityUsage(service)
-        # Receipts already claimed by this executor instance's active calls.
-        self._claimed: set[tuple[str, str]] = set()
 
     def _load(self, context: RunContext):
         service = self.service
         run = service.require("runs", context.run_id)
         conversation = service.require("conversations", context.conversation_id)
         user = service.require("users", context.user_id)
-        if run["conversation_id"] != conversation["id"] or conversation["user_id"] != user["id"]:
+        if (run["conversation_id"] != conversation["id"]
+                or conversation["user_id"] != user["id"]
+                or run["user_id"] != user["id"]
+                or context.assistant_id != conversation["assistant_id"]):
             raise AppError(403, "CAPABILITY_CONTEXT_DENIED", "工具上下文与当前会话不匹配")
         if conversation.get("active_run_id") != run["id"]:
             raise AppError(403, "CAPABILITY_RUN_REQUIRED", "当前任务已失效，请重新发送请求")
@@ -101,6 +103,8 @@ class CapabilityExecutor:
             raise AppError(403, "CAPABILITY_RUN_REQUIRED", "当前任务已结束")
         assistant = service.usable_assistant(conversation["assistant_id"], user)
         snapshot = json.loads(run.get("capability_snapshot") or "null") if run.get("capability_snapshot") else None
+        if isinstance(snapshot, dict) and snapshot.get("id") not in {None, assistant["id"]}:
+            raise AppError(403, "CAPABILITY_CONTEXT_DENIED", "工具上下文与助手快照不匹配")
         return run, conversation, user, assistant, snapshot
 
     def effective(self, context: RunContext, capability: str, arguments: dict) -> dict:
@@ -112,26 +116,24 @@ class CapabilityExecutor:
             conversation=conversation, user=user, assistant=assistant, snapshot=snapshot)[capability]
 
     def _authorize(self, context: RunContext, capability: str, arguments: dict, *,
-                   claim: bool) -> dict:
+                   claim: bool, owner_token: str) -> dict:
         tool_name = CAPABILITY_TOOLS[capability]
         # A False result means approval is required.  It is never proof that an
         # approval already happened.
-        automatic = self.service.authorize_tool(context.conversation_id, tool_name, arguments)
         effective = self.effective(context, capability, arguments)
+        automatic = self.service.authorize_tool(context.conversation_id, tool_name, arguments)
         if automatic is False:
             egress_mode = effective["egress"][required_egress(capability, arguments)]
             require_human = egress_mode == "approval"
-            key = (context.run_id, context.tool_call_id)
-            if claim and key not in self._claimed:
+            if claim:
                 claim_approval_receipt(
                     self.service, run_id=context.run_id, tool_call_id=context.tool_call_id,
-                    tool_name=tool_name, arguments=arguments, call_scope_id=context.tool_call_id,
+                    tool_name=tool_name, arguments=arguments, call_scope_id=owner_token,
                     require_human=require_human, expected_receipt_id=context.approval_id)
-                self._claimed.add(key)
             else:
                 verify_approval_receipt(
                     self.service, run_id=context.run_id, tool_call_id=context.tool_call_id,
-                    tool_name=tool_name, arguments=arguments, call_scope_id=context.tool_call_id,
+                    tool_name=tool_name, arguments=arguments, call_scope_id=owner_token,
                     require_human=require_human, expected_receipt_id=context.approval_id)
         return effective
 
@@ -160,12 +162,19 @@ class CapabilityExecutor:
             raise AppError(422, "CAPABILITY_UNKNOWN", "未知能力")
         if not isinstance(arguments, dict):
             raise AppError(422, "CAPABILITY_ARGUMENT_INVALID", "工具参数无效")
-        effective = self._authorize(context, capability, arguments, claim=True)
+        # Ownership belongs to this execute entry, never the reusable host id
+        # or executor instance. The closure alone can verify this receipt.
+        owner_token = uid()
+        effective = self._authorize(context, capability, arguments, claim=True, owner_token=owner_token)
         if not effective["enabled"]:
             raise AppError(403, "CAPABILITY_DISABLED", "当前能力未对本次任务或助手开放")
         self._check_target(effective, arguments, target_url)
         # Host-provided preflight recheck runs before any attempt.
         context.recheck()
+        self.usage.claim_call(
+            run_id=context.run_id, tool_call_id=context.tool_call_id,
+            tool_name=CAPABILITY_TOOLS[capability], arguments_digest=arguments_digest(arguments),
+            owner_token=owner_token)
 
         providers = [effective["preferred"], *effective["fallbacks"]]
         providers = [item for item in providers if item]
@@ -177,26 +186,35 @@ class CapabilityExecutor:
         limits = effective["limits"]
         last_error: AppError | None = None
         attempts = 0
+        credentials = CapabilityCredentials(self.service)
+        credential_binding: tuple[str, tuple[str | None, int]] | None = None
 
         def recheck() -> None:
             # Re-run the full current-authorization chain, route revision and
             # this invocation's own already-claimed receipt (no re-claim).
-            current = self._authorize(context, capability, arguments, claim=False)
+            current = self._authorize(context, capability, arguments, claim=False, owner_token=owner_token)
             if not current["enabled"]:
                 raise AppError(403, "CAPABILITY_DISABLED", "当前能力已被停用")
             if int(current["settings_revision"]) != settings_revision:
                 raise AppError(409, "CAPABILITY_CHANGED", "能力配置已更新，请重新发起请求")
+            self._check_target(current, arguments, target_url)
+            if credential_binding is not None:
+                provider_id, generation = credential_binding
+                if credentials.snapshot(provider_id) != generation:
+                    raise AppError(409, "CAPABILITY_CREDENTIAL_CHANGED", "能力凭据已更新，请重新发起请求")
             context.recheck()
 
         for attempt_index in range(max_attempts):
             if time.monotonic() >= deadline:
                 raise AppError(504, "CAPABILITY_TIMEOUT", "外部能力调用超时，请稍后重试")
             provider = providers[attempt_index] if attempt_index < len(providers) else providers[-1]
+            credential_binding = (provider, credentials.snapshot(provider)) if provider in KNOWN_PROVIDERS else None
             recheck()
             usage_id = self.usage.reserve_attempt(
                 run_id=context.run_id, assistant_id=context.assistant_id, user_id=context.user_id,
-                capability=capability, call_id=context.tool_call_id, attempt_index=attempt_index,
+                capability=capability, call_id=owner_token, attempt_index=attempt_index,
                 provider=provider, settings_revision=settings_revision,
+                provider_revision=credential_binding[1][1] if credential_binding is not None else 0,
                 calls_per_run=int(limits.get("calls_per_run") or 1),
                 calls_per_day=int(limits.get("calls_per_day") or 1))
             attempts = attempt_index + 1

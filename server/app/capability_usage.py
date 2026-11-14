@@ -26,13 +26,28 @@ class CapabilityUsage:
         self.service = service
         self.db = service.db
 
+    def claim_call(self, *, run_id: str, tool_call_id: str, tool_name: str,
+                   arguments_digest: str, owner_token: str) -> None:
+        # This durable claim also protects automatically approved calls and
+        # survives a crash with an unknown provider outcome. Never replay it.
+        with self.db.transaction():
+            if self.db.one("SELECT 1 FROM capability_dispatch_claims WHERE run_id=? AND tool_call_id=?",
+                           (run_id, tool_call_id)):
+                raise AppError(403, "CAPABILITY_REPLAY", "该工具调用已经执行，请勿重复提交")
+            self.db.execute(
+                "INSERT INTO capability_dispatch_claims VALUES(?,?,?,?,?,?)",
+                (run_id, tool_call_id, tool_name, arguments_digest, owner_token, now()))
+
     def reserve_attempt(self, *, run_id: str, assistant_id: str, user_id: str, capability: str,
                         call_id: str, attempt_index: int, provider: str, settings_revision: int,
-                        calls_per_run: int, calls_per_day: int) -> str:
+                        calls_per_run: int, calls_per_day: int, provider_revision: int = 0) -> str:
         usage_id = uid()
         started = now()
         window = day_key()
         with self.db.transaction():
+            if self.db.one("SELECT 1 FROM capability_attempts WHERE call_id=? AND attempt_index=?",
+                           (call_id, attempt_index)):
+                raise AppError(403, "CAPABILITY_REPLAY", "该工具请求已经派发")
             self.db.execute(
                 "INSERT OR IGNORE INTO capability_calls(call_id,run_id,actor_id,assistant_id,capability,started_at,state) "
                 "VALUES(?,?,?,?,?,?,'started')",
@@ -54,9 +69,9 @@ class CapabilityUsage:
                 (user_id, capability, window))
             self.db.execute(
                 "INSERT INTO capability_attempts(id,call_id,attempt_index,run_id,actor_id,assistant_id,capability,"
-                "provider,settings_revision,state,started_at) VALUES(?,?,?,?,?,?,?,?,?,'reserved',?)",
+                "provider,provider_revision,settings_revision,state,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,'reserved',?)",
                 (usage_id, call_id, attempt_index, run_id, user_id, assistant_id, capability, provider,
-                 settings_revision, started))
+                 provider_revision, settings_revision, started))
         return usage_id
 
     def settle_attempt(self, usage_id: str, *, state: str, error_code: str | None = None,
@@ -86,7 +101,7 @@ class CapabilityUsage:
                 (row["run_id"], row["capability"]))
             self.db.execute(
                 "UPDATE capability_day_counters SET calls=MAX(calls-1,0) WHERE actor_id=? AND capability=? AND day_key=?",
-                (row["actor_id"], row["capability"], day_key()))
+                (row["actor_id"], row["capability"], row["started_at"][:10]))
             remaining = self.db.one("SELECT COUNT(*) AS n FROM capability_attempts WHERE call_id=?", (row["call_id"],))
             if not remaining or not remaining["n"]:
                 self.db.execute("DELETE FROM capability_calls WHERE call_id=?", (row["call_id"],))

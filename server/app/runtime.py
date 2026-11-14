@@ -244,7 +244,8 @@ class SDKRuntime(WorkspaceRuntime):
                 self.tool_started[tool_use_id] = time.monotonic()
                 await self.emit("run.stage", {"stage": "tool", "tool_name": tool})
                 await self.emit("tool.started", {"tool_call_id": tool_use_id or uid(), "tool_name": tool, "arguments": redact(arguments), "requires_approval": not automatic or model_review})
-                return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow" if automatic and not model_review else "ask"}}
+                decision = "allow" if automatic and not model_review and tool not in CAPABILITY_TOOL_NAMES else "ask"
+                return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision}}
             except Exception:
                 return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "应用权限校验拒绝此工具调用"}}
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 from .workspace_tools import APPROVAL_ID, TOOL_CALL_ID, build_workspace_tools
 
 CAPABILITY_TOOL_NAMES = frozenset({
+    "mcp__workspace__web_search",
+    "mcp__workspace__web_read",
     "mcp__workspace__ocr",
     "mcp__workspace__image_search",
 })
@@ -25,9 +27,7 @@ _CAPABILITY_SCHEMAS = {
         "type": "object",
         "properties": {"file_id": {"type": "string"}, "purpose": {"type": "string"}},
         "required": ["file_id"],
-        # The ticket arrives through updated_input; the dispatch enforces the
-        # exact public key/type set below, so unknown parameters still fail.
-        "additionalProperties": True,
+        "additionalProperties": False,
     },
     "image_search": {
         "type": "object",
@@ -37,7 +37,17 @@ _CAPABILITY_SCHEMAS = {
             "file_id": {"type": "string"},
             "limit": {"type": "integer"},
         },
-        "additionalProperties": True,
+        "additionalProperties": False,
+    },
+    "web_search": {
+        "type": "object", "required": ["query"], "additionalProperties": False,
+        "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 500},
+                       "limit": {"type": "integer", "minimum": 1, "maximum": 10}},
+    },
+    "web_read": {
+        "type": "object", "required": ["url"], "additionalProperties": False,
+        "properties": {"url": {"type": "string", "minLength": 1, "maxLength": 4096},
+                       "query": {"type": "string", "maxLength": 500}},
     },
 }
 
@@ -58,6 +68,12 @@ def _validated(definition, arguments):
             return None
     if definition.name == "ocr" and not arguments.get("file_id"):
         return None
+    if definition.name in _CAPABILITY_SCHEMAS:
+        import jsonschema
+        try:
+            jsonschema.validate(arguments, _CAPABILITY_SCHEMAS[definition.name])
+        except jsonschema.ValidationError:
+            return None
     return arguments
 
 
@@ -108,4 +124,26 @@ def create_workspace_tools(runtime):
                 destructiveHint=False,
             ),
         )(handler))
-    return create_sdk_mcp_server("workspace", "0.4.0", tools=tools) if tools else None
+    if not tools:
+        return None
+    config = create_sdk_mcp_server("workspace", "0.4.0", tools=tools)
+    if not isinstance(config, dict):
+        return config  # Registry-only test doubles have no MCP dispatcher.
+    from mcp.types import CallToolRequest, CallToolResult, ServerResult
+    server = config["instance"]
+    original = server.request_handlers[CallToolRequest]
+    handlers = {definition.name: _capability_handler(definition, runtime)
+                for definition in definitions if definition.name in CAPABILITY_TOOL_SHORT_NAMES}
+
+    async def dispatch(request):
+        handler = handlers.get(request.params.name)
+        if handler is None:
+            return await original(request)
+        # Strip/verify the host nonce before public-schema validation. The
+        # advertised schema remains strict and never exposes a nonce field.
+        result = await handler(request.params.arguments or {})
+        return ServerResult(CallToolResult.model_validate({
+            "content": result.get("content", []), "isError": bool(result.get("is_error"))}))
+
+    server.request_handlers[CallToolRequest] = dispatch
+    return config

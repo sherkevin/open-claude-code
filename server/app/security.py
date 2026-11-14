@@ -131,7 +131,7 @@ def tool_risk_profile(tool_name: str) -> dict[str, object]:
 
 def redact(value, truncate=True):
     if isinstance(value, dict):
-        return {str(k): "[redacted]" if SENSITIVE.search(str(k)) else redact(v, truncate) for k, v in value.items()}
+        return {str(k): "[redacted]" if str(k) == "__oc_capability_ticket" or SENSITIVE.search(str(k)) else redact(v, truncate) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(v, truncate) for v in (value[:100] if truncate else value)]
     if isinstance(value, str):

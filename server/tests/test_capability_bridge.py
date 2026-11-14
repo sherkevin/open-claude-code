@@ -183,3 +183,33 @@ def test_dispatch_without_consume_support_fails_closed():
     dispatch = _capability_handler(definition(handler), SimpleNamespace())
     result = asyncio.run(dispatch({CAPABILITY_TICKET_FIELD: "ticket"}))
     assert result["is_error"] is True
+
+
+def test_actual_mcp_dispatch_strips_ticket_before_strict_public_validation(monkeypatch):
+    from app.capabilities import create_workspace_tools
+    from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
+    seen = []
+
+    async def operation(arguments):
+        seen.append(arguments)
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    runtime = bare_runtime()
+    monkeypatch.setattr("app.capabilities.build_workspace_tools", lambda runtime: [definition(operation)])
+    server = create_workspace_tools(runtime)["instance"]
+
+    async def run():
+        listed = await server.request_handlers[ListToolsRequest](ListToolsRequest())
+        schema = listed.root.tools[0].inputSchema
+        assert schema["additionalProperties"] is False
+        assert CAPABILITY_TICKET_FIELD not in schema["properties"]
+        ticket = runtime.issue_capability_ticket(
+            "mcp__workspace__ocr", {"file_id": "f1"}, SimpleNamespace(tool_use_id="toolu-wire"))
+        dispatch = server.request_handlers[CallToolRequest]
+        request = CallToolRequest(params=CallToolRequestParams(
+            name="ocr", arguments={"file_id": "f1", CAPABILITY_TICKET_FIELD: ticket}))
+        assert (await dispatch(request)).root.isError is False
+        assert (await dispatch(request)).root.isError is True
+        assert seen == [{"file_id": "f1"}]
+
+    asyncio.run(run())
