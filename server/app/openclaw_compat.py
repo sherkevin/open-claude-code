@@ -441,6 +441,7 @@ class ActiveRun:
     principal_id: str
     session_id: str
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    lease_lost: bool = False
 
 
 @dataclass(frozen=True)
@@ -1578,7 +1579,7 @@ class OpenClawFacade:
         )
         context = ExecutionContext(principal.tenant_id, principal.principal_id, session.id,
                                    session.conversation_id, agent_id, request.model_alias, run_id, turn_id)
-        heartbeat = asyncio.create_task(self._heartbeat_turn(turn_id))
+        heartbeat = asyncio.create_task(self._heartbeat_turn(turn_id, active))
         try:
             result = await self._run_executor(execution, context, active)
             result = _coerce_result(result)
@@ -1590,28 +1591,38 @@ class OpenClawFacade:
             else:
                 body = _responses_body(response_id, request, result)
                 events = _responses_stream_events(response_id, request, result)
-            self._remember_tool_calls(session.id, result.tool_calls)
-            self._complete_turn(turn_id, body, events, request.stream)
+            # Publish session references only with the successful ownership CAS.
+            with self.service.db.transaction():
+                self._complete_turn(turn_id, body, events, request.stream)
+                self._remember_tool_calls(session.id, result.tool_calls)
             self._audit(principal, "turn.completed", "allowed", session_id=session.id, run_id=run_id,
                         detail={"turn_id": turn_id, "finish_reason": _finish_reason(result),
                                 "tool_calls": len(result.tool_calls), "usage": result.usage.public()})
             return TurnOutcome(request.stream, body, events, response_id, run_id, session.id)
         except asyncio.CancelledError:
-            self._fail_turn(turn_id, "cancelled", 499, "REQUEST_CANCELLED", "客户端取消或断开连接")
-            self._audit(principal, "turn.cancelled", "cancelled", session_id=session.id, run_id=run_id,
+            recorded = self._fail_turn(turn_id, "cancelled", 499, "REQUEST_CANCELLED", "客户端取消或断开连接")
+            self._audit(principal, "turn.cancelled" if recorded else "turn.result_discarded",
+                        "cancelled" if recorded else "denied", session_id=session.id, run_id=run_id,
                         detail={"turn_id": turn_id, "reason": "client_disconnect"})
             raise
         except OpenClawError as error:
             status = "cancelled" if error.code == "REQUEST_CANCELLED" else "failed"
-            self._fail_turn(turn_id, status, error.status, error.code, error.message)
-            self._audit(principal, "turn.cancelled" if status == "cancelled" else "turn.failed", status,
+            recorded = self._fail_turn(turn_id, status, error.status, error.code, error.message)
+            action = "turn.cancelled" if status == "cancelled" else "turn.failed"
+            if not recorded:
+                error = OpenClawError(503, "INTERRUPTED", "请求租约已失效，迟到结果已丢弃")
+                action, status = "turn.result_discarded", "denied"
+            self._audit(principal, action, status,
                         session_id=session.id, run_id=run_id,
                         detail={"turn_id": turn_id, "code": error.code, "status": error.status})
-            raise
+            raise error
         except Exception as error:
             mapped = _error_for_status(getattr(error, "status_code", 0) if type(getattr(error, "status_code", None)) is int else 502)
-            self._fail_turn(turn_id, "failed", mapped.status, mapped.code, mapped.message)
-            self._audit(principal, "turn.failed", "failed", session_id=session.id, run_id=run_id,
+            recorded = self._fail_turn(turn_id, "failed", mapped.status, mapped.code, mapped.message)
+            if not recorded:
+                mapped = OpenClawError(503, "INTERRUPTED", "请求租约已失效，迟到结果已丢弃")
+            self._audit(principal, "turn.failed" if recorded else "turn.result_discarded",
+                        "failed" if recorded else "denied", session_id=session.id, run_id=run_id,
                         detail={"turn_id": turn_id, "code": mapped.code})
             raise mapped from None
         finally:
@@ -1620,16 +1631,23 @@ class OpenClawFacade:
             with self._lock:
                 self._active.pop(run_id, None)
 
-    async def _heartbeat_turn(self, turn_id: str) -> None:
-        """Renew the turn lease so another instance never recovers a live turn."""
+    async def _heartbeat_turn(self, turn_id: str, active: ActiveRun) -> None:
+        """Renew only this owner's live lease; stop execution after ownership loss."""
         interval = max(self.lease_seconds / 3.0, 0.01)
         while True:
             await asyncio.sleep(interval)
-            self.service.db.execute(
+            if not self._renew_turn_lease(turn_id):
+                active.lease_lost = True
+                active.cancelled.set()
+                return
+
+    def _renew_turn_lease(self, turn_id: str) -> bool:
+        with self.service.db.transaction():
+            return self.service.db.execute(
                 "UPDATE openclaw_turns SET lease_expires_at=? "
-                "WHERE id=? AND status='running'",
-                (_lease_deadline(self.lease_seconds), turn_id),
-            )
+                "WHERE id=? AND owner_instance=? AND status='running' AND lease_expires_at>?",
+                (_lease_deadline(self.lease_seconds), turn_id, self.instance_id, _now_iso()),
+            ).rowcount == 1
 
     async def _run_executor(self, request: ExecutionRequest, context: ExecutionContext,
                             active: ActiveRun) -> Any:
@@ -1645,6 +1663,8 @@ class OpenClawFacade:
             if cancel_wait in done:
                 task.cancel()
                 await _discard(task)
+                if active.lease_lost:
+                    raise OpenClawError(503, "INTERRUPTED", "请求租约已失效，执行已中止")
                 raise OpenClawError(499, "REQUEST_CANCELLED", "请求已取消")
             cancel_wait.cancel()
             await _discard(cancel_wait)
@@ -1676,10 +1696,15 @@ class OpenClawFacade:
 
     def _complete_turn(self, turn_id: str, body: dict[str, Any], events: tuple[dict[str, Any], ...],
                        stream: bool) -> None:
-        self.service.db.execute(
-            "UPDATE openclaw_turns SET status='succeeded',http_status=200,response_json=?,sse_json=?,stream=?,lease_expires_at=NULL,completed_at=? WHERE id=?",
-            (dump(body), dump(list(events)), 1 if stream else 0, _now_iso(), turn_id),
-        )
+        finished_at = _now_iso()
+        changed = self.service.db.execute(
+            "UPDATE openclaw_turns SET status='succeeded',http_status=200,response_json=?,sse_json=?,stream=?,lease_expires_at=NULL,completed_at=? "
+            "WHERE id=? AND owner_instance=? AND status='running' AND lease_expires_at>?",
+            (dump(body), dump(list(events)), 1 if stream else 0, finished_at,
+             turn_id, self.instance_id, finished_at),
+        ).rowcount
+        if changed != 1:
+            raise OpenClawError(503, "INTERRUPTED", "请求租约已失效，不能接受迟到结果")
         row = self.service.db.one(
             """SELECT turns.*, sessions.agent_id AS session_agent
                FROM openclaw_turns turns JOIN openclaw_sessions sessions ON sessions.id=turns.session_id
@@ -1693,11 +1718,13 @@ class OpenClawFacade:
                  row["session_agent"], _now_iso()),
             )
 
-    def _fail_turn(self, turn_id: str, status: str, http_status: int, code: str, message: str) -> None:
-        self.service.db.execute(
-            "UPDATE openclaw_turns SET status=?,http_status=?,error_json=?,lease_expires_at=NULL,completed_at=? WHERE id=?",
-            (status, http_status, dump({"code": code, "message": message}), _now_iso(), turn_id),
-        )
+    def _fail_turn(self, turn_id: str, status: str, http_status: int, code: str, message: str) -> bool:
+        return self.service.db.execute(
+            "UPDATE openclaw_turns SET status=?,http_status=?,error_json=?,lease_expires_at=NULL,completed_at=? "
+            "WHERE id=? AND owner_instance=? AND status='running'",
+            (status, http_status, dump({"code": code, "message": message}), _now_iso(),
+             turn_id, self.instance_id),
+        ).rowcount == 1
 
     # ----------------------------------------------------------- cancellation
     def cancel(self, principal: TenantPrincipal, run_id: str) -> dict[str, Any]:

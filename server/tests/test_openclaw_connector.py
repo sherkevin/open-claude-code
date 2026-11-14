@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.config import Settings
+from app import openclaw_connector as connector_module
 from app.db import dump, now, uid
 from app.openclaw_connector import (
     ConnectorError,
@@ -137,6 +141,26 @@ def env(tmp_path):
     yield Env(service, registry, ConnectorIdentity("tenant-a", "principal-a"),
               ConnectorIdentity("tenant-b", "principal-b"))
     service.db.close()
+
+
+@pytest.fixture
+def lease_clock(monkeypatch):
+    class Clock:
+        value = datetime(2040, 1, 1, tzinfo=timezone.utc)
+
+        def now(self):
+            return self.value.isoformat()
+
+        def deadline(self, seconds):
+            return (self.value + timedelta(seconds=seconds)).isoformat()
+
+        def advance(self, seconds):
+            self.value += timedelta(seconds=seconds)
+
+    clock = Clock()
+    monkeypatch.setattr(connector_module, "_now_iso", clock.now)
+    monkeypatch.setattr(connector_module, "_lease_deadline", clock.deadline)
+    return clock
 
 
 # ---------------------------------------------------------------- discovery
@@ -554,14 +578,17 @@ def test_second_registry_startup_does_not_recover_another_instances_live_call(en
                                  (request_id,))
         assert row["status"] == "succeeded"
         assert row["lease_expires_at"] is None
+        assert not first._renew_call_lease(request_id)
+        assert not first._finish_call(request_id, "failed", 502, "LATE_ERROR", None, None)
+        assert env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?", (request_id,)) == row
 
     asyncio.run(scenario())
 
 
-def test_lease_expiry_and_heartbeat_drive_recovery(env):
+def test_lease_expiry_and_legacy_rows_drive_recovery(env, lease_clock):
     registry = ConnectorRegistry(env.service.db, executor=Executor())
-    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    past = lease_clock.now()  # Equality is already expired, not a live lease.
+    future = lease_clock.deadline(300)
     expired_id, live_id, legacy_id = uid(), uid(), uid()
     env.service.db.execute(
         "INSERT INTO openclaw_connector_calls(request_id,tenant_id,principal_id,tool_name,status,owner_instance,lease_expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -589,6 +616,10 @@ def test_lease_expiry_and_heartbeat_drive_recovery(env):
                               (live_id,))
     assert live["status"] == "running"
     assert live["lease_expires_at"] == future
+    assert registry.recover_interrupted() == 0
+
+
+def test_heartbeat_renews_live_lease_before_second_registry_start(env, lease_clock, monkeypatch):
 
     async def heartbeat_case():
         started = asyncio.Event()
@@ -610,7 +641,18 @@ def test_lease_expiry_and_heartbeat_drive_recovery(env):
             "SELECT lease_expires_at FROM openclaw_connector_calls WHERE request_id=?",
             (request_id,),
         )["lease_expires_at"]
-        await asyncio.sleep(0.7)
+        heartbeat_completed = asyncio.Event()
+        renew = active._renew_call_lease
+
+        def observed_renew(call_id):
+            renewed = renew(call_id)
+            heartbeat_completed.set()
+            return renewed
+
+        monkeypatch.setattr(active, "_renew_call_lease", observed_renew)
+        lease_clock.advance(0.2)
+        # Await the real heartbeat, but let the controlled clock define expiry.
+        await asyncio.wait_for(heartbeat_completed.wait(), 2)
         second_lease = env.service.db.one(
             "SELECT lease_expires_at FROM openclaw_connector_calls WHERE request_id=?",
             (request_id,),
@@ -627,3 +669,148 @@ def test_lease_expiry_and_heartbeat_drive_recovery(env):
         assert row["status"] == "succeeded"
 
     asyncio.run(heartbeat_case())
+
+
+@pytest.mark.parametrize("ownership", ["recovered", "expired", "changed"])
+@pytest.mark.parametrize("late_error", [None, "mapped", "generic"])
+def test_late_call_result_cannot_revive_or_overwrite_lost_lease(env, lease_clock, ownership, late_error):
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+
+        class Blocking:
+            async def call(self, server, tool, arguments, cancelled, request_id):
+                started.set()
+                await release.wait()
+                if late_error == "mapped":
+                    raise ConnectorError(429, "RATE_LIMITED", "synthetic late error")
+                if late_error == "generic":
+                    raise RuntimeError("synthetic late error")
+                return {"late": True}
+
+        first = ConnectorRegistry(env.service.db, executor=Blocking(), lease_seconds=60)
+        first.register_server(env.me, "late", TOOLS, ALLOWED)
+        second = ConnectorRegistry(env.service.db)
+        task = asyncio.create_task(first.call(env.me, "read_ticket", {"id": "T-1"}))
+        await asyncio.wait_for(started.wait(), 2)
+        request_id = next(iter(first._active))
+        if ownership == "changed":
+            env.service.db.execute(
+                "UPDATE openclaw_connector_calls SET owner_instance=? WHERE request_id=?",
+                (second.instance_id, request_id),
+            )
+        else:
+            lease_clock.advance(60)
+            if ownership == "recovered":
+                assert second.recover_interrupted() == 1
+        before = env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?", (request_id,))
+        assert not first._renew_call_lease(request_id)
+        release.set()
+        with pytest.raises(ConnectorError) as exc:
+            await asyncio.wait_for(task, 2)
+        if ownership != "expired" or not late_error:
+            assert error(exc.value) == (503, "INTERRUPTED")
+        after = env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?", (request_id,))
+        if ownership == "expired":
+            assert after["status"] == "failed"
+            assert json.loads(after["error_json"])["code"] == exc.value.code
+        else:
+            assert after == before
+        assert not first._renew_call_lease(request_id)
+        assert not first._finish_call(request_id, "failed", 502, "LATE_ERROR", None, None)
+        assert env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?", (request_id,)) == after
+        assert not any(event["action"] == "tool.succeeded" for event in first.audit_events(env.me))
+        if ownership != "expired":
+            events = first.audit_events(env.me)
+            assert any(event["action"] == "tool.result_discarded" for event in events)
+            assert not any(event["action"] == "tool.failed" for event in events)
+
+    asyncio.run(scenario())
+
+
+def test_heartbeat_stops_executor_when_lease_expires(env, lease_clock):
+    async def scenario():
+        started, stopped = asyncio.Event(), asyncio.Event()
+
+        class Blocking:
+            async def call(self, server, tool, arguments, cancelled, request_id):
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    stopped.set()
+
+        registry = ConnectorRegistry(env.service.db, executor=Blocking(), lease_seconds=0.3)
+        registry.register_server(env.me, "expires", TOOLS, ALLOWED)
+        task = asyncio.create_task(registry.call(env.me, "read_ticket", {"id": "T-1"}))
+        await asyncio.wait_for(started.wait(), 2)
+        lease_clock.advance(0.3)
+        with pytest.raises(ConnectorError) as exc:
+            await asyncio.wait_for(task, 2)
+        assert error(exc.value) == (503, "INTERRUPTED")
+        assert stopped.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_recovery_rechecks_lease_after_scan(env, lease_clock, monkeypatch):
+    request_id = uid()
+    env.service.db.execute(
+        "INSERT INTO openclaw_connector_calls(request_id,tenant_id,principal_id,tool_name,status,owner_instance,lease_expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (request_id, env.me.tenant_id, env.me.principal_id, "read_ticket", "running",
+         env.registry.instance_id, lease_clock.now(), lease_clock.now()),
+    )
+    query = env.service.db.all
+
+    def scan_then_renew(sql, values=()):
+        rows = query(sql, values)
+        if sql.startswith("SELECT * FROM openclaw_connector_calls WHERE status='running'"):
+            # Simulate a concurrent renewal committed after the recovery scan.
+            env.service.db.execute(
+                "UPDATE openclaw_connector_calls SET lease_expires_at=? WHERE request_id=?",
+                (lease_clock.deadline(60), request_id),
+            )
+        return rows
+
+    monkeypatch.setattr(env.service.db, "all", scan_then_renew)
+    assert env.registry.recover_interrupted() == 0
+    row = env.service.db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?", (request_id,))
+    assert row["status"] == "running"
+    assert row["lease_expires_at"] == lease_clock.deadline(60)
+
+
+@pytest.mark.parametrize("operation", ["renew", "succeed"])
+def test_call_lease_check_uses_clock_after_waiting_for_write_lock(env, lease_clock, monkeypatch, operation):
+    request_id = uid()
+    db = env.service.db
+    db.execute(
+        "INSERT INTO openclaw_connector_calls(request_id,tenant_id,principal_id,tool_name,status,owner_instance,lease_expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (request_id, env.me.tenant_id, env.me.principal_id, "read_ticket", "running",
+         env.registry.instance_id, lease_clock.deadline(60), lease_clock.now()),
+    )
+    attempting_write = threading.Event()
+    execute, transaction = db.execute, db.transaction
+
+    def observed_execute(sql, values=()):
+        if sql.startswith("UPDATE openclaw_connector_calls"):
+            attempting_write.set()
+        return execute(sql, values)
+
+    @contextmanager
+    def observed_transaction():
+        attempting_write.set()
+        with transaction():
+            yield
+
+    monkeypatch.setattr(db, "execute", observed_execute)
+    monkeypatch.setattr(db, "transaction", observed_transaction)
+    action = (lambda: env.registry._renew_call_lease(request_id)) if operation == "renew" else (
+        lambda: env.registry._finish_call(request_id, "succeeded", 200, None, "digest", 1))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.lock:
+            pending = pool.submit(action)
+            assert attempting_write.wait(2)
+            lease_clock.advance(60)
+        assert pending.result(timeout=2) is False
+    row = db.one("SELECT * FROM openclaw_connector_calls WHERE request_id=?", (request_id,))
+    assert row["status"] == "running"
+    assert row["lease_expires_at"] == lease_clock.now()

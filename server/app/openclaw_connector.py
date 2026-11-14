@@ -239,6 +239,7 @@ class ActiveCall:
     identity: ConnectorIdentity
     tool_name: str
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    lease_lost: bool = False
 
 
 def _name_tokens(name: str) -> tuple[str, ...]:
@@ -720,30 +721,38 @@ class ConnectorRegistry:
             if len(encoded) > MAX_OUTPUT_CHARS:
                 raise ConnectorError(502, "TOOL_OUTPUT_TOO_LARGE", "工具输出超过长度限制，已拒绝返回")
             duration = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
-            self._finish_call(request_id, "succeeded", 200, None, _digest(text), len(encoded))
+            if not self._finish_call(request_id, "succeeded", 200, None, _digest(text), len(encoded)):
+                raise ConnectorError(503, "INTERRUPTED", "工具调用租约已失效，不能接受迟到结果")
             self._audit(identity, "tool.succeeded", "allowed", server_id=server["id"], tool_name=tool.name,
                         request_id=request_id,
                         detail={"risk": tool.risk, "output_digest": _digest(text), "output_bytes": len(encoded),
                                 "duration_ms": duration})
             return ToolCallResult(request_id, tool.name, tool.risk, tool.grant, result, duration)
         except asyncio.CancelledError:
-            self._finish_call(request_id, "cancelled", 499, "TOOL_CANCELLED", None, None)
-            self._audit(identity, "tool.cancelled", "cancelled", server_id=server["id"], tool_name=tool.name,
+            recorded = self._finish_call(request_id, "cancelled", 499, "TOOL_CANCELLED", None, None)
+            self._audit(identity, "tool.cancelled" if recorded else "tool.result_discarded",
+                        "cancelled" if recorded else "denied", server_id=server["id"], tool_name=tool.name,
                         request_id=request_id, detail={"reason": "caller_cancelled"})
             raise
         except ConnectorError as error:
             status = "cancelled" if error.code == "TOOL_CANCELLED" else "failed"
-            self._finish_call(request_id, status, error.status, error.code, None, None)
+            recorded = self._finish_call(request_id, status, error.status, error.code, None, None)
             action = {"TOOL_TIMEOUT": "tool.timed_out", "TOOL_CANCELLED": "tool.cancelled"}.get(
                 error.code, "tool.failed")
+            if not recorded:
+                error = ConnectorError(503, "INTERRUPTED", "工具调用租约已失效，迟到结果已丢弃")
+                action, status = "tool.result_discarded", "denied"
             self._audit(identity, action, status, server_id=server["id"], tool_name=tool.name,
                         request_id=request_id, detail={"code": error.code, "status": error.status})
-            raise
+            raise error
         except Exception:
-            self._finish_call(request_id, "failed", 502, "TOOL_EXECUTION_FAILED", None, None)
-            self._audit(identity, "tool.failed", "failed", server_id=server["id"], tool_name=tool.name,
-                        request_id=request_id, detail={"code": "TOOL_EXECUTION_FAILED"})
-            raise ConnectorError(502, "TOOL_EXECUTION_FAILED", "工具执行失败") from None
+            recorded = self._finish_call(request_id, "failed", 502, "TOOL_EXECUTION_FAILED", None, None)
+            error = (ConnectorError(502, "TOOL_EXECUTION_FAILED", "工具执行失败") if recorded else
+                     ConnectorError(503, "INTERRUPTED", "工具调用租约已失效，迟到结果已丢弃"))
+            self._audit(identity, "tool.failed" if recorded else "tool.result_discarded",
+                        "failed" if recorded else "denied", server_id=server["id"], tool_name=tool.name,
+                        request_id=request_id, detail={"code": error.code})
+            raise error from None
         finally:
             heartbeat.cancel()
             await _discard(heartbeat)
@@ -751,15 +760,27 @@ class ConnectorRegistry:
                 self._active.pop(request_id, None)
 
     async def _heartbeat_call(self, request_id: str) -> None:
-        """Renew the call lease so another instance never recovers a live call."""
+        """Renew only this owner's live lease; stop execution after ownership loss."""
         interval = max(self.lease_seconds / 3.0, 0.01)
         while True:
             await asyncio.sleep(interval)
-            self.db.execute(
+            if not self._renew_call_lease(request_id):
+                with self._lock:
+                    active = self._active.get(request_id)
+                if active:
+                    active.lease_lost = True
+                    active.cancelled.set()
+                return
+
+    def _renew_call_lease(self, request_id: str) -> bool:
+        # Sample time after acquiring the write lock, not before a busy wait.
+        with self.db.transaction():
+            return self.db.execute(
                 "UPDATE openclaw_connector_calls SET lease_expires_at=? "
-                "WHERE request_id=? AND status='running'",
-                (_lease_deadline(self.lease_seconds), request_id),
-            )
+                "WHERE request_id=? AND owner_instance=? AND status='running' "
+                "AND lease_expires_at>?",
+                (_lease_deadline(self.lease_seconds), request_id, self.instance_id, _now_iso()),
+            ).rowcount == 1
 
     async def _run_executor(self, server, tool: DeclaredTool, arguments, active: ActiveCall,
                             request_id: str, timeout: float) -> Any:
@@ -775,6 +796,8 @@ class ConnectorRegistry:
             if cancel_wait in done:
                 task.cancel()
                 await _discard(task)
+                if active.lease_lost:
+                    raise ConnectorError(503, "INTERRUPTED", "工具调用租约已失效，执行已中止")
                 raise ConnectorError(499, "TOOL_CANCELLED", "工具调用已取消")
             cancel_wait.cancel()
             await _discard(cancel_wait)
@@ -788,12 +811,18 @@ class ConnectorRegistry:
                 await _discard(cancel_wait)
 
     def _finish_call(self, request_id: str, status: str, http_status: int, code: str | None,
-                     output_digest: str | None, output_bytes: int | None) -> None:
+                     output_digest: str | None, output_bytes: int | None) -> bool:
         error_json = dump({"code": code, "message": "工具调用未完成"}) if code else None
-        self.db.execute(
-            "UPDATE openclaw_connector_calls SET status=?,http_status=?,error_json=?,output_digest=?,output_bytes=?,lease_expires_at=NULL,completed_at=? WHERE request_id=? AND status='running'",
-            (status, http_status, error_json, output_digest, output_bytes, _now_iso(), request_id),
-        )
+        with self.db.transaction():
+            finished_at = _now_iso()
+            # An expired owner may record failure, but must never publish success.
+            return self.db.execute(
+                "UPDATE openclaw_connector_calls SET status=?,http_status=?,error_json=?,output_digest=?,output_bytes=?,lease_expires_at=NULL,completed_at=? "
+                "WHERE request_id=? AND owner_instance=? AND status='running' "
+                "AND (?<>'succeeded' OR lease_expires_at>?)",
+                (status, http_status, error_json, output_digest, output_bytes, finished_at,
+                 request_id, self.instance_id, status, finished_at),
+            ).rowcount == 1
 
     def cancel(self, identity: ConnectorIdentity, request_id: str) -> dict[str, Any]:
         with self._lock:
