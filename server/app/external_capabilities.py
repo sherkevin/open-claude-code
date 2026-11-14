@@ -225,26 +225,33 @@ class ExternalCapabilities:
 
         public = public_provider(provider)
         page_out, sources = [], []
+        text_budget, output_truncated = 48_000, False
         with self.service.db.lock:
             self._recheck(context)
             for page in value["pages"]:
                 if not isinstance(page, Mapping):
                     continue
                 text = str(page.get("text") or "")
+                visible = text[:min(24_000, text_budget)]
+                text_budget -= len(visible)
+                truncated = len(visible) < len(text)
+                output_truncated = output_truncated or truncated
                 record = {
                     "page": int(page.get("page") or 0),
                     "extraction": str(page.get("extraction") or "managed-ocr"),
-                    "complete": bool(page.get("complete", page.get("finish_reason") != "length")),
+                    "complete": bool(page.get("complete", page.get("finish_reason") != "length")) and not truncated,
                     "characters": len(text),
+                    "text": visible, "truncated": truncated,
                 }
-                if text.strip():
+                if visible.strip():
                     source = self.service.evidence.register(
                         context.run_id, "knowledge", snapshot.name,
                         {"capability": "ocr", "file": snapshot.name, "version": 1,
                          "sha256": snapshot.sha256, "page": record["page"],
                          "pages": [record["page"]], "extraction": record["extraction"],
-                         "provider": public},
-                        text[:24000], resource_type="file", resource_id=snapshot.file_id,
+                         "provider": public, "character_start": 0, "character_end": len(visible),
+                         "truncated": truncated},
+                        visible, resource_type="file", resource_id=snapshot.file_id,
                         tool_name=CAPABILITY_TOOLS["ocr"],
                     )
                     record["source_id"] = source["id"]
@@ -253,7 +260,7 @@ class ExternalCapabilities:
                 page_out.append(record)
 
         status = "no_text" if value.get("empty") or not page_out else (
-            "partial" if value.get("partial") else "complete")
+            "partial" if value.get("partial") or output_truncated else "complete")
         note = {
             "no_text": "识别服务未返回可用文字；这不是识别成功，也不能生成引用。请勿自动重复提交同一文件。",
             "partial": "识别结果不完整（缺页、重复页、本地截断或页内截断）；请勿把它当作全文结论。",

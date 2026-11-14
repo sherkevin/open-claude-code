@@ -171,7 +171,7 @@ class EvidenceService:
                 raise AppError(404, "SOURCE_UNAVAILABLE", "附件不属于此会话")
         elif row["kind"] != "web":
             raise AppError(404, "SOURCE_UNAVAILABLE", "来源缺少可核对的授权资源")
-        elif capability in (None, "search", "fetch") and not assistant.get("web_search_enabled"):
+        elif capability is None and not assistant.get("web_search_enabled"):
             # Image search is a separate grant; its own capability check below
             # decides. Legacy web rows keep the historical boolean check.
             raise AppError(404, "SOURCE_UNAVAILABLE", "助手的网页访问能力已停用")

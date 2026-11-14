@@ -433,6 +433,40 @@ def test_official_text_image_search_uses_correlated_images_and_no_upload(system,
     assert external.executor().calls[0]["external_upload"] is False
 
 
+def test_v2_web_source_does_not_depend_on_retired_legacy_switch(system, monkeypatch):
+    service = system.service
+    service.save_assistant({"capabilities": {"search": {"enabled": True}}, "web_search_enabled": False},
+                           system.assistant["id"], user=system.user)
+    run = system.run_with([])
+    tools = __import__("app.web_tools", fromlist=["WebTools"]).WebTools(service)
+
+    async def result(*args):
+        return [{"title": "Public fixture", "url": "https://example.com/page", "excerpt": "fixture"}]
+
+    monkeypatch.setattr(tools, "_bing", result)
+    response = asyncio.run(tools.search_for_run(system.user, system.assistant, run["id"], "public"))
+    source = service.evidence.get(response["results"][0]["source_id"], system.user)
+    assert source["original_url"] == "https://example.com/page"
+    assert source["locator"]["capability"] == "search"
+
+
+def test_ocr_returns_bounded_text_and_marks_output_truncation(system, policy):
+    row = system.upload(png_bytes())
+    run = system.run_with([row])
+    response = {"pages": [{"page": index, "text": "A" * 30000} for index in range(1, 4)],
+                "page_count": 3, "empty": False, "partial": False}
+    external = ExternalCapabilities(system.service, executor=FakeExecutor())
+    client = SimpleNamespace(ocr_bytes=lambda *args, **kwargs: asyncio.sleep(0, result=response))
+    external.ocr_client = lambda: client
+    result = asyncio.run(external.ocr_for_run(context_for(system, run), row["id"]))
+    assert result["status"] == "partial"
+    assert sum(len(page["text"]) for page in result["pages"]) == 48000
+    assert all(page["truncated"] and not page["complete"] for page in result["pages"])
+    assert len(result["source_ids"]) == 2
+    assert all(system.service.evidence.get(source, system.user)["excerpt"]
+               for source in result["source_ids"])
+
+
 # --------------------------------------------------------------------------
 # Image execution and evidence
 # --------------------------------------------------------------------------
