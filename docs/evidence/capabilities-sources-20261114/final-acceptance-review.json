@@ -1,0 +1,26 @@
+{
+  "OC-T22-C3": {
+    "count": 97,
+    "files": [
+      "test_web_source_binding.py",
+      "test_knowledge_evidence.py",
+      "test_runtime_sources_04.py",
+      "test_harness_tool_execution.py"
+    ],
+    "outcome": "passed"
+  },
+  "OC-T23-C1": {
+    "count": 78,
+    "files": [
+      "test_capability_settings.py",
+      "test_web_tools.py",
+      "test_deepseek_api.py"
+    ],
+    "outcome": "passed"
+  },
+  "code_commit": "5eed11a199d09e063292fbde1005b2f6a4b0c910",
+  "docs_commit": "ce4488d545af3a4f267ed357760bac60645bb62f",
+  "executor": "collaboration /root (L2); reviewer verified logs and per-test observer reports, did not rerun full suite",
+  "server_result": "1656 passed, 51 skipped, 0 failed, 3 warnings, 1714.68s, exit 0",
+  "client_result": "168 passed across 25 files; build exit 0; minified chunk size warning remains"
+}
