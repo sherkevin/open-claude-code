@@ -49,6 +49,7 @@ def mcp_server():
     state = SimpleNamespace(tools=copy.deepcopy(TOOL_DEFINITIONS), methods=[], calls=[],
                             authenticated=[], delayed=False, echo_credential=False, fail=False,
                             delay_method="tools/call", response_fault=None, response_format="json", redirected=[],
+                            structured_mode="both", payload_padding=0,
                             started=threading.Event(), released=threading.Event())
 
     class Handler(BaseHTTPRequestHandler):
@@ -123,8 +124,14 @@ def mcp_server():
                         "aggregation": "latest", "row_count": 1, "page": 1,
                         "page_size": 1, "cache_hit": False, "returned_rows": 1,
                         "original_rows": 1}
+                if state.payload_padding:
+                    body["padding"] = "x" * state.payload_padding
                 result = {"content": [{"type": "text", "text": dump(body)}], "structuredContent": body,
                           "isError": state.fail}
+                if state.structured_mode == "only":
+                    result["content"] = []
+                elif state.structured_mode == "empty":
+                    result["content"], result["structuredContent"] = [], {}
                 if state.response_fault == "oversize":
                     result["content"][0]["text"] = "x" * 1_000_001
                 if state.response_fault == "redirect":

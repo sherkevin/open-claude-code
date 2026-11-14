@@ -13,6 +13,7 @@ import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 
 import anyio
 import httpx
@@ -68,6 +69,55 @@ def external_tool_name(canonical):
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True)
+
+
+def include_structured_text(body):
+    """Expose structured-only MCP results without repeating an existing copy.
+
+    Harness renders the content blocks, not structuredContent. Keep every
+    original block and the structured payload for provenance; append a textual
+    representation only if no single block already contains that whole JSON
+    value. This is exact representation de-duplication, not summarization.
+    """
+    structured = body.get("structuredContent")
+    if not isinstance(structured, dict):
+        return body
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
+    def invalid_constant(_):
+        raise ValueError("non-finite JSON value")
+
+    def signature(text):
+        parsed = json.loads(text, object_pairs_hook=unique_object,
+                            parse_int=Decimal, parse_float=Decimal,
+                            parse_constant=invalid_constant)
+
+        def typed(value):
+            if isinstance(value, dict):
+                return ("object", tuple((key, typed(item)) for key, item in sorted(value.items())))
+            if isinstance(value, list):
+                return ("array", tuple(typed(item) for item in value))
+            return (type(value).__name__, value)
+        return typed(parsed)
+
+    canonical = signature(encoded(structured))
+    for block in body.get("content", []):
+        if block.get("type") != "text" or not isinstance(block.get("text"), str):
+            continue
+        try:
+            # Decimal comparison avoids rounding text to the same float;
+            # typed signatures also keep True distinct from the number 1.
+            if signature(block["text"]) == canonical:
+                return body
+        except (ValueError, TypeError, RecursionError, InvalidOperation):
+            pass
+    return {**body, "content": [*body.get("content", []), {"type": "text", "text": dump(structured)}]}
 
 
 def contains_credential(value, credential):
@@ -238,9 +288,10 @@ class MCPBusinessTool:
                 raise ValueError("large result")
             if any(item.get("type") != "text" for item in body.get("content", [])):
                 raise AppError(422, "HARNESS_MCP_RESULT_UNSUPPORTED", "此业务工具返回了尚未验收的非文本内容")
+            body = include_structured_text(body)
+            # Decide equivalence before clean() normalizes JSON text, so a
+            # duplicate-key/precision ambiguity cannot become false equality.
             body = self.clean(body)
-            if body.get("structuredContent"):
-                body.setdefault("content", []).append({"type": "text", "text": dump(body["structuredContent"])})
             if len(encoded(body).encode()) > MAX_RESPONSE_BYTES:
                 raise ValueError("large normalized result")
             return body
