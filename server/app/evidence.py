@@ -123,6 +123,11 @@ class EvidenceService:
         return self.service.require("runs", run_id, user)
 
     def _authorize(self, row, user):
+        # Runtime callbacks may outlive the request that authenticated a user.
+        # Refresh identity as well as assistant/resource grants at every read.
+        user = self.service.require("users", user["id"])
+        if not user["enabled"]:
+            raise AppError(404, "SOURCE_UNAVAILABLE", "该账号已无权访问来源")
         run = self._run(row["run_id"], user)
         conversation = self.service.require("conversations", run["conversation_id"], user)
         assistant = self.service.usable_assistant(conversation["assistant_id"], user)
@@ -239,7 +244,7 @@ class EvidenceService:
         return self.register(run["id"], row["kind"], row["title"], json.loads(row["locator"]), row["excerpt"], row["resource_type"], row["resource_id"], row["original_url"], row["document_id"], row["document_version"], row.get("tool_name"))
 
     @staticmethod
-    def _bounded_source_ids(value):
+    def _bounded_source_ids(value, *, limit=30):
         """Return only opaque source identifiers from a trusted tool envelope.
 
         Tool results are still untrusted data until each identifier is looked up
@@ -248,8 +253,15 @@ class EvidenceService:
         """
         if not isinstance(value, list):
             return []
-        return [item for item in value[:30]
-                if isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item)]
+        found, seen = [], set()
+        for item in value:
+            if not isinstance(item, str) or item in seen or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", item):
+                continue
+            seen.add(item)
+            found.append(item)
+            if limit is not None and len(found) >= limit:
+                break
+        return found
 
     def trusted_sources(self, run_id, source_ids, user, *, same_run=True):
         """Resolve source IDs emitted by a completed tool after ACL checks.
@@ -261,7 +273,9 @@ class EvidenceService:
         """
         run = self._run(run_id, user)
         result, seen = [], set()
-        for source_id in self._bounded_source_ids(source_ids):
+        # Individual tool events are bounded; do not cap their aggregated run
+        # ledger before later web results have had a chance to be considered.
+        for source_id in self._bounded_source_ids(source_ids, limit=None):
             if source_id in seen:
                 continue
             row = self.db.one("SELECT * FROM evidence_sources WHERE id=?", (source_id,))
@@ -278,12 +292,23 @@ class EvidenceService:
 
     def used_sources(self, run_id, user):
         """Build the run-scoped source ledger from successful tool events."""
-        source_ids = []
-        for event in self.db.events(run_id, 0):
-            if event["type"] != "tool.completed" or not event["data"].get("success"):
-                continue
-            source_ids.extend(self._bounded_source_ids(event["data"].get("source_ids")))
-        return self.trusted_sources(run_id, source_ids, user)
+        self._run(run_id, user)
+        after, sources, seen = 0, [], set()
+        while True:
+            rows = self.db.all("SELECT id,data FROM events WHERE run_id=? AND type='tool.completed' AND id>? ORDER BY id LIMIT 200", (run_id, after))
+            if not rows:
+                return sources
+            after = rows[-1]["id"]
+            ids = []
+            for row in rows:
+                data = json.loads(row["data"])
+                if data.get("success") is not True:
+                    continue
+                ids.extend(source_id for source_id in self._bounded_source_ids(data.get("source_ids")) if source_id not in seen)
+            for source in self.trusted_sources(run_id, ids, user):
+                if source["id"] not in seen:
+                    sources.append(source)
+                    seen.add(source["id"])
 
     def source_ids_from_tool_result(self, result):
         """Extract bounded ``source_id`` fields from an MCP result envelope.
@@ -291,15 +316,16 @@ class EvidenceService:
         The IDs are only hints.  ``trusted_sources`` performs the authoritative
         database and permission validation before they enter the run ledger.
         """
-        pending, found, visited = [(result, 0)], [], 0
+        pending, found, visited, budget = [(result, 0)], [], 0, 1_000_000
         while pending and visited < 128 and len(found) < 30:
             item, depth = pending.pop(0)
             visited += 1
             if depth > 6:
                 continue
             if isinstance(item, str):
-                if len(item) > 512_000:
+                if len(item) > min(512_000, budget):
                     continue
+                budget -= len(item)
                 try:
                     parsed = json.loads(item)
                 except (ValueError, TypeError, RecursionError):
@@ -312,12 +338,16 @@ class EvidenceService:
                 continue
             if not isinstance(item, dict):
                 continue
+            if item.get("isError") or item.get("is_error"):
+                continue
             value = item.get("source_id")
             if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value) and value not in found:
                 found.append(value)
             for key in ("structuredContent", "content", "result", "results"):
                 if key in item:
                     pending.append((item[key], depth + 1))
+            if item.get("type") == "text" and "text" in item:
+                pending.append((item["text"], depth + 1))
         return found
 
     def finalize(self, run_id, text, used_source_ids=None):
@@ -338,7 +368,7 @@ class EvidenceService:
                 return "（来源未核验）"
             if source["id"] not in numbers:
                 numbers[source["id"]] = len(citations) + 1
-                citations.append({**source, "number": numbers[source["id"]]})
+                citations.append({**source, "number": numbers[source["id"]], "attribution": "cited"})
             number = numbers[source["id"]]
             return f"[{number}]({source['url']})"
         result = MARKER.sub(replace, text)
@@ -355,10 +385,11 @@ class EvidenceService:
         # Full page reads are stronger evidence than search snippets.  If no
         # page was read, retain a bounded set of search candidates instead.
         page_sources = [source for source in web_sources if source.get("locator", {}).get("content_type") == "page_text"]
-        auto_sources = page_sources or [source for source in web_sources if source.get("locator", {}).get("content_type") == "search_excerpt"][:5]
+        auto_sources = (page_sources or [source for source in web_sources if source.get("locator", {}).get("content_type") == "search_excerpt"])[:5]
         for source in auto_sources:
             numbers[source["id"]] = len(citations) + 1
-            citations.append({**source, "number": numbers[source["id"]]})
+            attribution = "read" if source["locator"].get("content_type") == "page_text" else "search_candidate"
+            citations.append({**source, "number": numbers[source["id"]], "attribution": attribution})
         # Models cannot create clickable internal source links without registration.
         permitted = {source["id"] for source in citations}
         result = re.sub(r"\[([^\]]*)\]\(/api/v1/sources/([A-Za-z0-9_-]+)\)",
@@ -374,11 +405,10 @@ class EvidenceService:
                     suffix += f" · v{source['document_version']}"
                 kind_label = labels[source["kind"]]
                 if source["kind"] == "web":
-                    content_type = location.get("content_type")
-                    kind_label = "网页正文" if content_type == "page_text" else "外部检索候选"
+                    kind_label = {"cited": "回答引用的网页", "read": "网页正文已读取，未明确引用", "search_candidate": "外部检索候选，未核验正文"}[source["attribution"]]
                 lines.append(f"[{source['number']}] [{kind_label} · {title}{suffix}]({source['url']})")
             result = result.rstrip() + "\n\n来源\n\n" + "\n\n".join(lines)
-        return {"text": result, "citations": [{key: source.get(key) for key in ("id", "number", "kind", "title", "url", "document_id", "document_version")} for source in citations]}
+        return {"text": result, "citations": [{key: source.get(key) for key in ("id", "number", "kind", "title", "url", "document_id", "document_version", "attribution")} for source in citations]}
 
 
 def create_evidence_router(svc, authenticated):

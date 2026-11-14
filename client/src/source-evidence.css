@@ -1,0 +1,6 @@
+.source-entry { display:flex; flex-direction:column; gap:7px; min-width:220px; max-width:100%; }
+.source-entry .source-card { flex:1; width:100%; }
+.source-open-action { display:flex; flex-direction:column; gap:6px; align-items:flex-start; }
+.source-open-action .button { font-size:12px; }
+.source-open-action [role="alert"] { font-size:12px; color:var(--error,#a33838); overflow-wrap:anywhere; }
+@media(max-width:760px) { .source-entry { min-width:0; width:100%; } }
