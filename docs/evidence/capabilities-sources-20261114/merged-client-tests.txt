@@ -1,0 +1,38 @@
+
+> zhixing-client@0.4.2 test
+> vitest run
+
+
+ RUN  v3.0.5 /media/data3/dengkw/projects/open-claude-code-main-merge/client
+
+ ✓ src/display.test.ts (2 tests) 5ms
+ ✓ src/workflowFlowgram.test.ts (3 tests) 12ms
+ ✓ src/feishu.test.ts (2 tests) 11ms
+ ✓ src/api.test.ts (4 tests) 17ms
+ ✓ src/stream.test.ts (7 tests) 23ms
+ ✓ src/memory.test.ts (11 tests) 88ms
+ ✓ src/integration.test.ts (4 tests) 20ms
+ ✓ src/runtimeBadge.test.tsx (3 tests) 18ms
+ ✓ src/approvals.test.tsx (1 test) 6ms
+ ✓ src/components.test.tsx (3 tests) 26ms
+ ✓ src/plugins.test.tsx (3 tests) 9ms
+ ✓ src/workflow.test.tsx (38 tests) 45ms
+ ✓ src/context.test.ts (11 tests) 75ms
+ ✓ src/knowledgeSearch.test.ts (10 tests) 12ms
+ ✓ src/benchmark.test.tsx (5 tests) 65ms
+ ✓ src/knowledgeRetrievalStatus.test.tsx (4 tests) 14ms
+ ✓ src/memoryApproval.test.tsx (4 tests) 53ms
+ ✓ src/models.test.tsx (10 tests) 97ms
+ ✓ src/capabilitySettings.test.tsx (6 tests) 127ms
+ ✓ src/assistantConfiguration.test.tsx (9 tests) 152ms
+ ✓ src/Sources.test.tsx (9 tests) 132ms
+ ✓ src/chatModel.test.ts (3 tests) 7ms
+ ✓ src/runMetrics.test.tsx (2 tests) 17ms
+ ✓ src/deploymentPolicyRequests.test.ts (4 tests) 59ms
+ ✓ src/workspace.test.tsx (10 tests) 109ms
+
+ Test Files  25 passed (25)
+      Tests  168 passed (168)
+   Start at  15:39:51
+   Duration  2.59s (transform 6.08s, setup 0ms, collect 32.74s, tests 1.20s, environment 13ms, prepare 4.97s)
+

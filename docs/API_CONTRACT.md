@@ -353,3 +353,19 @@ customer runtime execution or a production visual editor.
 官方索引必须与整个已授权片段集合匹配。查询期间账号停用、权限撤销、文档删除或版本变化，返回现有权限错误或 `409 KNOWLEDGE_SNAPSHOT_CHANGED`，不把旧结果组装为上下文。运行快照允许已固定的历史版本，但禁止采用新版本。
 
 聊天知识工具仅在相同的显式开发注入下尝试官方后端，引用仍经现有来源登记。默认聊天继续混合检索。完整限制及测试见 `design/HIPPORAG_ADAPTER.md`、`evidence/HIPPORAG_OFFICIAL_2026-11-10.md`；本合同不表示官方后端已经上线。
+
+## 2026-11-14 外部能力配置与来源补充
+
+本节是学校云代码合同，不表示常驻服务或外部供应商线路已验收。
+
+| Method | Path | Input / result |
+| --- | --- | --- |
+| GET | `/capability-settings` | 普通部署的管理员读取 `revision,origin,updated_at,search,fetch,providers,ocr,image_search`；不返回密钥或私有端点。成员拒绝，受控试用默认拒绝。 |
+| PUT | `/capability-settings` | 管理员提交 `{revision,search,fetch}`。每个路由为 `{enabled,preferred,fallbacks,timeout_seconds}`，最多一个不同于首选的回退，总超时为整数 1–60 秒。保存返回新版本；过期版本返回 `409 CAPABILITY_REVISION_CONFLICT`。 |
+
+- 搜索提供方：`bing_rss,searxng,brave,deepseek_api`；网页读取：`public_http,deepseek_api`。启用的路由不能选择未配置的提供方，返回 `422 CAPABILITY_PROVIDER_UNCONFIGURED`；不支持所选能力的提供方返回 `422 CAPABILITY_PROVIDER_INVALID`。
+- `providers[].configured` 仅表示依赖配置齐全，`verification=not_tested` 不代表外部健康检查通过。OCR/图片搜索 `status=not_integrated,configurable=false`，知识摄取的外部 OCR 配置状态另列 `ocr.knowledge_fallback_configured`；不能用该状态声明对话 OCR 可用。
+- 每次工具尝试和接纳结果前重新检查当前用户、助手权限、部署策略、配置版本和启用状态。禁用返回 `403 CAPABILITY_DISABLED`，权限拒绝不触发回退。原有 MCP 工具授权和审批不变。
+- 全局禁用阻止后续外部执行，不删除历史证据。历史来源仍受当前用户、助手及资源授权；原网页跳转需来源接口重新鉴权。
+- 替代早期仅依赖模型标记的来源补充行为：成功工具事件中的真实登记来源可在答案未显式标记时补附，正文优先、最多五条补附。消息 `citations` 新增 `attribution: cited|read|search_candidate`，分别表示明确引用、已读但未明确引用、仅搜索候选。旧消息缺该字段仍兼容；候选不能显示为已核验答案依据。
+- 最小消息引用中不保存 `original_url`。客户端的“打开原始网页”先请求 `GET /sources/{id}`，从当前授权详情读取登记的 HTTP(S) 原地址；模型提供的任意地址不能变成可信来源卡。
