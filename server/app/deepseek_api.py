@@ -200,8 +200,14 @@ class DeepSeekAPI:
         for index, item in enumerate(body["pages"][:MAX_PAGES]):
             if not isinstance(item, dict):
                 continue
+            try:
+                page_index = int(item.get("index", index))
+            except (TypeError, ValueError):
+                continue
+            if page_index < 0 or page_index >= MAX_PAGES:
+                continue
             text = _bounded_text(item.get("text"), 2_000_000)
-            pages.append({"page": int(item.get("index", index)) + 1, "text": text, "extraction": "managed-ocr", "finish_reason": _bounded_text(item.get("finish_reason"), 20)})
+            pages.append({"page": page_index + 1, "text": text, "extraction": "managed-ocr", "finish_reason": _bounded_text(item.get("finish_reason"), 20)})
         if not pages:
             raise AppError(502, "EXTERNAL_TOOL_RESPONSE_INVALID", "外部识别服务未返回页面")
         usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
