@@ -4,6 +4,10 @@ from app.runtime import result_fact_metadata
 def test_result_fact_metadata_projects_allowlisted_structured_scope():
     result = {
         "structuredContent": {
+            "business_domain": "库存",
+            "business_process": "出库",
+            "business_object": "订单",
+            "metrics": ["数量"],
             "fields": ["order_id", "status"],
             "filters": {"factory": "F01", "status": "open"},
             "time_range": "2026-11-01/2026-11-14",
@@ -22,6 +26,10 @@ def test_result_fact_metadata_projects_allowlisted_structured_scope():
     assert value["source_ids"] == ["source_1"]
     facts = value["result_facts"]
     assert facts["fields"] == ["order_id", "status"]
+    assert facts["business_domain"] == "库存"
+    assert facts["business_process"] == "出库"
+    assert facts["business_object"] == "订单"
+    assert facts["metrics"] == ["数量"]
     assert facts["filters"] == {"factory": "F01", "status": "open"}
     assert facts["row_count"] == 18
     assert facts["cache_hit"] is True

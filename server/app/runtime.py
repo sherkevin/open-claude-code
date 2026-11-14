@@ -54,6 +54,9 @@ def tool_result_metadata(success, sources):
 
 
 RESULT_FACT_KEYS = (
+    # Business funnel fields: domain -> process -> object -> metric.
+    "domain", "business_domain", "process", "business_process",
+    "object", "business_object", "metric", "metrics", "indicator", "indicators",
     "fields", "filters", "time_range", "aggregation", "row_count", "page",
     "page_size", "cache_hit", "cache_key", "returned_rows", "original_rows",
 )
@@ -213,6 +216,10 @@ class SDKRuntime(WorkspaceRuntime):
                 automatic = await offload(self.check_tool, tool, arguments)
                 model_review = await offload(self.service.model_approval.requires_review, self.conversation_id, tool)
                 self.tool_started[tool_use_id] = time.monotonic()
+                # Mirror the bounded funnel used by HarnessRuntime so the
+                # enterprise UI can explain scope before a tool is called.
+                await self.emit("run.stage", {"stage": "scoping", "tool_name": tool})
+                await self.emit("run.stage", {"stage": "routing", "tool_name": tool})
                 await self.emit("run.stage", {"stage": "tool", "tool_name": tool})
                 await self.emit("tool.started", {"tool_call_id": tool_use_id or uid(), "tool_name": tool, "arguments": redact(arguments), "requires_approval": not automatic or model_review})
                 return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow" if automatic and not model_review else "ask"}}
@@ -258,12 +265,17 @@ class SDKRuntime(WorkspaceRuntime):
                             break
                 elif success and self.current_run and tool_name == "Read":
                     sources = await offload(self.attachment_source, data)
+                result_facts = result_fact_metadata(success, response, sources)
+                if success:
+                    await self.emit("run.stage", {"stage": "evidence", "tool_name": tool_name,
+                                       "status": "reported" if sources else "unknown",
+                                       "source_count": len(sources)})
                 await self.emit("tool.completed", {
                     "tool_call_id": tool_use_id,
                     "tool_name": tool_name,
                     "success": success,
                     "duration_ms": duration,
-                    **tool_result_metadata(success, sources),
+                    **result_facts,
                 })
             if sources:
                 return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext":
