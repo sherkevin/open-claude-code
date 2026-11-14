@@ -53,6 +53,50 @@ def tool_result_metadata(success, sources):
     return {"source_ids": source_ids, "result_facts": {"source_count": len(source_ids)} if source_ids else {}}
 
 
+RESULT_FACT_KEYS = (
+    "fields", "filters", "time_range", "aggregation", "row_count", "page",
+    "page_size", "cache_hit", "cache_key", "returned_rows", "original_rows",
+)
+
+
+def _bounded_fact(value, *, depth=0):
+    """Keep result facts small, JSON-safe and free of arbitrary result payloads."""
+    if depth > 3:
+        return "unknown"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:512]
+    if isinstance(value, list):
+        return [_bounded_fact(item, depth=depth + 1) for item in value[:50]]
+    if isinstance(value, dict):
+        return {str(key)[:80]: _bounded_fact(item, depth=depth + 1)
+                for key, item in list(value.items())[:50]}
+    return "unknown"
+
+
+def result_fact_metadata(success, result, sources):
+    """Project allowlisted business facts from an MCP result.
+
+    MCP responses may contain arbitrary records. Only structured, bounded
+    metadata is copied to the public completion event; absent fields are
+    explicit ``unknown`` values so callers never infer a scope that was not
+    returned by the business tool.
+    """
+    metadata = tool_result_metadata(success, sources)
+    if not success or not isinstance(result, dict):
+        return metadata
+    structured = result.get("structuredContent")
+    if not isinstance(structured, dict):
+        structured = result.get("structured_content")
+    if not isinstance(structured, dict):
+        structured = {}
+    facts = dict(metadata.get("result_facts") or {})
+    for key in RESULT_FACT_KEYS:
+        facts[key] = _bounded_fact(structured[key]) if key in structured else "unknown"
+    return {"source_ids": metadata["source_ids"], "result_facts": facts}
+
+
 def model_execution_error(result, assistant_error=None):
     """Translate structured SDK failures without exposing provider response text."""
     status = getattr(result, "api_error_status", None)

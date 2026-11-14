@@ -14,6 +14,7 @@ from .db import uid
 from .harness_bridge import _arguments as knowledge_arguments
 from .harness_memory import HarnessMemoryTools, MEMORY_NAMES
 from .mcp_tools import build_mcp_tools
+from .runtime import result_fact_metadata
 from .security import AppError, redact
 from .workspace_tools import build_workspace_tools
 
@@ -142,6 +143,10 @@ class HarnessToolBridge:
             run = service.require("runs", run_id)
             review_required = service.model_approval.requires_review(runtime.conversation_id, tool_name)
             dual = service.high_risk_approval.requires_dual(run, tool_name, arguments)
+            # Keep the business funnel visible without exposing raw records:
+            # scope and route are reported before the call, evidence after it.
+            await runtime.emit("run.stage", {"stage": "scoping", "tool_name": tool_name})
+            await runtime.emit("run.stage", {"stage": "routing", "tool_name": tool_name})
             await runtime.emit("run.stage", {"stage": "tool", "tool_name": tool_name})
             await runtime.emit("tool.started", {"tool_call_id": event_id, "tool_name": tool_name,
                                "arguments": redact(arguments), "requires_approval": not automatic or review_required or dual})
@@ -179,6 +184,9 @@ class HarnessToolBridge:
                 else:
                     sources = [row["id"] for row in service.db.all("SELECT id FROM evidence_sources WHERE run_id=?", (run_id,)) if row["id"] not in before][:30]
                 success = True
+                await runtime.emit("run.stage", {"stage": "evidence", "tool_name": tool_name,
+                                   "status": "reported" if sources else "unknown",
+                                   "source_count": len(sources)})
             return result
         except asyncio.CancelledError:
             raise
@@ -189,4 +197,4 @@ class HarnessToolBridge:
             # not see a successful unaudited result.
             await runtime.emit("tool.completed", {"tool_call_id": event_id, "tool_name": tool_name,
                                "success": success, "duration_ms": round((time.monotonic() - started) * 1000),
-                               "source_ids": sources, "result_facts": {"source_count": len(sources)} if sources else {}})
+                               **result_fact_metadata(success, locals().get("result"), sources)})
