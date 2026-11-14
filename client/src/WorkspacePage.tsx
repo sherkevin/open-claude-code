@@ -24,7 +24,13 @@ export default function WorkspacePage({ assistants, conversations, onAssistant, 
   return <div className="workspace-page">
     <header className="workspace-topbar"><span>工作台</span><time dateTime={new Date().toISOString()}>{new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())}</time></header>
     <div className="workspace-content">
-      <div className="workspace-heading"><div><h1>开始今天的工作</h1><p>{canCreate ? '选择业务助手，或继续最近的会话。' : '选择一个已配置的业务助手，查看当前可用能力。'}</p></div>{canCreate && onNew && <Button onClick={() => onNew()}><Plus size={17}/>新建会话</Button>}</div>
+      <div className="workspace-heading"><div><span className="workspace-kicker">知行工作台 · 制造业务协同</span><h1>把今天最重要的事，先做清楚。</h1><p>{canCreate ? '从异常、任务或一条业务问题开始；结果会保留来源、状态和下一步。' : '选择一个已配置的业务助手，查看当前可用能力。'}</p></div>{canCreate && onNew && <Button onClick={() => onNew()}><Plus size={17}/>新建会话</Button>}</div>
+      <div className="workspace-signal-grid" aria-label="工作台状态概览">
+        <div className="workspace-signal workspace-signal-primary"><span>可用业务助手</span><strong>{available.length.toString().padStart(2, '0')}</strong><small>按业务范围分工</small></div>
+        <div className="workspace-signal"><span>最近业务会话</span><strong>{recent.length.toString().padStart(2, '0')}</strong><small>可继续查看上下文</small></div>
+        <div className="workspace-signal"><span>结果追溯</span><strong>开启</strong><small>来源与执行记录随会话保留</small></div>
+      </div>
+      <div className="workspace-priority-strip"><div><span className="priority-mark" aria-hidden="true"/><div><strong>先从一个具体问题开始</strong><p>助手会先缩小业务范围，再返回可核验的结果。</p></div></div><span className="priority-note">只读优先 · 结果可追溯</span></div>
       <div className="workspace-overview">
         <section className="workspace-assistants" aria-labelledby="assistants-heading">
           <div className="workspace-section-heading"><h2 id="assistants-heading">业务助手</h2>{canManage && <button className="text-action" onClick={() => onNavigate('assistants')}>管理助手<ArrowUpRight size={14}/></button>}</div>
