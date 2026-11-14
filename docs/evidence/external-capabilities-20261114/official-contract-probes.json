@@ -18,7 +18,10 @@
       "has_error": false,
       "results_count": 3,
       "transport_completed": true,
-      "elapsed_seconds": 0.618
+      "elapsed_seconds": 0.618,
+      "artifact_filename": "search-response.json",
+      "artifact_sha256": "59ae67309eb02d593d7e83af24950e2df0e5086394a3c1330e57db1860a6b79f",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
     },
     {
       "source_summary": "summary.json",
@@ -34,7 +37,10 @@
       "has_error": false,
       "content_chars": 1266,
       "transport_completed": true,
-      "elapsed_seconds": 7.843
+      "elapsed_seconds": 7.843,
+      "artifact_filename": "fetch-response.json",
+      "artifact_sha256": "f70d5464ccc8a792a5e2c2b3206acfda8462a3d857f675a912c07e3ce4e2506f",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
     },
     {
       "source_summary": "summary.json",
@@ -66,7 +72,10 @@
         "PASS": false
       },
       "transport_completed": true,
-      "elapsed_seconds": 2.438
+      "elapsed_seconds": 2.438,
+      "artifact_filename": "ocr-response.json",
+      "artifact_sha256": "f07d5cf24cd9511a40e70c403dc5a68c6c8ad4fcd9ec4e46b897c8252e20e553",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
     },
     {
       "source_summary": "summary-image-followup.json",
@@ -98,7 +107,10 @@
         "PASS": true
       },
       "transport_completed": true,
-      "elapsed_seconds": 2.52
+      "elapsed_seconds": 2.52,
+      "artifact_filename": "ocr-png-image-followup-response.json",
+      "artifact_sha256": "1aabbfecbd28a63ce87a650f2ad4faf05e6b69352f702b9d8a65817c5fc580dc",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
     },
     {
       "source_summary": "summary-reverse-only.json",
@@ -148,7 +160,10 @@
         }
       },
       "transport_completed": true,
-      "elapsed_seconds": 5.35
+      "elapsed_seconds": 5.35,
+      "artifact_filename": "reverse-image-reverse-only-response.json",
+      "artifact_sha256": "0de483f2bb30fe8598fad2937340f42e15e32e2eb10e51e4a8383011d9527200",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
     },
     {
       "source_summary": "summary-pdf-text-only.json",
@@ -180,7 +195,10 @@
         "PASS": true
       },
       "transport_completed": true,
-      "elapsed_seconds": 2.329
+      "elapsed_seconds": 2.329,
+      "artifact_filename": "ocr-pdf-text-pdf-text-only-response.json",
+      "artifact_sha256": "cf3d291331dac9faccc043b730180e8e88cdeabb5e30939b5263481234e283cf",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
     }
   ],
   "notes": [
