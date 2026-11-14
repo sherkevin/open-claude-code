@@ -11,6 +11,7 @@ export interface CapabilityLimits { calls_per_run: number; calls_per_day: number
 export interface CapabilityRoute {
   enabled: boolean; preferred: ProviderId; fallbacks: ProviderId[]; timeout_seconds: number; max_attempts: number;
   domains: DomainPolicy; egress: EgressPolicy; limits: CapabilityLimits;
+  mode_providers?: Partial<Record<'text_search' | 'reverse_image', ProviderId>>;
 }
 export interface ProviderView {
   id: ProviderId; configured: boolean; credential_present: boolean; verification: VerificationState;

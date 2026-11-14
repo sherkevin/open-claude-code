@@ -36,7 +36,7 @@ PROVIDER_MODES: dict[str, dict[str, list[str]]] = {
         "search": ["web"], "fetch": ["page"],
         "ocr": ["text_recognition", "rich_layout_recognition"],
     },
-    "deepseek_webtools": {"image_search": ["text_search", "reverse_image"]},
+    "deepseek_webtools": {"image_search": ["reverse_image"]},
     "brave_images": {"image_search": ["text_search"]},
 }
 
@@ -91,6 +91,7 @@ class CapabilityRoute(BaseModel):
     fallbacks: list[_provider_literal()] = Field(default_factory=list, max_length=1)
     timeout_seconds: int = Field(strict=True, ge=1, le=60)
     max_attempts: int | None = Field(default=None, strict=True, ge=1, le=3)
+    mode_providers: dict[Literal["text_search", "reverse_image"], _provider_literal()] | None = None
     domains: DomainPolicy | None = None
     egress: EgressPolicy | None = None
     limits: CapabilityLimits | None = None
@@ -126,6 +127,7 @@ def _route_defaults(capability: str) -> dict:
         "fallbacks": [],
         "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
         "max_attempts": 1,
+        "mode_providers": {},
         "domains": {"mode": "public", "hosts": []},
         "egress": _egress_defaults(capability),
         "limits": dict(OCR_LIMITS if capability in {"ocr", "image_search"} else DEFAULT_LIMITS),
@@ -158,6 +160,7 @@ def normalize_route(capability: str, route: dict, defaults: dict | None = None) 
         "fallbacks": fallbacks,
         "timeout_seconds": int(route.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
         "max_attempts": int(max_attempts),
+        "mode_providers": dict(route.get("mode_providers") if route.get("mode_providers") is not None else base.get("mode_providers", {})),
         "domains": {"mode": domains.get("mode", "public"), "hosts": list(domains.get("hosts") or [])},
         "egress": {key: egress[key] for key in EGRESS_KEYS},
         "limits": {key: int(limits[key]) for key in DEFAULT_LIMITS},
@@ -365,7 +368,7 @@ class CapabilitySettings:
             if supplied is None:
                 raw[capability] = {key: current[capability][key] for key in
                                    ("enabled", "preferred", "fallbacks", "timeout_seconds", "max_attempts",
-                                    "domains", "egress", "limits")}
+                                    "domains", "egress", "limits", "mode_providers")}
             else:
                 raw[capability] = supplied.model_dump()
         config = {capability: normalize_route(capability, raw[capability], current[capability])
@@ -373,6 +376,12 @@ class CapabilitySettings:
         availability = {item["id"]: item["configured"] for item in self.providers()}
         for kind, route in config.items():
             selected = [route["preferred"], *route["fallbacks"]]
+            if route["mode_providers"] and kind != "image_search":
+                raise AppError(422, "CAPABILITY_PROVIDER_INVALID", "只有图片搜索支持分模式线路")
+            for mode, provider in route["mode_providers"].items():
+                if mode not in PROVIDER_MODES.get(provider, {}).get(kind, []):
+                    raise AppError(422, "CAPABILITY_PROVIDER_INVALID", "提供方不支持所选图片模式")
+                selected.append(provider)
             if any(item not in PROVIDERS[kind] for item in selected):
                 raise AppError(422, "CAPABILITY_PROVIDER_INVALID", "提供方不支持所选能力")
             if route["enabled"] and any(not availability[item] for item in selected):

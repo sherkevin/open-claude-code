@@ -416,20 +416,17 @@ def test_webtools_parser_accepts_real_probe_fixture_without_opaque_content():
     assert not any("evil.example" in item["page_url"] for item in parsed["results"])
 
 
-def test_official_text_image_search_uses_correlated_images_and_no_upload(system, policy):
+def test_reverse_provider_does_not_silently_run_text_search(system, policy):
     fixture = json.loads((Path(__file__).parent / "fixtures" / "reverse_image_response.json").read_text())
     run = system.run_with([])
     requests = []
     external = ExternalCapabilities(system.service, executor=FakeExecutor("deepseek_webtools"),
                                     webtools_transport=transport_for([httpx.Response(200, json=fixture)], requests))
-    result = asyncio.run(external.image_search_for_run(context_for(system, run),
-                                                      mode="text_search", query="ABB robot", limit=3))
-    assert result["status"] == "results" and len(result["results"]) == 3
-    payload = json.loads(requests[0].content)
-    assert len(requests) == 1 and "/anthropic/v1/messages" in str(requests[0].url)
-    content = payload["messages"][0]["content"]
-    assert all(block["type"] == "text" for block in content)
-    assert "ABB robot" in content[0]["text"]
+    with pytest.raises(AppError) as error:
+        asyncio.run(external.image_search_for_run(context_for(system, run),
+                                                mode="text_search", query="ABB robot", limit=3))
+    assert error.value.code == "IMAGE_SEARCH_PROVIDER_UNAVAILABLE"
+    assert requests == []
     assert external.executor().calls[0]["external_upload"] is False
 
 
@@ -465,6 +462,20 @@ def test_ocr_returns_bounded_text_and_marks_output_truncation(system, policy):
     assert len(result["source_ids"]) == 2
     assert all(system.service.evidence.get(source, system.user)["excerpt"]
                for source in result["source_ids"])
+
+
+def test_image_domain_policy_filters_original_image_as_well_as_page(system, policy):
+    run = system.run_with([])
+    body = {"type": "images", "results": [{"type": "image_result", "url": "https://example.com/page",
+            "properties": {"url": "https://denied.example/image.jpg"}, "title": "outside image scope"}]}
+    executor = FakeExecutor("brave_images")
+    executor.effective = lambda *args: {"domains": {"mode": "allowlist", "hosts": ["example.com"]}}
+    external = ExternalCapabilities(system.service, executor=executor,
+                                    brave_transport=transport_for([httpx.Response(200, json=body)]))
+    result = asyncio.run(external.image_search_for_run(context_for(system, run), mode="text_search", query="public"))
+    assert result["status"] == "no_results" and result["results"] == []
+    assert result["source_ids"] == []
+    assert system.service.db.one("SELECT COUNT(*) AS n FROM evidence_sources")["n"] == 0
 
 
 # --------------------------------------------------------------------------

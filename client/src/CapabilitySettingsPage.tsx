@@ -56,6 +56,14 @@ function RouteEditor({kind, value, busy, onEdit}: {kind: CapabilityKind; value: 
     <Field label="首选提供方"><select value={route.preferred} onChange={e => edit({preferred: e.target.value as ProviderId, fallbacks: route.fallbacks.filter(id => id !== e.target.value)})}>
       {providers.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
     </select></Field>
+    {kind === 'image_search' && <div className="two-col">
+      <Field label="文字搜图线路" hint="覆盖首选线路；需要对应的图片搜索授权。"><select value={route.mode_providers?.text_search || ''} onChange={e => edit({mode_providers: {...route.mode_providers, text_search: (e.target.value || undefined) as ProviderId | undefined}})}>
+        <option value="">使用首选线路（须支持文字搜图）</option><option value="brave_images">Brave 图片搜索</option>
+      </select></Field>
+      <Field label="以图搜图线路"><select value={route.mode_providers?.reverse_image || ''} onChange={e => edit({mode_providers: {...route.mode_providers, reverse_image: (e.target.value || undefined) as ProviderId | undefined}})}>
+        <option value="">使用首选线路（须支持以图搜图）</option><option value="deepseek_webtools">DeepSeek 图片工具</option>
+      </select></Field>
+    </div>}
     <Field label="回退服务" hint="仅服务故障或限流时回退；权限、域名、审批或安全拒绝不会触发回退。">
       <select disabled={fixedRetry} value={fixedRetry ? '' : route.fallbacks[0] || ''} onChange={e => edit({fallbacks: e.target.value ? [e.target.value as ProviderId] : []})}>
         <option value="">不回退</option>{providers.filter(([id]) => id !== route.preferred).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
@@ -93,6 +101,7 @@ function RouteEditor({kind, value, busy, onEdit}: {kind: CapabilityKind; value: 
 }
 
 function CredentialPanel({value, busy, onChanged}: {value: CapabilityConfiguration; busy: boolean; onChanged: () => Promise<void>}) {
+  const secureChannel = typeof window !== 'undefined' && (window.location.protocol === 'https:' || ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname));
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [working, setWorking] = useState('');
   const [error, setError] = useState('');
@@ -107,14 +116,16 @@ function CredentialPanel({value, busy, onChanged}: {value: CapabilityConfigurati
   return <section className="capability-settings-card capability-credentials">
     <header><KeyRound size={20}/><h2>提供方密钥与诊断</h2><span className="badge">只写，不回显</span></header>
     <p>密钥只提交到服务端加密存储，读取接口不会返回密钥。保存或删除需要 HTTPS 通道，并受版本冲突保护。</p>
+    {!secureChannel&&<p role="status">当前入口未使用 HTTPS，密钥输入已关闭。请通过安全入口配置密钥。</p>}
     <ErrorNotice message={error}/><SuccessNotice message={notice}/>
     {value.providers.map(provider => {
       const credential = value.credentials[provider.id];
+      const writable = secureChannel && ['deepseek_api', 'deepseek_webtools', 'brave', 'brave_images'].includes(provider.id);
       return <div className="credential-row" key={provider.id}>
         <div><strong>{providerLabels[provider.id]}</strong><small>{provider.configured ? '服务依赖已配置' : '服务依赖未配置'} · 密钥{credential.present ? '已保存' : '未保存'} · 验证{provider.verification === 'verified' ? '已通过' : provider.verification === 'failed' ? '失败' : '未测试'}</small></div>
-        <input type="password" autoComplete="new-password" aria-label={`${providerLabels[provider.id]} 新密钥`} value={drafts[provider.id] || ''} onChange={e => setDrafts({...drafts, [provider.id]: e.target.value})}/>
+        {writable&&<><input type="password" autoComplete="new-password" aria-label={`${providerLabels[provider.id]} 新密钥`} value={drafts[provider.id] || ''} onChange={e => setDrafts({...drafts, [provider.id]: e.target.value})}/>
         <Button variant="secondary" disabled={!!working || busy || !(drafts[provider.id] || '').trim()} onClick={() => void act(provider.id, () => saveProviderCredential(provider.id, credential.revision, drafts[provider.id]), `${providerLabels[provider.id]} 密钥已保存；验证状态已重置，请运行诊断。`)}>保存密钥</Button>
-        <Button variant="ghost" disabled={!!working || busy || !credential.present} onClick={() => void act(provider.id, () => deleteProviderCredential(provider.id, credential.revision), `${providerLabels[provider.id]} 密钥已删除。`)}>删除</Button>
+        <Button variant="ghost" disabled={!!working || busy || !credential.present} onClick={() => void act(provider.id, () => deleteProviderCredential(provider.id, credential.revision), `${providerLabels[provider.id]} 密钥已删除。`)}>删除</Button></>}
         <Button variant="ghost" disabled={!!working || busy} onClick={() => void act(provider.id, async () => setDiagnostics(await runProviderDiagnostics(provider.id)), '诊断已完成。')}><Stethoscope size={15}/>诊断</Button>
         <span className="credential-revision">版本 {credential.revision}</span>
       </div>;

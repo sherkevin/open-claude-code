@@ -172,8 +172,8 @@ class EvidenceService:
         elif row["kind"] != "web":
             raise AppError(404, "SOURCE_UNAVAILABLE", "来源缺少可核对的授权资源")
         elif capability is None and not assistant.get("web_search_enabled"):
-            # Image search is a separate grant; its own capability check below
-            # decides. Legacy web rows keep the historical boolean check.
+            # Tagged sources use the granular policy below. Only untagged
+            # legacy web rows keep their historical boolean check.
             raise AppError(404, "SOURCE_UNAVAILABLE", "助手的网页访问能力已停用")
         if capability is not None:
             self._authorize_capability_source(row, user)

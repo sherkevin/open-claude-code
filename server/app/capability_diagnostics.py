@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+from pathlib import Path
 import time
 from urllib.parse import urlsplit
 
@@ -116,7 +117,11 @@ class CapabilityDiagnostics:
             client = adapters.webtools_client() if provider_id == "deepseek_webtools" else adapters.brave_images_client()
             if client is None:
                 raise AppError(503, "CAPABILITY_PROVIDER_UNCONFIGURED", "提供方尚未配置")
-            result = await client.search("ABB industrial robot", limit=3, deadline=deadline)
+            if provider_id == "deepseek_webtools":
+                image = Path(__file__).parent / "assets" / "diagnostics" / "robot-abb-1.jpg"
+                result = await client.reverse_image(data=image.read_bytes(), mime_type="image/jpeg", deadline=deadline)
+            else:
+                result = await client.search("ABB industrial robot", limit=3, deadline=deadline)
             if result.get("status") != "results" or not result.get("results"):
                 raise AppError(502, "CAPABILITY_DIAGNOSTIC_QUALITY_FAILED", "固定图片检索样例未返回可核验图片")
         else:

@@ -112,8 +112,13 @@ class CapabilityExecutor:
         _, conversation, user, assistant, snapshot = self._load(context)
         if capability not in CAPABILITY_TOOLS:
             raise AppError(422, "CAPABILITY_UNKNOWN", "未知能力")
-        return CapabilityPolicy(self.service).current(
+        effective = CapabilityPolicy(self.service).current(
             conversation=conversation, user=user, assistant=assistant, snapshot=snapshot)[capability]
+        if capability == "image_search":
+            provider = effective["mode_providers"].get(arguments.get("mode", "text_search"))
+            if provider:
+                effective = {**effective, "preferred": provider, "fallbacks": [], "max_attempts": 1}
+        return effective
 
     def _authorize(self, context: RunContext, capability: str, arguments: dict, *,
                    claim: bool, owner_token: str) -> dict:

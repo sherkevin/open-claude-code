@@ -19,6 +19,7 @@ from typing import Any
 
 from .authorized_uploads import AuthorizedUploads
 from .capability_credentials import CapabilityCredentials
+from .capability_policy import domain_allows
 from .db import now, uid
 from .deepseek_api import DeepSeekAPI, OCR_PURPOSES
 from .image_search_adapters import BraveImagesAPI, DeepSeekWebToolsAPI
@@ -31,7 +32,7 @@ CAPABILITY_TOOLS = {
 CAPABILITY_TOOL_SHORT_NAMES = frozenset({"ocr", "image_search", "web_search", "web_read"})
 OCR_PROVIDERS = frozenset({"deepseek_api"})
 REVERSE_IMAGE_PROVIDERS = frozenset({"deepseek_webtools"})
-TEXT_IMAGE_PROVIDERS = frozenset({"brave_images", "deepseek_webtools"})
+TEXT_IMAGE_PROVIDERS = frozenset({"brave_images"})
 PUBLIC_PROVIDER_NAMES = {
     "deepseek_api": "managed_ocr",
     "deepseek_webtools": "managed_image_search",
@@ -312,7 +313,7 @@ class ExternalCapabilities:
             async def operation(provider: str, deadline: float, recheck: Callable[[], None]):
                 if provider not in TEXT_IMAGE_PROVIDERS:
                     raise AppError(503, "IMAGE_SEARCH_PROVIDER_UNAVAILABLE", "当前未配置文字图片搜索服务")
-                client = self.webtools_client() if provider == "deepseek_webtools" else self.brave_images_client()
+                client = self.brave_images_client()
                 if client is None:
                     raise AppError(503, "IMAGE_SEARCH_PROVIDER_UNAVAILABLE", "当前未配置文字图片搜索服务")
                 recheck()
@@ -351,12 +352,16 @@ class ExternalCapabilities:
         if status == "results":
             with self.service.db.lock:
                 self._recheck(context)
+                effective = getattr(self.executor(), "effective", None)
+                domains = effective(self._runtime_context(context), "image_search", arguments)["domains"] if callable(effective) else {"mode": "public", "hosts": []}
                 for item in value["results"][:limit]:
                     if not isinstance(item, Mapping):
                         continue
                     page_url = item.get("page_url")
                     image_url = item.get("image_url")
                     if not page_url or not image_url:
+                        continue
+                    if not domain_allows(domains, page_url) or not domain_allows(domains, image_url):
                         continue
                     locator = {
                         "capability": "image_search", "content_type": "image_search_result",
@@ -381,6 +386,8 @@ class ExternalCapabilities:
                         "provider": public, "source_id": source["id"],
                         "citation": f"[[source:{source['id']}]]",
                     })
+        if status == "results" and not results:
+            status = "no_results"
         note = {
             "results": "图片候选只说明检索服务返回了这些链接；原网页与原图分别打开并重新鉴权，不要从回答文字猜图片地址。",
             "no_results": "检索服务已执行，但未返回同时具备原网页与原图的可用图片；不能当作成功搜图。",

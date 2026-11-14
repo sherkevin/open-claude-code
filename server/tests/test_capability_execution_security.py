@@ -270,3 +270,48 @@ def test_host_ticket_is_redacted_from_progress_arguments():
     from app.security import redact
     assert redact({"__oc_capability_ticket": "private-host-nonce", "query": "public"}) == {
         "__oc_capability_ticket": "[redacted]", "query": "public"}
+
+
+def test_explicit_image_modes_route_to_their_own_authorized_provider(system):
+    from app.service import assistant_view
+    service, user, assistant, run_id = system
+    service.settings.deepseek_api_enabled = True
+    credentials = CapabilityCredentials(service)
+    credentials.put(user, "deepseek_webtools", 0, "synthetic-reverse")
+    credentials.put(user, "brave_images", 0, "synthetic-text")
+    configure(service, user, "image_search", enabled=True, preferred="deepseek_webtools",
+              mode_providers={"text_search": "brave_images", "reverse_image": "deepseek_webtools"},
+              egress={"query": "allow", "url": "allow", "upload": "allow"})
+    service.save_assistant({"capabilities": {"image_search": {"enabled": True, "auto_approved": True}}},
+                           assistant["id"], user=user)
+    snapshot = assistant_view(service.require("assistants", assistant["id"]), user)
+    service.db.execute("UPDATE runs SET capability_snapshot=? WHERE id=?", (dump(snapshot), run_id))
+    called = []
+
+    async def operation(provider, deadline, recheck):
+        called.append(provider)
+        recheck()
+        return provider
+
+    for mode in ["text_search", "reverse_image"]:
+        arguments = {"mode": mode, **({"query": "public"} if mode == "text_search" else {"file_id": "fixture"})}
+        context = context_for(service, user, assistant, run_id, mode)
+        context = replace(context, recheck=lambda: service.authorize_tool(
+            context.conversation_id, "mcp__workspace__image_search", arguments))
+        result = asyncio.run(CapabilityExecutor(service).execute_for_run(
+            context, "image_search", arguments, operation))
+        assert result.attempts == 1
+    assert called == ["brave_images", "deepseek_webtools"]
+    from app.capability_policy import authorize_source_access
+    configure(service, user, "image_search", domains={"mode": "allowlist", "hosts": ["example.com"]})
+    with pytest.raises(AppError) as error:
+        authorize_source_access(service, {"run_id": run_id, "kind": "web", "original_url": "https://example.com/page",
+            "locator": {"capability": "image_search", "image_url": "https://denied.example/image.jpg"}}, user)
+    assert error.value.code == "SOURCE_UNAVAILABLE"
+
+
+def test_incompatible_image_mode_provider_cannot_be_saved(system):
+    service, user, _, _ = system
+    with pytest.raises(AppError) as error:
+        configure(service, user, "image_search", mode_providers={"text_search": "deepseek_webtools"})
+    assert error.value.code == "CAPABILITY_PROVIDER_INVALID"

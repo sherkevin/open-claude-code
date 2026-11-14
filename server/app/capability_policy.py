@@ -265,6 +265,7 @@ def effective_capability(
         "limits": limits,
         "max_attempts": max(1, attempts),
         "preferred": route.get("preferred"),
+        "mode_providers": dict(route.get("mode_providers") or {}),
         "fallbacks": list(route.get("fallbacks") or []),
         "timeout_seconds": int(route.get("timeout_seconds") or 60),
         "settings_revision": int(route.get("revision") or 0),
@@ -367,6 +368,8 @@ def authorize_source_access(service, source_row, user) -> None:
     original = source_row.get("original_url")
     if original and not domain_allows(effective["domains"], original):
         raise AppError(404, "SOURCE_UNAVAILABLE", "该来源域名已不在允许范围内")
+    if capability == "image_search" and locator.get("image_url") and not domain_allows(effective["domains"], locator["image_url"]):
+        raise AppError(404, "SOURCE_UNAVAILABLE", "该图片域名已不在允许范围内")
 
 
 def classify_error(exc: BaseException) -> str:
