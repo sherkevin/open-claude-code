@@ -1,0 +1,55 @@
+{
+  "commit": "06f596a26edbc999c818db55bfb89b12f43d0477",
+  "scope": "public_synthetic_product_tools",
+  "automatic_retries": 0,
+  "real_customer_data": false,
+  "checks": [
+    {
+      "name": "ocr",
+      "result_status": "complete",
+      "usage": {
+        "input_tokens": 257,
+        "output_tokens": 70,
+        "total_tokens": 327
+      },
+      "fields": {
+        "DEMO-PUMP-042": true,
+        "0.80": true,
+        "0.76": true,
+        "2026-11-14": true,
+        "PASS": true
+      },
+      "extraction_status": "complete",
+      "runtime_source_hints": 1,
+      "persisted_citation_metadata": {
+        "capability": "ocr",
+        "page": 1,
+        "provider": "managed_ocr",
+        "extraction": "managed-ocr",
+        "complete": true,
+        "truncated": false
+      },
+      "status": "passed",
+      "authorized_source_count": 1,
+      "elapsed_seconds": 2.713
+    }
+  ],
+  "status": "passed",
+  "duplicate_execution": "CAPABILITY_REPLAY",
+  "attempts": [
+    {
+      "capability": "ocr",
+      "provider": "deepseek_api",
+      "provider_revision": 1,
+      "attempt_index": 0,
+      "state": "ok",
+      "error_code": null
+    }
+  ],
+  "robot_license": {
+    "page": "https://commons.wikimedia.org/wiki/File:Robot_ABB_1.jpg",
+    "author": "Peter Potrowl",
+    "license": "CC BY 2.5"
+  },
+  "image_protocol_trace": []
+}
