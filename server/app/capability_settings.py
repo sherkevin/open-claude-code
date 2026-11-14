@@ -1,4 +1,10 @@
-"""Provider-neutral, secret-free policy for the existing web tool executors."""
+"""Provider-neutral, secret-free policy for external capability executors.
+
+Four capabilities share one versioned administrator document.  Search and fetch
+keep their historical defaults until an administrator saves an explicit
+granular policy; OCR and image search default to disabled with file egress
+denied.  Provider credentials are never returned here.
+"""
 from __future__ import annotations
 
 import json
@@ -6,7 +12,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from .db import dump, now
 from .security import AppError
@@ -14,15 +20,80 @@ from .security import AppError
 PROVIDERS = {
     "search": ("bing_rss", "searxng", "brave", "deepseek_api"),
     "fetch": ("public_http", "deepseek_api"),
+    "ocr": ("deepseek_api",),
+    "image_search": ("deepseek_webtools", "brave_images"),
 }
+CAPABILITY_KINDS = tuple(PROVIDERS)
+
+# Supported modes are part of the contract, not a readiness claim.  A provider
+# only appears here after an adapter exists for that mode.
+PROVIDER_MODES: dict[str, dict[str, list[str]]] = {
+    "bing_rss": {"search": ["web"]},
+    "searxng": {"search": ["web"]},
+    "brave": {"search": ["web"]},
+    "public_http": {"fetch": ["page"]},
+    "deepseek_api": {
+        "search": ["web"], "fetch": ["page"],
+        "ocr": ["text_recognition", "rich_layout_recognition"],
+    },
+    "deepseek_webtools": {"image_search": ["reverse_image"]},
+    "brave_images": {"image_search": ["text_search"]},
+}
+
+DEFAULT_TIMEOUT_SECONDS = 60
+DEFAULT_LIMITS = {"calls_per_run": 50, "calls_per_day": 500, "max_upload_bytes": 0}
+OCR_LIMITS = {"calls_per_run": 20, "calls_per_day": 100, "max_upload_bytes": 20 * 1024 * 1024}
+EGRESS_KEYS = ("query", "url", "upload")
+
+
+class DomainPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["public", "allowlist"] = "public"
+    hosts: list[str] = Field(default_factory=list, max_length=64)
+
+    @field_validator("hosts")
+    @classmethod
+    def canonical_hosts(cls, values):
+        from .capability_policy import normalize_domain
+        result = []
+        for value in values:
+            host = normalize_domain(value)
+            if host is None:
+                raise ValueError("host must be an exact public hostname")
+            if host not in result:
+                result.append(host)
+        return result
+
+
+class EgressPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: Literal["deny", "approval", "allow"] | None = None
+    url: Literal["deny", "approval", "allow"] | None = None
+    upload: Literal["deny", "approval", "allow"] | None = None
+
+
+class CapabilityLimits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    calls_per_run: int | None = Field(default=None, strict=True, ge=1, le=10_000)
+    calls_per_day: int | None = Field(default=None, strict=True, ge=1, le=100_000)
+    max_upload_bytes: int | None = Field(default=None, strict=True, ge=0, le=200 * 1024 * 1024)
+
+
+def _provider_literal():
+    return Literal["bing_rss", "searxng", "brave", "deepseek_api", "public_http",
+                   "deepseek_webtools", "brave_images"]
 
 
 class CapabilityRoute(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: StrictBool
-    preferred: Literal["bing_rss", "searxng", "brave", "deepseek_api", "public_http"]
-    fallbacks: list[Literal["bing_rss", "searxng", "brave", "deepseek_api", "public_http"]] = Field(max_length=1)
+    preferred: _provider_literal()
+    fallbacks: list[_provider_literal()] = Field(default_factory=list, max_length=1)
     timeout_seconds: int = Field(strict=True, ge=1, le=60)
+    max_attempts: int | None = Field(default=None, strict=True, ge=1, le=3)
+    domains: DomainPolicy | None = None
+    egress: EgressPolicy | None = None
+    limits: CapabilityLimits | None = None
 
     @model_validator(mode="after")
     def unique_providers(self):
@@ -36,6 +107,73 @@ class CapabilityUpdate(BaseModel):
     revision: int = Field(strict=True, ge=0)
     search: CapabilityRoute
     fetch: CapabilityRoute
+    # Older clients may omit the new capabilities; they are carried forward
+    # from the current effective policy rather than silently enabled.
+    ocr: CapabilityRoute | None = None
+    image_search: CapabilityRoute | None = None
+
+
+def _egress_defaults(capability: str) -> dict:
+    if capability in {"search", "fetch"}:
+        return {"query": "allow", "url": "allow", "upload": "deny"}
+    return {"query": "deny", "url": "deny", "upload": "deny"}
+
+
+def _route_defaults(capability: str) -> dict:
+    return {
+        "enabled": False if capability in {"ocr", "image_search"} else True,
+        "preferred": "deepseek_api" if capability == "ocr" else "deepseek_webtools",
+        "fallbacks": [],
+        "timeout_seconds": DEFAULT_TIMEOUT_SECONDS,
+        "max_attempts": 1,
+        "domains": {"mode": "public", "hosts": []},
+        "egress": _egress_defaults(capability),
+        "limits": dict(OCR_LIMITS if capability in {"ocr", "image_search"} else DEFAULT_LIMITS),
+    }
+
+
+def normalize_route(capability: str, route: dict, defaults: dict | None = None) -> dict:
+    """Fill omitted v2 fields with capability-specific defaults."""
+    base = dict(defaults or _route_defaults(capability))
+    fallbacks = list(route.get("fallbacks") or [])
+    max_attempts = route.get("max_attempts")
+    if max_attempts is None:
+        max_attempts = 1 if capability in {"ocr", "image_search"} else 1 + len(fallbacks)
+    domains = route.get("domains") if route.get("domains") is not None else base["domains"]
+    egress = dict(base["egress"])
+    egress.update({key: value for key, value in (route.get("egress") or {}).items() if value is not None})
+    limits = dict(base["limits"])
+    limits.update({key: value for key, value in (route.get("limits") or {}).items() if value is not None})
+    if capability in {"ocr", "image_search"} and max_attempts > 1:
+        # The official OCR images continue remotely after a local cancel, so
+        # automatic retry/fallback would duplicate upload/steps and charges.
+        max_attempts = 1
+    if capability == "ocr":
+        fallbacks = []
+    if max_attempts < 1 + len(fallbacks):
+        raise AppError(422, "CAPABILITY_ROUTE_INVALID", "总尝试次数必须至少覆盖首选与回退提供方")
+    return {
+        "enabled": bool(route.get("enabled")),
+        "preferred": route.get("preferred"),
+        "fallbacks": fallbacks,
+        "timeout_seconds": int(route.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
+        "max_attempts": int(max_attempts),
+        "domains": {"mode": domains.get("mode", "public"), "hosts": list(domains.get("hosts") or [])},
+        "egress": {key: egress[key] for key in EGRESS_KEYS},
+        "limits": {key: int(limits[key]) for key in DEFAULT_LIMITS},
+    }
+
+
+def migrate_config(config: dict, defaults: dict) -> dict:
+    """Fill v1 documents (search/fetch only) with safe v2 defaults."""
+    result = {}
+    for capability in CAPABILITY_KINDS:
+        existing = config.get(capability)
+        if existing is None:
+            result[capability] = json.loads(json.dumps(defaults[capability]))
+        else:
+            result[capability] = normalize_route(capability, existing, defaults[capability])
+    return result
 
 
 class CapabilitySettings:
@@ -45,26 +183,40 @@ class CapabilitySettings:
     def defaults(self):
         settings = self.service.settings
         provider = settings.web_search_provider
+        search_fallbacks = ["bing_rss"] if provider != "bing_rss" and settings.web_search_fallback_bing else []
         fetch = "deepseek_api" if provider == "deepseek_api" else "public_http"
+        fetch_fallbacks = ["public_http"] if fetch != "public_http" and settings.web_search_fallback_bing else []
         return {
-            "search": {"enabled": True, "preferred": provider,
-                       "fallbacks": ["bing_rss"] if provider != "bing_rss" and settings.web_search_fallback_bing else [],
-                       "timeout_seconds": 60},
-            "fetch": {"enabled": True, "preferred": fetch,
-                      "fallbacks": ["public_http"] if fetch != "public_http" and settings.web_search_fallback_bing else [],
-                      "timeout_seconds": 60},
+            "search": normalize_route("search", {
+                "enabled": True, "preferred": provider, "fallbacks": search_fallbacks,
+                "timeout_seconds": DEFAULT_TIMEOUT_SECONDS, "max_attempts": 1 + len(search_fallbacks)}),
+            "fetch": normalize_route("fetch", {
+                "enabled": True, "preferred": fetch, "fallbacks": fetch_fallbacks,
+                "timeout_seconds": DEFAULT_TIMEOUT_SECONDS, "max_attempts": 1 + len(fetch_fallbacks)}),
+            "ocr": normalize_route("ocr", _route_defaults("ocr")),
+            "image_search": normalize_route("image_search", _route_defaults("image_search")),
         }
 
     def effective(self):
         row = self.service.db.one("SELECT * FROM capability_settings WHERE id=1")
+        defaults = self.defaults()
         if row:
+            config = migrate_config(json.loads(row["config"]), defaults)
             return {"revision": row["revision"], "origin": "administrator", "updated_at": row["updated_at"],
-                    **json.loads(row["config"])}
-        return {"revision": 0, "origin": "environment", "updated_at": None, **self.defaults()}
+                    "schema_version": 2, **config}
+        return {"revision": 0, "origin": "environment", "updated_at": None, "schema_version": 2, **defaults}
+
+    def effective_route(self, capability: str) -> dict:
+        state = self.effective()
+        return {**state[capability], "revision": state["revision"]}
+
+    def _credential_present(self, provider_id: str) -> bool:
+        from .capability_credentials import CapabilityCredentials
+        return CapabilityCredentials(self.service).present(provider_id)
 
     def providers(self):
         settings = self.service.settings
-        # Inspect only readiness booleans: no credential value or endpoint is returned.
+        # Inspect readiness booleans only; never return a credential or endpoint.
         from .web_tools import public_url
 
         def public_endpoint(value):
@@ -74,41 +226,129 @@ class CapabilitySettings:
             except (AppError, ValueError, TypeError):
                 return False
 
-        from .deepseek_api import _endpoint
-        try:
-            _endpoint(settings.deepseek_api_base_url, "/v1/tools/search")
-            official = bool(settings.deepseek_api_enabled and settings.deepseek_api_key)
-        except AppError:
-            official = False
+        def official_deepseek():
+            try:
+                parsed = urlsplit(settings.deepseek_api_base_url)
+                return parsed.scheme == "https" and (parsed.hostname or "").lower() == "api.deepseek.com"
+            except (ValueError, TypeError):
+                return False
+
+        deepseek_enabled = bool(settings.deepseek_api_enabled)
+        deepseek_ready = deepseek_enabled and official_deepseek() and self._credential_present("deepseek_api")
         availability = {
             "bing_rss": True,
             "public_http": True,
             "searxng": public_endpoint(settings.web_search_searxng_url),
-            "brave": bool(settings.web_search_brave_api_key) and public_endpoint(settings.web_search_brave_url),
-            "deepseek_api": official,
+            "brave": public_endpoint(settings.web_search_brave_url) and self._credential_present("brave"),
+            "deepseek_api": deepseek_ready,
+            "deepseek_webtools": deepseek_enabled and official_deepseek() and self._credential_present("deepseek_webtools"),
+            # The official Images endpoint is fixed; a present key is not proof
+            # of product entitlement, so verification stays not_tested.
+            "brave_images": self._credential_present("brave_images"),
         }
-        return [{"id": name, "configured": configured, "verification": "not_tested",
-                 "capabilities": [kind for kind, providers in PROVIDERS.items() if name in providers]}
-                for name, configured in availability.items()]
+        verification = self._verification()
+        result = []
+        for name, configured in availability.items():
+            modes = PROVIDER_MODES.get(name, {})
+            result.append({
+                "id": name,
+                "configured": bool(configured),
+                "credential_present": self._credential_present(name),
+                "verification": verification.get(name, "not_tested"),
+                "capabilities": list(modes),
+                "modes": modes,
+                "revision": self._provider_revision(name),
+            })
+        return result
+
+    def _verification(self) -> dict[str, str]:
+        try:
+            rows = self.service.db.all("SELECT provider_id,status FROM capability_provider_verification")
+        except Exception:
+            return {}
+        return {row["provider_id"]: row["status"] for row in rows}
+
+    def _provider_revision(self, provider_id: str) -> int:
+        from .capability_credentials import CapabilityCredentials
+        return CapabilityCredentials(self.service).revision(provider_id)
 
     def view(self):
         result = self.effective()
         result["providers"] = self.providers()
-        result["ocr"] = {"status": "not_integrated", "configurable": False,
-                         "knowledge_fallback_configured": bool(self.service.settings.deepseek_api_ocr_enabled
-                             and next(p for p in result["providers"] if p["id"] == "deepseek_api")["configured"])}
-        result["image_search"] = {"status": "not_integrated", "configurable": False}
+        result["credentials"] = {
+            item["id"]: {"present": item["credential_present"], "revision": item["revision"], "verified": False}
+            for item in result["providers"]
+        }
+        return result
+
+    def narrow_assistant_grants(self, grants: dict, *, is_admin: bool) -> dict:
+        """Persist only grants that narrow the current global route.
+
+        Runtime always intersects again, but writing the honest narrowed value
+        prevents a member editor (or a stale client) from appearing to widen a
+        domain, egress mode or limit.  ``auto_approved`` is administrator-only.
+        """
+        from .capability_policy import _min_limit, intersect_domains, normalize_domain_policy, stricter_egress
+        result = {}
+        for capability in CAPABILITY_KINDS:
+            grant = grants.get(capability)
+            if not isinstance(grant, dict):
+                continue
+            route = self.effective_route(capability)
+            domains = grant.get("domains")
+            if domains is not None:
+                domains = normalize_domain_policy(domains)
+            global_egress = route.get("egress") or {}
+            egress = {key: stricter_egress(global_egress.get(key), (grant.get("egress") or {}).get(key))
+                      for key in EGRESS_KEYS}
+            global_limits = route.get("limits") or {}
+            limits = {key: _min_limit([global_limits.get(key), (grant.get("limits") or {}).get(key)],
+                                      int(global_limits.get(key) or 0)) for key in DEFAULT_LIMITS}
+            normalized = {
+                "enabled": bool(grant.get("enabled")),
+                "auto_approved": bool(grant.get("auto_approved")) and is_admin,
+                "domains": intersect_domains(route.get("domains"), domains),
+                "egress": egress,
+                "limits": limits,
+            }
+            if grant.get("max_attempts"):
+                normalized["max_attempts"] = min(int(grant["max_attempts"]), int(route.get("max_attempts") or 1))
+            result[capability] = normalized
         return result
 
     def require_enabled(self, capability):
+        if capability not in CAPABILITY_KINDS:
+            raise AppError(422, "CAPABILITY_UNKNOWN", "未知能力")
         if not self.effective()[capability]["enabled"]:
             raise AppError(403, "CAPABILITY_DISABLED", "管理员已停用此能力")
+
+    def knowledge_ocr_egress_allowed(self) -> bool:
+        """Old knowledge-ingestion OCR may only send when explicitly allowed.
+
+        There is no interactive approver on that background path, so an
+        ``approval`` mode must not be treated as permission.  The tombstone /
+        environment switch alone is not enough: the global OCR route must be
+        enabled and its upload egress explicitly ``allow``.
+        """
+        state = self.effective()["ocr"]
+        return bool(state["enabled"] and state["egress"]["upload"] == "allow")
 
     def save(self, user, payload: CapabilityUpdate):
         self.service.require_admin(user)
         if self.service.policy.is_trial:
             raise AppError(403, "FEATURE_DISABLED", "受控试用不允许修改能力配置")
-        config = {key: getattr(payload, key).model_dump() for key in PROVIDERS}
+        current = self.effective()
+        raw = {}
+        for capability in CAPABILITY_KINDS:
+            supplied = getattr(payload, capability, None)
+            if supplied is None:
+                raw[capability] = {key: current[capability][key] for key in
+                                   ("enabled", "preferred", "fallbacks", "timeout_seconds", "max_attempts",
+                                    "domains", "egress", "limits")}
+            else:
+                raw[capability] = supplied.model_dump()
+        config = {capability: normalize_route(capability, raw[capability], current[capability])
+                  for capability in CAPABILITY_KINDS}
         availability = {item["id"]: item["configured"] for item in self.providers()}
         for kind, route in config.items():
             selected = [route["preferred"], *route["fallbacks"]]
@@ -121,8 +361,7 @@ class CapabilitySettings:
             self.service.require_admin(current_user)
             if not current_user["enabled"]:
                 raise AppError(403, "USER_DISABLED", "账号已停用")
-            current = self.effective()
-            if current["revision"] != payload.revision:
+            if self.effective()["revision"] != payload.revision:
                 raise AppError(409, "CAPABILITY_REVISION_CONFLICT", "配置已被其他管理员修改，请重新加载后再保存")
             revision, timestamp = payload.revision + 1, now()
             self.service.db.execute(

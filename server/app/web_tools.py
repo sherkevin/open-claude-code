@@ -6,6 +6,7 @@ import ipaddress
 import json
 import re
 import socket
+import time
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -170,24 +171,29 @@ class PageText(HTMLParser):
         return re.sub(r"\n{3,}", "\n\n", re.sub(r"[^\S\n]+", " ", "".join(self.parts))).strip()
 
 
-async def fetch_public(url: str, *, max_bytes: int = 2_000_000) -> tuple[str, str, bytes]:
+async def fetch_public(url: str, *, max_bytes: int = 2_000_000, deadline: float | None = None) -> tuple[str, str, bytes]:
     try:
-        with anyio.fail_after(40):
+        budget = 40 if deadline is None else max(0.1, deadline - time.monotonic())
+        with anyio.fail_after(min(40, budget)):
             return await _fetch_public(url, max_bytes=max_bytes)
     except TimeoutError:
         raise AppError(504, "WEB_TIMEOUT", "网页读取超时，请尝试其他来源") from None
 
 
-async def fetch_public_headers(url: str, *, headers: dict[str, str], max_bytes: int = MAX_SEARCH_RESPONSE_BYTES) -> tuple[str, str, bytes]:
+async def fetch_public_headers(url: str, *, headers: dict[str, str], max_bytes: int = MAX_SEARCH_RESPONSE_BYTES,
+                               deadline: float | None = None, credentialed: bool = False) -> tuple[str, str, bytes]:
     """Fetch a public URL with bounded headers and the same SSRF checks.
 
-    Brave requires an authentication header, so it cannot use ``fetch_public``
-    directly.  This helper deliberately shares the pinned public transport and
-    never follows a redirect without validating the next URL first.
+    ``credentialed`` requests are restricted to HTTPS and refuse every
+    redirect, so an upstream 30x can never forward a provider authorization
+    header to another public host or downgrade the scheme to plain HTTP.
     """
     try:
-        with anyio.fail_after(40):
+        budget = 40 if deadline is None else max(0.1, deadline - time.monotonic())
+        with anyio.fail_after(min(40, budget)):
             url = public_url(url)
+            if credentialed and urlsplit(url).scheme != "https":
+                raise AppError(422, "WEB_URL_DENIED", "带凭据的搜索请求必须使用 HTTPS")
             transport = httpx.AsyncHTTPTransport(retries=0)
             transport._pool._network_backend = PublicNetworkBackend()
             safe_headers = {str(key): str(value)[:4096] for key, value in headers.items()}
@@ -196,6 +202,8 @@ async def fetch_public_headers(url: str, *, headers: dict[str, str], max_bytes: 
                 for _ in range(5):
                     async with client.stream("GET", url) as response:
                         if response.status_code in {301, 302, 303, 307, 308}:
+                            if credentialed:
+                                raise AppError(502, "WEB_SEARCH_PROVIDER_FAILED", "搜索服务返回了不允许的重定向")
                             url = public_url(urljoin(url, response.headers.get("location", "")))
                             continue
                         if response.status_code >= 400:
@@ -302,16 +310,19 @@ class WebTools:
             return None
         return DeepSeekAPI(base_url=base_url, api_key=api_key, timeout_seconds=timeout)
 
-    async def _deepseek(self, query: str, limit: int) -> list[dict]:
+    async def _deepseek(self, query: str, limit: int, deadline: float | None = None) -> list[dict]:
         client = self._deepseek_client()
         if client is None:
             raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "当前网页搜索服务未配置")
-        return await client.search(query, count=limit, need_content=False)
+        if deadline is None:
+            return await client.search(query, count=limit, need_content=False)
+        async with anyio.fail_after(max(0.1, deadline - time.monotonic())):
+            return await client.search(query, count=limit, need_content=False)
 
-    async def _bing(self, query: str) -> list[dict]:
+    async def _bing(self, query: str, deadline: float | None = None) -> list[dict]:
         url = "https://www.bing.com/search?" + urlencode({"q": query, "format": "rss"})
         try:
-            _, _, body = await fetch_public(url, max_bytes=MAX_SEARCH_RESPONSE_BYTES)
+            _, _, body = await fetch_public(url, max_bytes=MAX_SEARCH_RESPONSE_BYTES, deadline=deadline)
         except AppError:
             raise
         except (httpx.HTTPError, httpcore.NetworkError, OSError, TimeoutError) as exc:
@@ -332,14 +343,14 @@ class WebTools:
                 results.append(result)
         return results
 
-    async def _searxng(self, endpoint: str, query: str, limit: int) -> list[dict]:
+    async def _searxng(self, endpoint: str, query: str, limit: int, deadline: float | None = None) -> list[dict]:
         if not endpoint:
             raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "未配置公共 SearXNG 搜索地址")
         endpoint = public_url(endpoint.rstrip("/"))
         separator = "&" if "?" in endpoint else "?"
         url = endpoint + separator + urlencode({"q": query, "format": "json", "language": "all", "safesearch": 1})
         try:
-            _, _, body = await fetch_public(url, max_bytes=MAX_SEARCH_RESPONSE_BYTES)
+            _, _, body = await fetch_public(url, max_bytes=MAX_SEARCH_RESPONSE_BYTES, deadline=deadline)
         except AppError:
             raise
         except (httpx.HTTPError, httpcore.NetworkError, OSError, TimeoutError) as exc:
@@ -351,7 +362,7 @@ class WebTools:
         rows = document.get("results", []) if isinstance(document, dict) else []
         return [item for raw in rows[:MAX_SEARCH_RESULTS] if (item := _result_item(raw))][:limit]
 
-    async def _brave(self, endpoint: str, key: str, query: str, limit: int) -> list[dict]:
+    async def _brave(self, endpoint: str, key: str, query: str, limit: int, deadline: float | None = None) -> list[dict]:
         if not endpoint or not key:
             raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "未配置 Brave 搜索地址或授权密钥")
         endpoint = public_url(endpoint)
@@ -359,7 +370,8 @@ class WebTools:
         url = endpoint + separator + urlencode({"q": query, "count": limit, "safesearch": "moderate"})
         try:
             _, _, body = await fetch_public_headers(
-                url, headers={"Accept": "application/json", "X-Subscription-Token": key}, max_bytes=MAX_SEARCH_RESPONSE_BYTES)
+                url, headers={"Accept": "application/json", "X-Subscription-Token": key},
+                max_bytes=MAX_SEARCH_RESPONSE_BYTES, deadline=deadline, credentialed=True)
         except AppError:
             raise
         except (httpx.HTTPError, httpcore.NetworkError, OSError, TimeoutError) as exc:
@@ -371,87 +383,66 @@ class WebTools:
         rows = ((document.get("web") or {}).get("results") or []) if isinstance(document, dict) else []
         return [item for raw in rows[:MAX_SEARCH_RESULTS] if (item := _result_item(raw))][:limit]
 
-    def _route(self, capability):
-        if getattr(self.service, "db", None) is not None and getattr(self.service, "settings", None) is not None:
-            from .capability_settings import CapabilitySettings
-            state = CapabilitySettings(self.service).effective()
-            return {**state[capability], "revision": state["revision"]}
-        provider, _, _, _, fallback = self._provider_config()
-        if capability == "fetch":
-            provider = "deepseek_api" if provider == "deepseek_api" else "public_http"
-        default = "bing_rss" if capability == "search" else "public_http"
-        return {"enabled": True, "preferred": provider, "fallbacks": [default] if fallback and provider != default else [],
-                "timeout_seconds": 60, "revision": 0}
+    def _host_recheck(self, run_id, capability, arguments):
+        from .capability_policy import CAPABILITY_TOOLS
+        run = self.service.require("runs", run_id)
+        # May return False (approval required); the executor verifies the
+        # corresponding approvals row rather than treating False as approval.
+        self.service.authorize_tool(run["conversation_id"], CAPABILITY_TOOLS[capability], arguments)
 
-    def authorize(self, user, assistant, capability="search"):
-        policy = getattr(self.service, "policy", None)
-        if policy is not None:
-            policy.require_tool("mcp__workspace__web_search" if capability == "search" else "mcp__workspace__web_read")
-        if getattr(self.service, "db", None) is not None:
-            user = self.service.require("users", user["id"])
-            if not user["enabled"]:
-                raise AppError(403, "USER_DISABLED", "账号已停用")
-        current = self.service.usable_assistant(assistant["id"], user)
-        if not current.get("web_search_enabled"):
-            raise AppError(403, "WEB_SEARCH_DISABLED", "当前助手未启用网页搜索")
-        if not self._route(capability)["enabled"]:
-            raise AppError(403, "CAPABILITY_DISABLED", "管理员已停用此能力")
+    def _context(self, user, assistant, run_id, capability, arguments, call_id=None):
+        from .capability_execution import RunContext, new_call_id
+        run = self.service.require("runs", run_id)
+        return RunContext(
+            run_id=run_id, conversation_id=run["conversation_id"], user_id=user["id"],
+            assistant_id=assistant["id"], tool_call_id=call_id or new_call_id(),
+            recheck=lambda: self._host_recheck(run_id, capability, arguments))
 
-    async def _execute_route(self, user, assistant, capability, execute):
-        self.authorize(user, assistant, capability)
-        route = self._route(capability)
-        try:
-            with anyio.fail_after(route["timeout_seconds"]):
-                for index, provider in enumerate([route["preferred"], *route["fallbacks"]]):
-                    self.authorize(user, assistant, capability)
-                    if self._route(capability)["revision"] != route["revision"]:
-                        raise AppError(409, "CAPABILITY_CHANGED", "能力配置已更新，请重新发起请求")
-                    try:
-                        result = await execute(provider)
-                    except AppError as exc:
-                        # Never turn a permission, input or safety refusal into a fallback.
-                        if index == len(route["fallbacks"]) or (exc.status < 500 and exc.status not in {408, 429}):
-                            raise
-                        continue
-                    self.authorize(user, assistant, capability)
-                    if self._route(capability)["revision"] != route["revision"]:
-                        raise AppError(409, "CAPABILITY_CHANGED", "能力配置已更新，请重新发起请求")
-                    return result, provider, route["preferred"]
-        except TimeoutError:
-            raise AppError(504, "WEB_TIMEOUT", "外部检索超时，请稍后重试") from None
-
-    async def search_for_run(self, user, assistant, run_id, query, limit=5):
-        self.authorize(user, assistant)
+    async def search_for_run(self, user, assistant, run_id, query, limit=5, call_id=None):
         query = str(query).strip()
         if not query or len(query) > 500:
             raise AppError(422, "WEB_QUERY_INVALID", "搜索词长度应为 1–500 个字符")
         limit = max(1, min(int(limit), MAX_SEARCH_RESULTS))
         _, searx_url, brave_url, brave_key, _ = self._provider_config()
-        async def execute(provider):
+        arguments = {"query": query, "limit": limit}
+        context = self._context(user, assistant, run_id, "search", arguments, call_id)
+
+        async def operation(provider, deadline, recheck):
             if provider == "bing_rss":
-                return await self._bing(query)
+                return await self._bing(query, deadline)
             if provider == "searxng":
-                return await self._searxng(searx_url, query, limit)
+                return await self._searxng(searx_url, query, limit, deadline)
             if provider == "brave":
-                return await self._brave(brave_url, brave_key, query, limit)
+                return await self._brave(brave_url, brave_key, query, limit, deadline)
             if provider == "deepseek_api":
-                return await self._deepseek(query, limit)
+                return await self._deepseek(query, limit, deadline)
             raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "当前网页搜索服务未配置")
-        raw_results, used_provider, provider = await self._execute_route(user, assistant, "search", execute)
+
+        from .capability_execution import CapabilityExecutor
+        from .capability_policy import domain_allows
+        executor = CapabilityExecutor(self.service)
+        route = await executor.execute_for_run(context, "search", arguments, operation)
+        domains = executor.effective(context, "search", arguments)["domains"]
+        used_provider, requested_provider = route.provider, route.requested_provider
         results, seen = [], set()
-        for item in raw_results:
+        for item in route.value:
             canonical = item.get("url")
             if not canonical or canonical in seen:
+                continue
+            # Domain policy governs which result content is accepted; it is not
+            # a claim that the upstream search service only queried those hosts.
+            if not domain_allows(domains, canonical):
                 continue
             seen.add(canonical)
             public_provider = PUBLIC_PROVIDER_NAME if used_provider == "deepseek_api" else used_provider
             locator = {"url": canonical, "fetched_at": now(), "search_query": query,
-                       "content_type": "search_excerpt", "provider": public_provider}
+                       "content_type": "search_excerpt", "capability": "search", "provider": public_provider}
             if item.get("published_at"):
                 locator["published_at"] = item["published_at"]
             source = self.service.evidence.register(
                 run_id, "web", item["title"] or canonical, locator, item["excerpt"],
                 resource_type="web", resource_id=assistant["id"], original_url=canonical,
+                tool_name="mcp__workspace__web_search",
             )
             results.append({"title": item["title"], "url": canonical, "excerpt": item["excerpt"],
                            "source_id": source["id"], "citation": f"[[source:{source['id']}]]",
@@ -459,26 +450,29 @@ class WebTools:
             if len(results) >= limit:
                 break
         note = "这些是搜索摘要；精确引文或细节请用 web_read 读取原网页。"
-        if used_provider != provider:
+        if used_provider != requested_provider:
             note += " 当前首选搜索服务暂时不可用，已使用配置的回退服务。"
         public_used = PUBLIC_PROVIDER_NAME if used_provider == "deepseek_api" else used_provider
-        public_requested = PUBLIC_PROVIDER_NAME if provider == "deepseek_api" else provider
+        public_requested = PUBLIC_PROVIDER_NAME if requested_provider == "deepseek_api" else requested_provider
         return {"results": results, "provider": public_used, "requested_provider": public_requested,
-                "fallback": used_provider != provider, "note": note}
+                "fallback": used_provider != requested_provider, "note": note}
 
-    async def read_for_run(self, user, assistant, run_id, url, query=""):
-        self.authorize(user, assistant, "fetch")
+    async def read_for_run(self, user, assistant, run_id, url, query="", call_id=None):
         url = public_url(url)
-        async def execute(provider):
+        arguments = {"url": url, "query": str(query or "")}
+        context = self._context(user, assistant, run_id, "fetch", arguments, call_id)
+
+        async def operation(provider, deadline, recheck):
             if provider == "deepseek_api":
                 client = self._deepseek_client()
                 if client is None:
                     raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "当前网页读取服务未配置")
-                page = await client.fetch(url)
+                async with anyio.fail_after(max(0.1, deadline - time.monotonic())):
+                    page = await client.fetch(url)
                 return page["url"], page["content"], page["title"]
             if provider != "public_http":
                 raise AppError(503, "WEB_SEARCH_PROVIDER_UNAVAILABLE", "当前网页读取服务未配置")
-            final_url, mime, body = await fetch_public(url)
+            final_url, mime, body = await fetch_public(url, deadline=deadline)
             if mime and not any(kind in mime for kind in ("text/", "xml", "json")):
                 raise AppError(422, "WEB_FORMAT_UNSUPPORTED", "此链接不是可读取的文本网页，请使用网页正文链接")
             encoding = httpx.Response(200, headers={"content-type": mime}, content=body).encoding or "utf-8"
@@ -490,7 +484,12 @@ class WebTools:
             else:
                 text, title = decoded, final_url
             return final_url, text, title
-        (final_url, text, title), used_provider, requested_provider = await self._execute_route(user, assistant, "fetch", execute)
+
+        from .capability_execution import CapabilityExecutor
+        route = await CapabilityExecutor(self.service).execute_for_run(
+            context, "fetch", arguments, operation, target_url=url)
+        final_url, text, title = route.value
+        used_provider, requested_provider = route.provider, route.requested_provider
         start = 0
         query = str(query).strip()[:300]
         if query:
@@ -502,10 +501,12 @@ class WebTools:
             raise AppError(422, "WEB_EMPTY", "该网页未提供可读取的正文")
         source = self.service.evidence.register(
             run_id, "web", title[:300] or final_url,
-            {"url": final_url, "fetched_at": now(), "content_type": "page_text", "character_start": start,
-             "character_end": start + len(excerpt), "truncated": len(text) > start + len(excerpt),
+            {"url": final_url, "fetched_at": now(), "content_type": "page_text", "capability": "fetch",
+             "character_start": start, "character_end": start + len(excerpt),
+             "truncated": len(text) > start + len(excerpt),
              "provider": PUBLIC_PROVIDER_NAME if used_provider == "deepseek_api" else used_provider},
             excerpt, resource_type="web", resource_id=assistant["id"], original_url=final_url,
+            tool_name="mcp__workspace__web_read",
         )
         return {"title": title, "url": final_url, "text": excerpt, "source_id": source["id"], "citation": f"[[source:{source['id']}]]",
                 "provider": PUBLIC_PROVIDER_NAME if used_provider == "deepseek_api" else used_provider,
