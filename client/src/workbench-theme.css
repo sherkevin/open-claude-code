@@ -227,6 +227,8 @@
 .zhixing-theme .approval-card pre {background:var(--paper);color:var(--ink);font-size:12px}
 .zhixing-theme .approval-actions .button {font-size:13px}
 .zhixing-theme .run-outcome p,.zhixing-theme .compaction-message p {font-size:13px;color:var(--muted)}
+.zhixing-theme .run-outcome-actions {display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.zhixing-theme .run-outcome-actions small {color:var(--muted);font-size:12px;line-height:1.5}
 .zhixing-theme .file-chip {background:#fff;border-color:var(--line);border-radius:6px}
 .zhixing-theme .file-chip-main {color:var(--ink)}
 .zhixing-theme .file-chip-main>span {font-size:13px}
