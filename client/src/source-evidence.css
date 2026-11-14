@@ -3,4 +3,9 @@
 .source-open-action { display:flex; flex-direction:column; gap:6px; align-items:flex-start; }
 .source-open-action .button { font-size:12px; }
 .source-open-action [role="alert"] { font-size:12px; color:var(--error,#a33838); overflow-wrap:anywhere; }
-@media(max-width:760px) { .source-entry { min-width:0; width:100%; } }
+.source-image-actions { display:flex; flex-wrap:wrap; gap:6px; align-items:flex-start; }
+.source-image-actions .source-open-action { flex:1 1 150px; min-width:0; }
+.source-id { opacity:.72; font-family:var(--font-mono,ui-monospace,monospace); overflow-wrap:anywhere; }
+.source-boundary { margin:0 0 12px; padding:8px 10px; border-left:3px solid var(--warning,#a66a00); background:var(--surface-muted,#f6f2e8); color:var(--text-muted,#5b5345); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.source-blocked-image { display:inline-block; padding:4px 8px; border:1px dashed var(--border-strong,#b8ad97); border-radius:6px; color:var(--text-muted,#5b5345); font-size:12px; overflow-wrap:anywhere; }
+@media(max-width:760px) { .source-entry { min-width:0; width:100%; } .source-image-actions .source-open-action { flex:1 1 100%; } }

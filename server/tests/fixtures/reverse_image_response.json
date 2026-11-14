@@ -1,0 +1,108 @@
+{
+ "_meta": {
+  "source": "school-cloud DeepSeek WebTools reverse-image probe, 2026-11-14",
+  "normalization": "opaque encrypted_content, snippets and model prose removed"
+ },
+ "id": "fixture-reverse-image",
+ "type": "message",
+ "role": "assistant",
+ "model": "deepseek-flash",
+ "content": [
+  {
+   "type": "server_tool_use",
+   "id": "srvtoolu_is_00_9f1c932ece7948998ddebc2098a51dea",
+   "name": "deepseek_web_search",
+   "input": {
+    "action": "search",
+    "queries": []
+   },
+   "kind": "image_search"
+  },
+  {
+   "type": "web_search_tool_result",
+   "tool_use_id": "srvtoolu_is_00_9f1c932ece7948998ddebc2098a51dea",
+   "kind": "image_search",
+   "content": [
+    {
+     "type": "web_search_result",
+     "title": "ABB NTAC-02 58976008",
+     "url": "https://www.foreign-trade.com/wholesale/ABB-NTAC-02-58976008_280925.html",
+     "image_url": "https://www.foreign-trade.com/photo/ko/Robot%5FABB%5F1%2Ejpg"
+    },
+    {
+     "type": "web_search_result",
+     "title": "Cercetătorii au creat primul braţ robotic care poate fi controlat fără ajutorul unui implant cerebral",
+     "url": "https://www.descopera.ro/stiinta/18178346-cercetatorii-au-creat-primul-brat-robotic-care-poate-fi-controlat-fara-ajutorul-unui-implant-cerebral",
+     "image_url": "https://media.descopera.ro/067gC6pI3lPshe9S5Y23X7HewPs=/970x500/smart/filters:contrast(5):format(webp):quality(90)/https://www.descopera.ro/wp-content/uploads/2019/06/18178346/1-brat-robotic-pixabay-descopera.jpg"
+    },
+    {
+     "type": "web_search_result",
+     "title": "Reaching for a better grip with robots",
+     "url": "https://www.newelectronics.co.uk/content/features/reaching-for-a-better-grip-with-robots",
+     "image_url": "https://www.newelectronics.co.uk/media/sdpd5uzy/robot-gripper-image.jpg?width=1002&height=564&bgcolor=White&v=1db44e8d274c110"
+    },
+    {
+     "type": "web_search_result",
+     "title": "机器人用装配电缆",
+     "url": "https://www.igus.cn/zh-CN/info/rc-for-robot2023",
+     "image_url": "https://eapi.igus.cn/ecom/media/cn-igus-strapi-bucket/file/chainflex_CFROBOT_8_appl_robot_9cb8a8ab51.jpeg"
+    },
+    {
+     "type": "web_search_result",
+     "title": "机器人抓取放置：为您的自动化项目匹配最佳系统",
+     "url": "https://robodk.com/cn/blog/%e6%9c%ba%e5%99%a8%e4%ba%ba%e6%8a%93%e5%8f%96%e6%94%be%e7%bd%ae%e6%8c%87%e5%8d%97/",
+     "image_url": "https://robodk.com/cn/blog/wp-content/uploads/2026/04/image-9.png"
+    },
+    {
+     "type": "web_search_result",
+     "title": "Olympia levert naast uitzendkrachten ook cobots",
+     "url": "https://www.flexmarkt.nl/ondernemen/olympia-levert-ook-cobots-aan-inleners/",
+     "image_url": "https://www.flexmarkt.nl/wp-content/uploads/2019/06/robotarm-1078x516.jpg"
+    },
+    {
+     "type": "web_search_result",
+     "title": "LHT-IV cup type solid shaft robot arm gearbox harmonic drive harmonic gearbox",
+     "url": "https://www.alibaba.com/product-detail/LHT-IV-cup-type-solid-shaft_1600751918610.html",
+     "image_url": "http://s.alicdn.com/@sc04/kf/H29688cb331cf4515b49fdcf178588fc2L.jpg_720x720q50.jpg"
+    },
+    {
+     "type": "web_search_result",
+     "title": "通过RoboDK对机器人进行拾取和放置编程",
+     "url": "https://robodk.com/cn/blog/%e9%80%9a%e8%bf%87robodk%e5%af%b9%e6%9c%ba%e5%99%a8%e4%ba%ba%e8%bf%9b%e8%a1%8c%e6%8b%be%e5%8f%96%e5%92%8c%e6%94%be%e7%bd%ae%e7%bc%96%e7%a8%8b/",
+     "image_url": "https://robodk.com/cn/blog/wp-content/uploads/2022/05/image-4.png"
+    },
+    {
+     "type": "web_search_result",
+     "title": "AHTE 2025",
+     "url": "https://www.shanghaiahte.com/press/exhibition-news/384.html",
+     "image_url": "http://img.shanghaiahte.com/UploadFiles/common/2018/6/20180625105010497284018.jpg"
+    },
+    {
+     "type": "web_search_result",
+     "title": "Do you know about automatic palletizing systems?",
+     "url": "https://en.poyatos.com/blog/automatic-palletizing-systems-poyatos",
+     "image_url": "https://en.poyatos.com/uploads/images/Integration-of-Robots-for-special-processes.jpg"
+    },
+    {
+     "type": "web_search_result",
+     "title": "В России разработают робота, который «выжил» бы на крыше ЧАЭС после аварии",
+     "url": "https://www.belnovosti.by/tehnologii/v-rossii-razrabotayut-robota-kotoryy-vyzhil-na-kryshe-chaes-posle-avarii",
+     "image_url": "https://www.belnovosti.by/sites/default/files/article/2019/07/24/1_2.jpg"
+    }
+   ]
+  },
+  {
+   "type": "text",
+   "text": "[fixture trimmed: model prose intentionally omitted; prose URLs are never sources]"
+  }
+ ],
+ "usage": {
+  "input_tokens": 16142,
+  "output_tokens": 222,
+  "cache_read_input_tokens": 1024,
+  "service_tier": "standard",
+  "server_tool_use": {
+   "tool_image_search": 2
+  }
+ }
+}

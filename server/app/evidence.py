@@ -17,8 +17,10 @@ KINDS = {"data", "knowledge", "web"}
 MARKER = re.compile(r"\[\[source:([A-Za-z0-9_-]{1,100})\]\]")
 FIELDS = {
     "data": {"data_source", "database", "schema", "table", "tables", "fields", "record_keys", "filters", "time_range", "timezone", "queried_at", "aggregation", "trace_id", "dataset", "dataset_purpose", "dataset_version", "missing_fields", "row_count", "query", "tool"},
-    "knowledge": {"knowledge_base", "knowledge_base_id", "file", "version", "sha256", "page", "pages", "section", "paragraph", "chunk_id", "imported_at", "extraction", "start", "end"},
-    "web": {"url", "title", "fetched_at", "published_at", "updated_at", "search_query", "provider", "content_type", "character_start", "character_end", "truncated"},
+    # ``capability``/``provider`` let OCR sources be reauthorized against the
+    # current capability grant instead of inheriting an old run's authority.
+    "knowledge": {"knowledge_base", "knowledge_base_id", "file", "version", "sha256", "page", "pages", "section", "paragraph", "chunk_id", "imported_at", "extraction", "start", "end", "capability", "provider"},
+    "web": {"url", "title", "fetched_at", "published_at", "updated_at", "search_query", "provider", "content_type", "character_start", "character_end", "truncated", "capability", "image_url", "thumbnail_url", "width", "height", "mode"},
 }
 SENSITIVE = re.compile(r"password|secret|token|authorization|api.?key|credential|internal_path|file_path", re.I)
 
@@ -35,6 +37,16 @@ def public_url(value):
     except ValueError:
         pass
     return None
+
+
+def safe_public_link(value):
+    """Public evidence link plus the shared private-address/DNS policy check."""
+    try:
+        from .web_tools import public_url as public_http_url
+        public_http_url(value)
+    except (AppError, ValueError, TypeError):
+        return None
+    return public_url(value)
 
 
 def internal_source_link(value):
@@ -131,6 +143,8 @@ class EvidenceService:
         run = self._run(row["run_id"], user)
         conversation = self.service.require("conversations", run["conversation_id"], user)
         assistant = self.service.usable_assistant(conversation["assistant_id"], user)
+        locator = json.loads(row["locator"]) if isinstance(row["locator"], str) else row["locator"] or {}
+        capability = locator.get("capability") if isinstance(locator, dict) else None
         resource_type, resource_id = row.get("resource_type"), row.get("resource_id")
         if resource_type == "knowledge_base":
             kb = self.service.knowledge.require(resource_id, user)
@@ -157,9 +171,26 @@ class EvidenceService:
                 raise AppError(404, "SOURCE_UNAVAILABLE", "附件不属于此会话")
         elif row["kind"] != "web":
             raise AppError(404, "SOURCE_UNAVAILABLE", "来源缺少可核对的授权资源")
-        elif not assistant.get("web_search_enabled"):
+        elif capability in (None, "search", "fetch") and not assistant.get("web_search_enabled"):
+            # Image search is a separate grant; its own capability check below
+            # decides. Legacy web rows keep the historical boolean check.
             raise AppError(404, "SOURCE_UNAVAILABLE", "助手的网页访问能力已停用")
+        if capability is not None:
+            self._authorize_capability_source(row, user)
         return row
+
+    def _authorize_capability_source(self, row, user):
+        """Current capability/domain grant for a recorded source.
+
+        The policy module is provided by the capability-governance owner.  When
+        it is absent (this branch before integration) capability-tagged sources
+        fail closed rather than bypassing revocation.
+        """
+        try:
+            from .capability_policy import authorize_source_access
+        except ImportError:
+            raise AppError(404, "SOURCE_UNAVAILABLE", "该能力来源暂不可重新授权") from None
+        authorize_source_access(self.service, row, user)
 
     def view(self, row):
         locator = json.loads(row["locator"]) if isinstance(row["locator"], str) else row["locator"]
@@ -174,6 +205,17 @@ class EvidenceService:
         run = self._run(run_id)
         user = self.service.require("users", run["user_id"])
         cleaned = {key: _safe_value(value) for key, value in locator.items() if key in FIELDS[kind]}
+        if kind == "web" and cleaned.get("capability") == "image_search":
+            # Both links come from the provider, but only a safe public pair may
+            # reach the UI.  Never repair one link by guessing from the other.
+            image_url = safe_public_link(cleaned.get("image_url"))
+            if not image_url:
+                raise AppError(422, "INVALID_SOURCE", "图片来源缺少安全的原始图片地址")
+            cleaned["image_url"] = image_url
+            if cleaned.get("thumbnail_url"):
+                cleaned["thumbnail_url"] = safe_public_link(cleaned["thumbnail_url"])
+            if cleaned.get("url") and not safe_public_link(cleaned["url"]):
+                raise AppError(422, "INVALID_SOURCE", "图片来源缺少安全的原网页地址")
         if kind == "data":
             required = ("database", "table", "fields", "time_range", "timezone", "queried_at")
             cleaned["missing_fields"] = [key for key in required if not cleaned.get(key)]
@@ -384,11 +426,19 @@ class EvidenceService:
                        if source["kind"] == "web" and source["id"] not in explicit_ids]
         # Full page reads are stronger evidence than search snippets.  If no
         # page was read, retain a bounded set of search candidates instead.
+        # Image candidates stay visible on their own budget so a busy text
+        # search cannot push a successful image result out of the source bar.
         page_sources = [source for source in web_sources if source.get("locator", {}).get("content_type") == "page_text"]
-        auto_sources = (page_sources or [source for source in web_sources if source.get("locator", {}).get("content_type") == "search_excerpt"])[:5]
+        search_sources = [source for source in web_sources if source.get("locator", {}).get("content_type") == "search_excerpt"]
+        image_sources = [source for source in web_sources if source.get("locator", {}).get("content_type") == "image_search_result"]
+        if page_sources:
+            auto_sources = page_sources[:5] + image_sources[:3]
+        else:
+            auto_sources = search_sources[:5] + image_sources[:5]
         for source in auto_sources:
             numbers[source["id"]] = len(citations) + 1
-            attribution = "read" if source["locator"].get("content_type") == "page_text" else "search_candidate"
+            attribution = {"page_text": "read", "search_excerpt": "search_candidate",
+                           "image_search_result": "image_candidate"}[source["locator"].get("content_type")]
             citations.append({**source, "number": numbers[source["id"]], "attribution": attribution})
         # Models cannot create clickable internal source links without registration.
         permitted = {source["id"] for source in citations}
@@ -405,7 +455,9 @@ class EvidenceService:
                     suffix += f" · v{source['document_version']}"
                 kind_label = labels[source["kind"]]
                 if source["kind"] == "web":
-                    kind_label = {"cited": "回答引用的网页", "read": "网页正文已读取，未明确引用", "search_candidate": "外部检索候选，未核验正文"}[source["attribution"]]
+                    kind_label = {"cited": "回答引用的网页", "read": "网页正文已读取，未明确引用",
+                                  "search_candidate": "外部检索候选，未核验正文",
+                                  "image_candidate": "图片检索候选，未读取网页正文"}[source["attribution"]]
                 lines.append(f"[{source['number']}] [{kind_label} · {title}{suffix}]({source['url']})")
             result = result.rstrip() + "\n\n来源\n\n" + "\n\n".join(lines)
         return {"text": result, "citations": [{key: source.get(key) for key in ("id", "number", "kind", "title", "url", "document_id", "document_version", "attribution")} for source in citations]}

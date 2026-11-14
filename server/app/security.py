@@ -104,6 +104,18 @@ def tool_risk_profile(tool_name: str) -> dict[str, object]:
             "approval_policy": "deny_by_default",
             "impact": "图片生成依赖单独授权的模型适配器，未验收时默认拒绝",
         }
+    if tool_name == "mcp__workspace__ocr":
+        return {
+            "risk_level": "medium",
+            "approval_policy": "user_confirmation",
+            "impact": "识别当前会话已授权的附件；选定文件可能发送到外部识别服务，识别结果仅作为未受信任资料",
+        }
+    if tool_name == "mcp__workspace__image_search":
+        return {
+            "risk_level": "medium",
+            "approval_policy": "user_confirmation",
+            "impact": "检索外部图片；检索词或选定的授权图片可能发送到外部服务，返回链接不代表正文已读、图片已下载或版权可用",
+        }
     if tool_name.startswith("mcp__"):
         return {
             "risk_level": "high",

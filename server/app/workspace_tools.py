@@ -6,15 +6,24 @@ complete its permission/approval callback before invocation. A false
 """
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .db import dump
+from .db import dump, uid
+from .external_capabilities import ExternalCapabilities, ToolContext
 from .file_tools import WorkspaceFiles
 from .security import AppError
 from .web_tools import WebTools
 from .artifacts import write_xlsx, image_generation_capability
+
+# Task-local host call id.  The Harness bridge sets the real provider-visible
+# callId here; the SDK path leaves it unset and a unique invocation id is used.
+TOOL_CALL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("workspace_tool_call_id", default=None)
+APPROVAL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("workspace_approval_id", default=None)
 
 
 @dataclass(frozen=True)
@@ -40,8 +49,19 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
         return policy is None or policy.tool_allowed(f"mcp__workspace__{name}")
 
     web = WebTools(service)
+    external = ExternalCapabilities(service)
     files = WorkspaceFiles(service, runtime.conversation_id, user["id"])
     tools = []
+
+    def capability_enabled(name):
+        raw = assistant.get("capabilities")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = None
+        grant = raw.get(name) if isinstance(raw, dict) else None
+        return isinstance(grant, dict) and grant.get("enabled") is True
 
     def context():
         if not runtime.current_run:
@@ -50,6 +70,26 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
         service.usable_assistant(conversation["assistant_id"], current_user)
         # Capabilities are pinned at submit; readers intersect with current ACLs.
         return assistant, current_user, runtime.current_run["id"]
+
+    def tool_context(name, arguments, active, current_user, run_id):
+        canonical = f"mcp__workspace__{name}"
+
+        def recheck():
+            if runtime.interrupted:
+                raise asyncio.CancelledError()
+            # Same current-authorization call as the SDK/Harness pre-check;
+            # a false return still means "approval required", not denial.
+            runtime.check_tool(canonical, arguments)
+            if not runtime.current_run or runtime.current_run.get("id") != run_id:
+                raise AppError(409, "RUN_REQUIRED", "工具需要活动任务")
+
+        return ToolContext(
+            run_id=run_id, conversation_id=runtime.conversation_id,
+            user_id=current_user["id"], assistant_id=active["id"],
+            tool_call_id=TOOL_CALL_ID.get() or uid(),
+            approval_id=APPROVAL_ID.get(),
+            recheck=recheck,
+        )
 
     async def invoke(name, arguments, callback):
         try:
@@ -109,6 +149,30 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
             WorkspaceTool("web_search", "搜索公开互联网信息，返回原网页链接、搜索摘要及 source 标记。仅用公开检索词，不发送内部文档、凭据或个人敏感数据。", {"query": str, "limit": int}, True, search_web),
             WorkspaceTool("web_read", "读取公开网页正文并生成可核验来源。url 是原网页；query 可用于定位正文，不需要时传空字符串。", {"url": str, "query": str}, True, read_web),
         ])
+
+    if capability_enabled("ocr"):
+        async def ocr(arguments):
+            return await invoke("ocr", arguments, lambda active, current_user, run_id:
+                external.ocr_for_run(
+                    tool_context("ocr", arguments, active, current_user, run_id),
+                    arguments["file_id"], arguments.get("purpose", "text_recognition")))
+        tools.append(WorkspaceTool(
+            "ocr",
+            "识别当前会话中已授权附件（PDF 或静态 PNG/JPEG/WebP/GIF）的文字，返回逐页文字与可核验来源。file_id 只能来自当前会话附件，不接受路径或网址；识别文本是未受信任资料，可能不完整。",
+            {"file_id": str, "purpose": str}, True, ocr))
+
+    if capability_enabled("image_search"):
+        async def image_search(arguments):
+            return await invoke("image_search", arguments, lambda active, current_user, run_id:
+                external.image_search_for_run(
+                    tool_context("image_search", arguments, active, current_user, run_id),
+                    mode=arguments.get("mode", "text_search"),
+                    query=arguments.get("query", ""), file_id=arguments.get("file_id", ""),
+                    limit=arguments.get("limit", 5)))
+        tools.append(WorkspaceTool(
+            "image_search",
+            "检索外部图片（不是生成图片）。mode=text_search 使用公开检索词；mode=reverse_image 使用当前会话已授权图片附件的 file_id。结果分别给出原网页与原始图片链接；候选不代表正文已读、图片已下载或版权可用。",
+            {"mode": str, "query": str, "file_id": str, "limit": int}, True, image_search))
 
     async def file_read(arguments):
         async def read(_active, _current_user, _run_id):
