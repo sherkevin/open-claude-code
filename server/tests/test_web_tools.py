@@ -5,8 +5,42 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.config import Settings
+from app.db import dump
 from app.security import AppError
+from app.service import Service, assistant_view
 from app.web_tools import PageText, PublicNetworkBackend, WebTools, public_dns_answers, public_url
+
+
+PASSWORD = "Synthetic-pass-for-test-123"
+
+
+class MemoryEvidence:
+    def __init__(self):
+        self.items = []
+
+    def register(self, *args, **kwargs):
+        self.items.append((args, kwargs))
+        return {"id": f"source-{len(self.items)}"}
+
+
+def governed_service(tmp_path, **overrides):
+    """Real Service/run/assistant so the executor cannot be bypassed in tests."""
+    settings = Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",), **overrides)
+    service = Service(settings)
+    user = service.create_user({"username": "u", "display_name": "U", "role": "admin", "password": PASSWORD})
+    row = service.db.one("SELECT * FROM users WHERE id=?", (user["id"],))
+    assistant = service.save_assistant({"name": "A", "instructions": "T", "web_search_enabled": True}, user=row)
+    conversation_id, run_id = "conv-test", "run-test"
+    service.db.execute(
+        "INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,active_run_id) "
+        "VALUES(?,?,?,?,?,?,?)", (conversation_id, user["id"], assistant["id"], "T", "2026-01-01", "2026-01-01", run_id))
+    snapshot = assistant_view(service.db.one("SELECT * FROM assistants WHERE id=?", (assistant["id"],)), row)
+    service.db.execute(
+        "INSERT INTO runs(id,conversation_id,user_id,client_request_id,message_id,status,created_at,capability_snapshot) "
+        "VALUES(?,?,?,?,?,?,?,?)", (run_id, conversation_id, user["id"], "c1", "m1", "running", "2026-01-01", dump(snapshot)))
+    service.evidence = MemoryEvidence()
+    return service, user, assistant, run_id
 
 
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "http://localhost/a", "http://127.0.0.1", "http://169.254.169.254/latest", "http://[::1]", "http://user:pass@example.com", "https://example.com:8443", "https://host.internal/", "http://192.168.1.1", "http://example.com\\@127.0.0.1"])
@@ -40,45 +74,25 @@ def test_page_text_excludes_executable_content():
     assert "".join(parser.title_parts) == "Source"
 
 
-def test_search_uses_real_response_sources_and_current_assistant_flag(monkeypatch):
-    class Evidence:
-        def register(self, *args, **kwargs):
-            self.last = (args, kwargs)
-            return {"id": "registered-source"}
-    class Service:
-        evidence = Evidence()
-        enabled = True
-        def usable_assistant(self, assistant_id, user):
-            return {"id": assistant_id, "web_search_enabled": self.enabled}
-    service = Service()
+def test_search_uses_real_response_sources_and_current_assistant_flag(tmp_path, monkeypatch):
+    service, user, assistant, run_id = governed_service(tmp_path)
     fetch = AsyncMock(return_value=("https://www.bing.com/search", "application/rss+xml", b'<rss><channel><item><title>Real title</title><link>https://example.com/report</link><description>Measured result</description></item></channel></rss>'))
     monkeypatch.setattr("app.web_tools.fetch_public", fetch)
     async def scenario():
-        result = await WebTools(service).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query")
-        assert result["results"][0]["citation"] == "[[source:registered-source]]"
-        assert service.evidence.last[0][4] == "Measured result"
-        assert service.evidence.last[0][3]["fetched_at"]
-        service.enabled = False
+        result = await WebTools(service).search_for_run(user, assistant, run_id, "public query")
+        assert result["results"][0]["citation"] == "[[source:source-1]]"
+        assert service.evidence.items[0][0][4] == "Measured result"
+        assert service.evidence.items[0][0][3]["fetched_at"]
+        service.db.execute("UPDATE assistants SET web_search_enabled=0 WHERE id=?", (assistant["id"],))
         with pytest.raises(AppError):
-            await WebTools(service).read_for_run({"id": "u"}, {"id": "a"}, "run", "https://example.com")
+            await WebTools(service).read_for_run(user, assistant, run_id, "https://example.com")
         assert fetch.await_count == 1
     asyncio.run(scenario())
 
 
-def test_search_deduplicates_canonical_urls_and_marks_provider(monkeypatch):
-    class Evidence:
-        def __init__(self):
-            self.items = []
-        def register(self, *args, **kwargs):
-            self.items.append((args, kwargs))
-            return {"id": f"source-{len(self.items)}"}
-    class Service:
-        evidence = Evidence()
-        settings = None
-        def usable_assistant(self, assistant_id, user):
-            return {"id": assistant_id, "web_search_enabled": True}
-    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "searxng")
-    monkeypatch.setenv("AGENT_WEB_SEARCH_SEARXNG_URL", "https://search.example/search")
+def test_search_deduplicates_canonical_urls_and_marks_provider(tmp_path, monkeypatch):
+    service, user, assistant, run_id = governed_service(
+        tmp_path, web_search_provider="searxng", web_search_searxng_url="https://search.example/search")
     fetch = AsyncMock(return_value=("https://search.example/search", "application/json", json_bytes({
         "results": [
             {"title": "First", "url": "https://example.com/report/?utm_source=x", "content": "a"},
@@ -88,74 +102,51 @@ def test_search_deduplicates_canonical_urls_and_marks_provider(monkeypatch):
     })))
     monkeypatch.setattr("app.web_tools.fetch_public", fetch)
     async def scenario():
-        result = await WebTools(Service()).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query", limit=5)
+        result = await WebTools(service).search_for_run(user, assistant, run_id, "public query", limit=5)
         assert result["provider"] == "searxng" and result["fallback"] is False
         assert [item["url"] for item in result["results"]] == ["https://example.com/report", "https://example.org/other"]
         assert all(item["provider"] == "searxng" for item in result["results"])
-        assert len(Service.evidence.items) == 2
+        assert len(service.evidence.items) == 2
     asyncio.run(scenario())
 
 
-def test_optional_provider_without_endpoint_falls_back_to_bing(monkeypatch):
-    class Evidence:
-        def register(self, *args, **kwargs):
-            return {"id": "source"}
-    class Service:
-        evidence = Evidence()
-        settings = None
-        def usable_assistant(self, assistant_id, user):
-            return {"id": assistant_id, "web_search_enabled": True}
-    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "searxng")
-    monkeypatch.delenv("AGENT_WEB_SEARCH_SEARXNG_URL", raising=False)
+def test_optional_provider_without_endpoint_falls_back_to_bing(tmp_path, monkeypatch):
+    service, user, assistant, run_id = governed_service(tmp_path, web_search_provider="searxng")
     monkeypatch.setattr(WebTools, "_bing", AsyncMock(return_value=[{"title": "Fallback", "url": "https://example.com", "excerpt": "ok"}]))
     async def scenario():
-        result = await WebTools(Service()).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query")
+        result = await WebTools(service).search_for_run(user, assistant, run_id, "public query")
         assert result["provider"] == "bing_rss" and result["requested_provider"] == "searxng"
         assert result["fallback"] is True
     asyncio.run(scenario())
 
 
-def test_optional_provider_transport_failure_falls_back_without_leaking_error(monkeypatch):
-    class Evidence:
-        def register(self, *args, **kwargs):
-            return {"id": "source"}
-    class Service:
-        evidence = Evidence()
-        settings = None
-        def usable_assistant(self, assistant_id, user):
-            return {"id": assistant_id, "web_search_enabled": True}
-    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "searxng")
-    monkeypatch.setenv("AGENT_WEB_SEARCH_SEARXNG_URL", "https://search.example/search")
+def test_optional_provider_transport_failure_falls_back_without_leaking_error(tmp_path, monkeypatch):
+    service, user, assistant, run_id = governed_service(
+        tmp_path, web_search_provider="searxng", web_search_searxng_url="https://search.example/search")
     monkeypatch.setattr("app.web_tools.fetch_public", AsyncMock(side_effect=httpx.ConnectError("offline")))
     monkeypatch.setattr(WebTools, "_bing", AsyncMock(return_value=[{"title": "Fallback", "url": "https://example.com", "excerpt": "ok"}]))
     async def scenario():
-        result = await WebTools(Service()).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query")
+        result = await WebTools(service).search_for_run(user, assistant, run_id, "public query")
         assert result["provider"] == "bing_rss" and result["fallback"] is True
     asyncio.run(scenario())
 
 
-def test_brave_provider_uses_header_without_putting_key_in_url(monkeypatch):
-    class Evidence:
-        def register(self, *args, **kwargs):
-            return {"id": "source"}
-    class Service:
-        evidence = Evidence()
-        settings = None
-        def usable_assistant(self, assistant_id, user):
-            return {"id": assistant_id, "web_search_enabled": True}
-    monkeypatch.setenv("AGENT_WEB_SEARCH_PROVIDER", "brave")
-    monkeypatch.setenv("AGENT_WEB_SEARCH_BRAVE_URL", "https://api.search.brave.com/res/v1/web/search")
-    monkeypatch.setenv("AGENT_WEB_SEARCH_BRAVE_API_KEY", "secret-key")
+def test_brave_provider_uses_header_without_putting_key_in_url(tmp_path, monkeypatch):
+    service, user, assistant, run_id = governed_service(
+        tmp_path, web_search_provider="brave",
+        web_search_brave_url="https://api.search.brave.com/res/v1/web/search",
+        web_search_brave_api_key="secret-key")
     fetch = AsyncMock(return_value=("https://api.search.brave.com/res/v1/web/search", "application/json", json_bytes({
         "web": {"results": [{"title": "Brave result", "url": "https://example.com", "description": "ok"}]}
     })))
     monkeypatch.setattr("app.web_tools.fetch_public_headers", fetch)
     async def scenario():
-        result = await WebTools(Service()).search_for_run({"id": "u"}, {"id": "a"}, "run", "public query")
+        result = await WebTools(service).search_for_run(user, assistant, run_id, "public query")
         assert result["provider"] == "brave"
         called_url = fetch.await_args.args[0]
         assert "secret-key" not in called_url
         assert fetch.await_args.kwargs["headers"]["X-Subscription-Token"] == "secret-key"
+        assert fetch.await_args.kwargs["credentialed"] is True
     asyncio.run(scenario())
 
 

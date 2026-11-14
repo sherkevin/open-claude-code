@@ -62,6 +62,22 @@ class Binding(InputModel):
     auto_approved_tools: list[str] = Field(default_factory=list, max_length=1000)
 
 
+class AssistantCapabilityGrant(InputModel):
+    enabled: bool = False
+    auto_approved: bool = False
+    domains: dict | None = None
+    egress: dict | None = None
+    limits: dict | None = None
+    max_attempts: int | None = Field(default=None, strict=True, ge=1, le=3)
+
+
+class AssistantCapabilities(InputModel):
+    search: AssistantCapabilityGrant | None = None
+    fetch: AssistantCapabilityGrant | None = None
+    ocr: AssistantCapabilityGrant | None = None
+    image_search: AssistantCapabilityGrant | None = None
+
+
 class AssistantCreate(InputModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
@@ -73,6 +89,7 @@ class AssistantCreate(InputModel):
     knowledge_base_ids: list[str] | None = Field(default=None, max_length=64)
     skill_ids: list[str] = Field(default_factory=list, max_length=64)
     web_search_enabled: bool = False
+    capabilities: AssistantCapabilities | None = None
     default_model_id: str | None = Field(default=None, max_length=100)
     default_reasoning_level: str | None = Field(default=None, max_length=30)
 
@@ -89,6 +106,7 @@ class AssistantPatch(InputModel):
     knowledge_base_ids: list[str] | None = Field(default=None, max_length=64)
     skill_ids: list[str] | None = Field(default=None, max_length=64)
     web_search_enabled: bool | None = None
+    capabilities: AssistantCapabilities | None = None
     default_model_id: str | None = Field(default=None, max_length=100)
     default_reasoning_level: str | None = Field(default=None, max_length=30)
 
