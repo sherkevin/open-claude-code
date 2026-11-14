@@ -126,6 +126,8 @@ def mcp_server():
                         "original_rows": 1}
                 if state.payload_padding:
                     body["padding"] = "x" * state.payload_padding
+                if hasattr(state, "structured_override"):
+                    body = copy.deepcopy(state.structured_override)
                 result = {"content": [{"type": "text", "text": dump(body)}], "structuredContent": body,
                           "isError": state.fail}
                 if state.structured_mode == "only":

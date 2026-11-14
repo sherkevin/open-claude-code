@@ -1,0 +1,23 @@
+/* Product palette: SAP Horizon source tokens recorded in the approved 2026-11-14
+   product plan. Brand artwork is deliberately unchanged. */
+.zhixing-theme{--brand:#0070f2;--brand-soft:#edf5ff;--ink:#131e29;--muted:#556b80;--paper:#f5f6f7;--white:#fff;--line:#dce3eb;--panel:#edf1f5;--green:#256f3a;--green-dark:#1e5430;--green-soft:#eff8f0;--red:#aa0808;--shadow:0 8px 28px #17324c0a}
+.zhixing-theme .button.primary,.zhixing-theme .new-conversation,.zhixing-theme .send-button{background:var(--brand);border-color:var(--brand);color:#fff}
+.zhixing-theme .button.primary:hover:not(:disabled),.zhixing-theme .new-conversation:hover{background:#0064d9;border-color:#0064d9}
+.zhixing-theme .nav-item.selected{background:var(--brand);color:#fff;border-radius:6px}
+.zhixing-theme .nav-item.selected:before{display:none}
+.zhixing-theme .history-item.selected{background:var(--brand-soft);color:#0064d9}
+.zhixing-theme .brand-symbol{background:#131e29}
+.zhixing-theme .badge.green{color:#256f3a;background:#eff8f0}
+.zhixing-theme .badge.amber{color:#8d5100;background:#fff5e5}
+.zhixing-theme .button{border-radius:6px}
+.zhixing-theme .page-header h1{font-size:24px;font-weight:600}
+.zhixing-theme .message.user .message-content{border-color:#d8e5f6;background:#f1f6fd}
+.zhixing-theme .chat-heading h1{font-weight:600}
+.zhixing-theme :is(button,a,input,select,textarea,summary):focus-visible{outline-color:#0070f2}
+.zhixing-theme .business-result{--br-accent:#0070f2}
+@media(prefers-reduced-motion:reduce){.zhixing-theme *{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+.zhixing-theme .business-result td {color:var(--ink)}
+.zhixing-theme .business-result th {color:var(--muted)}
+@media(min-width:1100px){.zhixing-theme .messages {max-width:1120px}.zhixing-theme .composer-inner {max-width:1040px}}
+.zhixing-theme .page-header h1 {color:var(--ink)}
+.zhixing-theme .page-header p,.zhixing-theme .page-header .eyebrow {color:var(--muted)}

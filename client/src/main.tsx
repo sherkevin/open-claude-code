@@ -4,5 +4,6 @@ import App from './App';
 import './styles.css';
 import './muse-polish.css';
 import './workbench-theme.css';
+import './enterprise-theme.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);

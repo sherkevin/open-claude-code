@@ -13,7 +13,7 @@ import time
 from .db import uid
 from .harness_bridge import _arguments as knowledge_arguments
 from .harness_memory import HarnessMemoryTools, MEMORY_NAMES
-from .mcp_tools import build_mcp_tools
+from .mcp_tools import build_mcp_tools, enforce_model_result_budget
 from .runtime import result_fact_metadata
 from .security import AppError, redact
 from .workspace_tools import build_workspace_tools
@@ -136,6 +136,8 @@ class HarnessToolBridge:
         event_id, started = uid(), time.monotonic()
         success = False
         sources = []
+        error = None
+        model_input_bytes = None
         try:
             self.active(run_id)
             automatic = runtime.check_tool(tool_name, arguments)
@@ -171,6 +173,8 @@ class HarnessToolBridge:
             recheck()
             if not result.get("is_error") and not result.get("isError"):
                 if business:
+                    # Also guard injected/custom adapters, before source registration.
+                    enforce_model_result_budget(result)
                     registered = service.evidence.register_mcp(run_id, business.connection_id, result, tool_name=business.server_tool)
                     if registered:
                         result["content"].append({"type": "text", "text": json.dumps([
@@ -179,6 +183,8 @@ class HarnessToolBridge:
                     # Other tools can finish while the HTTP call is pending.
                     # Attribute only this result's sources, including reused IDs.
                     sources = [source["id"] for source in registered][:30]
+                    # Citation context is real model input too; do not exempt it.
+                    model_input_bytes = enforce_model_result_budget(result)
                 else:
                     sources = [row["id"] for row in service.db.all("SELECT id FROM evidence_sources WHERE run_id=?", (run_id,)) if row["id"] not in before][:30]
                 success = True
@@ -186,6 +192,7 @@ class HarnessToolBridge:
         except asyncio.CancelledError:
             raise
         except AppError as exc:
+            error = {"error_code": exc.code, "error_message": exc.message}
             return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
         finally:
             # Failure to persist completion also fails the RPC; the child must
@@ -195,4 +202,6 @@ class HarnessToolBridge:
                                "source_count": len(sources)})
             await runtime.emit("tool.completed", {"tool_call_id": event_id, "tool_name": tool_name,
                                "success": success, "duration_ms": round((time.monotonic() - started) * 1000),
+                               **(error or {}),
+                               **({"model_input_bytes": model_input_bytes} if success and model_input_bytes is not None else {}),
                                **result_fact_metadata(success, locals().get("result"), sources)})

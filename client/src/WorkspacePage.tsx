@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { ArrowRight, ArrowUpRight, BookOpen, Clock3, Layers3, MessageSquare, Network, Plus } from 'lucide-react';
 import type { Assistant, Conversation } from './types';
 import { timeText } from './api';
 import { Button, EmptyState } from './components';
 import { ScopeBadge } from './resources';
+import './workbench-refinement.css';
 
 type Props = {
   assistants: Assistant[];
@@ -10,45 +12,98 @@ type Props = {
   onAssistant: (assistant: Assistant) => void;
   onConversation: (conversation: Conversation) => void;
   onNew?: (assistant?: Assistant) => void;
+  onStart?: (question: string, assistant?: Assistant) => void;
   onNavigate: (view: 'assistants' | 'sessions' | 'knowledge' | 'connections') => void;
   canCreate?: boolean;
   canManage?: boolean;
+  canReadKnowledge?: boolean;
+  canManageConnections?: boolean;
+  canReadSessions?: boolean;
 };
 
-export default function WorkspacePage({ assistants, conversations, onAssistant, onConversation, onNew, onNavigate, canCreate = true, canManage = true }: Props) {
-  const available = assistants.filter(assistant => assistant.enabled);
-  const recent = conversations.filter(conversation => !conversation.archived)
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 5);
-  const assistantNames = new Map(assistants.map(assistant => [assistant.id, assistant.name]));
+function updatedTime(value: string) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
 
-  return <div className="workspace-page">
-    <header className="workspace-topbar"><span>工作台</span><time dateTime={new Date().toISOString()}>{new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())}</time></header>
-    <div className="workspace-content">
-      <div className="workspace-heading"><div><span className="workspace-kicker">知行工作台 · 制造业务协同</span><h1>把今天最重要的事，先做清楚。</h1><p>{canCreate ? '从异常、任务或一条业务问题开始；结果会保留来源、状态和下一步。' : '选择一个已配置的业务助手，查看当前可用能力。'}</p></div>{canCreate && onNew && <Button onClick={() => onNew()}><Plus size={17}/>新建会话</Button>}</div>
-      <div className="workspace-signal-grid" aria-label="工作台状态概览">
-        <div className="workspace-signal workspace-signal-primary"><span>可用业务助手</span><strong>{available.length.toString().padStart(2, '0')}</strong><small>按业务范围分工</small></div>
-        <div className="workspace-signal"><span>最近业务会话</span><strong>{recent.length.toString().padStart(2, '0')}</strong><small>可继续查看上下文</small></div>
-        <div className="workspace-signal"><span>结果追溯</span><strong>开启</strong><small>来源与执行记录随会话保留</small></div>
-      </div>
-      <div className="workspace-priority-strip"><div><span className="priority-mark" aria-hidden="true"/><div><strong>先从一个具体问题开始</strong><p>助手会先缩小业务范围，再返回可核验的结果。</p></div></div><span className="priority-note">只读优先 · 结果可追溯</span></div>
-      <div className="workspace-overview">
-        <section className="workspace-assistants" aria-labelledby="assistants-heading">
-          <div className="workspace-section-heading"><h2 id="assistants-heading">业务助手</h2>{canManage && <button className="text-action" onClick={() => onNavigate('assistants')}>管理助手<ArrowUpRight size={14}/></button>}</div>
-          {available.length ? <div className="workspace-assistant-list">{available.map(assistant => <article className="workspace-assistant" key={assistant.id}>
-            <div className="workspace-assistant-heading"><span className="workspace-assistant-icon"><Layers3 size={23}/></span><button className="assistant-title-link" onClick={() => onAssistant(assistant)}><h3>{assistant.name}</h3><ArrowUpRight size={16}/></button><ScopeBadge scope={assistant.scope}/></div>
-            <p>{assistant.description || '查看助手的配置，开始新的会话。'}</p>
-            <div className="assistant-capabilities"><span><BookOpen size={14}/>{assistant.knowledge_base_ids?.length || 0} 个知识库</span><span><Network size={14}/>{assistant.connections.length} 个业务连接</span></div>
-            <div className="workspace-assistant-footer"><button className="text-action" onClick={() => canManage ? onAssistant(assistant) : onNew?.(assistant)}>{canManage ? '查看助手' : canCreate ? '开始会话' : '查看助手'}<ArrowRight size={15}/></button>{canCreate && onNew && <Button variant="secondary" onClick={() => onNew(assistant)}>开始会话</Button>}</div>
-          </article>)}</div> : <EmptyState icon={<Layers3 size={28}/>} title="还没有可用助手" description="创建一个助手，即可开始会话。知识库和业务连接可按需配置。" action={<Button onClick={() => onNavigate('assistants')}>配置助手</Button>}/>}
+export default function WorkspacePage({
+  assistants, conversations, onAssistant, onConversation, onNew, onStart, onNavigate,
+  canCreate = true, canManage = true, canReadKnowledge = true, canManageConnections = true, canReadSessions = true,
+}: Props) {
+  const [question, setQuestion] = useState('');
+  const [assistantId, setAssistantId] = useState('');
+  const available = assistants.filter(assistant => assistant.enabled);
+  const selectedAssistant = available.find(assistant => assistant.id === assistantId);
+  const selectionUnavailable = Boolean(assistantId && !selectedAssistant);
+  const recent = canReadSessions ? conversations.filter(conversation => !conversation.archived)
+    .sort((a, b) => updatedTime(b.updated_at) - updatedTime(a.updated_at)).slice(0, 5) : [];
+  const runningCount = canReadSessions ? conversations.filter(conversation => !conversation.archived && conversation.active_run_id).length : 0;
+  const assistantNames = new Map(assistants.map(assistant => [assistant.id, assistant.name]));
+  const hasResources = canReadKnowledge || canManageConnections;
+  const canAsk = canCreate && Boolean(onStart) && available.length > 0;
+  const today = new Date();
+
+  return <div className="workspace-page wr-workspace">
+    <header className="wr-topbar">
+      <span>工作台</span>
+      <time dateTime={today.toISOString()}>{new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(today)}</time>
+    </header>
+    <div className="wr-content">
+      <header className="wr-heading">
+        <div><h1>业务工作台</h1><p>{canCreate ? '提出问题，或继续最近的工作。' : '查看可用助手与最近的工作。'}</p></div>
+        {canCreate && onNew && <Button variant="secondary" onClick={() => onNew()}><Plus size={16}/>新建会话</Button>}
+      </header>
+
+      {canAsk && <section className="wr-question-panel" aria-labelledby="wr-question-heading">
+        <div className="wr-question-heading"><MessageSquare size={18}/><h2 id="wr-question-heading">开始一项工作</h2></div>
+        <form onSubmit={event => {
+          event.preventDefault();
+          if (question.trim() && !selectionUnavailable) onStart?.(question.trim(), selectedAssistant);
+        }}>
+          <label className="wr-sr-only" htmlFor="wr-question">业务问题</label>
+          <textarea id="wr-question" rows={2} value={question} onChange={event => setQuestion(event.target.value)} placeholder="描述要查询的对象、时间范围，或需要查阅的资料…" aria-describedby="wr-question-hint"/>
+          <div className="wr-question-footer">
+            <label className="wr-assistant-select"><Layers3 size={16}/><span className="wr-sr-only">使用助手</span><select value={assistantId} onChange={event => setAssistantId(event.target.value)}>
+              <option value="">稍后选择助手</option>
+              {selectionUnavailable && <option value={assistantId} disabled>原助手已不可用，请重新选择</option>}
+              {available.map(assistant => <option key={assistant.id} value={assistant.id}>{assistant.name}</option>)}
+            </select></label>
+            <span id="wr-question-hint" className="wr-question-hint">进入会话后确认并发送</span>
+            <Button type="submit" disabled={!question.trim() || selectionUnavailable}>继续<ArrowRight size={16}/></Button>
+          </div>
+        </form>
+      </section>}
+
+      <div className={`wr-overview${hasResources ? '' : ' wr-overview-full'}`}>
+        <section className="wr-assistants" aria-labelledby="wr-assistants-heading">
+          <div className="wr-section-heading"><h2 id="wr-assistants-heading">业务助手 <span className="wr-count">{available.length}</span></h2>{canManage && <button type="button" className="wr-text-action" onClick={() => onNavigate('assistants')}>管理助手<ArrowUpRight size={14}/></button>}</div>
+          {available.length ? <div className="wr-assistant-list">{available.map(assistant => <article className="wr-assistant" key={assistant.id}>
+            <div className="wr-assistant-heading"><span className="wr-assistant-icon"><Layers3 size={20}/></span><button type="button" className="wr-title-link" onClick={() => onAssistant(assistant)}><h3>{assistant.name}</h3><ArrowUpRight size={14}/></button><ScopeBadge scope={assistant.scope}/></div>
+            <p>{assistant.description || '查看助手能力，开始新的会话。'}</p>
+            <div className="wr-assistant-capabilities"><span><BookOpen size={14}/>{assistant.knowledge_base_ids?.length || 0} 个知识库</span><span><Network size={14}/>已配置 {assistant.connections.length} 个连接</span></div>
+            <div className="wr-assistant-footer"><button type="button" className="wr-text-action" onClick={() => onAssistant(assistant)}>查看能力<ArrowRight size={14}/></button>{canCreate && onNew && <Button variant="secondary" onClick={() => onNew(assistant)}>开始会话</Button>}</div>
+          </article>)}</div> : <div className="wr-empty-panel"><EmptyState icon={<Layers3 size={26}/>} title="还没有可用助手" description={canManage ? '先配置一个助手，再开始业务会话。' : '管理员开放助手后，可以在这里开始工作。'} action={canManage ? <Button onClick={() => onNavigate('assistants')}>配置助手</Button> : undefined}/></div>}
         </section>
-        <section className="workspace-resources" aria-labelledby="resources-heading"><div className="workspace-section-heading"><h2 id="resources-heading">工作资料</h2></div><div className="workspace-resource-list">
-          <button onClick={() => onNavigate('knowledge')}><span className="resource-shortcut-icon"><BookOpen size={21}/></span><span><strong>知识库</strong><small>查看文件、版本和检索结果</small></span><ArrowUpRight size={16}/></button>
-          <button onClick={() => onNavigate('connections')}><span className="resource-shortcut-icon"><Network size={21}/></span><span><strong>业务连接</strong><small>管理已接入的系统与工具</small></span><ArrowUpRight size={16}/></button>
-        </div></section>
+
+        {hasResources && <section className="wr-resources" aria-labelledby="wr-resources-heading">
+          <div className="wr-section-heading"><h2 id="wr-resources-heading">资料与连接</h2></div>
+          <div className="wr-resource-list">
+            {canReadKnowledge && <button type="button" onClick={() => onNavigate('knowledge')}><span className="wr-resource-icon"><BookOpen size={20}/></span><span><strong>知识库</strong><small>查阅文件与检索结果</small></span><ArrowUpRight size={15}/></button>}
+            {canManageConnections && <button type="button" onClick={() => onNavigate('connections')}><span className="wr-resource-icon"><Network size={20}/></span><span><strong>业务连接</strong><small>接入 MCP，检查工具能力</small></span><ArrowUpRight size={15}/></button>}
+          </div>
+          {canManageConnections && <p className="wr-resource-note">连接配置和工具检查，可在业务连接中查看。</p>}
+        </section>}
       </div>
-      <section className="workspace-recent" aria-labelledby="recent-heading"><div className="workspace-section-heading"><div className="section-heading-with-icon"><Clock3 size={17}/><h2 id="recent-heading">最近会话</h2></div><button className="text-action" onClick={() => onNavigate('sessions')}>查看全部<ArrowRight size={15}/></button></div>
-        {recent.length ? <div className="recent-conversations"><div className="recent-columns" aria-hidden="true"><span>会话</span><span>业务助手</span><span>最近更新</span><span/></div>{recent.map(conversation => <button className="recent-conversation" key={conversation.id} onClick={() => onConversation(conversation)}><span className="recent-conversation-title"><MessageSquare size={17}/><span>{conversation.title || '新会话'}</span>{conversation.active_run_id && <span className="recent-running">执行中</span>}</span><span className="recent-assistant-name">{assistantNames.get(conversation.assistant_id) || '业务助手'}</span><time dateTime={conversation.updated_at}>{timeText(conversation.updated_at)}</time><ArrowUpRight size={15}/></button>)}</div> : <div className="workspace-recent-empty"><MessageSquare size={22}/><div><h3>还没有会话</h3><p>开始一次工作后，可以在这里继续。</p></div>{canCreate && onNew && <button className="text-action" onClick={() => onNew()}>新建会话<ArrowRight size={15}/></button>}</div>}
-      </section>
+
+      {canReadSessions && <section className="wr-recent" aria-labelledby="wr-recent-heading">
+        <div className="wr-section-heading"><div className="wr-recent-heading"><Clock3 size={17}/><h2 id="wr-recent-heading">最近工作</h2>{runningCount > 0 && <span className="wr-running-summary">{runningCount} 项执行中</span>}</div><button type="button" className="wr-text-action" onClick={() => onNavigate('sessions')}>全部会话<ArrowRight size={14}/></button></div>
+        {recent.length ? <div className="wr-recent-list"><div className="wr-recent-columns" aria-hidden="true"><span>会话</span><span>业务助手</span><span>最近更新</span><span/></div>{recent.map(conversation => <button type="button" className="wr-recent-row" key={conversation.id} onClick={() => onConversation(conversation)}>
+          <span className="wr-conversation-title"><MessageSquare size={16}/><span>{conversation.title || '新会话'}</span>{conversation.active_run_id && <span className="wr-running"><span aria-hidden="true"/>执行中</span>}</span>
+          <span className="wr-conversation-assistant">{assistantNames.get(conversation.assistant_id) || '业务助手'}</span>
+          {updatedTime(conversation.updated_at) ? <time dateTime={conversation.updated_at}>{timeText(conversation.updated_at)}</time> : <span className="wr-time-unknown">更新时间未提供</span>}
+          <ArrowUpRight size={15}/>
+        </button>)}</div> : <div className="wr-recent-empty"><MessageSquare size={22}/><div><h3>还没有会话</h3><p>开始一次工作后，可以在这里继续。</p></div>{canCreate && onNew && <button type="button" className="wr-text-action" onClick={() => onNew()}>新建会话<ArrowRight size={14}/></button>}</div>}
+      </section>}
     </div>
   </div>;
 }

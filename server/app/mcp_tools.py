@@ -27,6 +27,9 @@ from .security import AppError, redact, validate_mcp_url
 
 MAX_ARGUMENT_BYTES = 512_000
 MAX_RESPONSE_BYTES = 1_000_000
+# A transport limit is not a model-input budget. This counts UTF-8 bytes,
+# never provider tokens, and refuses the whole result instead of truncating it.
+MAX_MODEL_RESULT_BYTES = 32_000
 MAX_SCHEMA_BYTES = 128_000
 MCP_TIMEOUT_SECONDS = 60
 _transport_logging = ContextVar("harness_mcp_transport_logging", default=False)
@@ -74,10 +77,10 @@ def encoded(value):
 def include_structured_text(body):
     """Expose structured-only MCP results without repeating an existing copy.
 
-    Harness renders the content blocks, not structuredContent. Keep every
-    original block and the structured payload for provenance; append a textual
-    representation only if no single block already contains that whole JSON
-    value. This is exact representation de-duplication, not summarization.
+    Harness renders content blocks, not structuredContent. Keep all distinct
+    blocks and the structured payload for provenance; identical complete JSON
+    copies appear once. Append text only if no block contains that whole value.
+    This is exact representation de-duplication, not summarization or row merging.
     """
     structured = body.get("structuredContent")
     if not isinstance(structured, dict):
@@ -107,17 +110,81 @@ def include_structured_text(body):
         return typed(parsed)
 
     canonical = signature(encoded(structured))
+    content, found = [], False
     for block in body.get("content", []):
         if block.get("type") != "text" or not isinstance(block.get("text"), str):
+            content.append(block)
             continue
         try:
             # Decimal comparison avoids rounding text to the same float;
             # typed signatures also keep True distinct from the number 1.
             if signature(block["text"]) == canonical:
-                return body
+                if not found:
+                    content.append(block)
+                found = True
+                continue
         except (ValueError, TypeError, RecursionError, InvalidOperation):
             pass
-    return {**body, "content": [*body.get("content", []), {"type": "text", "text": dump(structured)}]}
+        content.append(block)
+    if not found:
+        content.append({"type": "text", "text": dump(structured)})
+    return {**body, "content": content}
+
+
+def enforce_model_result_budget(body):
+    """Reject excessive model-visible results without modifying any rows.
+
+    The same complete structured payload stays available for evidence and UI.
+    Only explicit tabular containers get row/column limits; arbitrary prose is
+    bounded by bytes and is never parsed as a business table.
+    """
+    from .business_results import MAX_COLUMNS, MAX_ROWS, table_payload
+    content = body.get("content", [])
+    if not isinstance(content, list) or any(not isinstance(item, dict)
+            or item.get("type") != "text" or not isinstance(item.get("text"), str)
+            for item in content):
+        raise AppError(422, "MCP_RESULT_UNSUPPORTED", "业务工具返回了尚未验收的非文本内容")
+    structured = body.get("structuredContent", body.get("structured_content"))
+    pair = table_payload(structured)
+    if pair is not None:
+        payload, rows = pair
+        columns = payload.get("columns")
+        row_width = max((len(row) for row in rows if isinstance(row, dict)), default=0)
+        if len(rows) > MAX_ROWS or row_width > MAX_COLUMNS or isinstance(columns, list) and len(columns) > MAX_COLUMNS:
+            raise AppError(422, "MCP_RESULT_TOO_LARGE", "业务结果超过 200 行或 24 列上限，未送入模型；请使用过滤、后台聚合或分页，不能据截取样本计算全量。")
+    try:
+        size = len("\n".join(item["text"] for item in content).encode("utf-8"))
+        structured_size = len(encoded(structured).encode("utf-8")) if structured is not None else 0
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        raise AppError(422, "MCP_RESULT_INVALID", "业务结果不是可核验的有限 JSON 数据") from None
+    if max(size, structured_size) > MAX_MODEL_RESULT_BYTES:
+        raise AppError(422, "MCP_RESULT_TOO_LARGE", "业务结果超过 32000 字节入模上限，未送入模型；请缩小字段和时间范围，或在业务系统先聚合后重试。未自动截断或计算全量。")
+    return size
+
+
+def sdk_business_result(response, credential=None):
+    """Normalize known SDK MCP output shapes for a pre-model replacement.
+
+    Raw text is not parsed into business rows. The SDK can expose either an
+    MCP envelope, content blocks, or plain text; unknown shapes fail closed.
+    """
+    if isinstance(response, dict):
+        if "content" in response or "structuredContent" in response or "structured_content" in response:
+            body = {**response, "content": response.get("content", [])}
+            if "structuredContent" not in body and isinstance(body.get("structured_content"), dict):
+                body["structuredContent"] = body.pop("structured_content")
+        else:
+            body = {"content": [{"type": "text", "text": encoded(response)}]}
+    elif isinstance(response, list):
+        body = {"content": response}
+    elif isinstance(response, str):
+        body = {"content": [{"type": "text", "text": response}]}
+    else:
+        raise AppError(422, "MCP_RESULT_UNSUPPORTED", "业务工具回包格式未核验，未作为业务结果使用")
+    body = include_structured_text(body)
+    body = clean_mcp_value(body, credential)
+    enforce_model_result_budget(body)
+    return body
 
 
 def contains_credential(value, credential):
@@ -301,6 +368,7 @@ class MCPBusinessTool:
             body = self.clean(body)
             if len(encoded(body).encode()) > MAX_RESPONSE_BYTES:
                 raise ValueError("large normalized result")
+            enforce_model_result_budget(body)
             return body
         except asyncio.CancelledError:
             raise

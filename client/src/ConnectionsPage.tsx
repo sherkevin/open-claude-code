@@ -1,37 +1,137 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowUpRight, CheckCircle2, ChevronDown, CircleHelp, Link2, Network, Pencil, PlugZap, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
-import { api, errorText, patch, post, remove, timeText } from './api';
-import type { Connection } from './types';
+import { ArrowUpRight, ChevronDown, CircleHelp, Link2, Network, Pencil, PlugZap, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { api, ApiError, errorText, patch, post, remove, timeText } from './api';
+import type { Assistant, Connection } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import McpImportDialog from './McpImportDialog';
 import { RemoteToolDeclaration } from './ToolReadOnlyConfirmation';
+import './connections-onboarding.css';
 
-const connectionStatuses = { untested: '尚未测试', connected: '已连接', needs_auth: '需要授权', failed: '连接失败' };
-export default function ConnectionsPage({ onConfigureAssistant,admin }: { onConfigureAssistant: () => void;admin:boolean }) {
-  const [items, setItems] = useState<Connection[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState('');
+export function connectionDiscoveryState(item: Connection) {
+  if (!item.enabled) return { label: '连接已停用', detail: '启用后重新测试；当前不能发起新的工具调用。', complete: false, tone: 'neutral' };
+  if (item.status === 'needs_auth') return { label: '认证或权限未通过', detail: '请核对凭据和 MCP 端权限；连接成功前不进入业务试跑。', complete: false, tone: 'warning' };
+  if (item.status === 'failed') return { label: '连接测试失败', detail: '请检查服务端网络、地址与 Streamable HTTP 协议。具体失败阶段未确认。', complete: false, tone: 'warning' };
+  if (item.status === 'connected' && item.tools.length === 0) return { label: '已连接，未发现工具', detail: '服务返回空工具清单。请检查 MCP 是否提供所需能力及工具发现权限。', complete: false, tone: 'warning' };
+  if (item.status === 'connected') return { label: `已发现 ${item.tools.length} 个工具`, detail: '连接测试与工具发现已完成，业务数据权限和查询结果仍需试跑核对。', complete: true, tone: 'success' };
+  return { label: '等待连接测试', detail: '配置已保存，尚未确认此配置能否连接和发现工具。', complete: false, tone: 'neutral' };
+}
+
+export function connectionBindings(item: Connection, assistants: Assistant[] | null) {
+  if (assistants === null) return null;
+  return assistants.flatMap(assistant => {
+    const bindings = assistant.connections.filter(binding => binding.connection_id === item.id);
+    if (!bindings.length) return [];
+    const allowed = new Set(bindings.flatMap(binding => binding.allowed_tools));
+    return [{ id: assistant.id, name: assistant.name, enabled: assistant.enabled, allowedCount: item.tools.filter(tool => allowed.has(tool.name)).length }];
+  });
+}
+
+export async function loadConnectionOnboarding(signal?: AbortSignal) {
+  const [connections, assistants] = await Promise.allSettled([
+    api<Connection[]>('/connections', { signal }), api<Assistant[]>('/assistants', { signal }),
+  ]);
+  return { connections, assistants };
+}
+
+export function connectionTestError(error: unknown) {
+  if (error instanceof ApiError && error.status === 403) return '当前账号无权测试此连接。请由有管理权限的成员操作；MCP 的连接状态尚未重新确认。';
+  if (error instanceof ApiError && error.status === 401) return '工作台登录已失效，请重新登录后测试；这不表示 MCP 凭据有误。';
+  return `测试请求未完成：${errorText(error)} MCP 的最新状态未确认。`;
+}
+export const testConnectionDiscovery = (item: Connection) => post<Connection>(`/connections/${encodeURIComponent(item.id)}/test`);
+export const saveConnectionConfiguration = (value: Connection | null, body: Record<string, unknown>) => value ? patch<Connection>(`/connections/${encodeURIComponent(value.id)}`, body) : post<Connection>('/connections', body);
+
+export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = false, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onConfigureAssistant }: {
+  item: Connection; assistants: Assistant[] | null; bindingsLoading?: boolean; testing?: boolean; actionsBusy?: boolean; testError?: string; admin: boolean;
+  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onConfigureAssistant: () => void;
+}) {
+  const discovery = connectionDiscoveryState(item);
+  const bindings = connectionBindings(item, assistants);
+  const editable = canEdit(item, admin);
+  const currentTestPassed = !testing && !testError && discovery.complete;
+  const bindingLabel = bindingsLoading ? '正在读取绑定' : bindings === null ? '绑定情况未核' : bindings.length ? `已绑定 ${bindings.length} 个助手` : '尚未绑定助手';
+  const usableBindings = bindings?.filter(binding => binding.enabled && binding.allowedCount > 0).length || 0;
+  const statusLabel = testing ? '正在测试与发现工具' : testError ? '本次测试未完成' : discovery.label;
+  return <article className={`connection-card onboarding-card ${!item.enabled ? 'disabled-card' : ''}`} aria-labelledby={`connection-${item.id}`}>
+    <header className="connection-card-head"><span className="connection-icon"><Link2 size={22}/></span><span className={`badge ${!testing && !testError && discovery.tone === 'success' ? 'green' : testError || discovery.tone === 'warning' ? 'amber' : ''}`} role="status">{statusLabel}</span></header>
+    <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
+    <p className="connection-url" title={item.url}>{item.url}</p>
+    <div className="connection-meta"><span>{item.auth_type === 'bearer' ? 'Bearer Token' : '无认证'}{item.auth_type === 'bearer' && !item.credential_present ? ' · 未保存凭据' : ''}</span><span>Streamable HTTP</span></div>
+    <ol className="connection-progress" aria-label={`${item.name}接入进度`}>
+      <li data-state="complete"><span className="connection-step-number">1</span><div><strong>配置已保存</strong><p>由工作台服务端连接此地址</p></div></li>
+      <li data-state={currentTestPassed ? 'complete' : 'pending'}><span className="connection-step-number">2</span><div><strong>{statusLabel}</strong><p>{testing ? '正在请求 MCP 服务并读取工具定义，不执行业务查询。' : testError || discovery.detail}</p></div></li>
+      <li data-state={!bindingsLoading && bindings && bindings.length ? 'complete' : 'pending'}><span className="connection-step-number">3</span><div><strong>{bindingLabel}</strong><p>{bindingsLoading ? '按当前账号可见的助手核对。' : bindings === null ? '未取得助手清单，不能判断是否已绑定。' : bindings.length ? `当前可见助手中，${usableBindings} 个已启用并允许调用已发现工具。绑定不代表业务验证通过。` : '到助手设置中选择本连接及允许调用的工具。'}</p></div></li>
+    </ol>
+    {!testError && item.last_error && <p className="inline-error">{item.last_error}</p>}
+    <div className="connection-time">{item.last_tested_at ? `${item.status === 'untested' ? '历史测试' : '最近测试'} ${timeText(item.last_tested_at)} · ${item.status === 'untested' ? '当前配置待重测' : '非实时健康检查'}` : '尚无测试时间记录'}</div>
+    <details className="connection-trial-guide"><summary><span>绑定详情与业务试跑</span><span className="badge">试跑结果未核</span><ChevronDown size={15}/></summary>
+      {bindings && bindings.length > 0 && <ul className="connection-bound-assistants">{bindings.map(binding => <li key={binding.id}><strong>{binding.name}</strong><span>{binding.enabled ? '已启用' : '已停用'} · 允许 {binding.allowedCount} 个已发现工具</span></li>)}</ul>}
+      <p>在助手设置中选择「{item.name}」和本次任务需要的工具。再从首页进入该助手，使用已授权的业务范围和一个有标准答案的问题核对结果。</p>
+      <p>工具声明、绑定或免审批都不等于只读。试跑前核对受限账号、工具权限与业务范围；本页不自动调用业务工具，也不据此判定业务试跑通过。</p>
+    </details>
+    <footer className="card-toolbar"><Button variant="secondary" busy={testing} disabled={actionsBusy || !item.enabled || !editable} onClick={onTest}><PlugZap size={15}/>测试连接</Button><Button variant="ghost" onClick={onTools}>查看工具<ArrowUpRight size={15}/></Button><Button variant="ghost" onClick={onConfigureAssistant}>去配置助手<ArrowUpRight size={15}/></Button><div className="toolbar-spacer"/>{editable && <><button type="button" className="icon-button" disabled={actionsBusy} aria-label={`编辑 ${item.name}`} title="编辑连接" onClick={onEdit}><Pencil size={16}/></button><button type="button" className="icon-button danger-text" disabled={actionsBusy} aria-label={`删除 ${item.name}`} title="删除连接" onClick={onDelete}><Trash2 size={16}/></button></>}</footer>
+    {!editable && <p className="connection-access-note">此连接由有管理权限的成员维护，你可以查看工具和自己的助手绑定。</p>}
+  </article>;
+}
+
+export default function ConnectionsPage({ onConfigureAssistant, admin }: { onConfigureAssistant: () => void; admin: boolean }) {
+  const [items, setItems] = useState<Connection[]>([]);
+  const [assistants, setAssistants] = useState<Assistant[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [bindingsError, setBindingsError] = useState('');
+  const [error, setError] = useState('');
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState(false);
-  const [success, setSuccess] = useState(''); const [editor, setEditor] = useState<Connection | 'new' | null>(null); const [testing, setTesting] = useState(''); const [tools, setTools] = useState<Connection | null>(null); const [deleting, setDeleting] = useState<Connection | null>(null); const [busyDelete, setBusyDelete] = useState(false);
-  const load = useCallback(async () => { setError(''); try { setItems(await api<Connection[]>('/connections')); } catch (e) { setError(errorText(e)); } finally { setLoading(false); } }, []);
-  useEffect(() => { void load(); }, [load]);
-  const test = async (item: Connection) => { setTesting(item.id); setSuccess(''); setError(''); try { const next = await post<Connection>(`/connections/${item.id}/test`); setItems(items => items.map(i => i.id === next.id ? next : i)); if (next.status === 'connected') setSuccess(`「${next.name}」连接成功，已发现 ${next.tools.length} 个工具。`); else setError(next.last_error || '连接尚未就绪，请检查地址与认证配置。'); } catch (e) { setError(errorText(e)); } finally { setTesting(''); } };
-  const hasConfigured = items.length > 0; const hasTested = items.some(item => Boolean(item.last_tested_at)); const hasConnected = items.some(item => item.status === 'connected' && item.enabled);
-  return <div className="page"><PageHeader eyebrow="连接业务能力" title="业务连接" description="把已有 MCP 服务接入工作台，再授权给需要它的助手。" actions={<><Button variant="secondary" onClick={() => setImporting(true)}><Upload size={17}/>导入 MCP 配置</Button><Button onClick={() => setEditor('new')}><Plus size={17}/>新增连接</Button></>}/>
-    <ErrorNotice message={error} onDismiss={() => setError('')}/><SuccessNotice message={success}/>
-    {imported && <div className="import-next-step"><div><strong>下一步：把连接交给助手使用</strong><p>先在下方测试新连接，再到助手设置中选择连接和允许的工具。</p></div><Button variant="secondary" onClick={onConfigureAssistant}>去配置助手<ArrowUpRight size={16}/></Button></div>}
-    <div className="info-strip"><Network size={18}/><p>由服务端访问 MCP 地址。配置完成后，测试连接并查看工具，再到助手设置中启用。</p><span className="transport-badge">HTTP MCP</span></div>
-    <ol className="connection-steps" aria-label="MCP 接入步骤"><li className={hasConfigured ? 'complete' : ''}><span>01</span><div><strong>配置端点</strong><small>地址与认证凭据</small></div></li><li className={hasTested ? 'complete' : ''}><span>02</span><div><strong>测试与发现</strong><small>查看工具定义与状态</small></div></li><li className={hasConnected ? 'complete' : ''}><span>03</span><div><strong>绑定助手</strong><small>授权与只读核查</small></div></li></ol>
-    {loading ? <Loader/> : !items.length ? <EmptyState icon={<Network size={32}/>} title="连接你的第一个业务系统" description="准备好 MCP 服务地址和认证凭据，即可接入企业知识库、工单或其他业务能力。" action={<Button onClick={() => setEditor('new')}><Plus size={16}/>新增连接</Button>}/> : <div className="connections-grid">{items.map(item => <article className={`connection-card ${!item.enabled ? 'disabled-card' : ''}`} key={item.id}><div className="connection-card-head"><span className="connection-icon"><Link2 size={23}/></span><span className={`badge ${item.enabled && item.status === 'connected' ? 'green' : item.status === 'failed' || item.status === 'needs_auth' ? 'amber' : ''}`}><span className="tiny-dot"/>{item.enabled ? connectionStatuses[item.status] : '已停用'}</span></div><h2>{item.name}</h2><ScopeBadge scope={item.scope}/><p className="connection-url" title={item.url}>{item.url}</p><div className="connection-meta"><span>{item.auth_type === 'bearer' ? 'Token 认证' : '无认证'}{item.auth_type === 'bearer' && !item.credential_present ? ' · 未保存凭据' : ''}</span><span>{item.tools.length} 个工具</span></div>{item.last_error && <p className="inline-error">{item.last_error}</p>}<div className="connection-time">{item.last_tested_at ? `最近测试 ${timeText(item.last_tested_at)}` : '添加后请先测试连接'}</div><div className="card-toolbar"><Button variant="secondary" busy={testing === item.id} disabled={!!testing || !item.enabled || !canEdit(item,admin)} onClick={() => void test(item)}><PlugZap size={15}/>测试连接</Button><Button variant="ghost" onClick={() => setTools(item)}>工具<ArrowUpRight size={15}/></Button><div className="toolbar-spacer"/>{canEdit(item,admin)&&<><button className="icon-button" aria-label={`编辑 ${item.name}`} title="编辑连接" onClick={() => setEditor(item)}><Pencil size={16}/></button><button className="icon-button danger-text" aria-label={`删除 ${item.name}`} title="删除连接" onClick={() => setDeleting(item)}><Trash2 size={16}/></button></>}</div></article>)}</div>}
-    {editor && <ConnectionEditor admin={admin} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async () => { setEditor(null); setSuccess('连接配置已保存，请测试后绑定到助手。'); await load(); }}/>}
-    {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); setImported(true); setSuccess(`已导入 ${result.connections.length} 个业务连接。请先测试连接，再到助手设置中选择允许的工具及审批方式。`); void load(); }}/>}
-    {tools && <Modal title={`${tools.name} · 可用工具`} description={tools.last_tested_at ? `发现于 ${timeText(tools.last_tested_at)}` : '先测试连接以发现可用工具'} onClose={() => setTools(null)} wide><div className="modal-body connection-tools">{!tools.tools.length ? <EmptyState icon={<CircleHelp size={26}/>} title="暂时没有工具" description="关闭此窗口，测试连接后再查看。"/> : tools.tools.map(tool => <details key={tool.name} className="tool-detail"><summary><span><strong>{tool.name}</strong><small>{tool.description || '此工具没有提供描述。'}</small></span><ChevronDown size={16}/></summary><RemoteToolDeclaration tool={tool}/><p className="section-help">工作流只读确认须在具体助手的能力配置中登记；此处不授予只读执行权限。</p><pre>{JSON.stringify(tool.inputSchema, null, 2)}</pre></details>)}</div><footer className="modal-footer"><Button variant="secondary" onClick={() => setTools(null)}>关闭</Button></footer></Modal>}
-    {deleting && <Modal title="删除业务连接" onClose={() => { if (!busyDelete) setDeleting(null); }}><div className="modal-body"><p>删除「{deleting.name}」后，绑定它的助手将无法继续调用这个连接。历史对话仍然保留。</p></div><footer className="modal-footer"><Button variant="secondary" disabled={busyDelete} onClick={() => setDeleting(null)}>保留连接</Button><Button variant="danger" busy={busyDelete} onClick={async () => { setBusyDelete(true); try { await remove(`/connections/${deleting.id}`); setDeleting(null); setSuccess('连接已删除。'); await load(); } catch (e) { setError(errorText(e)); setDeleting(null); } finally { setBusyDelete(false); } }}>确认删除</Button></footer></Modal>}
+  const [success, setSuccess] = useState('');
+  const [editor, setEditor] = useState<Connection | 'new' | null>(null);
+  const [testing, setTesting] = useState('');
+  const [testErrors, setTestErrors] = useState<Record<string, string>>({});
+  const [tools, setTools] = useState<Connection | null>(null);
+  const [deleting, setDeleting] = useState<Connection | null>(null);
+  const [busyDelete, setBusyDelete] = useState(false);
+  const load = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true); setError(''); setBindingsError(''); setAssistants(null);
+    const result = await loadConnectionOnboarding(signal);
+    if (signal?.aborted) return;
+    if (result.connections.status === 'fulfilled') setItems(result.connections.value);
+    else setError(`连接清单读取失败：${errorText(result.connections.reason)} 已显示内容如有，则为上次读取结果。`);
+    if (result.assistants.status === 'fulfilled') setAssistants(result.assistants.value);
+    else setBindingsError(`助手绑定情况未核：${errorText(result.assistants.reason)}`);
+    setLoading(false);
+  }, []);
+  useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load]);
+  const test = async (item: Connection) => {
+    setTesting(item.id); setSuccess(''); setError('');
+    setTestErrors(previous => { const next = { ...previous }; delete next[item.id]; return next; });
+    try {
+      const next = await testConnectionDiscovery(item);
+      setItems(previous => previous.map(existing => existing.id === next.id ? next : existing));
+      if (next.status === 'connected' && next.tools.length > 0) setSuccess(`「${next.name}」已发现 ${next.tools.length} 个工具。助手绑定和业务结果请继续分别核对。`);
+    } catch (e) { setTestErrors(previous => ({ ...previous, [item.id]: connectionTestError(e) })); }
+    finally { setTesting(''); }
+  };
+  return <div className="page connections-onboarding">
+    <PageHeader eyebrow="连接业务能力" title="业务连接" description="接入已有 MCP，检查工具，再交给助手试跑真实业务问题。" actions={<><Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入 MCP 配置</Button><Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>新增连接</Button></>}/>
+    <ErrorNotice message={error} onDismiss={() => setError('')}/><ErrorNotice message={bindingsError}/><SuccessNotice message={success}/>
+    {imported && <div className="import-next-step"><div><strong>已导入配置，下一步先测试连接</strong><p>导入不代表接通，也不会自动绑定助手或授权工具。</p></div><Button variant="secondary" onClick={onConfigureAssistant}>去配置助手<ArrowUpRight size={16}/></Button></div>}
+    <div className="info-strip connection-server-note"><Network size={20}/><div><strong>由工作台服务端连接，不是你的浏览器</strong><p>请提供服务端能访问的 Streamable HTTP MCP 地址；当前支持无认证或 Bearer Token。连接测试只读取工具清单。</p></div></div>
+    <div className="connections-list-heading"><div><h2>已保存的连接{!loading && ` · ${items.length}`}</h2><p>每条连接独立核对配置、工具发现和助手绑定。业务试跑不在本页自动判定。</p></div><Button variant="ghost" busy={loading} disabled={!!testing} onClick={() => void load()}><RefreshCw size={16}/>刷新状态</Button></div>
+    {loading && !items.length ? <Loader/> : !items.length ? error ? <EmptyState icon={<Network size={32}/>} title="连接清单暂未取得" description="请恢复工作台访问后刷新；这不表示没有已保存的连接。"/> : <EmptyState icon={<Network size={32}/>} title="连接你的第一个业务系统" description="准备 MCP 地址与受限凭据。保存后测试工具，再选择助手和允许的能力。" action={<Button onClick={() => setEditor('new')}><Plus size={16}/>新增连接</Button>}/> : <div className="connections-grid">{items.map(item => <ConnectionOnboardingCard key={item.id} item={item} assistants={assistants} bindingsLoading={loading} testing={testing === item.id} actionsBusy={!!testing || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setTools(item)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onConfigureAssistant={onConfigureAssistant}/>)}</div>}
+    {editor && <ConnectionEditor admin={admin} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => {
+      setEditor(null); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]);
+      setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; });
+      setSuccess('连接配置已保存；保存不代表已经接通或完成业务验证。');
+      if (shouldTest) await test(saved);
+    }}/>}
+    {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); setImported(true); setSuccess(`已导入 ${result.connections.length} 个业务连接。请先测试，再配置助手允许使用的工具及审批方式。`); void load(); }}/>}
+    {tools && <Modal title={`${tools.name} · 工具定义`} description={tools.last_tested_at ? `最近测试 ${timeText(tools.last_tested_at)}；工具定义不等于业务结果已验证` : '先测试连接以发现可用工具'} onClose={() => setTools(null)} wide><div className="modal-body connection-tools onboarding-tools">{!tools.tools.length ? <EmptyState icon={<CircleHelp size={26}/>} title={tools.status === 'connected' ? '连接已通，工具清单为空' : '尚无可查看的工具'} description={tools.status === 'connected' ? '请核对 MCP 提供的能力及工具发现权限。空工具清单不是业务查询的空结果。' : '先处理连接或认证问题，再测试发现工具。'}/> : <>{tools.status !== 'connected' && <p className="section-help">以下为已保存的工具定义；当前连接尚未通过测试。</p>}{tools.tools.map(tool => <details key={tool.name} className="tool-detail"><summary><span><strong>{tool.name}</strong><small>{tool.description || '此工具没有提供描述。'}</small></span><ChevronDown size={16}/></summary><RemoteToolDeclaration tool={tool}/><p className="section-help">工作流只读确认须在具体助手的能力配置中登记；此处不授予只读执行权限。</p><pre>{JSON.stringify(tool.inputSchema, null, 2)}</pre></details>)}</>}</div><footer className="modal-footer"><Button variant="secondary" onClick={() => setTools(null)}>关闭</Button></footer></Modal>}
+    {deleting && <Modal title="删除业务连接" onClose={() => { if (!busyDelete) setDeleting(null); }}><div className="modal-body"><p>删除「{deleting.name}」后，绑定它的助手将无法继续调用这个连接。历史对话仍然保留。</p></div><footer className="modal-footer"><Button variant="secondary" disabled={busyDelete} onClick={() => setDeleting(null)}>保留连接</Button><Button variant="danger" busy={busyDelete} onClick={async () => { setBusyDelete(true); try { await remove(`/connections/${encodeURIComponent(deleting.id)}`); setDeleting(null); setSuccess('连接已删除。'); await load(); } catch (e) { setError(errorText(e)); setDeleting(null); } finally { setBusyDelete(false); } }}>确认删除</Button></footer></Modal>}
   </div>;
 }
 
-function ConnectionEditor({ value, admin, onClose, onSaved }: { value: Connection | null;admin:boolean; onClose: () => void; onSaved: () => void }) {
+export function ConnectionEditor({ value, admin, onClose, onSaved }: { value: Connection | null;admin:boolean; onClose: () => void; onSaved: (saved: Connection, shouldTest: boolean) => void | Promise<void> }) {
   const [scope,setScope]=useState<ResourceScope>(value?.scope||'private');const [metadata,setMetadata]=useState(JSON.stringify(value?.source_metadata||{},null,2));
   const [name, setName] = useState(value?.name || ''); const [url, setURL] = useState(value?.url || ''); const [auth, setAuth] = useState<'none' | 'bearer'>(value?.auth_type || 'none'); const [credential, setCredential] = useState(''); const [clear, setClear] = useState(false); const [enabled, setEnabled] = useState(value?.enabled ?? true); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  return <Modal title={value ? '编辑业务连接' : '新增业务连接'} description="接入已有的 HTTP MCP 服务，凭据仅保存在服务端。" onClose={() => { if (!busy) onClose(); }}><form onSubmit={async e => { e.preventDefault(); setBusy(true); setError(''); let sourceMetadata:Record<string,string>;try{sourceMetadata=JSON.parse(metadata);if(!sourceMetadata||Array.isArray(sourceMetadata)||typeof sourceMetadata!=='object'||Object.values(sourceMetadata).some(v=>typeof v!=='string'))throw new Error();}catch{setError('数据源说明须为名称与文本组成的 JSON 对象。');setBusy(false);return;} const body = { name: name.trim(),scope,source_metadata:sourceMetadata, transport: 'http', url: url.trim(), auth_type: auth, enabled, ...(auth === 'bearer' && credential ? { credential } : {}), ...(value && (clear || auth === 'none') ? { clear_credential: true } : {}) }; try { if (value) await patch(`/connections/${value.id}`, body); else await post('/connections', body); onSaved(); } catch (err) { setError(errorText(err)); } finally { setBusy(false); } }}><div className="modal-body"><ErrorNotice message={error}/><ScopeField value={scope} onChange={setScope} admin={admin} disabled={!!value}/><Field label="连接名称" required><input autoFocus value={name} maxLength={100} onChange={e => setName(e.target.value)} placeholder="例如：企业知识库" required/></Field><Field label="MCP 服务地址" hint="填写执行服务器可以访问的完整地址。" required><input type="url" value={url} onChange={e => setURL(e.target.value)} placeholder="https://your-service.example/mcp" required/></Field><Field label="认证方式"><select value={auth} onChange={e => setAuth(e.target.value as 'none' | 'bearer')}><option value="none">无需认证</option><option value="bearer">Bearer Token</option></select></Field>{auth === 'bearer' && <><Field label={value?.credential_present ? '替换 Token' : 'Token'} hint={value?.credential_present ? '留空会保留已保存的凭据。保存后无法再次查看原文。' : '保存后以受控方式存储，不会展示在对话中。'}><input type="password" autoComplete="new-password" value={credential} disabled={clear} onChange={e => setCredential(e.target.value)} placeholder={value?.credential_present ? '已保存凭据，输入新值以替换' : '输入 Token'} required={!value?.credential_present && !clear}/></Field>{value?.credential_present && <label className="checkbox-row"><input type="checkbox" checked={clear} onChange={e => setClear(e.target.checked)}/>清除已保存的凭据</label>}</>}<details className="resource-advanced"><summary>数据源定位说明</summary><Field label="数据库、表与时间口径（JSON）" hint="填写连接提供的实际信息。每次取数的具体记录和筛选条件由 MCP 返回。"><textarea value={metadata} onChange={e=>setMetadata(e.target.value)} rows={6} placeholder={'{"database":"质量管理库","tables":"quality_records","timezone":"Asia/Shanghai"}'}/></Field></details><label className="checkbox-row separated"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}/><span>启用此连接<small>停用后，助手不能继续发起新的工具调用。</small></span></label><p className="form-note"><CheckCircle2 size={15}/>保存配置后，执行一次连接测试以确认服务可用。</p></div><footer className="modal-footer"><Button variant="secondary" type="button" disabled={busy} onClick={onClose}>取消</Button><Button busy={busy} type="submit"><RefreshCw size={15}/>保存连接</Button></footer></form></Modal>;
+  return <Modal title={value ? '编辑业务连接' : '新增业务连接'} description="远程 Streamable HTTP MCP；由工作台服务端连接。" onClose={() => { if (!busy) onClose(); }}><form className="connections-onboarding-editor" onSubmit={async e => { e.preventDefault(); if (busy) return; const shouldTest = enabled && (e.nativeEvent as SubmitEvent).submitter?.getAttribute('value') === 'test'; setBusy(true); setError(''); let sourceMetadata:Record<string,string>;try{sourceMetadata=JSON.parse(metadata);if(!sourceMetadata||Array.isArray(sourceMetadata)||typeof sourceMetadata!=='object'||Object.values(sourceMetadata).some(v=>typeof v!=='string'))throw new Error();}catch{setError('数据源说明须为名称与文本组成的 JSON 对象。');setBusy(false);return;} const body = { name: name.trim(),scope,source_metadata:sourceMetadata, transport: 'http', url: url.trim(), auth_type: auth, enabled, ...(auth === 'bearer' && !clear && credential ? { credential } : {}), ...(value && (clear || auth === 'none') ? { clear_credential: true } : {}) }; try { const saved = await saveConnectionConfiguration(value, body); await onSaved(saved, shouldTest); } catch (err) { setError(errorText(err)); } finally { setBusy(false); } }}><fieldset className="plain-fieldset" disabled={busy}><div className="modal-body"><ErrorNotice message={error}/><ScopeField value={scope} onChange={setScope} admin={admin} disabled={!!value}/><Field label="连接名称" required><input autoFocus value={name} maxLength={100} onChange={e => setName(e.target.value)} placeholder="例如：企业知识库" required/></Field><Field label="MCP 服务地址" hint="填写工作台服务端能访问的完整地址；浏览器能打开不等于服务端可达。不要在地址中填写凭据。" required><input type="url" value={url} onChange={e => setURL(e.target.value)} placeholder="https://your-service.example/mcp" required/></Field><Field label="认证方式"><select value={auth} onChange={e => setAuth(e.target.value as 'none' | 'bearer')}><option value="none">无需认证</option><option value="bearer">Bearer Token</option></select></Field>{auth === 'bearer' && <><Field label={value?.credential_present ? '替换 Token' : 'Token'} hint={value?.credential_present ? '留空会保留已保存的凭据。保存后无法再次查看原文。' : '保存后以受控方式存储，不会展示在对话中。'}><input type="password" autoComplete="new-password" value={credential} disabled={clear} onChange={e => setCredential(e.target.value)} placeholder={value?.credential_present ? '已保存凭据，输入新值以替换' : '输入 Token'} required={!value?.credential_present && !clear}/></Field>{value?.credential_present && <label className="checkbox-row"><input type="checkbox" checked={clear} onChange={e => setClear(e.target.checked)}/>清除已保存的凭据</label>}</>}<details className="resource-advanced"><summary>数据源定位说明</summary><Field label="数据库、表与时间口径（JSON）" hint="填写连接提供的实际信息。每次取数的具体记录和筛选条件由 MCP 返回。"><textarea value={metadata} onChange={e=>setMetadata(e.target.value)} rows={6} placeholder={'{"database":"质量管理库","tables":"quality_records","timezone":"Asia/Shanghai"}'}/></Field></details><label className="checkbox-row separated"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}/><span>启用此连接<small>停用后，助手不能继续发起新的工具调用。</small></span></label><p className="form-note">保存只记录配置；“保存并测试”会连接 MCP 并读取工具清单，不会运行业务工具或自动绑定助手。</p></div><footer className="modal-footer"><Button variant="secondary" type="button" disabled={busy} onClick={onClose}>取消</Button><Button variant="secondary" busy={busy} type="submit" value="save">仅保存</Button><Button busy={busy} disabled={!enabled} type="submit" value="test"><PlugZap size={15}/>保存并测试</Button></footer></fieldset></form></Modal>;
 }

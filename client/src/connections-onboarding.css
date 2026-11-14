@@ -1,0 +1,48 @@
+.connections-onboarding {--connection-blue:#0070f2;--connection-ink:#131e29;--connection-muted:#526171;--connection-line:#dbe3eb}
+.connections-onboarding .connection-server-note {align-items:flex-start;background:#f2f7fc;border:1px solid #d5e4f5;border-radius:8px;padding:18px 20px;color:var(--connection-ink)}
+.connections-onboarding .connection-server-note>svg {flex-shrink:0;margin-top:2px;color:var(--connection-blue)}
+.connections-onboarding .connection-server-note strong {font-size:14px;font-weight:600}
+.connections-onboarding .connection-server-note p {font-size:13px;line-height:1.7;margin:5px 0 0;color:var(--connection-muted)}
+.connections-onboarding .connections-list-heading {display:flex;align-items:center;justify-content:space-between;gap:16px;margin:26px 0 16px}
+.connections-onboarding .connections-list-heading h2 {font-size:16px;color:var(--connection-ink)}
+.connections-onboarding .connections-list-heading p {font-size:13px;color:var(--connection-muted);line-height:1.6;margin-top:5px}
+.connections-onboarding .connections-grid {grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:20px}
+.connections-onboarding .onboarding-card {border:1px solid var(--connection-line);border-radius:10px;padding:22px;background:#fff}
+.connections-onboarding .onboarding-card.disabled-card {background:#f5f6f7}
+.connections-onboarding .connection-card-head {margin-bottom:14px;gap:12px;flex-wrap:wrap}
+.connections-onboarding .connection-icon {background:#eaf3ff;color:var(--connection-blue);border-color:#d5e4f5}
+.connections-onboarding .onboarding-card-title {display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.connections-onboarding .onboarding-card-title h2 {font-size:17px;color:var(--connection-ink);margin:0}
+.connections-onboarding .connection-url {font-size:12px;color:var(--connection-muted);margin:9px 0 12px}
+.connections-onboarding .connection-meta {font-size:12px;color:var(--connection-muted);gap:12px;flex-wrap:wrap}
+.connections-onboarding .connection-progress {list-style:none;display:grid;gap:18px;padding:20px 0;margin:18px 0 0;border-top:1px solid var(--connection-line)}
+.connections-onboarding .connection-progress>li {display:flex;gap:12px;align-items:flex-start}
+.connections-onboarding .connection-step-number {display:flex;align-items:center;justify-content:center;flex-shrink:0;width:26px;height:26px;border:1px solid #b9c7d5;border-radius:50%;color:var(--connection-muted);font-size:12px;background:#fff}
+.connections-onboarding .connection-progress>li[data-state="complete"] .connection-step-number {border-color:#8db9ed;background:#edf5ff;color:#0064d9}
+.connections-onboarding .connection-progress strong {font-size:14px;line-height:24px;color:var(--connection-ink)}
+.connections-onboarding .connection-progress p {font-size:13px;line-height:1.65;color:var(--connection-muted);margin:3px 0 0;overflow-wrap:anywhere}
+.connections-onboarding .connection-time {font-size:12px;line-height:1.6;color:var(--connection-muted);margin-top:0}
+.connections-onboarding .inline-error {font-size:13px;line-height:1.65;color:#a14300;margin:0 0 12px}
+.connections-onboarding .connection-trial-guide {border-top:1px solid var(--connection-line);margin-top:16px;padding-top:14px}
+.connections-onboarding .connection-trial-guide>summary {display:flex;align-items:center;gap:8px;list-style:none;cursor:pointer;font-size:13px;line-height:22px;color:var(--connection-ink)}
+.connections-onboarding .connection-trial-guide>summary::-webkit-details-marker {display:none}
+.connections-onboarding .connection-trial-guide>summary>svg {margin-left:auto;flex-shrink:0}
+.connections-onboarding .connection-trial-guide[open]>summary>svg {transform:rotate(180deg)}
+.connections-onboarding .connection-trial-guide>p {font-size:13px;color:var(--connection-muted);line-height:1.75;margin:12px 0}
+.connections-onboarding .connection-trial-guide>.button {margin:3px 0}
+.connections-onboarding .connection-bound-assistants {padding:0;margin:14px 0;list-style:none;display:grid;gap:9px}
+.connections-onboarding .connection-bound-assistants>li {display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--connection-muted)}
+.connections-onboarding .connection-bound-assistants strong {color:var(--connection-ink);font-weight:500;overflow-wrap:anywhere}
+.connections-onboarding .card-toolbar {margin-top:16px;border-color:var(--connection-line);gap:6px;flex-wrap:wrap}
+.connections-onboarding .card-toolbar .button {font-size:13px;min-height:36px;padding:7px 10px}
+.connections-onboarding .connection-access-note {font-size:12px;line-height:1.6;color:var(--connection-muted);margin-top:10px}
+.connections-onboarding .button.primary {background:var(--connection-blue);border-color:var(--connection-blue);color:#fff}
+.connections-onboarding .button.primary:hover:not(:disabled) {background:#0064d9;border-color:#0064d9}
+.connections-onboarding .badge {font-size:12px;line-height:18px;white-space:normal}
+.connections-onboarding :is(button,summary):focus-visible {outline:2px solid #0070f2;outline-offset:3px}
+.connections-onboarding-editor .field>small,.connections-onboarding-editor .form-note,.connections-onboarding-editor .section-help,.connections-onboarding-editor .checkbox-row small {font-size:12px;line-height:1.7}
+.connections-onboarding-editor .modal-footer {flex-wrap:wrap}
+.onboarding-tools .section-help {font-size:13px;line-height:1.7}
+@media(max-width:1100px) {.connections-onboarding .connections-grid {grid-template-columns:1fr}}
+@media(max-width:600px) {.connections-onboarding .connections-list-heading {align-items:flex-start;flex-wrap:wrap}.connections-onboarding .onboarding-card {padding:17px}.connections-onboarding .connection-server-note {padding:15px}.connections-onboarding .connection-trial-guide>summary {flex-wrap:wrap}.connections-onboarding .connection-meta {flex-direction:row}.connections-onboarding .connection-url {white-space:normal;overflow-wrap:anywhere}.connections-onboarding-editor .modal-footer .button {flex:1}}
+@media(prefers-reduced-motion:reduce) {.connections-onboarding :is(button,summary,svg),.connections-onboarding-editor button {transition:none}}

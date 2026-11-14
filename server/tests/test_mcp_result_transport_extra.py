@@ -24,16 +24,16 @@ def test_structured_payload_reaches_model_once_without_losing_sources(system, mo
         assert completed(system)["result_facts"]["business_domain"] == "制造运营"
 
 
-def test_valid_transport_result_is_not_rejected_by_host_added_duplicate(system):
-    # Wire result contains both representations (<1MB). The old normalization
-    # appended a third copy and incorrectly pushed it over the same limit.
+def test_valid_transport_result_still_obeys_separate_model_budget(system):
+    # A <1MB network response can still exceed the much smaller model budget.
+    # It must fail as a whole, never truncate then present a full-result total.
     system.server.payload_padding = 400_000
     result = asyncio.run(system.runtime.bridge.invoke(request(system)))
-    assert not result.get("is_error"), result
-    text = "\n".join(block["text"] for block in result["content"])
-    assert text.count('"padding"') == 1
-    assert len(result["structuredContent"]["padding"]) == 400_000
-    assert completed(system)["success"] is True
+    assert result.get("is_error") is True
+    assert completed(system)["success"] is False
+    assert completed(system)["error_code"] == "MCP_RESULT_TOO_LARGE"
+    assert completed(system)["source_ids"] == []
+    assert not system.service.evidence.list(system.actor.current_run_id, system.owner)
 
 
 def test_wire_size_limit_remains_enforced_without_truncation_or_sources(system):
