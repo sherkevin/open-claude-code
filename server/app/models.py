@@ -56,11 +56,18 @@ class Access(InputModel):
     user_ids: list[str] = Field(default_factory=list, max_length=1000)
 
 
+class ReadOnlyToolConfirmation(InputModel):
+    connection_revision: int = Field(ge=1, strict=True)
+    definition_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    basis: str = Field(min_length=1, max_length=500)
+
+
 class Binding(InputModel):
     connection_id: str
     allowed_tools: list[str] = Field(default_factory=list, max_length=1000)
     auto_approved_tools: list[str] = Field(default_factory=list, max_length=1000)
     argument_constraints: dict[str, dict] = Field(default_factory=dict, max_length=64)
+    read_only_confirmations: dict[str, ReadOnlyToolConfirmation] = Field(default_factory=dict, max_length=128)
 
 
 class AssistantCreate(InputModel):

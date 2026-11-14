@@ -137,6 +137,23 @@ def contains_credential(value, credential):
     return False
 
 
+def clean_mcp_value(value, credential=None):
+    """Scrub known transport credentials before evidence or model projection."""
+    if isinstance(value, str):
+        if credential:
+            value = value.replace(f"Bearer {credential}", "[redacted]").replace(credential, "[redacted]")
+        try:
+            parsed = json.loads(value)
+        except (ValueError, RecursionError):
+            return value
+        return dump(clean_mcp_value(parsed, credential)) if isinstance(parsed, (dict, list, str)) and parsed != value else value
+    if isinstance(value, dict):
+        return redact({clean_mcp_value(str(key), credential): clean_mcp_value(child, credential) for key, child in value.items()}, truncate=False)
+    if isinstance(value, list):
+        return [clean_mcp_value(child, credential) for child in value]
+    return value
+
+
 def offline_resource(uri):
     raise NoSuchResource(ref=uri)
 
@@ -196,7 +213,7 @@ async def bound_response(response):
 
 
 class MCPBusinessTool:
-    def __init__(self, runtime, connection, definition):
+    def __init__(self, runtime, connection, definition, argument_constraint=None):
         self.runtime = runtime
         self.connection_id = connection["id"]
         self.server_tool = definition["name"]
@@ -205,6 +222,8 @@ class MCPBusinessTool:
         self.stored_definition = encoded(definition)
         self.input_schema = definition["inputSchema"]
         self.validator = schema_validator(self.input_schema)
+        from .tool_constraint_context import constrained_input_schema
+        self.model_input_schema = constrained_input_schema(self.input_schema, argument_constraint)
         self.route = dict(runtime.config["mcp_servers"][f"c{self.connection_id}"])
         self.credential = runtime.service.secrets.decrypt(connection.get("secret"))
         # Schema constants/defaults must not smuggle a transport credential to
@@ -214,22 +233,10 @@ class MCPBusinessTool:
         self.description = self.clean(definition.get("description") or f"已授权业务工具 {self.server_tool}")[:4000]
 
     def clean(self, value):
-        if isinstance(value, str):
-            if self.credential:
-                value = value.replace(f"Bearer {self.credential}", "[redacted]").replace(self.credential, "[redacted]")
-            try:
-                parsed = json.loads(value)
-            except (ValueError, RecursionError):
-                return value
-            return dump(self.clean(parsed)) if isinstance(parsed, (dict, list, str)) and parsed != value else value
-        if isinstance(value, dict):
-            return redact({self.clean(str(key)): self.clean(child) for key, child in value.items()}, truncate=False)
-        if isinstance(value, list):
-            return [self.clean(child) for child in value]
-        return value
+        return clean_mcp_value(value, self.credential)
 
     def definition(self):
-        return {"name": self.name, "description": self.description, "input_schema": self.input_schema}
+        return {"name": self.name, "description": self.description, "input_schema": self.model_input_schema}
 
     def arguments(self, value):
         try:
@@ -311,6 +318,9 @@ def build_mcp_tools(runtime):
     # MCPBusinessTool.invoke for callers that construct the registry directly.
     if getattr(service, "policy", None) is not None and service.policy.is_trial:
         return {}
+    from .tool_constraint_context import request_constraint_rules
+    # Both execution paths cap the combined added policy, not just each tool.
+    request_constraint_rules(runtime)
     tools = {}
     user = service.require("users", service.require("conversations", runtime.conversation_id)["user_id"])
     for binding in runtime.config.get("assistant_snapshot", {}).get("connections", []):
@@ -322,11 +332,14 @@ def build_mcp_tools(runtime):
         if connection["status"] != "connected":
             raise AppError(409, "HARNESS_MCP_NOT_TESTED", "请先测试并确认已绑定的业务连接")
         definitions = json.loads(connection["tools"])
+        if binding.get("argument_constraints"):
+            from .tool_constraints import validate_definitions
+            validate_definitions(binding, connection, service.secrets.decrypt(connection.get("secret")))
         for name in binding["allowed_tools"]:
             matching = [item for item in definitions if item.get("name") == name]
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name) or len(matching) != 1:
                 raise AppError(409, "HARNESS_MCP_TOOL_UNAVAILABLE", "助手授权的业务工具已不存在或名称不受支持，请重新配置")
-            tool = MCPBusinessTool(runtime, connection, matching[0])
+            tool = MCPBusinessTool(runtime, connection, matching[0], binding.get("argument_constraints", {}).get(name))
             if tool.name in tools:
                 raise AppError(409, "HARNESS_MCP_TOOL_UNAVAILABLE", "业务工具定义重复，请重新配置助手")
             tools[tool.name] = tool

@@ -29,7 +29,8 @@ def user_view(row):
 
 
 def connection_view(row, user=None):
-    return {"id": row["id"], "name": row["name"], "transport": "http", "url": row["url"], "auth_type": row["auth_type"], "credential_present": bool(row["secret"]), "enabled": bool(row["enabled"]), "status": row["status"], "tools": json.loads(row["tools"]), "last_error": row["last_error"], "last_tested_at": row["last_tested_at"], "revision": row["revision"], "source_metadata": json.loads(row.get("source_metadata") or "{}"), **scope_fields(row, user)}
+    from .read_only_tools import tool_view
+    return {"id": row["id"], "name": row["name"], "transport": "http", "url": row["url"], "auth_type": row["auth_type"], "credential_present": bool(row["secret"]), "enabled": bool(row["enabled"]), "status": row["status"], "tools": [tool_view(tool) for tool in json.loads(row["tools"])], "last_error": row["last_error"], "last_tested_at": row["last_tested_at"], "revision": row["revision"], "source_metadata": json.loads(row.get("source_metadata") or "{}"), **scope_fields(row, user)}
 
 
 def assistant_view(row, user=None):
@@ -354,6 +355,7 @@ class Service:
     async def discover(self, row):
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
+        from .read_only_tools import discovered_definition
 
         validate_mcp_url(row["url"], self.settings.mcp_hosts)
         headers = {}
@@ -368,7 +370,7 @@ class Service:
                     tools, cursor = [], None
                     for _ in range(20):
                         result = await session.list_tools(cursor=cursor)
-                        tools.extend({"name": tool.name, "description": (tool.description or "")[:4000], "inputSchema": tool.inputSchema} for tool in result.tools)
+                        tools.extend(discovered_definition(tool) for tool in result.tools)
                         cursor = result.nextCursor
                         if not cursor:
                             break
@@ -424,6 +426,9 @@ class Service:
                 raise AppError(422, "INVALID_TOOL_SELECTION", "请先测试连接，再从工具清单选择允许及自动批准的工具")
             from .tool_constraints import validate_definitions
             validate_definitions(binding, row, self.secrets.decrypt(row.get("secret")) if binding.get("argument_constraints") else None)
+            from .read_only_tools import validate_saved_confirmations
+            old_binding = next((item for item in old.get("connections", []) if item["connection_id"] == row["id"]), None)
+            validate_saved_confirmations(binding, old_binding, row, self.secrets.decrypt(row.get("secret")) if binding.get("read_only_confirmations") else None)
         for user_id in merged["access"]["user_ids"]:
             self.require("users", user_id)
         for field, table in (("knowledge_base_ids", "knowledge_bases"), ("skill_ids", "skills")):
@@ -783,6 +788,30 @@ class Service:
         from .tool_constraints import binding_digest
         return {"automatic": automatic,
                 "argument_constraints_digest": binding_digest(binding, connection, self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)}
+
+    def inspect_read_only_tool_authorization(self, conversation_id, tool_name):
+        """Require an explicit, current host confirmation for live mcp_read."""
+        automatic, binding, connection = self._business_tool_access(conversation_id, tool_name)
+        conversation = self.require("conversations", conversation_id)
+        if conversation["archived"]:
+            raise AppError(409, "WORKFLOW_SESSION_UNAVAILABLE", "会话已归档，不能继续只读工作流")
+        name = tool_name[len(f"mcp__c{connection['id']}__"):]
+        from .read_only_tools import require_snapshot_confirmation, validate_confirmation
+        if conversation["active_run_id"]:
+            run = self.require("runs", conversation["active_run_id"])
+            if run["status"] not in {"queued", "running", "awaiting_approval"}:
+                raise AppError(409, "WORKFLOW_SESSION_UNAVAILABLE", "关联任务已结束或取消，不能继续只读工作流")
+            snapshot = json.loads(run.get("capability_snapshot") or "null")
+        else:
+            snapshot = None
+        if snapshot:
+            prior_binding = next((item for item in snapshot.get("connections", []) if item["connection_id"] == connection["id"]), None)
+            confirmation_digest = require_snapshot_confirmation(binding, prior_binding, connection, name)
+        else:
+            confirmation_digest = validate_confirmation(binding, connection, name)
+        record = binding["read_only_confirmations"][name]
+        return {"automatic": automatic, "read_only_confirmation_digest": confirmation_digest,
+                "definition_digest": record["definition_digest"]}
 
     def runtime_config(self, conversation_id):
         conversation = self.require("conversations", conversation_id)

@@ -321,10 +321,12 @@ class SDKRuntime(WorkspaceRuntime):
         if workspace_tools:
             servers["workspace"] = workspace_tools
         native_tools = [] if self.service.policy.is_trial else ["Read", "Write", "Edit", "Glob", "Grep"]
+        from .tool_constraint_context import sdk_constraint_context
+        constraint_context = await offload(sdk_constraint_context, self)
         options = ClaudeAgentOptions(
             cwd=str(root), env=provider, model=self.config["upstream_model"], effort=self.config["upstream_effort"],
             add_dirs=[str(memory_dir)],
-            system_prompt={"type": "custom", "snapshot": False, "prompt": build_system_prompt(public_model_id=self.config["public_model_id"], public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"])},
+            system_prompt={"type": "custom", "snapshot": False, "prompt": build_system_prompt(public_model_id=self.config["public_model_id"], public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"]) + constraint_context},
             setting_sources=["project"], settings=dump(isolated_settings), strict_mcp_config=True,
             tools=native_tools,
             disallowed_tools=["Bash", "Agent", "Task", "WebFetch", "WebSearch", "NotebookEdit", "Skill"],

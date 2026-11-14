@@ -10,6 +10,7 @@ from app.config import Settings
 from app.db import dump
 from app.harness_runtime import HarnessRuntime
 from app.models import AssistantCreate
+from app.read_only_tools import definition_digest
 from app.runtime import SDKRuntime
 from app.security import AppError
 from app.service import Service
@@ -54,7 +55,8 @@ def env(tmp_path, monkeypatch):
     connection = service.save_connection({"name": "Synthetic MCP", "url": "http://localhost:18999/mcp"}, user=user)
     service.db.execute("UPDATE connections SET status='connected',tools=? WHERE id=?", (dump([{"name": "read_orders", "inputSchema": REMOTE}]), connection["id"]))
     binding = {"connection_id": connection["id"], "allowed_tools": ["read_orders"], "auto_approved_tools": ["read_orders"],
-               "argument_constraints": {"read_orders": copy.deepcopy(CONSTRAINT)}}
+               "argument_constraints": {"read_orders": copy.deepcopy(CONSTRAINT)},
+               "read_only_confirmations": {"read_orders": {"connection_revision": connection["revision"], "definition_digest": definition_digest({"name": "read_orders", "inputSchema": REMOTE}), "basis": "Synthetic query-only fixture reviewed by the host"}}}
     assistant = service.save_assistant({"name": "Synthetic assistant", "connections": [binding]}, user=user)
     conversation = service.create_conversation({"assistant_id": assistant["id"], "title": "Synthetic query"}, user)
     yield SimpleNamespace(service=service, user=user, connection=connection, binding=binding, assistant=assistant,
@@ -231,6 +233,9 @@ def fake_transport(monkeypatch, on_initialize=None):
             if on_initialize:
                 on_initialize()
 
+        async def list_tools(self, cursor=None):
+            return SimpleNamespace(tools=[{"name": "read_orders", "inputSchema": REMOTE}], nextCursor=None)
+
         async def call_tool(self, name, arguments, **kwargs):
             calls.append((name, copy.deepcopy(arguments)))
             return SimpleNamespace(isError=False, model_dump=lambda mode: {"content": [{"type": "text", "text": "synthetic result"}]})
@@ -340,7 +345,7 @@ def test_workflow_approval_resume_rejects_discovery_change_without_connection_re
     service = client.app.state.service
     connection = client.post("/api/v1/connections", json={"name": "Synthetic orders", "url": "http://localhost:18999/mcp"}).json()
     service.db.execute("UPDATE connections SET status='connected',tools=? WHERE id=?", (dump([{"name": "read_orders", "inputSchema": REMOTE}]), connection["id"]))
-    binding = {"connection_id": connection["id"], "allowed_tools": ["read_orders"], "auto_approved_tools": ["read_orders"], "argument_constraints": {"read_orders": CONSTRAINT}}
+    binding = {"connection_id": connection["id"], "allowed_tools": ["read_orders"], "auto_approved_tools": ["read_orders"], "argument_constraints": {"read_orders": CONSTRAINT}, "read_only_confirmations": {"read_orders": {"connection_revision": connection["revision"], "definition_digest": definition_digest({"name": "read_orders", "inputSchema": REMOTE}), "basis": "Synthetic read-only fixture"}}}
     response = client.post("/api/v1/assistants", json={"name": "Synthetic workflow", "connections": [binding]})
     assert response.status_code == 201, response.text
     assistant = response.json()
@@ -366,4 +371,4 @@ def test_workflow_approval_resume_rejects_discovery_change_without_connection_re
     assert service.require("connections", connection["id"])["revision"] == before_revision
     response = client.post(f"/api/v1/workflow-runs/{run['id']}/approvals/approval/decision", json={"decision": "approve"})
     assert response.status_code == 409, response.text
-    assert response.json()["error"]["code"] == "WORKFLOW_PERMISSION_CHANGED"
+    assert response.json()["error"]["code"] == "READ_ONLY_CONFIRMATION_STALE"

@@ -530,6 +530,9 @@ def test_condition_rejects_an_undeclared_structured_field(client):
 
 
 def test_live_mcp_read_node_calls_bound_readonly_tool_and_persists_evidence(monkeypatch, client):
+    from types import SimpleNamespace
+    from app.read_only_tools import definition_digest
+    tool_definition = {"name": "read_records", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False}}
     class FakeResult:
         isError = False
 
@@ -555,6 +558,9 @@ def test_live_mcp_read_node_calls_bound_readonly_tool_and_persists_evidence(monk
         async def initialize(self):
             return None
 
+        async def list_tools(self, cursor=None):
+            return SimpleNamespace(tools=[tool_definition], nextCursor=None)
+
         async def call_tool(self, name, arguments=None, read_timeout_seconds=None):
             self.calls.append({"name": name, "arguments": arguments})
             return FakeResult()
@@ -570,8 +576,8 @@ def test_live_mcp_read_node_calls_bound_readonly_tool_and_persists_evidence(monk
     monkeypatch.setattr("mcp.client.streamable_http.streamable_http_client", lambda *args, **kwargs: FakeStreams())
     connection = client.post("/api/v1/connections", json={"name": "质量 MCP", "url": "http://localhost:8932/mcp"}).json()
     service = client.app.state.service
-    service.db.execute("UPDATE connections SET status='connected',tools=? WHERE id=?", (json.dumps([{"name": "read_records"}]), connection["id"]))
-    assistant = client.post("/api/v1/assistants", json={"name": "工具流程助手", "connections": [{"connection_id": connection["id"], "allowed_tools": ["read_records"], "auto_approved_tools": ["read_records"]}]}).json()
+    service.db.execute("UPDATE connections SET status='connected',tools=? WHERE id=?", (json.dumps([tool_definition]), connection["id"]))
+    assistant = client.post("/api/v1/assistants", json={"name": "工具流程助手", "connections": [{"connection_id": connection["id"], "allowed_tools": ["read_records"], "auto_approved_tools": ["read_records"], "read_only_confirmations": {"read_records": {"connection_revision": connection["revision"], "definition_digest": definition_digest(tool_definition), "basis": "Synthetic read-only fixture"}}}]}).json()
     conversation = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"], "title": "工具运行会话"}).json()
     tool_name = f"mcp__c{connection['id']}__read_records"
     graph = {

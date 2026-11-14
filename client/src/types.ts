@@ -23,7 +23,13 @@ export interface ModelRouteEvidence { schema_version: string; policy_version: st
 export interface ModelRecommendation { model_id: string; model_label: string; reasoning_level: string; reason: string; applied: false; router: { model_id: string; mode: string; input_chars: number; candidate_count: number; max_output_chars: number; estimated_cost_usd: number | null; target_model_id?: string; target_available?: boolean; target_status?: string; target_error?: string; provider_configured?: boolean; provider_status?: string; provider_attempted?: boolean; rejection_reason?: string; evidence?: ModelRouteEvidence } }
 export interface ModelSelection { model_id: string; reasoning_level: string }
 export interface User { id: string; username: string; display_name: string; role: 'admin' | 'member'; enabled: boolean }
-export interface MCPTool { name: string; description: string; inputSchema: Record<string, unknown> }
+export interface MCPTool {
+  name: string; description: string; inputSchema: Record<string, unknown>;
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; [key: string]: unknown };
+  definition_digest?: string | null;
+  read_only_confirmation_eligible?: boolean;
+  read_only_confirmation_reason?: string | null;
+}
 export interface ScopedResource { owner_id?: string | null; scope?: 'private' | 'team'; can_edit?: boolean }
 export interface Connection extends ScopedResource {
   id: string; name: string; transport: 'http'; url: string; auth_type: 'none' | 'bearer';
@@ -48,7 +54,8 @@ export interface MemoryIndex extends MemoryMutationResult {
 }
 export interface MemoryFile extends MemoryMutationResult { path: string; content: string; revision: number; updated_at: string }
 export interface MemoryApprovalContent { conversation_id: string; old_content_sha256: string|null; content_digest: string; path: string; content: string; expected_revision: number; native_epoch: number; operation_id: string }
-export interface AssistantBinding { connection_id: string; allowed_tools: string[]; auto_approved_tools: string[]; argument_constraints?: Record<string, Record<string, unknown>> }
+export interface ReadOnlyConfirmation { connection_revision: number; definition_digest: string; basis: string }
+export interface AssistantBinding { connection_id: string; allowed_tools: string[]; auto_approved_tools: string[]; argument_constraints?: Record<string, Record<string, unknown>>; read_only_confirmations?: Record<string, ReadOnlyConfirmation> }
 export interface Assistant extends ScopedResource {
   id: string; name: string; description: string; instructions: string; enabled: boolean;
   access: { all_members: boolean; user_ids: string[] }; connections: AssistantBinding[]; revision: number;

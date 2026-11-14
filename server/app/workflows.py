@@ -16,6 +16,7 @@ from datetime import timedelta
 from time import perf_counter
 
 import httpx
+import anyio
 from fastapi import APIRouter, Depends, Query, Request
 
 from .db import dump, now, uid
@@ -1015,6 +1016,9 @@ def _workflow_tool_scope(service, assistant: dict, user: dict, conversation: dic
         return {}
     if not conversation:
         raise AppError(409, "WORKFLOW_TOOL_SESSION_REQUIRED", "实时工具节点必须绑定同一助手的运行会话")
+    current_conversation = service.require("conversations", conversation["id"])
+    if current_conversation["assistant_id"] != assistant["id"] or current_conversation["user_id"] != user["id"]:
+        raise AppError(403, "WORKFLOW_TOOL_SCOPE_INVALID", "只读工具会话不属于当前用户或助手")
     raw_bindings = assistant.get("connections", [])
     if isinstance(raw_bindings, str):
         try:
@@ -1038,6 +1042,7 @@ def _workflow_tool_scope(service, assistant: dict, user: dict, conversation: dic
         authorization = service.inspect_business_tool_authorization(conversation["id"], tool_name)
         if authorization["automatic"] is not True:
             raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "当前会话未自动批准此只读工具")
+        readonly = service.inspect_read_only_tool_authorization(conversation["id"], tool_name)
         try:
             discovered = json.loads(connection.get("tools") or "[]")
         except (TypeError, ValueError, json.JSONDecodeError) as error:
@@ -1051,6 +1056,12 @@ def _workflow_tool_scope(service, assistant: dict, user: dict, conversation: dic
             "connection_id": connection_id,
             "connection_revision": connection["revision"],
             "argument_constraints_digest": authorization["argument_constraints_digest"],
+            "read_only_confirmation_digest": readonly["read_only_confirmation_digest"],
+            "definition_digest": readonly["definition_digest"],
+            "conversation_id": conversation["id"],
+            "conversation_run_id": current_conversation.get("active_run_id"),
+            "assistant_id": assistant["id"],
+            "user_id": user["id"],
         }
     return scope
 
@@ -1121,13 +1132,26 @@ async def _run_mcp_read(service, user: dict, conversation: dict | None, node: di
     scope = tool_scope.get(node["id"])
     if not scope:
         raise AppError(409, "WORKFLOW_TOOL_SCOPE_INVALID", "实时工具节点权限快照不存在")
+    if (scope.get("conversation_id") != conversation["id"] or scope.get("user_id") != user["id"]
+            or scope.get("assistant_id") != conversation["assistant_id"]):
+        raise AppError(403, "WORKFLOW_TOOL_SCOPE_INVALID", "只读工具权限快照不属于当前用户、助手或会话")
     arguments = _tool_arguments(node, safe_input, outputs, structured_outputs)
     def recheck():
+        current_conversation = service.require("conversations", conversation["id"])
+        if (current_conversation["assistant_id"] != scope["assistant_id"]
+                or current_conversation["user_id"] != scope["user_id"]):
+            raise AppError(403, "WORKFLOW_TOOL_SCOPE_INVALID", "只读工具会话归属已变化，请重新运行")
+        if current_conversation.get("active_run_id") != scope.get("conversation_run_id"):
+            raise AppError(409, "WORKFLOW_SESSION_UNAVAILABLE", "关联任务已结束、取消或更换，请重新运行只读工作流")
         if service.authorize_tool(conversation["id"], scope["tool_name"], arguments) is not True:
             raise AppError(403, "WORKFLOW_TOOL_NOT_AUTO_APPROVED", "当前会话未自动批准此只读工具")
         authorization = service.inspect_business_tool_authorization(conversation["id"], scope["tool_name"])
         if authorization["argument_constraints_digest"] != scope.get("argument_constraints_digest"):
             raise AppError(409, "TOOL_CONSTRAINT_CHANGED", "工具请求约束或参数定义已变化，请重新运行工作流")
+        readonly = service.inspect_read_only_tool_authorization(conversation["id"], scope["tool_name"])
+        if (readonly["read_only_confirmation_digest"] != scope.get("read_only_confirmation_digest")
+                or readonly["definition_digest"] != scope.get("definition_digest")):
+            raise AppError(409, "READ_ONLY_CONFIRMATION_CHANGED", "只读确认已变化，请重新运行工作流")
         connection = service.require_resource("connections", scope["connection_id"], user)
         if connection["revision"] != scope["connection_revision"] or not connection["enabled"]:
             raise AppError(409, "WORKFLOW_TOOL_CONFIG_CHANGED", "工具连接配置已改变，请重新运行工作流")
@@ -1144,20 +1168,31 @@ async def _run_mcp_read(service, user: dict, conversation: dict | None, node: di
     try:
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
-        async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)), follow_redirects=False, trust_env=False) as http:
-            async with streamable_http_client(connection["url"], http_client=http) as streams:
-                async with ClientSession(streams[0], streams[1]) as session:
-                    await session.initialize()
-                    recheck()
-                    result = await session.call_tool(scope["server_tool"], arguments=arguments, read_timeout_seconds=timedelta(seconds=timeout))
+        from .mcp_tools import bound_response, clean_mcp_value, transport_logs
+        from .read_only_tools import verify_live_definition
+        with transport_logs(), anyio.fail_after(timeout):
+            async with httpx.AsyncClient(headers={**headers, "Accept-Encoding": "identity"}, timeout=httpx.Timeout(timeout, connect=min(10.0, timeout)), follow_redirects=False, trust_env=False, event_hooks={"response": [bound_response]}) as http:
+                async with streamable_http_client(connection["url"], http_client=http) as streams:
+                    async with ClientSession(streams[0], streams[1]) as session:
+                        await session.initialize()
+                        recheck()
+                        await verify_live_definition(session, scope["server_tool"], scope["definition_digest"], recheck)
+                        recheck()
+                        result = await session.call_tool(scope["server_tool"], arguments=arguments, read_timeout_seconds=timedelta(seconds=timeout))
     except AppError:
         raise
-    except Exception as error:
-        raise AppError(502, "WORKFLOW_TOOL_FAILED", "实时只读工具暂时无法连接，请检查连接或稍后重试") from error
+    except Exception:
+        raise AppError(502, "WORKFLOW_TOOL_FAILED", "实时只读工具暂时无法连接，请检查连接或稍后重试") from None
     if getattr(result, "isError", False):
         raise AppError(502, "WORKFLOW_TOOL_FAILED", "实时只读工具返回了错误")
     recheck()
-    body = _tool_result_body(result)
+    try:
+        raw_body = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+        # Redact before any preview truncation or source extraction, otherwise a
+        # credential cut in half could survive exact-string redaction later.
+        body = _tool_result_body(clean_mcp_value(raw_body, credential))
+    except Exception:
+        raise AppError(502, "WORKFLOW_TOOL_FAILED", "实时只读工具返回内容无法安全处理") from None
     sources = _tool_sources(body)
     payload = {"kind": "mcp_read", "status": "completed", "tool_name": scope["tool_name"], "connection_id": scope["connection_id"], "result": body, "evidence": sources}
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -1756,7 +1791,7 @@ async def run_model(service, workflow_id, body: WorkflowRunRequest, user, resume
     if tool_scope:
         _ensure_workflow_runtime_schema(service)
     public_models = [{key: selection[key] for key in ("model_id", "model_label", "reasoning_level")} for selection in selections.values()]
-    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision", "argument_constraints_digest")} for item in tool_scope.values()]
+    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision", "argument_constraints_digest", "read_only_confirmation_digest", "definition_digest", "conversation_run_id")} for item in tool_scope.values()]
     permission_payload = {"assistant_id": assistant["id"], "assistant_revision": assistant["revision"], "workflow_revision": row["revision"], "conversation_id": conversation["id"] if conversation else None, "user_id": user["id"], "models": public_models, "knowledge_bases": knowledge_scope, "tools": public_tools, "mode": "model"}
     permission_digest = hashlib.sha256(json.dumps(permission_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     permission_snapshot = {
@@ -1963,7 +1998,7 @@ async def run_synthetic(service, workflow_id, body: WorkflowRunRequest, user, re
     tool_scope = _workflow_tool_scope(service, assistant, user, conversation, tool_nodes)
     if tool_scope:
         _ensure_workflow_runtime_schema(service)
-    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision", "argument_constraints_digest")} for item in tool_scope.values()]
+    public_tools = [{key: item[key] for key in ("node_id", "tool_name", "connection_id", "connection_revision", "argument_constraints_digest", "read_only_confirmation_digest", "definition_digest", "conversation_run_id")} for item in tool_scope.values()]
     permission_payload = {
         "assistant_id": assistant["id"],
         "assistant_revision": assistant["revision"],

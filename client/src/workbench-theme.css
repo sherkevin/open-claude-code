@@ -381,6 +381,18 @@
 .zhixing-theme .assistant-configuration .missing-binding .button,
 .zhixing-theme .assistant-configuration .form-note { font-size:12px; color:var(--muted); }
 .zhixing-theme .assistant-configuration .configuration-conflict { color:var(--ink); font-size:14px; }
+.zhixing-theme .tool-readonly-declaration { color:var(--ink); font-size:14px; line-height:1.6; margin:12px 0; min-width:0; }
+.zhixing-theme .tool-readonly-declaration small { display:block; color:var(--muted); font-size:12px; line-height:1.6; }
+.zhixing-theme .tool-definition-digest { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; overflow-wrap:anywhere; }
+.zhixing-theme .tool-confirmation-basis { color:var(--ink); font-size:14px; line-height:1.6; overflow-wrap:anywhere; padding:10px 12px; background:var(--panel); border:1px solid var(--line); border-radius:6px; }
+.zhixing-theme .tool-confirmation-basis strong { display:block; font-size:12px; color:var(--muted); font-weight:500; }
+.zhixing-theme .assistant-configuration .tool-readonly-confirmation textarea { font-family:inherit; white-space:pre-wrap; overflow-wrap:anywhere; }
+.zhixing-theme .connection-tools .tool-detail { min-width:0; background:var(--paper); border-color:var(--line); }
+.zhixing-theme .connection-tools .tool-detail summary,
+.zhixing-theme .connection-tools .tool-detail strong { color:var(--ink); font-size:14px; }
+.zhixing-theme .connection-tools .section-help,
+.zhixing-theme .connection-tools .tool-detail small { color:var(--muted); font-size:12px; line-height:1.6; }
+.zhixing-theme .connection-tools .tool-detail pre { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:14px; line-height:1.6; color:var(--ink); background:var(--panel); border-color:var(--line); white-space:pre; overflow-x:auto; max-width:100%; }
 
 @media(max-width:760px) {
   .zhixing-theme .workspace-heading { align-items:flex-start; padding-top:8px; }
