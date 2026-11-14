@@ -9,6 +9,7 @@
 - 紫色 `feature/external-capability-governance`，目录 `open-claude-code-external-governance`，负责配置、权限与统一执行治理。
 - 项目负责人文档分支 `docs/capability-completion-plan`，目录 `open-claude-code-capability-plan`。其他工程师分支和未提交内容不修改，不清理。
 - Orca run `run_7bbd04216a23`；橙色 dispatch `ctx_32d11eac85de`，紫色 dispatch `ctx_8c44bad53f6d`。Orca 注册项目是 folder，因此启动目录与实际编辑 Git 工作树不同；任务书强制先核对独立工作树，不冒称自动创建成功。
+- 18:43 用户确认其他工程师负责前端设计；两名执行者的全部 `client/` 写权限冻结，后端继续。当时两分支 `git status --short -- client` 均为空，未回退或覆盖任何前端文件。设计工程师的具体分支/会话待确认；前端接入和浏览器整链门禁仍保留，不冒充后端完成即可发布。
 
 ## 2. 已执行的真实供应商探针
 
