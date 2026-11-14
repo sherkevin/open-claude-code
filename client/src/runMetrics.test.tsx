@@ -20,4 +20,8 @@ describe('execution metrics boundaries',()=>{
     const html=renderToStaticMarkup(<ExecutionEvidenceCard events={events} run={{...run,usage:null}}/>);
     expect(html).toContain('证据 1');expect(html).toContain('业务域');expect(html).toContain('未提供');
   });
+  it('shows measured token stages only when the runtime reports them',()=>{
+    const html=renderToStaticMarkup(<RunMetrics run={{...run,usage:{input_tokens:12,output_tokens:4,token_accounting:{stages:[{stage:'answer',source:'harness_provider'}]}}}}/>);
+    expect(html).toContain('Token 阶段');expect(html).toContain('answer · harness_provider');
+  });
 });

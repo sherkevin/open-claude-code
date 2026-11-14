@@ -20,6 +20,7 @@ from .identity import build_system_prompt, identity_reply_for_message
 from .provider_policy import provider_route
 from .security import AppError, redact
 from .service import TERMINAL, approval_view
+from .token_savings import TokenAccounting
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +338,7 @@ class SDKRuntime(WorkspaceRuntime):
 
     async def execute(self, run, message):
         self.current_run = run
+        token_ledger = TokenAccounting()
         self.tool_done.clear()
         self.tool_started.clear()
         self.compaction_boundary = None
@@ -464,8 +466,9 @@ class SDKRuntime(WorkspaceRuntime):
                 await offload_write(self.service.db.execute, "UPDATE conversations SET sdk_session_id=?,sdk_cost_total=? WHERE id=?", (session_id, max(previous, total or 0), self.conversation_id))
                 usage = event.usage or {}
                 tokens = {key: usage[key] for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens") if type(usage.get(key)) is int and usage[key] >= 0}
-                if tokens or cost is not None:
-                    await self.emit("usage.updated", {**tokens, "estimated_cost_usd": cost, "currency": "USD", "cost_is_estimate": True})
+                token_ledger.record("answer", usage, source="sdk_provider")
+                await self.emit("usage.updated", {**tokens, "estimated_cost_usd": cost, "currency": "USD",
+                                                   "cost_is_estimate": True, "token_accounting": token_ledger.summary()})
                 api_status = getattr(event, "api_error_status", None)
                 if event.is_error or assistant_error or getattr(event, "terminal_reason", None) == "api_error" or (isinstance(api_status, int) and api_status >= 400):
                     raise model_execution_error(event, assistant_error)

@@ -317,6 +317,8 @@
 .execution-evidence-grid dd { margin-top:3px; color:var(--ink); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
 .execution-evidence-meta { display:flex; flex-wrap:wrap; gap:6px 10px; margin-top:12px; padding-top:10px; border-top:1px solid #edf0ef; color:var(--muted); font-size:11px; }
 .execution-evidence-meta span { font-variant-numeric:tabular-nums; }
+.token-stage-list { display:flex; flex-wrap:wrap; gap:4px 6px; }
+.token-stage-list span { display:inline-flex; padding:2px 6px; border:1px solid #e1e8e6; border-radius:999px; color:var(--muted); font-size:10px; font-weight:500; }
 @media(max-width:760px) {
   .zhixing-theme .workspace-heading { align-items:flex-start; padding-top:8px; }
   .zhixing-theme .workspace-heading h1 { font-size:25px; }

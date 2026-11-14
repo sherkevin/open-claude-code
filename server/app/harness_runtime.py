@@ -20,6 +20,7 @@ from .identity import build_system_prompt
 from .runtime import WorkspaceRuntime, elapsed_ms, save_timing
 from .provider_policy import TOKENHUB_BASE_URL, provider_route
 from .security import AppError
+from .token_savings import TokenAccounting
 
 PINNED_COMMIT = "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"
 
@@ -392,6 +393,7 @@ class HarnessRuntime(WorkspaceRuntime):
         accepted, finish, model_started = False, None, False
         streams, committed, active_step = {}, set(), None
         tokens = {}
+        token_ledger = TokenAccounting()
         # The child is legitimately silent while a person considers approval.
         # Do not expire a 600-second approval with a shorter transport timer.
         notification_timeout = max(300, self.service.settings.approval_seconds + 60)
@@ -424,9 +426,14 @@ class HarnessRuntime(WorkspaceRuntime):
                             value = usage.get(upstream)
                             if type(value) is int and value >= 0:
                                 tokens[public] = tokens.get(public, 0) + value
-                        if tokens:
-                            await self.emit("usage.updated", {**tokens, "estimated_cost_usd": None,
-                                "currency": "USD", "cost_is_estimate": True, "source": "harness_provider"})
+                        token_ledger.record("answer", {"input_tokens": usage.get("inputTokens"),
+                                                        "output_tokens": usage.get("outputTokens"),
+                                                        "cache_read_input_tokens": usage.get("cacheReadTokens"),
+                                                        "cache_write_input_tokens": usage.get("cacheWriteTokens")},
+                                           source="harness_provider")
+                        await self.emit("usage.updated", {**tokens, "estimated_cost_usd": None,
+                            "currency": "USD", "cost_is_estimate": True, "source": "harness_provider",
+                            "token_accounting": token_ledger.summary()})
                         if kind != "assistant/message":
                             continue
                         message_data = data.get("message") or data
