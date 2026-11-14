@@ -592,10 +592,35 @@ class SessionActor:
         await offload_write(self._emit, run_id, kind, data)
 
     def _emit(self, run_id, kind, data):
+        run = self.service.require("runs", run_id)
+        timings = json.loads(run.get("timings") or "{}")
+        timing_changed = False
+        # These timestamps are deliberately event-boundary metrics. They do
+        # not estimate provider work; they record when the user-visible
+        # execution funnel first reached each verifiable boundary.
+        if kind == "run.stage":
+            stage = data.get("stage") if isinstance(data, dict) else None
+            if "first_feedback_ms" not in timings:
+                timings["first_feedback_ms"] = elapsed_ms(run)
+                timing_changed = True
+            if stage in {"scoping", "routing", "tool"} and "first_structure_ms" not in timings:
+                timings["first_structure_ms"] = elapsed_ms(run)
+                timing_changed = True
+        elif kind == "tool.started" and "first_structure_ms" not in timings:
+            timings["first_structure_ms"] = elapsed_ms(run)
+            timing_changed = True
+        elif kind == "tool.completed" and isinstance(data, dict) and data.get("success") is not False:
+            if "first_valid_result_ms" not in timings:
+                timings["first_valid_result_ms"] = elapsed_ms(run)
+                timing_changed = True
+        if timing_changed:
+            self.service.db.execute("UPDATE runs SET timings=? WHERE id=?", (dump(timings), run_id))
+            self.service.db.event(run_id, "timing.updated", timings)
         with self.service.db.transaction():
             if kind == "message.delta":
                 run = self.service.require("runs", run_id)
-                if "first_text_ms" not in json.loads(run.get("timings") or "{}"):
+                current_timings = json.loads(run.get("timings") or "{}")
+                if "first_text_ms" not in current_timings:
                     timings = save_timing(self.service, run_id, "first_text_ms", elapsed_ms(run))
                     self.service.db.event(run_id, "timing.updated", timings)
                     self.service.db.event(run_id, "run.stage", {"stage": "answering"})

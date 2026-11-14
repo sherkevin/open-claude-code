@@ -4,7 +4,7 @@ import shutil
 
 from app.config import Settings
 from app.db import dump, now, uid
-from app.runtime import RunManager, SDKRuntime, tool_result_metadata
+from app.runtime import RunManager, SDKRuntime, SessionActor, tool_result_metadata
 from app.service import Service
 
 
@@ -60,5 +60,25 @@ def test_run_finish_emits_canonical_source_replacement_and_total_timing(tmp_path
         events = service.db.events(run["id"], 0)
         assert events[-2]["type"] == "message.updated"
         assert events[-1]["type"] == "run.completed" and events[-1]["data"]["timings"]["total_ms"] >= 0
+    finally:
+        service.db.close()
+
+
+def test_event_boundaries_record_feedback_structure_and_valid_result_timing(tmp_path):
+    service = Service(Settings(data_dir=tmp_path))
+    try:
+        user = service.create_user({"username": "timing-test", "display_name": "Test", "password": "safe-test-password-123", "role": "admin"})
+        assistant = service.save_assistant({"name": "Timing test", "connections": []})
+        conversation = service.create_conversation({"assistant_id": assistant["id"], "title": "test"}, user)
+        response, _ = service.prepare_run(conversation["id"], {"text": "read", "file_ids": [], "client_request_id": "timing"}, user)
+        actor = object.__new__(SessionActor)
+        actor.service = service
+        run_id = response["run_id"]
+        actor._emit(run_id, "run.stage", {"stage": "initializing"})
+        actor._emit(run_id, "run.stage", {"stage": "scoping"})
+        actor._emit(run_id, "tool.completed", {"success": True})
+        timings = service.require("runs", run_id)["timings"]
+        assert all(key in json.loads(timings) for key in ("first_feedback_ms", "first_structure_ms", "first_valid_result_ms"))
+        assert json.loads(timings)["first_feedback_ms"] <= json.loads(timings)["first_structure_ms"] <= json.loads(timings)["first_valid_result_ms"]
     finally:
         service.db.close()
