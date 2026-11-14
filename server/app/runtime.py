@@ -212,6 +212,18 @@ class SDKRuntime(WorkspaceRuntime):
                         if server.startswith("c") and tool_name.startswith(f"mcp__{server}__"):
                             sources = await offload_write(service.evidence.register_mcp, self.current_run["id"], server[1:], data.get("tool_response"), tool_name=tool_name[len(f"mcp__{server}__"):])
                             break
+                elif success and self.current_run and tool_name.startswith("mcp__workspace__"):
+                    # Workspace handlers already register knowledge/web
+                    # evidence while executing.  The SDK post hook must copy
+                    # those opaque IDs into the durable run ledger just like
+                    # external MCP results; IDs are revalidated against the
+                    # current run and permissions before they are emitted.
+                    candidate_ids = service.evidence.source_ids_from_tool_result(data.get("tool_response"))
+                    current_user = await offload(service.require, "users", self.current_run["user_id"])
+                    sources = await offload(
+                        service.evidence.trusted_sources,
+                        self.current_run["id"], candidate_ids, current_user,
+                    )
                 elif success and self.current_run and tool_name == "Read":
                     sources = await offload(self.attachment_source, data)
                 await self.emit("tool.completed", {
@@ -985,7 +997,12 @@ class RunManager:
         timings = save_timing(self.service, run_id, "total_ms", elapsed_ms(run))
         if run.get("kind", "chat") == "chat" and run.get("assistant_message_id"):
             message = self.service.require("messages", run["assistant_message_id"])
-            result = self.service.evidence.finalize(run_id, message["text"])
+            user = self.service.require("users", run["user_id"])
+            # Pass the server-built tool ledger explicitly.  finalize() still
+            # revalidates every ID against this run and the current ACLs; the
+            # argument is never accepted as model-controlled input.
+            used_source_ids = [source["id"] for source in self.service.evidence.used_sources(run_id, user)]
+            result = self.service.evidence.finalize(run_id, message["text"], used_source_ids=used_source_ids)
             self.service.db.execute("UPDATE messages SET text=?,citations=? WHERE id=?", (result["text"], dump(result["citations"]), message["id"]))
             self.service.db.event(run_id, "message.updated", {"message_id": message["id"], **result})
         if run.get("kind") == "compact" and status in {"failed", "cancelled", "interrupted"}:
