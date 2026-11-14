@@ -45,12 +45,13 @@ def tool_result_metadata(success, sources):
     """
     if not success:
         return {"source_ids": [], "result_facts": {}}
-    source_ids = [
-        source["id"] for source in sources
-        if isinstance(source, dict)
-        and isinstance(source.get("id"), str)
-        and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source["id"])
-    ][:30]
+    source_ids = []
+    for source in sources:
+        candidate = source.get("id") if isinstance(source, dict) else source
+        if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", candidate):
+            source_ids.append(candidate)
+        if len(source_ids) >= 30:
+            break
     return {"source_ids": source_ids, "result_facts": {"source_count": len(source_ids)} if source_ids else {}}
 
 

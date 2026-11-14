@@ -51,3 +51,9 @@ def test_result_fact_metadata_marks_missing_scope_as_unknown_and_failure_is_empt
     assert result_fact_metadata(False, {"structuredContent": {"row_count": 9}}, []) == {
         "source_ids": [], "result_facts": {}
     }
+
+
+def test_result_fact_metadata_accepts_source_id_projection_from_harness():
+    value = result_fact_metadata(True, {"structuredContent": {}}, ["source_1"])
+    assert value["source_ids"] == ["source_1"]
+    assert value["result_facts"]["source_count"] == 1
