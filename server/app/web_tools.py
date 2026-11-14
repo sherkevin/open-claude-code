@@ -431,9 +431,10 @@ class WebTools:
     async def read_for_run(self, user, assistant, run_id, url, query=""):
         self.authorize(user, assistant)
         provider, _searx_url, _brave_url, _brave_key, fallback = self._provider_config()
-        if provider == "deepseek_api" and self._deepseek_client() is not None:
+        deepseek_client = self._deepseek_client() if provider == "deepseek_api" else None
+        if deepseek_client is not None:
             try:
-                page = await self._deepseek_client().fetch(url)
+                page = await deepseek_client.fetch(url)
                 final_url, text, title = page["url"], page["content"], page["title"]
             except AppError:
                 if not fallback:
