@@ -9,7 +9,7 @@ def test_result_fact_metadata_projects_allowlisted_structured_scope():
             "business_object": "订单",
             "metrics": ["数量"],
             "fields": ["order_id", "status"],
-            "filters": {"factory": "F01", "status": "open"},
+            "filters": {"factory": "F01", "status": "open", "password": "must be redacted"},
             "time_range": "2026-11-01/2026-11-14",
             "aggregation": "count",
             "row_count": 18,
@@ -17,6 +17,7 @@ def test_result_fact_metadata_projects_allowlisted_structured_scope():
             "page_size": 20,
             "cache_hit": True,
             "cache_key": "scope:abc123",
+            "api_token": "must be redacted",
             "returned_rows": 18,
             "original_rows": 240,
             "records": [{"secret": "must not be copied"}],
@@ -30,9 +31,12 @@ def test_result_fact_metadata_projects_allowlisted_structured_scope():
     assert facts["business_process"] == "出库"
     assert facts["business_object"] == "订单"
     assert facts["metrics"] == ["数量"]
-    assert facts["filters"] == {"factory": "F01", "status": "open"}
+    assert facts["filters"] == {"factory": "F01", "status": "open", "password": "redacted"}
     assert facts["row_count"] == 18
     assert facts["cache_hit"] is True
+    assert facts["cache_key"].startswith("opaque:")
+    assert "api_token" not in facts
+    assert facts["filters"]["password"] == "redacted"
     assert "records" not in facts
     assert "secret" not in str(facts)
 

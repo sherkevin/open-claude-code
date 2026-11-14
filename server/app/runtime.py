@@ -62,8 +62,18 @@ RESULT_FACT_KEYS = (
 )
 
 
-def _bounded_fact(value, *, depth=0):
+_SENSITIVE_FACT_MARKERS = ("token", "password", "passwd", "secret", "api_key", "apikey", "credential")
+
+
+def _bounded_fact(value, *, depth=0, key=""):
     """Keep result facts small, JSON-safe and free of arbitrary result payloads."""
+    key_name = str(key).lower()
+    if any(marker in key_name for marker in _SENSITIVE_FACT_MARKERS):
+        return "redacted"
+    if key_name == "cache_key":
+        if value is None:
+            return "unknown"
+        return f"opaque:{hashlib.sha256(str(value).encode('utf-8')).hexdigest()[:16]}"
     if depth > 3:
         return "unknown"
     if value is None or isinstance(value, (bool, int, float)):
@@ -71,10 +81,10 @@ def _bounded_fact(value, *, depth=0):
     if isinstance(value, str):
         return value[:512]
     if isinstance(value, list):
-        return [_bounded_fact(item, depth=depth + 1) for item in value[:50]]
+        return [_bounded_fact(item, depth=depth + 1, key=key) for item in value[:50]]
     if isinstance(value, dict):
-        return {str(key)[:80]: _bounded_fact(item, depth=depth + 1)
-                for key, item in list(value.items())[:50]}
+        return {str(item_key)[:80]: _bounded_fact(item, depth=depth + 1, key=item_key)
+                for item_key, item in list(value.items())[:50]}
     return "unknown"
 
 
@@ -96,7 +106,7 @@ def result_fact_metadata(success, result, sources):
         structured = {}
     facts = dict(metadata.get("result_facts") or {})
     for key in RESULT_FACT_KEYS:
-        facts[key] = _bounded_fact(structured[key]) if key in structured else "unknown"
+        facts[key] = _bounded_fact(structured[key], key=key) if key in structured else "unknown"
     return {"source_ids": metadata["source_ids"], "result_facts": facts}
 
 
@@ -266,10 +276,9 @@ class SDKRuntime(WorkspaceRuntime):
                 elif success and self.current_run and tool_name == "Read":
                     sources = await offload(self.attachment_source, data)
                 result_facts = result_fact_metadata(success, response, sources)
-                if success:
-                    await self.emit("run.stage", {"stage": "evidence", "tool_name": tool_name,
-                                       "status": "reported" if sources else "unknown",
-                                       "source_count": len(sources)})
+                await self.emit("run.stage", {"stage": "evidence", "tool_name": tool_name,
+                                   "status": "reported" if success and sources else "unknown",
+                                   "source_count": len(sources)})
                 await self.emit("tool.completed", {
                     "tool_call_id": tool_use_id,
                     "tool_name": tool_name,

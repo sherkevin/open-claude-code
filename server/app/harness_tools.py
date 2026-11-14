@@ -184,9 +184,6 @@ class HarnessToolBridge:
                 else:
                     sources = [row["id"] for row in service.db.all("SELECT id FROM evidence_sources WHERE run_id=?", (run_id,)) if row["id"] not in before][:30]
                 success = True
-                await runtime.emit("run.stage", {"stage": "evidence", "tool_name": tool_name,
-                                   "status": "reported" if sources else "unknown",
-                                   "source_count": len(sources)})
             return result
         except asyncio.CancelledError:
             raise
@@ -195,6 +192,9 @@ class HarnessToolBridge:
         finally:
             # Failure to persist completion also fails the RPC; the child must
             # not see a successful unaudited result.
+            await runtime.emit("run.stage", {"stage": "evidence", "tool_name": tool_name,
+                               "status": "reported" if success and sources else "unknown",
+                               "source_count": len(sources)})
             await runtime.emit("tool.completed", {"tool_call_id": event_id, "tool_name": tool_name,
                                "success": success, "duration_ms": round((time.monotonic() - started) * 1000),
                                **result_fact_metadata(success, locals().get("result"), sources)})
