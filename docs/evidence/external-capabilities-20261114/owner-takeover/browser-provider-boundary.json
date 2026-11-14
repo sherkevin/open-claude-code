@@ -1,0 +1,62 @@
+{
+  "model_calls": 0,
+  "runtime_executions": 23,
+  "denied_network_or_process_attempts": [],
+  "mock_provider_calls": [
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "POST",
+      "host": "api.deepseek.com",
+      "path": "/v1/tools/search"
+    },
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "POST",
+      "host": "api.deepseek.com",
+      "path": "/v1/tools/fetch"
+    },
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "POST",
+      "host": "api.deepseek.com",
+      "path": "/v1/tools/ocr"
+    },
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "POST",
+      "host": "api.deepseek.com",
+      "path": "/anthropic/v1/messages"
+    },
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "POST",
+      "host": "api.deepseek.com",
+      "path": "/v1/tools/search"
+    },
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "POST",
+      "host": "api.deepseek.com",
+      "path": "/v1/tools/search"
+    },
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "POST",
+      "host": "api.deepseek.com",
+      "path": "/v1/tools/ocr"
+    },
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "POST",
+      "host": "api.deepseek.com",
+      "path": "/anthropic/v1/messages"
+    },
+    {
+      "provider": "synthetic-supplier-transport",
+      "method": "GET",
+      "host": "api.search.brave.com",
+      "path": "/res/v1/images/search"
+    }
+  ],
+  "adapter_hook": true
+}

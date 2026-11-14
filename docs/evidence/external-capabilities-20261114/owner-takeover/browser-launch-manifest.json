@@ -1,0 +1,44 @@
+{
+  "revision": "06f596a26edbc999c818db55bfb89b12f43d0477",
+  "scope": "isolated_synthetic",
+  "stage": "stopped",
+  "provider_live_calls_authorized": false,
+  "baseline_only": false,
+  "adapter_hook_sha256": "5189ef39a0bdae1d491bd208dd9440b1b2573337ebab999abe666b13e280c5a2",
+  "browser_cases_sha256": "eabd10f8cbb4301660ca57b6b1ce708c5674ce0688da660950fe673c7183a152",
+  "harness_sha256": {
+    "preflight.py": "4d6d4b1f7184ab98a9fcba5b5ee361d1fa5dc795e8d52bad4fc7c944be911d6b",
+    "launch.py": "009d0af5b817628e3005bac23b0aef06dbfc72c68b759d3c79252ca4fa3da27e",
+    "server.py": "4ff28977d7c89a9db9e401fb623843d791bd5290ec78da5e36e2bafcb05d0671",
+    "network_guard.py": "3b9fe37315fe560c9cd8290b967bd6130887f4235d2534eca427ccc6b7252946",
+    "browser.mjs": "bfa0f4f7ede6512807673c2b09959bd01823f1d8fdcd6313660db319a6ccb32d"
+  },
+  "paths": {
+    "repo": "/media/data3/dengkw/projects/open-claude-code-main-merge",
+    "python": "/media/data3/dengkw/projects/open-claude-code/.venv/bin/python",
+    "node": "/home/dengkw/.local/bin/node",
+    "playwright": "/media/data3/dengkw/projects/open-claude-code/.runtime/third_party/deepseek-harness/node_modules/.pnpm/playwright@1.63.0-alpha-2026-08-31/node_modules/playwright/index.mjs",
+    "chromium": "/home/dengkw/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome",
+    "agent_browser": "/media/data3/dengkw/.private-dev/nodejs/node-v20.20.2-linux-x64/bin/agent-browser"
+  },
+  "archive_sha256": "548c1a10ce49520cadfc2c9b118b5eb9f0fac985d5bc7606c68440548cf727ad",
+  "client_files_sha256": {
+    "assets/index-B8qcCGPA.css": "6040f08b3453bb64a4c5ab7e8e88ed79eae065bd2f16bc9c4bc87ad1846154a3",
+    "assets/index-CwZffas7.js": "cc043eee300a945b9da3e4fbd410dd0d8368955c83b37b2f8e14a6ce9982a5ad",
+    "favicon.svg": "d9c53427d25d69215d2714330e95e6d97988fe51953f7d4bbf313f2f75255b4b",
+    "fonts/72-Bold.woff2": "270387a820fef53fe57f8f7514bc8a69e986ded2a01fd8722c024e2081aa6c1c",
+    "fonts/72-Regular.woff2": "c33e1916f644b2f0408ef6d01ee8dbb37a889b0f8d824bc961b43269b3abbf69",
+    "fonts/72-Semibold.woff2": "56f0dfef94587821c23a6856f5385b6175692c3fb32a62be5f38d1e956f0f872",
+    "fonts/LICENSE-72.txt": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac",
+    "fonts/sources.json": "a39291f81fb345163693d6af30237d1ca6a4e083260fa24d55a55849030d79ef",
+    "index.html": "8f5c4d5800dd51e8099abfaa03c1ed30a0ec3c12a90e224b76e05a059c7f5e00"
+  },
+  "owned_server_pid": 959411,
+  "base_url": "http://127.0.0.1:37545",
+  "browser_private_tmp": "/media/data3/dengkw/tmp/b-g62_pojz",
+  "owned_browser_driver_pid": 959489,
+  "browser_private_tmp_removed": true,
+  "owned_server_stopped": true,
+  "exit_code": 0,
+  "status": "passed"
+}

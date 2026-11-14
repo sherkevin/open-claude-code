@@ -1,0 +1,237 @@
+{
+  "scope": "baseline_real_app_with_seeded_evidence",
+  "status": "baseline_only_passed",
+  "checks": [
+    {
+      "id": "real_app_login_and_api_fixture_creation",
+      "status": "passed",
+      "duration_ms": 1971,
+      "evidence": {
+        "member_id": "cc370431a4e84467a345daf5d3a9a81a",
+        "assistant_id": "009fd77a8c1d498bbef6899cdd31f59f"
+      }
+    },
+    {
+      "id": "desktop_and_390px_real_capability_page",
+      "status": "passed",
+      "duration_ms": 1768,
+      "evidence": {
+        "width": 390,
+        "document_width": 390,
+        "drawer": {
+          "open": false,
+          "right": 0,
+          "scrim_count": 0
+        }
+      }
+    },
+    {
+      "id": "mobile_capability_controls_operable_without_persistence",
+      "status": "passed",
+      "duration_ms": 2866,
+      "evidence": {
+        "viewport_width": 390,
+        "controls": [
+          {
+            "label": "网页搜索: enable toggle",
+            "left": 40,
+            "right": 55,
+            "top": 468.25,
+            "bottom": 483.25,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "网页搜索: preferred provider",
+            "left": 40,
+            "right": 350,
+            "top": 529.953125,
+            "bottom": 569.953125,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "网页搜索: fallback provider",
+            "left": 40,
+            "right": 350,
+            "top": 616.953125,
+            "bottom": 656.953125,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "网页搜索: timeout",
+            "left": 40,
+            "right": 350,
+            "top": 766.546875,
+            "bottom": 810.9375,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "网页读取: enable toggle",
+            "left": 40,
+            "right": 55,
+            "top": 414.765625,
+            "bottom": 429.765625,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "网页读取: preferred provider",
+            "left": 40,
+            "right": 350,
+            "top": 476.46875,
+            "bottom": 516.46875,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "网页读取: fallback provider",
+            "left": 40,
+            "right": 350,
+            "top": 563.46875,
+            "bottom": 603.46875,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "网页读取: timeout",
+            "left": 40,
+            "right": 350,
+            "top": 713.0625,
+            "bottom": 757.453125,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "save and apply (trial only; no mutation)",
+            "left": 19,
+            "right": 119,
+            "top": 767.734375,
+            "bottom": 803.734375,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          },
+          {
+            "label": "reload",
+            "left": 19,
+            "right": 128,
+            "top": 206.46875,
+            "bottom": 242.46875,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "receives_pointer": true
+          }
+        ],
+        "actual_toggle_and_input_restore": true,
+        "provider_popup_open_close": true,
+        "reload_status": 200,
+        "persisted_writes": 0,
+        "save_scope": "pointer_actionability_only_not_save_contract"
+      }
+    },
+    {
+      "id": "member_admin_get_api_denied_without_schema_guessing",
+      "status": "passed",
+      "duration_ms": 24,
+      "evidence": {
+        "get_status": 403,
+        "code": "ADMIN_REQUIRED",
+        "put_case": "blocked_final_contract_mapping"
+      }
+    },
+    {
+      "id": "seeded_source_and_revocation_real_endpoint",
+      "status": "passed",
+      "duration_ms": 4238,
+      "evidence": {
+        "source_id": "ee3aafc83a34445d86ecbfe5f654e2bd",
+        "evidence": "fixture_seeded_not_provider_execution",
+        "revocation": "assistant_disabled_not_granular_grant"
+      }
+    },
+    {
+      "id": "no_password_echo_and_no_automatic_external_image_attempt",
+      "status": "passed",
+      "duration_ms": 10533,
+      "evidence": {
+        "observation_ms": 750,
+        "password_echo": false,
+        "api_key_write_case": "blocked_final_contract_mapping"
+      }
+    }
+  ],
+  "outbound_attempts": [],
+  "page_errors": [],
+  "console_errors": [
+    {
+      "actor": "admin",
+      "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "actor": "member",
+      "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "actor": "member",
+      "message": "Failed to load resource: the server responded with a status of 403 (Forbidden)"
+    }
+  ],
+  "screenshots": [
+    {
+      "path": "/media/data3/dengkw/scratch/tmp/oc-capabilities-completion-20261114/browser-preflight/runs/20261114T142130Z-ad3bf3b2dedb-867619/evidence/01-admin-desktop.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1080
+      }
+    },
+    {
+      "path": "/media/data3/dengkw/scratch/tmp/oc-capabilities-completion-20261114/browser-preflight/runs/20261114T142130Z-ad3bf3b2dedb-867619/evidence/02-admin-390px.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "path": "/media/data3/dengkw/scratch/tmp/oc-capabilities-completion-20261114/browser-preflight/runs/20261114T142130Z-ad3bf3b2dedb-867619/evidence/03-admin-390px-bottom.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "path": "/media/data3/dengkw/scratch/tmp/oc-capabilities-completion-20261114/browser-preflight/runs/20261114T142130Z-ad3bf3b2dedb-867619/evidence/04-source-before-revocation.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1080
+      }
+    },
+    {
+      "path": "/media/data3/dengkw/scratch/tmp/oc-capabilities-completion-20261114/browser-preflight/runs/20261114T142130Z-ad3bf3b2dedb-867619/evidence/05-source-revoked-390px.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      }
+    },
+    {
+      "path": "/media/data3/dengkw/scratch/tmp/oc-capabilities-completion-20261114/browser-preflight/runs/20261114T142130Z-ad3bf3b2dedb-867619/evidence/06-tracker-guard.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1080
+      }
+    }
+  ],
+  "future_contract": "blocked_not_implemented",
+  "server_network_proof": "see server-evidence.json",
+  "finished_at": "2026-11-14T14:22:16.238Z"
+}

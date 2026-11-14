@@ -1,0 +1,32 @@
+{
+  "production_commit": "06f596a26edbc999c818db55bfb89b12f43d0477",
+  "test_contract_commit": "5dd713ffb5d76adbd8c6275359d830c8ded01b19",
+  "changed_paths_after_production_freeze": [
+    "server/tests/test_workspace_tools.py"
+  ],
+  "production_code_unchanged": true,
+  "first_full_command_exit": 1,
+  "first_full_counts": {
+    "passed": 1792,
+    "failed": 2,
+    "skipped": 10
+  },
+  "retest_file": "server/tests/test_workspace_tools.py",
+  "retest_counts": {
+    "passed": 16,
+    "failed": 0,
+    "skipped": 0
+  },
+  "unique_case_counts_after_retest": {
+    "passed": 1794,
+    "failed": 0,
+    "skipped": 10
+  },
+  "failed_cases_before_retest": [
+    "tests/test_workspace_tools.py::test_sdk_wrapper_preserves_registry_metadata_and_server_contract",
+    "tests/test_workspace_tools.py::test_web_handlers_preserve_defaults_and_source_links"
+  ],
+  "remaining_failed_cases": [],
+  "single_fresh_full_command_passed": false,
+  "scope": "full_run_plus_contract_only_retest_not_a_second_full_run"
+}
