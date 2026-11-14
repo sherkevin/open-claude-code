@@ -307,6 +307,16 @@
 .connection-steps li.complete { background:linear-gradient(90deg,color-mix(in srgb,var(--brand) 6%,#fff),#fff); }
 .connection-steps li.complete>span { color:#fff; border-color:var(--brand); background:var(--brand); }
 .connection-steps li.complete strong { color:var(--brand); }
+.execution-evidence { margin:14px 0 18px; padding:14px 14px 12px; border:1px solid #dfe5e4; border-radius:8px; background:#fff; }
+.execution-evidence-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:10px; }
+.execution-evidence-heading h3 { margin-top:3px; color:var(--ink); font-size:13px; font-weight:650; }
+.execution-evidence-heading small { color:var(--muted); font-size:11px; white-space:nowrap; }
+.execution-evidence-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 12px; }
+.execution-evidence-grid>div { min-width:0; padding-top:7px; border-top:1px solid #edf0ef; }
+.execution-evidence-grid dt { color:var(--muted); font-size:11px; }
+.execution-evidence-grid dd { margin-top:3px; color:var(--ink); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.execution-evidence-meta { display:flex; flex-wrap:wrap; gap:6px 10px; margin-top:12px; padding-top:10px; border-top:1px solid #edf0ef; color:var(--muted); font-size:11px; }
+.execution-evidence-meta span { font-variant-numeric:tabular-nums; }
 @media(max-width:760px) {
   .zhixing-theme .workspace-heading { align-items:flex-start; padding-top:8px; }
   .zhixing-theme .workspace-heading h1 { font-size:25px; }
@@ -317,6 +327,9 @@
   .chat-proof-bar { padding:7px 16px; }
   .connection-steps { grid-template-columns:1fr; }
   .connection-steps li+li { border-left:0; border-top:1px solid #e9edec; }
+  .execution-evidence-grid { grid-template-columns:1fr; }
+  .execution-evidence-heading { flex-direction:column; }
+  .execution-evidence-heading small { white-space:normal; }
 }
 @media(prefers-reduced-motion:reduce) {.zhixing-theme *,.zhixing-theme *::before,.zhixing-theme *::after {animation:none!important;transition:none!important;scroll-behavior:auto!important}.zhixing-theme .text-action:hover svg {transform:none}}
 @media(hover:none) {.zhixing-theme .copy-answer {opacity:1}}
