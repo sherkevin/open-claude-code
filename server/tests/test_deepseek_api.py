@@ -45,6 +45,9 @@ def test_search_rejects_overlong_query_without_truncating_or_calling():
         asyncio.run(client.search("x" * (MAX_SEARCH_QUERY + 1)))
     assert error.value.code == "WEB_QUERY_INVALID"
     assert not requests
+    with pytest.raises(AppError) as error:
+        asyncio.run(client.search("query", original_question="x" * (MAX_SEARCH_QUERY + 1)))
+    assert error.value.code == "WEB_QUERY_INVALID"
 
 
 def test_retryable_status_retries_once_but_balance_error_does_not():

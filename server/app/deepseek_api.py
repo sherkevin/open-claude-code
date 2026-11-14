@@ -134,7 +134,12 @@ class DeepSeekAPI:
         if len(query) > MAX_SEARCH_QUERY:
             raise AppError(422, "WEB_QUERY_INVALID", "搜索词不能超过 128 个字符")
         query = _bounded_text(query, MAX_SEARCH_QUERY)
-        count = max(1, min(50, int(count)))
+        try:
+            count = max(1, min(50, int(count)))
+        except (TypeError, ValueError):
+            raise AppError(422, "WEB_QUERY_INVALID", "返回数量无效") from None
+        if original_question is not None and len(str(original_question).strip()) > MAX_SEARCH_QUERY:
+            raise AppError(422, "WEB_QUERY_INVALID", "原始问题不能超过 128 个字符")
         original_question = _bounded_text(original_question, MAX_SEARCH_QUERY).strip() or None
         payload: dict[str, Any] = {"query": query, "count": count, "need_content": bool(need_content)}
         if original_question:
