@@ -36,7 +36,31 @@
 .zhixing-theme .chat-page .run-metrics :is(dt,dd) {min-width:0;overflow-wrap:anywhere}
 .zhixing-theme .message-label>.fw-ai-identity {vertical-align:middle}
 .zhixing-theme :is(.wr-title-link,.wr-text-action,.chat-actions .icon-button)>svg {stroke-width:1.7}
+/* Session management uses the same readable neutral text and blue selection as the workspace. */
+.zhixing-theme .session-card {background:var(--white);border-color:var(--line);border-radius:8px}
+.zhixing-theme .session-main {color:var(--ink)}
+.zhixing-theme .session-main:hover {background:var(--brand-soft)}
+.zhixing-theme .session-main strong {font-size:14px;font-weight:600}
+.zhixing-theme .session-main small,.zhixing-theme .session-tags {font-size:12px;color:var(--muted);line-height:1.6}
+.zhixing-theme .session-main>svg {color:var(--muted);stroke-width:1.7}
+.zhixing-theme .session-icon {background:var(--brand-soft);color:var(--brand);border-radius:6px}
+.zhixing-theme .session-icon svg {stroke-width:1.7}
+.zhixing-theme .session-tags>span {background:var(--paper)}
+.zhixing-theme .session-intro {font-size:14px;color:var(--muted)}
+.zhixing-theme .session-filters :is(.search-field,select,input) {background:var(--white);border-color:var(--line);color:var(--ink);font-size:14px}
+.zhixing-theme .session-filters .search-field {color:var(--muted)}
+.zhixing-theme .session-filters .search-field:focus-within {outline-color:var(--brand)}
+.zhixing-theme .session-filters .segmented {background:var(--panel);border-radius:6px}
+.zhixing-theme .session-filters .segmented button {font-size:14px;color:var(--muted)}
+.zhixing-theme .session-filters .segmented button.selected {background:var(--white);color:var(--brand);font-weight:600}
+.zhixing-theme .assistant-detail-meta {font-size:12px;color:var(--muted)}
+.zhixing-theme .assistant-detail-tabs {border-color:var(--line)}
+.zhixing-theme .assistant-detail-tabs>button {font-size:14px;color:var(--muted)}
+.zhixing-theme .assistant-detail-tabs>button.selected {border-color:var(--brand);color:var(--brand)}
 @media(max-width:600px) {
+  .zhixing-theme .session-filters :is(input,select) {font-size:16px;min-height:44px}
+  .zhixing-theme .session-filters .segmented button,.zhixing-theme .session-actions .icon-button {min-height:44px}
+  .zhixing-theme .session-main small {overflow-wrap:anywhere}
   .zhixing-theme .assistant-setting-card {gap:12px}
   .zhixing-theme .assistant-setting-card .setting-actions {margin-left:42px}
   .zhixing-theme .assistant-setting-card .assistant-setting-content {flex-basis:calc(100% - 42px)}
@@ -50,4 +74,9 @@
 }
 @media(prefers-reduced-motion:reduce) {
   .zhixing-theme .fw-ai-identity.is-working {animation:none}
+}
+/* A closed mobile drawer must not remain in keyboard or screen-reader order. */
+@media (max-width: 760px) {
+  .zhixing-theme .sidebar:not(.open) { visibility: hidden; pointer-events: none; }
+  .zhixing-theme .sidebar.open { visibility: visible; }
 }

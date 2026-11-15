@@ -22,26 +22,65 @@ export function Field({ label, hint, children, required }: { label: string; hint
 export function EmptyState({ icon, title, description, action }: { icon: ReactNode; title: string; description: string; action?: ReactNode }) {
   return <div className="empty-state"><div className="empty-icon">{icon}</div><h2>{title}</h2><p>{description}</p>{action}</div>;
 }
+type ModalLayer = { node: HTMLElement; previous: HTMLElement | null };
+type ModalStack = { layers: ModalLayer[]; overflow: string; previous: HTMLElement | null };
+const modalStacks = new WeakMap<Document, ModalStack>();
+const modalFocusable = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]')].filter(el => el.offsetParent !== null);
+
+/** Share keyboard ownership and the body lock across nested dialogs. */
+export function bindModalLayer(node: HTMLElement, onClose: () => void) {
+  const doc = node.ownerDocument;
+  let stack = modalStacks.get(doc);
+  if (!stack) {
+    stack = { layers: [], overflow: doc.body.style.overflow, previous: doc.activeElement as HTMLElement | null };
+    modalStacks.set(doc, stack);
+  }
+  const layer = { node, previous: doc.activeElement as HTMLElement | null };
+  // Child effects may mount before their parent; keep the deeper dialog on top.
+  const descendant = stack.layers.findIndex(item => node.contains(item.node));
+  stack.layers.splice(descendant < 0 ? stack.layers.length : descendant, 0, layer);
+  doc.body.style.overflow = 'hidden';
+  const top = () => stack.layers.at(-1);
+  const focusFirst = (target: HTMLElement) => (modalFocusable(target)[0] || target).focus();
+  const timer = window.setTimeout(() => { if (top() === layer) focusFirst(node); }, 0);
+  const onKey = (event: KeyboardEvent) => {
+    if (top() !== layer) return;
+    if (event.key === 'Escape') {
+      event.preventDefault(); event.stopImmediatePropagation(); onClose(); return;
+    }
+    if (event.key !== 'Tab') return;
+    event.stopImmediatePropagation();
+    const focusable = modalFocusable(node);
+    const first = focusable[0], last = focusable.at(-1);
+    if (!first) { event.preventDefault(); node.focus(); return; }
+    if (!node.contains(doc.activeElement)) { event.preventDefault(); (event.shiftKey ? last : first)?.focus(); return; }
+    if (event.shiftKey && (doc.activeElement === first || doc.activeElement === node)) { event.preventDefault(); last?.focus(); }
+    if (!event.shiftKey && (doc.activeElement === last || doc.activeElement === node)) { event.preventDefault(); first.focus(); }
+  };
+  doc.addEventListener('keydown', onKey);
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    window.clearTimeout(timer); doc.removeEventListener('keydown', onKey);
+    const wasTop = top() === layer;
+    stack.layers.splice(stack.layers.indexOf(layer), 1);
+    const remaining = top();
+    if (!remaining) { doc.body.style.overflow = stack.overflow; modalStacks.delete(doc); }
+    if (!wasTop) return;
+    const previous = layer.previous?.isConnected && (!remaining || remaining.node.contains(layer.previous)) ? layer.previous : null;
+    if (previous) previous.focus();
+    else if (remaining) focusFirst(remaining.node);
+    else if (stack.previous?.isConnected) stack.previous.focus();
+  };
+}
 export function Modal({ title, description, children, onClose, wide = false }: { title: string; description?: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   const dialog = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose); closeRef.current = onClose;
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const oldOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const timer = window.setTimeout(() => dialog.current?.querySelector<HTMLElement>('input, select, textarea, button')?.focus(), 0);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeRef.current();
-      if (event.key !== 'Tab') return;
-      const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]') || [])].filter(el => el.offsetParent !== null);
-      const first = focusable[0], last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => { window.clearTimeout(timer); document.removeEventListener('keydown', onKey); document.body.style.overflow = oldOverflow; previous?.focus(); };
+    if (dialog.current) return bindModalLayer(dialog.current, () => closeRef.current());
   }, []);
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div ref={dialog} role="dialog" aria-modal="true" aria-label={title} className={`modal ${wide ? 'wide' : ''}`}><header className="modal-header"><div><h2>{title}</h2>{description && <p>{description}</p>}</div><button type="button" className="icon-button" aria-label="关闭窗口" onClick={onClose}><X size={20}/></button></header>{children}</div></div>;
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><div ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className={`modal ${wide ? 'wide' : ''}`}><header className="modal-header"><div><h2>{title}</h2>{description && <p>{description}</p>}</div><button type="button" className="icon-button" aria-label="关闭窗口" onClick={onClose}><X size={20}/></button></header>{children}</div></div>;
 }
 export function FileChip({ file, onRemove, onPreview }: { file: StoredFile; onRemove?: () => void; onPreview?: () => void }) {
   return <div className="file-chip"><button type="button" onClick={onPreview} className="file-chip-main" title={file.name}><FileText size={17}/><span>{file.name}<small>{sizeText(file.size)}</small></span></button>{onRemove ? <button type="button" onClick={onRemove} className="icon-button" aria-label={`移除 ${file.name}`}><X size={14}/></button> : <a className="icon-button" aria-label={`下载 ${file.name}`} href={fileURL(file.id)} download={file.name}><Download size={14}/></a>}</div>;

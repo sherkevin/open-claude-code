@@ -1373,8 +1373,19 @@ class RunManager:
             answer_text = message["text"]
             if status == "succeeded":
                 from .business_facts import check_answer, conflict_answer
+                from .business_results import oversized_only_reply
+                run_events = self.service.db.events(run_id, 0)
+                failure_reply = oversized_only_reply(run_events)
+                if failure_reply:
+                    self.service.db.event(run_id, "business.failure_answer", {
+                        "error_code": "MCP_RESULT_TOO_LARGE", "original_answer": answer_text,
+                        "replacement": failure_reply, "policy": "all_completed_tools_oversized",
+                    })
+                    answer_text = failure_reply
+                    status, error_code = "failed", "MCP_RESULT_TOO_LARGE"
+                    error = "业务数据超过处理上限，本次未取得可用结果。"
                 business_results = []
-                for event in self.service.db.events(run_id, 0):
+                for event in run_events:
                     data = event["data"]
                     if event["type"] == "tool.completed" and data.get("success") and data.get("business_result"):
                         business = data["business_result"]

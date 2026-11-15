@@ -6,7 +6,7 @@ import { publicModelLabel } from './models';
 export function ModelRoutingControl({ automatic, disabled = false, onChange }: {
   automatic: boolean; disabled?: boolean; onChange: (automatic: boolean) => void;
 }) {
-  return <div className="model-routing-control"><label><span>选模方式</span><select aria-label="选模方式" value={automatic ? 'auto' : 'manual'} disabled={disabled} onChange={event => onChange(event.target.value === 'auto')}><option value="auto">自动选择</option><option value="manual">手动固定</option></select></label><p>{automatic ? '发送时按任务选择模型，实际模型以本次任务回执为准。' : '使用你选择的模型和推理级别，不自动切换。'}</p></div>;
+  return <div className="model-routing-control"><label><span>选模方式</span><select aria-label="选模方式" value={automatic ? 'auto' : 'manual'} disabled={disabled} onChange={event => onChange(event.target.value === 'auto')}><option value="auto">自动选择</option><option value="manual">手动固定</option></select></label><p>{automatic ? '根据当前任务选择模型，实际使用的模型显示在会话顶部。' : '使用你选择的模型和推理级别，不自动切换。'}</p></div>;
 }
 
 export function ModelSettingsDisclosure({ automatic, selection, models, loading = false, pending = false, children }: {
@@ -22,5 +22,5 @@ export function RunModelIdentity({ run, models }: { run: Run; models: ModelOptio
   if (run.execution_kind === 'product_metadata' || run.model_call_count === 0) return <span className="model-run-identity">本次无模型调用</span>;
   const model = models.find(item => item.id === run.model_id);
   const level = model?.reasoning_levels.find(item => item.id === run.reasoning_level)?.label;
-  return <span className="model-run-identity"><small>本次任务模型</small><strong>{run.model_id ? publicModelLabel(models, run.model_id) : '回执待确认'}{level && ` · ${level}`}</strong></span>;
+  return <span className="model-run-identity"><small>本次任务模型</small><strong>{run.model_id ? publicModelLabel(models, run.model_id) : '模型信息待确认'}{level && ` · ${level}`}</strong></span>;
 }

@@ -9,3 +9,13 @@
 .source-boundary { margin:0 0 12px; padding:8px 10px; border-left:3px solid var(--warning,#a66a00); background:var(--surface-muted,#f6f2e8); color:var(--text-muted,#5b5345); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
 .source-blocked-image { display:inline-block; padding:4px 8px; border:1px dashed var(--border-strong,#b8ad97); border-radius:6px; color:var(--text-muted,#5b5345); font-size:12px; overflow-wrap:anywhere; }
 @media(max-width:760px) { .source-entry { min-width:0; width:100%; } .source-image-actions .source-open-action { flex:1 1 100%; } }
+
+.source-details { min-width:0; }
+.source-details .source-locator { margin-top:0; }
+.source-details .source-locator dd { min-width:0; }
+.source-details .source-locator pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+.source-disclosure { margin-top:16px; border-top:1px solid var(--line,#d9e2eb); }
+.source-disclosure>summary { padding:12px 0; color:var(--ink,#1d2d3e); font-size:14px; font-weight:600; line-height:20px; cursor:pointer; overflow-wrap:anywhere; }
+.source-disclosure>summary:focus-visible { outline:2px solid var(--brand,#0070f2); outline-offset:3px; border-radius:3px; }
+.source-disclosure .source-excerpt { margin-top:0; }
+@media(max-width:760px) { .source-details .source-locator>div { grid-template-columns:85px minmax(0,1fr); } .source-disclosure>summary { min-height:44px; } }

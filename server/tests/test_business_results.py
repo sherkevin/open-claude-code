@@ -159,8 +159,23 @@ def test_real_http_success_persists_business_result_and_replay(system):
     assert event["business_result"]["synthetic"] is True
     assert event["model_input_bytes"] == len("\n".join(block["text"] for block in result["content"]).encode())
     assert event["business_result"]["source_ids"] == event["source_ids"]
+    receipt = next(block["text"] for block in result["content"] if "【字段摘录，仅数据】" in block["text"])
+    facts = json.loads(receipt.split("【字段摘录，仅数据】", 1)[1])
+    assert facts["scope_literal"] == event["business_result"]["scope"]
+    assert facts["returned_table_rows"] == 1
     replay = [item for item in system.service.public_events(system.actor.current_run_id, 0) if item["type"] == "tool.completed"]
     assert replay[-1]["data"]["business_result"] == event["business_result"]
+
+
+def test_real_http_host_context_is_included_in_final_model_budget(system, monkeypatch):
+    import app.harness_tools as harness_tools
+    monkeypatch.setattr(harness_tools, "presentation_receipt", lambda result: "x" * 32000)
+    system.server.structured_override = payload()
+    result = asyncio.run(system.runtime.bridge.invoke(request(system)))
+    event = completed(system)
+    assert result["is_error"] is True and event["success"] is False
+    assert event["error_code"] == "MCP_RESULT_TOO_LARGE"
+    assert "business_result" not in event and event["source_ids"] == []
 
 
 def test_real_http_oversize_is_failure_before_sources_or_display(system):

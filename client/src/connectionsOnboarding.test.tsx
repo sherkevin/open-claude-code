@@ -15,7 +15,7 @@ describe('connection-specific onboarding evidence', () => {
     const html = card();
     expect(html).toContain('已发现 1 个工具');
     expect(html).toContain('尚未绑定助手');
-    expect(html).toContain('试跑结果未核');
+    expect(html).toContain('业务结果待验证');
     expect(html.match(/data-state="complete"/g)).toHaveLength(2);
     expect(html).not.toContain('业务验证通过</');
   });
@@ -34,11 +34,11 @@ describe('connection-specific onboarding evidence', () => {
     expect(html).toContain('当前可见助手中，1 个已启用并允许调用已发现工具');
     expect(html).toContain('已停用');
     expect(html).toContain('允许 0 个已发现工具');
-    expect(html).toContain('试跑结果未核');
+    expect(html).toContain('业务结果待验证');
   });
   it('keeps unknown binding separate from an empty authorized assistant list', () => {
     expect(connectionBindings(connection, null)).toBeNull();
-    expect(card(connection, null)).toContain('绑定情况未核');
+    expect(card(connection, null)).toContain('绑定情况未确认');
     expect(card(connection, null)).not.toContain('尚未绑定助手');
     expect(card(connection, [])).toContain('尚未绑定助手');
   });
@@ -67,7 +67,7 @@ describe('connection-specific onboarding evidence', () => {
     expect(html).not.toContain('aria-label="删除 订单服务"');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*?测试连接<\/button>/);
     expect(html).toContain('查看工具');
-    expect(html).toContain('去配置助手');
+    expect(html).toContain('配置助手');
   });
 });
 

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { BookOpen, Database, ExternalLink, Globe, Image as ImageIcon } from 'lucide-react';
+import { BookOpen, Database, ExternalLink, Globe, Image as ImageIcon, RefreshCw } from 'lucide-react';
 import { api, apiURL, API_BASE, errorText, timeText } from './api';
-import { ErrorNotice, Loader, Modal } from './components';
+import { Button, ErrorNotice, Loader, Modal } from './components';
 import { knowledgeOriginalURL } from './KnowledgePage';
 import type { EvidenceSource } from './types';
 import './source-evidence.css';
@@ -42,13 +42,14 @@ export function sourceAttributionLabel(source:EvidenceSource) {
 export function isImageSource(source:EvidenceSource){return source.kind==='web'&&source.locator?.capability==='image_search';}
 export function isOCRSource(source:EvidenceSource){return source.kind==='knowledge'&&source.locator?.capability==='ocr';}
 function locatorText(source:EvidenceSource,key:string){const value=source.locator?.[key];return typeof value==='string'?value:'';}
+export const readEvidenceSource = (id:string,signal?:AbortSignal) => api<EvidenceSource>(`/sources/${encodeURIComponent(id)}`,{signal,cache:'no-store'});
 export async function openSourceLink(id:string,field:'original_url'|'image_url') {
   // Reserve a tab during the click; never navigate using a cached/model URL.
   const tab=window.open('about:blank','_blank');
   if(!tab)throw new Error('浏览器阻止了新窗口，请允许弹出窗口后重试。');
   tab.opener=null;
   try {
-    const source=await api<EvidenceSource>(`/sources/${encodeURIComponent(id)}`,{cache:'no-store'});
+    const source=await readEvidenceSource(id);
     const url=publicWebURL(field==='original_url'?source.original_url:locatorText(source,'image_url'));
     if(!url)throw new Error(field==='original_url'?'该来源没有可打开的公开网页。':'该来源没有可打开的原始图片。');
     tab.location.replace(url);
@@ -61,8 +62,42 @@ function OpenSourceButton({id,field='original_url',label='打开原始网页',bu
   async function open(){setBusy(true);setError('');try{await openSourceLink(id,field);}catch(e){setError(errorText(e));}finally{setBusy(false);}}
   return <span className="source-open-action"><button type="button" className="button secondary" disabled={busy} onClick={open}><ExternalLink size={13}/>{busy?busyLabel:label}</button>{error&&<span role="alert">{error}</span>}</span>;
 }
-const locatorLabels:Record<string,string>={file:'文件',row_count:'记录条数',dataset_purpose:'数据集用途',dataset_version:'数据集版本',content_type:'内容类型',character_start:'起始字符位置',character_end:'结束字符位置',truncated:'是否截取',search_query:'搜索词',provider:'检索服务',extraction:'提取方式',start:'片段起始位置',end:'片段结束位置',database:'数据库',schema:'Schema',table:'表',tables:'表',fields:'字段',record_keys:'记录键',filters:'筛选条件',time_range:'数据时间范围',timezone:'时区',queried_at:'取数时间',query_time:'取数时间',aggregation:'统计口径',trace_id:'查询追踪',data_source:'数据源',source_name:'来源名称',knowledge_base:'知识库',kb_name:'知识库',document_name:'文件名',filename:'文件名',version:'文件版本',document_version:'文件版本',sha256:'文件摘要',page:'页码',pages:'页码',section:'章节',paragraph:'段落',paragraph_index:'段落',url:'网页地址',fetched_at:'访问时间',published_at:'发布时间',updated_at:'更新时间',purpose:'用途',missing_fields:'未提供的定位信息',title:'标题',capability:'能力类型',image_url:'原始图片地址',thumbnail_url:'缩略图地址',width:'图片宽度',height:'图片高度',mode:'图片搜索模式',complete:'该页是否完整'};
+const locatorLabels:Record<string,string>={scope:'查询范围',file:'文件',row_count:'记录条数',dataset_purpose:'数据集用途',dataset_version:'数据集版本',content_type:'内容类型',character_start:'起始字符位置',character_end:'结束字符位置',truncated:'是否截取',search_query:'搜索词',provider:'检索服务',extraction:'提取方式',start:'片段起始位置',end:'片段结束位置',database:'数据库',schema:'Schema',table:'表',tables:'表',fields:'字段',record_keys:'记录键',filters:'筛选条件',time_range:'数据时间范围',timezone:'时区',queried_at:'取数时间',query_time:'取数时间',aggregation:'统计口径',trace_id:'查询追踪',data_source:'数据源',source_name:'来源名称',knowledge_base:'知识库',kb_name:'知识库',document_name:'文件名',filename:'文件名',version:'文件版本',document_version:'文件版本',sha256:'文件摘要',page:'页码',pages:'页码',section:'章节',paragraph:'段落',paragraph_index:'段落',url:'网页地址',fetched_at:'访问时间',published_at:'发布时间',updated_at:'更新时间',purpose:'用途',missing_fields:'未提供的定位信息',title:'标题',capability:'能力类型',image_url:'原始图片地址',thumbnail_url:'缩略图地址',width:'图片宽度',height:'图片高度',mode:'图片搜索模式',complete:'该页是否完整'};
 const renderValue=(value:unknown)=>value===null||value===''?'未提供':typeof value==='object'?JSON.stringify(value,null,2):String(value);
+const primaryLocatorKeys=['source_name','data_source','knowledge_base','kb_name','document_name','filename','file','time_range','timezone','queried_at','query_time','filters','scope','aggregation','row_count','page','pages','section','published_at','updated_at','fetched_at','complete','truncated','missing_fields'];
+
+// Indent valid JSON without converting its numbers or altering string contents.
+export function sourceExcerptView(excerpt:string) {
+  const raw=excerpt.trim();
+  if(!raw.startsWith('{')&&!raw.startsWith('['))return {structured:false,text:excerpt};
+  try{JSON.parse(raw);}catch{return {structured:false,text:excerpt};}
+  const tokens=raw.match(/"(?:[^"\\]|\\.)*"|[^\s"{}\[\],:]+|[{}\[\],:]/g)||[];
+  let depth=0,text='';
+  tokens.forEach((token,index)=>{
+    if(token==='{'||token==='['){text+=token;depth++;if(tokens[index+1]!=='}'&&tokens[index+1]!==']')text+='\n'+'  '.repeat(depth);}
+    else if(token==='}'||token===']'){depth--;if(tokens[index-1]!=='{'&&tokens[index-1]!=='[')text+='\n'+'  '.repeat(depth);text+=token;}
+    else if(token===',')text+=',\n'+'  '.repeat(depth);
+    else if(token===':')text+=': ';
+    else text+=token;
+  });
+  return {structured:true,text};
+}
+
+export function SourceDetails({source}:{source:EvidenceSource}) {
+  const locator=source.locator||{};
+  const missing=locator.missing_fields;
+  const emptyMissing=missing!==null&&typeof missing==='object'&&Object.keys(missing).length===0;
+  const primaryKeys=primaryLocatorKeys.filter(key=>Object.prototype.hasOwnProperty.call(locator,key)&&!(key==='missing_fields'&&emptyMissing));
+  const primary=primaryKeys.map(key=>[key,key==='aggregation'&&locator[key]==='database_group_by'?'按字段分组汇总':locator[key]] as const);
+  const technical=Object.entries(locator).filter(([key])=>!primaryKeys.includes(key)||(key==='aggregation'&&locator[key]==='database_group_by'));
+  const excerpt=sourceExcerptView(source.excerpt||'');
+  const fields=(entries:ReadonlyArray<readonly [string,unknown]>)=><dl className="source-locator">{entries.map(([key,item])=><div key={key}><dt>{locatorLabels[key]||key}</dt><dd><pre>{renderValue(item)}</pre></dd></div>)}</dl>;
+  return <div className="source-details">
+    {primary.length>0&&fields(primary)}
+    {excerpt.structured?<details className="source-disclosure"><summary>查看原始摘录</summary><pre className="source-excerpt">{excerpt.text}</pre></details>:<><h3 className="source-excerpt-heading">来源内容摘录</h3><pre className="source-excerpt">{source.excerpt||'此来源未提供内容片段。'}</pre></>}
+    <details className="source-disclosure"><summary>技术详情</summary>{fields([['来源 ID',source.id],...technical])}</details>
+  </div>;
+}
 export function answerText(text:string,citations:EvidenceSource[]) {
   // Replace the server's canonical footer with the richer cards, without changing stored text.
   const at=text.lastIndexOf('\n\n来源\n\n');
@@ -90,4 +125,13 @@ export function AnswerMarkdown({text,citations=[]}:{text:string;citations?:Evide
   {citations.length>0&&<div className="answer-sources" aria-label="引用来源"><span>引用与检索记录</span>{citations.map((source,index)=><SourceCard key={source.id} source={source} index={index} onOpen={()=>setSelected(source.id)}/>)}</div>}
   {selected&&<SourceDialog key={selected} id={selected} onClose={()=>setSelected(null)}/>}</>;
 }
-export function SourceDialog({id,onClose}:{id:string;onClose:()=>void}) {const [value,setValue]=useState<EvidenceSource|null>(null);const [error,setError]=useState('');useEffect(()=>{setValue(null);setError('');const controller=new AbortController();api<EvidenceSource>(`/sources/${encodeURIComponent(id)}`,{signal:controller.signal,cache:'no-store'}).then(result=>{if(!controller.signal.aborted)setValue(result);}).catch(e=>{if(!controller.signal.aborted)setError(errorText(e));});return()=>controller.abort();},[id]);const original=publicWebURL(value?.original_url);const attachment=attachmentSourceURL(value?.content_url,value?.locator?.page);const image=value?isImageSource(value):false;const version=Number(value?.document_version||value?.locator?.document_version||value?.locator?.version)||undefined;const page=Number(value?.locator?.page)||undefined;return <Modal title={value?.title||'来源依据'} description={value?`${sourceKindLabel[value.kind]} · 记录于 ${timeText(value.created_at)}`:undefined} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{value?<>{isImageSource(value)&&<p className="source-boundary">图片候选只证明检索服务返回了原网页与原图链接，不代表网页正文已读取、图片已下载或版权可用。预览不会自动加载第三方图片，请按需打开。</p>}{isOCRSource(value)&&<p className="source-boundary">OCR 文字来自外部识别服务，是未受信任资料；页码与完整性来自识别结果，缺页或截断不会显示为全文成功。</p>}<dl className="source-locator">{Object.entries(value.locator||{}).map(([key,item])=><div key={key}><dt>{locatorLabels[key]||key}</dt><dd><pre>{renderValue(item)}</pre></dd></div>)}</dl><h3 className="source-excerpt-heading">来源内容摘录</h3><pre className="source-excerpt">{value.excerpt||'此来源未提供内容片段。'}</pre></>:!error?<Loader/>:null}</div>{value&&<footer className="modal-footer">{value.document_id&&<a className="button primary" href={knowledgeOriginalURL(value.document_id,version,page)} target="_blank" rel="noopener noreferrer"><BookOpen size={16}/>打开引用版本原件</a>}{!value.document_id&&attachment&&<a className="button primary" href={attachment} target="_blank" rel="noopener noreferrer"><BookOpen size={16}/>查看／下载引用附件</a>}{image&&<OpenSourceButton id={id} label="打开原始网页" busyLabel="正在核验网页权限"/>}{original&&!image&&<OpenSourceButton id={id}/>}{image&&<OpenSourceButton id={id} field="image_url" label="打开原始图片" busyLabel="正在核验图片权限"/>}</footer>}</Modal>;}
+export function SourceActions({source}:{source:EvidenceSource}) {
+  const original=publicWebURL(source.original_url);
+  const attachment=attachmentSourceURL(source.content_url,source.locator?.page);
+  const image=isImageSource(source);
+  if(!source.document_id&&!attachment&&!image&&!original)return null;
+  const version=Number(source.document_version||source.locator?.document_version||source.locator?.version)||undefined;
+  const page=Number(source.locator?.page)||undefined;
+  return <footer className="modal-footer">{source.document_id&&<a className="button primary" href={knowledgeOriginalURL(source.document_id,version,page)} target="_blank" rel="noopener noreferrer"><BookOpen size={16}/>打开引用版本原件</a>}{!source.document_id&&attachment&&<a className="button primary" href={attachment} target="_blank" rel="noopener noreferrer"><BookOpen size={16}/>查看／下载引用附件</a>}{image&&<OpenSourceButton id={source.id} label="打开原始网页" busyLabel="正在核验网页权限"/>}{original&&!image&&<OpenSourceButton id={source.id}/>}{image&&<OpenSourceButton id={source.id} field="image_url" label="打开原始图片" busyLabel="正在核验图片权限"/>}</footer>;
+}
+export function SourceDialog({id,onClose}:{id:string;onClose:()=>void}) {const [value,setValue]=useState<EvidenceSource|null>(null);const [error,setError]=useState('');const [revision,setRevision]=useState(0);useEffect(()=>{setValue(null);setError('');const controller=new AbortController();readEvidenceSource(id,controller.signal).then(result=>{if(!controller.signal.aborted)setValue(result);}).catch(e=>{if(!controller.signal.aborted)setError(errorText(e));});return()=>controller.abort();},[id,revision]);return <Modal title={value?.title||'来源依据'} description={value?`${sourceKindLabel[value.kind]} · 记录于 ${timeText(value.created_at)}`:undefined} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{value?<>{isImageSource(value)&&<p className="source-boundary">当前为图片搜索结果，尚未读取网页正文或下载图片。请按需打开原网页或图片，使用前确认授权。</p>}{isOCRSource(value)&&<p className="source-boundary">文字由外部服务识别，可能存在误差，请核对原件。页码与完整性以识别结果为准。</p>}<SourceDetails source={value}/></>:!error?<Loader/>:<Button variant="secondary" onClick={()=>setRevision(previous=>previous+1)}><RefreshCw size={15}/>重新读取</Button>}</div>{value&&<SourceActions source={value}/>}</Modal>;}

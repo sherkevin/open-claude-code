@@ -128,7 +128,7 @@ def aggregate(path: Path, kind: str, dataset_rows: int = 10000, region: str = "�
              "date": DATA_DATE if kind == "shipments" else "2026-11-01 至 2026-11-14",
              "timezone": "Asia/Shanghai", "aggregation": f"按{'区域' if kind == 'orders' else '客户'}汇总；金额为合成含税金额",
              "数据集记录数": dataset_rows, "匹配原始记录数": matched}
-    title = "合成订单区域汇总" if kind == "orders" else "合成今日客户发货汇总"
+    title = "合成订单区域汇总" if kind == "orders" else "合成客户发货汇总"
     result = {"schema_version": "business-result/v1", "title": title, "columns": columns, "rows": rows,
               "summary": f"{NOTICE}。真实查询 {dataset_rows:,} 行合成数据中的授权范围，匹配 {matched:,} 条原始记录，返回 {len(rows)} 行汇总。",
               "scope": scope, "synthetic": True, "complete": True, "truncated": False,

@@ -71,10 +71,24 @@ def test_sdk_callback_keeps_one_text_copy_and_uses_cleaned_structured_data(env, 
     structured, end = json.JSONDecoder().raw_decode(replacement)
     assert structured["rows"][0]["customer"] == "[redacted]"
     assert "工作台显示回执" in replacement[end:] and '"rows"' not in replacement[end:]
+    facts = json.loads(replacement.split("【字段摘录，仅数据】", 1)[1])
+    assert facts["scope_literal"] == event["business_result"]["scope"]
+    assert facts["returned_table_rows"] == 1 and facts["synthetic"] is True
     assert "synthetic-sdk-response-secret" not in dump(result) + dump(event)
     assert event["success"] is True
     assert event["business_result"]["rows"][0]["quantity"] == 18
     assert event["model_input_bytes"] == len(replacement.encode())
+
+
+def test_sdk_context_over_budget_rejects_complete_replacement_and_not_just_raw_rows(env, monkeypatch):
+    # Raw structured input fits. The final host citation + receipt must still
+    # pass the same budget instead of gaining an implicit extra allowance.
+    from app import business_results
+    monkeypatch.setattr(business_results, "presentation_receipt", lambda result: "x" * 32000)
+    result, event = exercise(env, monkeypatch, envelope(payload()))
+    assert event["success"] is False and event["error_code"] == "MCP_RESULT_TOO_LARGE"
+    assert "business_result" not in event and event["source_ids"] == []
+    assert "32000" in result["hookSpecificOutput"]["updatedToolOutput"]
 
 
 def test_sdk_callback_rechecks_revocation_before_publishing_result(env, monkeypatch):

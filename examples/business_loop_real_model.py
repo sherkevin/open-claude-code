@@ -62,7 +62,7 @@ def business_result(path, kind, dataset_rows, region):
     from decimal import Decimal
     result = fixture.aggregate(path, kind, dataset_rows, region)
     result["summary"] = f"合成业务数据：匹配 {result['scope']['匹配原始记录数']} 条原始记录，返回 {len(result['rows'])} 行汇总。"
-    result["warnings"] = ["合成业务数据，不代表华微数据；是否有真实模型推理由独立执行回执记录。"]
+    result["warnings"] = ["本页为合成测试数据，不代表华微业务数据。"]
     # This fixture owns the SQL contract: these three columns are additive,
     # disjoint group sums in the same scope/unit. General MCP tools must make
     # their own explicit declaration; the host never guesses from a column name.

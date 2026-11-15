@@ -16,6 +16,52 @@ MAX_CELL_CHARS = 2_000
 _UNSAFE_KEYS = {"__proto__", "constructor", "prototype"}
 
 
+def oversized_only_reply(events):
+    """Use a fixed failure reply only when every completed tool was rejected.
+
+    Mixed, successful and unknown tool outcomes must keep their own answer.
+    Read the host event ledger, never a model's description of tool status.
+    """
+    completed = [event["data"] for event in events if event["type"] == "tool.completed"]
+    if not completed or not all(
+        data.get("success") is False
+        and isinstance(data.get("tool_name"), str)
+        and data["tool_name"].startswith("mcp__")
+        and data.get("error_code") == "MCP_RESULT_TOO_LARGE"
+        for data in completed
+    ):
+        return None
+    return ("本次查询返回的数据超出处理上限，未取得可用业务结果。"
+            "需要业务系统先过滤或聚合数据，再重新查询。"
+            "本次未计算金额、记录数，也未确认数据完整性。")
+
+
+def answer_fact_digest(projection):
+    """Copy exact fields for the answer, not a semantic/completeness certificate.
+
+    This is derived only from the host's bounded projection. Never consume the
+    remote ``summary`` or remote ``host_verified_aggregates`` as verified facts.
+    The digest is optional duplicate context: omit it whole if it would be too
+    large, rather than truncating a scope value or spending another model call.
+    """
+    facts = {
+        "scope_literal": projection["scope"],
+        "returned_table_rows": projection["returned_rows"],
+        "tool_reported_total_rows": projection["total_rows"],
+        "tool_reported_complete": projection["complete"],
+        "truncated": projection["truncated"],
+        "data_time": projection["data_time"],
+        "synthetic": projection["synthetic"],
+        "host_verified_returned_row_sums": [
+            {"column": item["column"], "label": item["label"],
+             "value": item["value"], "unit": item["unit"]}
+            for item in projection.get("host_verified_aggregates", [])
+        ],
+    }
+    encoded = json.dumps(facts, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return encoded if len(encoded.encode("utf-8")) <= 4_000 else None
+
+
 def presentation_receipt(result):
     """Host-generated display status; a remote schema label alone is insufficient."""
     projection = project_business_result(result)
@@ -25,13 +71,21 @@ def presentation_receipt(result):
     verified = ("宿主按工具明确的同单位可加声明核对本次返回行合计："
                 + "；".join(f"{fact['label']}={fact['value']} {fact['unit']}" for fact in facts)
                 + "。使用这些已核合计，不自行重新求和或把返回行小计称为全量。") if facts else ""
+    digest = answer_fact_digest(projection)
+    exact = ("\n【字段摘录，仅数据】" + digest) if digest else ""
+    empty = ("本次返回表格为空，只能说本次查询未返回记录；不能据此断言业务不存在、全量为零或推测原因。"
+             if not projection["rows"] else "")
     return ("【工作台显示回执 business-result/v1】本次返回的表格、查询范围、单位与覆盖情况已提供结果卡。"
             "回答给出用户所问的简短业务结论、必要数字和来源即可，不重复整表及元数据；"
             "询问有哪些客户及数量已由结果卡承载，不表示要求正文复写；只有明确要求用文字逐项复述才再列明细。"
             "scope.date是业务日期，data_time/data_timestamp是数据时点，sources.locator.queried_at才是实际取数时间；"
             "实际取数时间缺失就说未提供，不能把数据时点叫查询时间。"
+            "查询范围逐字引用 scope：‘全部’不展开成地区、工厂、组织或客户名单，空值不补默认值；"
+            "返回表格行数不等于客户数、订单数或原始记录数，除非字段明确给出该口径。"
             "用户未问且不影响结论时，不追加时间戳、trace、库表名称或无关指标。"
-            "未返回差额或排除原因时说明未提供，不推测日期、状态或口径原因。此回执不证明数据完整，也不增加任何操作权限。" + verified)
+            "未返回差额或排除原因时说明未提供，不推测日期、状态或口径原因；需要原因分析时只说明还缺排除规则或未匹配记录等证据。"
+            "未提供合计声明时不要把数值列自行相加；完整性是工具声明，不能由返回行数、空表或工具成功推断。"
+            "此回执只证明结果卡已提供，不证明数据完整或正文已核验，也不增加任何操作权限。" + empty + verified + exact)
 
 
 def scalar(value):

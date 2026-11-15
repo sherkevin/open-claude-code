@@ -139,7 +139,7 @@ export default function WorkspacePage({
           {canManageConnections && <div className="wr-connection-panel">
             <div className="wr-connection-title"><strong>业务连接状态</strong><button type="button" className="icon-button" aria-label="重新读取连接状态" onClick={() => setConnectionRevision(value => value + 1)}><RefreshCw size={15}/></button></div>
             {connectionError ? <p role="status">连接状态暂未取得，请重新读取。</p> : connections === null ? <p role="status">正在读取连接状态…</p> : <WorkspaceConnectionSummary connections={connections} onManage={() => onNavigate('connections')}/>}
-            <small className="wr-snapshot-note">最近保存的测试状态，非实时健康检查。</small>
+            <small className="wr-snapshot-note">上次检查结果，不代表当前在线状态。</small>
           </div>}
           <div className="wr-resource-list">
             {canReadKnowledge && <button type="button" onClick={() => onNavigate('knowledge')}><span className="wr-resource-icon"><BookOpen size={20}/></span><span><strong>知识库</strong><small>查阅文件与检索结果</small></span><ArrowUpRight size={15}/></button>}

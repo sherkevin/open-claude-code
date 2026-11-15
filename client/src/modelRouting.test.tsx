@@ -25,7 +25,7 @@ describe('explicit model routing mode',()=>{
   });
   it('labels automatic selection without presenting a fixed Dano selection',()=>{
     const html=renderToStaticMarkup(<ModelRoutingControl automatic onChange={()=>{}}/>);
-    expect(html).toContain('value="auto" selected=""');expect(html).toContain('实际模型以本次任务回执为准');
+    expect(html).toContain('value="auto" selected=""');expect(html).toContain('实际使用的模型显示在会话顶部');
     expect(html).not.toContain('Dano');expect(html).toContain('手动固定');
   });
   it('locks mode while pending and states that manual mode cannot auto-switch',()=>{
@@ -59,7 +59,7 @@ describe('run identity is authoritative',()=>{
     const unknown=renderToStaticMarkup(<RunModelIdentity run={{...run,model_id:'private-provider-id',model:'internal-secret-label'}} models={models}/>);
     expect(unknown).toContain('模型信息暂不可用');expect(unknown).not.toContain('private-provider-id');expect(unknown).not.toContain('internal-secret-label');
     const pending=renderToStaticMarkup(<RunModelIdentity run={{...run,model_id:undefined}} models={models}/>);
-    expect(pending).toContain('回执待确认');
+    expect(pending).toContain('模型信息待确认');
     const metadata=renderToStaticMarkup(<RunModelIdentity run={{...run,execution_kind:'product_metadata',model_call_count:0}} models={models}/>);
     expect(metadata).toContain('本次无模型调用');expect(metadata).not.toContain('Deepseek');
   });

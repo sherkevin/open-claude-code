@@ -1,12 +1,24 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnswerMarkdown, openOriginalImageSource, openOriginalSource } from './Sources';
+import { AnswerMarkdown, openOriginalImageSource, openOriginalSource, readEvidenceSource, SourceActions, SourceDetails, sourceExcerptView } from './Sources';
 import type { EvidenceSource } from './types';
 
 afterEach(()=>vi.unstubAllGlobals());
 const source=(attribution:EvidenceSource['attribution'],id='web-1'):EvidenceSource=>({id,kind:'web',title:'Industrial reference',attribution,locator:{},excerpt:'',created_at:''});
 
 describe('verified external source visibility',()=>{
+  it('retries source reads through the authenticated registry without reusing a failed response',async()=>{
+    const fetch=vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({error:{message:'暂时无法读取'}}),{status:503}))
+      .mockResolvedValueOnce(new Response(JSON.stringify(source('cited'))));
+    vi.stubGlobal('fetch',fetch);
+    const first=new AbortController(),retry=new AbortController();
+    await expect(readEvidenceSource('web-1',first.signal)).rejects.toThrow('暂时无法读取');
+    expect((await readEvidenceSource('web-1',retry.signal)).id).toBe('web-1');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for(const [,init] of fetch.mock.calls)expect(init).toMatchObject({cache:'no-store',credentials:'include'});
+    expect(fetch.mock.calls[1][1].signal).toBe(retry.signal);
+  });
   it.each([
     ['cited','回答引用'],['read','网页正文已读取 · 未明确引用'],['search_candidate','外部检索候选 · 未核验正文'],
   ] as const)('keeps %s labels visible after stripping the canonical footer',(attribution,label)=>{
@@ -92,5 +104,96 @@ describe('verified external source visibility',()=>{
     expect(remote).not.toContain('tracker.invalid');
     const local=renderToStaticMarkup(<AnswerMarkdown text="![scan](/api/v1/files/file-1/content)"/>);
     expect(local).toContain('src="/api/v1/files/file-1/content"');
+  });
+});
+
+
+describe('business-readable source details',()=>{
+  it('shows existing data and query times before collapsed technical fields',()=>{
+    const value={...source('cited'),kind:'data' as const,locator:{database:'orders_db',trace_id:'trace-1',time_range:'2026-11-14',queried_at:'2026-11-15T05:17:29Z',filters:{region:'全部'}},excerpt:'{"rows":[{"amount":123.4}]}'};
+    const html=renderToStaticMarkup(<SourceDetails source={value}/>);
+    const visible=html.slice(0,html.indexOf('<details'));
+    expect(visible).toContain('数据时间范围');
+    expect(visible).toContain('2026-11-14');
+    expect(visible).toContain('取数时间');
+    expect(visible).toContain('2026-11-15T05:17:29Z');
+    expect(visible).toContain('全部');
+    expect(visible).not.toContain('orders_db');
+    expect(visible).not.toContain('trace-1');
+    expect(html).toContain('<summary>查看原始摘录</summary>');
+    expect(html).toContain('<summary>技术详情</summary>');
+    expect(html).toContain('orders_db');
+    expect(html).toContain('trace-1');
+    expect(html).not.toContain('open=""');
+    expect(html).not.toContain('记录条数');
+  });
+  it('keeps ordinary and malformed text excerpts immediately readable',()=>{
+    for(const excerpt of ['第一行原文。\n第二行原文。','{"rows": 截取至此']){
+      const html=renderToStaticMarkup(<SourceDetails source={{...source('cited'),excerpt}}/>);
+      expect(html.slice(0,html.indexOf('<details'))).toContain('来源内容摘录');
+      expect(html).not.toContain('查看原始摘录');
+      expect(sourceExcerptView(excerpt)).toEqual({structured:false,text:excerpt});
+    }
+  });
+  it('preserves raw numbers, escaped strings and empty structures when indenting JSON',()=>{
+    const excerpt=String.raw`{"id":9007199254740993,"amount":123.4500,"ratio":1e-09,"text":"keep  spaces, [brackets] and \"quotes\"","rows":[],"extra":{}}`;
+    const result=sourceExcerptView(excerpt);
+    expect(result.structured).toBe(true);
+    expect(result.text).toContain('9007199254740993');
+    expect(result.text).toContain('123.4500');
+    expect(result.text).toContain('1e-09');
+    expect(result.text).toContain('keep  spaces, [brackets]');
+    expect(result.text).toContain('"rows": []');
+    expect(result.text).toContain('"extra": {}');
+    expect(JSON.parse(result.text)).toEqual(JSON.parse(excerpt));
+  });
+  it('does not invent missing time, count or scope and keeps an empty excerpt explicit',()=>{
+    const html=renderToStaticMarkup(<SourceDetails source={source('cited')}/>);
+    expect(html).toContain('此来源未提供内容片段。');
+    expect(html).not.toContain('数据时间范围');
+    expect(html).not.toContain('查询范围');
+    expect(html).not.toContain('记录条数');
+  });
+  it('retains incomplete markers and unknown locator fields without treating them as business facts',()=>{
+    const value={...source('cited'),locator:{complete:false,truncated:true,missing_fields:['date'],internal_vendor_field:'original-value'},excerpt:'原文'};
+    const html=renderToStaticMarkup(<SourceDetails source={value}/>);
+    const visible=html.slice(0,html.indexOf('<details'));
+    expect(visible).toContain('该页是否完整');
+    expect(visible).toContain('false');
+    expect(visible).toContain('是否截取');
+    expect(visible).toContain('未提供的定位信息');
+    expect(visible).not.toContain('internal_vendor_field');
+    expect(html).toContain('internal_vendor_field');
+    expect(html).toContain('original-value');
+  });
+});
+
+
+describe('source detail presentation refinements',()=>{
+  it('labels the known aggregation in Chinese and preserves its raw value in technical details',()=>{
+    const html=renderToStaticMarkup(<SourceDetails source={{...source('cited'),locator:{aggregation:'database_group_by'}}}/>);
+    const visible=html.slice(0,html.indexOf('<details'));
+    expect(visible).toContain('按字段分组汇总');
+    expect(visible).not.toContain('database_group_by');
+    expect(html.slice(html.indexOf('<details'))).toContain('database_group_by');
+    const unknown=renderToStaticMarkup(<SourceDetails source={{...source('cited'),locator:{aggregation:'vendor_custom'}}}/>);
+    expect(unknown.slice(0,unknown.indexOf('<details'))).toContain('vendor_custom');
+  });
+  it.each([[],{}])('keeps empty missing fields %j in technical details only',missing_fields=>{
+    const html=renderToStaticMarkup(<SourceDetails source={{...source('cited'),locator:{missing_fields}}}/>);
+    expect(html.slice(0,html.indexOf('<details'))).not.toContain('未提供的定位信息');
+    expect(html.slice(html.indexOf('<details'))).toContain('未提供的定位信息');
+  });
+  it('does not render an empty footer or unsafe original link',()=>{
+    expect(renderToStaticMarkup(<SourceActions source={source('cited')}/>)).toBe('');
+    expect(renderToStaticMarkup(<SourceActions source={{...source('cited'),original_url:'javascript:alert(1)'}}/>)).toBe('');
+  });
+  it('retains actual attachment and authenticated external-link actions',()=>{
+    const attachment=renderToStaticMarkup(<SourceActions source={{...source('cited'),content_url:'/api/v1/files/file-1/content'}}/>);
+    expect(attachment).toContain('modal-footer');
+    expect(attachment).toContain('查看／下载引用附件');
+    const external=renderToStaticMarkup(<SourceActions source={{...source('cited'),original_url:'https://example.com/report'}}/>);
+    expect(external).toContain('打开原始网页');
+    expect(external).not.toContain('href="https://example.com/report"');
   });
 });

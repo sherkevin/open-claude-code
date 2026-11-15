@@ -151,14 +151,14 @@ def enforce_model_result_budget(body):
         columns = payload.get("columns")
         row_width = max((len(row) for row in rows if isinstance(row, dict)), default=0)
         if len(rows) > MAX_ROWS or row_width > MAX_COLUMNS or isinstance(columns, list) and len(columns) > MAX_COLUMNS:
-            raise AppError(422, "MCP_RESULT_TOO_LARGE", "业务结果超过 200 行或 24 列上限，未送入模型；请使用过滤、后台聚合或分页，不能据截取样本计算全量。")
+            raise AppError(422, "MCP_RESULT_TOO_LARGE", "业务结果超过 200 行或 24 列上限，未送入模型；本次未取得可用结果，匹配记录、完整性与原因均未核实。请使用过滤、后台聚合或分页后重试，不能据截取样本计算全量。")
     try:
         size = len("\n".join(item["text"] for item in content).encode("utf-8"))
         structured_size = len(encoded(structured).encode("utf-8")) if structured is not None else 0
     except (ValueError, TypeError, RecursionError, UnicodeError):
         raise AppError(422, "MCP_RESULT_INVALID", "业务结果不是可核验的有限 JSON 数据") from None
     if max(size, structured_size) > MAX_MODEL_RESULT_BYTES:
-        raise AppError(422, "MCP_RESULT_TOO_LARGE", "业务结果超过 32000 字节入模上限，未送入模型；请缩小字段和时间范围，或在业务系统先聚合后重试。未自动截断或计算全量。")
+        raise AppError(422, "MCP_RESULT_TOO_LARGE", "业务结果超过 32000 字节入模上限，未送入模型；本次未取得可用结果，匹配记录、完整性与原因均未核实。请缩小字段和时间范围，或在业务系统先聚合后重试。未自动截断或计算全量。")
     return size
 
 

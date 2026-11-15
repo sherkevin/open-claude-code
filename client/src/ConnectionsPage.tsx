@@ -10,10 +10,10 @@ import './connections-onboarding.css';
 
 export function connectionDiscoveryState(item: Connection) {
   if (!item.enabled) return { label: '连接已停用', detail: '启用后重新测试；当前不能发起新的工具调用。', complete: false, tone: 'neutral' };
-  if (item.status === 'needs_auth') return { label: '认证或权限未通过', detail: '请核对凭据和 MCP 端权限；连接成功前不进入业务试跑。', complete: false, tone: 'warning' };
+  if (item.status === 'needs_auth') return { label: '认证或权限未通过', detail: '请核对凭据和 MCP 端权限；连接成功后再验证业务结果。', complete: false, tone: 'warning' };
   if (item.status === 'failed') return { label: '连接测试失败', detail: '请检查服务端网络、地址与 Streamable HTTP 协议。具体失败阶段未确认。', complete: false, tone: 'warning' };
   if (item.status === 'connected' && item.tools.length === 0) return { label: '已连接，未发现工具', detail: '服务返回空工具清单。请检查 MCP 是否提供所需能力及工具发现权限。', complete: false, tone: 'warning' };
-  if (item.status === 'connected') return { label: `已发现 ${item.tools.length} 个工具`, detail: '工具已发现，业务结果仍需试跑核对。', complete: true, tone: 'success' };
+  if (item.status === 'connected') return { label: `已发现 ${item.tools.length} 个工具`, detail: '已取得工具清单，请继续配置助手并验证结果。', complete: true, tone: 'success' };
   return { label: '等待连接测试', detail: '配置已保存，尚未确认此配置能否连接和发现工具。', complete: false, tone: 'neutral' };
 }
 
@@ -61,7 +61,7 @@ export function ConnectionGroups({ items, renderCard }: { items: Connection[]; r
 export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = false, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onConfigureAssistant, canConfigureAssistant = true, onStartAssistant, highlighted = false }: {
   item: Connection; assistants: Assistant[] | null; bindingsLoading?: boolean; testing?: boolean; actionsBusy?: boolean; testError?: string; admin: boolean;
   onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onConfigureAssistant: (connection: Connection) => void; highlighted?: boolean;
-  canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant) => void;
+  canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant, connection: Connection) => void;
 }) {
   const [trialAssistantId, setTrialAssistantId] = useState('');
   const discovery = connectionDiscoveryState(item);
@@ -70,7 +70,7 @@ export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = f
   const currentTestPassed = !testing && !testError && discovery.complete;
   const candidates = currentTestPassed && !bindingsLoading && !actionsBusy ? trialAssistants(item, assistants) : [];
   const selectedTrial = candidates.find(assistant => assistant.id === trialAssistantId) || candidates[0];
-  const bindingLabel = bindingsLoading ? '正在读取绑定' : bindings === null ? '绑定情况未核' : bindings.length ? `已绑定 ${bindings.length} 个助手` : '尚未绑定助手';
+  const bindingLabel = bindingsLoading ? '正在读取绑定' : bindings === null ? '绑定情况未确认' : bindings.length ? `已绑定 ${bindings.length} 个助手` : '尚未绑定助手';
   const usableBindings = bindings?.filter(binding => binding.enabled && binding.allowedCount > 0).length || 0;
   const statusLabel = testing ? '正在测试与发现工具' : testError ? '本次测试未完成' : discovery.label;
   return <article className={`connection-card onboarding-card ${!item.enabled ? 'disabled-card' : ''}`} aria-labelledby={`connection-${item.id}`} data-connection-id={item.id} data-highlighted={highlighted || undefined} tabIndex={highlighted ? -1 : undefined}>
@@ -81,23 +81,23 @@ export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = f
     <ol className="connection-progress" aria-label={`${item.name}接入进度`}>
       <li data-state="complete"><span className="connection-step-number">1</span><div><strong>地址与认证</strong><p>配置已保存 · 服务端连接</p></div></li>
       <li data-state={currentTestPassed ? 'complete' : 'pending'}><span className="connection-step-number">2</span><div><strong>检查工具能力</strong><span className="connection-step-status">{statusLabel}</span><p>{testing ? '正在请求 MCP 服务并读取工具定义，不执行业务查询。' : testError || discovery.detail}</p></div></li>
-      <li data-state={candidates.length ? 'current' : 'pending'}><span className="connection-step-number">3</span><div><strong>绑定与试跑</strong><span className="connection-step-status">{bindingLabel}</span><p>{bindingsLoading ? '按当前账号可见的助手核对。' : bindings === null ? '未取得助手清单，不能判断是否已绑定。' : bindings.length ? `当前可见助手中，${usableBindings} 个已启用并允许调用已发现工具。` : '选择助手与允许调用的工具。'}</p></div></li>
+      <li data-state={candidates.length ? 'current' : 'pending'}><span className="connection-step-number">3</span><div><strong>配置助手并验证</strong><span className="connection-step-status">{bindingLabel}</span><p>{bindingsLoading ? '按当前账号可见的助手核对。' : bindings === null ? '未取得助手清单，不能判断是否已绑定。' : bindings.length ? `当前可见助手中，${usableBindings} 个已启用并允许调用已发现工具。` : '选择助手与允许调用的工具。'}</p></div></li>
     </ol>
     {!testError && item.last_error && <p className="inline-error">{item.last_error}</p>}
-    <div className="connection-time">{item.last_tested_at ? `${item.status === 'untested' ? '历史测试' : '最近测试'} ${timeText(item.last_tested_at)} · ${item.status === 'untested' ? '当前配置待重测' : '非实时健康检查'}` : '尚无测试时间记录'}</div>
-    {onStartAssistant && selectedTrial && <div className="connection-trial-action"><div><strong>用一个业务问题核对结果</strong><p>进入已绑定助手，确认问题后发送。试跑结果未核。</p></div><div>{candidates.length > 1 && <label><span className="sr-only">试跑助手</span><select value={selectedTrial.id} onChange={event => setTrialAssistantId(event.target.value)}>{candidates.map(assistant => <option value={assistant.id} key={assistant.id}>{assistant.name}</option>)}</select></label>}<Button onClick={() => onStartAssistant(selectedTrial)}>开始业务试跑<ArrowUpRight size={15}/></Button></div></div>}
-    <details className="connection-trial-guide"><summary><span>绑定详情与业务试跑</span><span className="badge">试跑结果未核</span><ChevronDown size={15}/></summary>
+    <div className="connection-time">{item.last_tested_at ? `${item.status === 'untested' ? '历史测试' : '最近测试'} ${timeText(item.last_tested_at)} · ${item.status === 'untested' ? '当前配置待重测' : '非实时状态'}` : '尚无测试时间记录'}</div>
+    {onStartAssistant && selectedTrial && <div className="connection-trial-action"><div><strong>用一个业务问题核对结果</strong><p>使用已绑定的助手提问，核对查询范围与答案。</p></div><div>{candidates.length > 1 && <label><span className="sr-only">验证助手</span><select value={selectedTrial.id} onChange={event => setTrialAssistantId(event.target.value)}>{candidates.map(assistant => <option value={assistant.id} key={assistant.id}>{assistant.name}</option>)}</select></label>}<Button onClick={() => onStartAssistant(selectedTrial, item)}>验证业务结果<ArrowUpRight size={15}/></Button></div></div>}
+    <details className="connection-trial-guide"><summary><span>助手绑定与验证说明</span><span className="badge">业务结果待验证</span><ChevronDown size={15}/></summary>
       {bindings && bindings.length > 0 && <ul className="connection-bound-assistants">{bindings.map(binding => <li key={binding.id}><strong>{binding.name}</strong><span>{binding.enabled ? '已启用' : '已停用'} · 允许 {binding.allowedCount} 个已发现工具</span></li>)}</ul>}
       <p>在助手设置中选择「{item.name}」和本次任务需要的工具。再从首页进入该助手，使用已授权的业务范围和一个有标准答案的问题核对结果。</p>
-      <p>工具声明、绑定或免审批都不等于只读。试跑前核对受限账号、工具权限与业务范围；本页不自动调用业务工具，也不据此判定业务试跑通过。</p>
+      <p>验证前，请核对 MCP 账号、工具权限和业务范围。免确认执行不代表只读；本页不会自动调用业务工具。</p>
     </details>
-    <footer className="card-toolbar"><Button variant={!currentTestPassed && editable && item.enabled ? "primary" : "secondary"} busy={testing} disabled={actionsBusy || !item.enabled || !editable} onClick={onTest}><PlugZap size={15}/>测试连接</Button><Button variant="ghost" onClick={onTools}>查看工具<ArrowUpRight size={15}/></Button>{canConfigureAssistant && <Button variant={currentTestPassed && !candidates.length ? "primary" : "ghost"} disabled={actionsBusy} onClick={() => onConfigureAssistant(item)}>去配置助手<ArrowUpRight size={15}/></Button>}<div className="toolbar-spacer"/>{editable && <><button type="button" className="icon-button" disabled={actionsBusy} aria-label={`编辑 ${item.name}`} title="编辑连接" onClick={onEdit}><Pencil size={16}/></button><button type="button" className="icon-button danger-text" disabled={actionsBusy} aria-label={`删除 ${item.name}`} title="删除连接" onClick={onDelete}><Trash2 size={16}/></button></>}</footer>
+    <footer className="card-toolbar"><Button variant={!currentTestPassed && editable && item.enabled ? "primary" : "secondary"} busy={testing} disabled={actionsBusy || !item.enabled || !editable} onClick={onTest}><PlugZap size={15}/>测试连接</Button><Button variant="ghost" onClick={onTools}>查看工具<ArrowUpRight size={15}/></Button>{canConfigureAssistant && <Button variant={currentTestPassed && !candidates.length ? "primary" : "ghost"} disabled={actionsBusy} onClick={() => onConfigureAssistant(item)}>配置助手<ArrowUpRight size={15}/></Button>}<div className="toolbar-spacer"/>{editable && <><button type="button" className="icon-button" disabled={actionsBusy} aria-label={`编辑 ${item.name}`} title="编辑连接" onClick={onEdit}><Pencil size={16}/></button><button type="button" className="icon-button danger-text" disabled={actionsBusy} aria-label={`删除 ${item.name}`} title="删除连接" onClick={onDelete}><Trash2 size={16}/></button></>}</footer>
     {!editable && <p className="connection-access-note">此连接由有管理权限的成员维护，你可以查看工具和自己的助手绑定。</p>}
   </article>;
 }
 
 export default function ConnectionsPage({ onConfigureAssistant, admin, canConfigureAssistant = true, onStartAssistant, focusConnectionId }: {
-  onConfigureAssistant: (connection: Connection) => void; focusConnectionId?: string; admin: boolean; canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant) => void;
+  onConfigureAssistant: (connection: Connection) => void; focusConnectionId?: string; admin: boolean; canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant, connection: Connection) => void;
 }) {
   const [items, setItems] = useState<Connection[]>([]);
   const [assistants, setAssistants] = useState<Assistant[] | null>(null);
@@ -130,7 +130,7 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
     if (result.connections.status === 'fulfilled') setItems(result.connections.value);
     else setError(`连接清单读取失败：${errorText(result.connections.reason)} 已显示内容如有，则为上次读取结果。`);
     if (result.assistants.status === 'fulfilled') setAssistants(result.assistants.value);
-    else setBindingsError(`助手绑定情况未核：${errorText(result.assistants.reason)}`);
+    else setBindingsError(`助手绑定情况未确认：${errorText(result.assistants.reason)}`);
     setLoading(false);
   }, []);
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load]);
@@ -140,22 +140,22 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
     try {
       const next = await testConnectionDiscovery(item);
       setItems(previous => previous.map(existing => existing.id === next.id ? next : existing));
-      if (next.status === 'connected' && next.tools.length > 0) setSuccess(`「${next.name}」已发现 ${next.tools.length} 个工具。助手绑定和业务结果请继续分别核对。`);
+      if (next.status === 'connected' && next.tools.length > 0) setSuccess(`「${next.name}」已发现 ${next.tools.length} 个工具。请配置助手并验证业务结果。`);
     } catch (e) { setTestErrors(previous => ({ ...previous, [item.id]: connectionTestError(e) })); }
     finally { setTesting(''); }
   };
   return <div className="page connections-onboarding">
-    <PageHeader eyebrow="连接业务能力" title="业务连接" description="接入已有 MCP，检查工具，再交给助手试跑真实业务问题。" actions={<><Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入 MCP 配置</Button><Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>新增连接</Button></>}/>
+    <PageHeader eyebrow="系统接入" title="业务连接" description="接入企业 MCP，选择工具与助手，验证业务结果。" actions={<><Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入 MCP 配置</Button><Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>新增连接</Button></>}/>
     <ErrorNotice message={error} onDismiss={() => setError('')}/><ErrorNotice message={bindingsError}/><SuccessNotice message={success}/>
     {imported && <div className="import-next-step"><div><strong>已导入配置，下一步先测试连接</strong><p>导入不代表接通，也不会自动绑定助手或授权工具。</p></div></div>}
-    <ol className="connection-route" aria-label="MCP 接入步骤"><li><span>1</span><div><strong>地址与认证</strong><p>填写 MCP 地址与受限凭据</p></div></li><li><span>2</span><div><strong>检查工具能力</strong><p>测试连通与认证，查看工具</p></div></li><li><span>3</span><div><strong>绑定与业务试跑</strong><p>选择助手和允许的工具，核对答案</p></div></li></ol>
+    <ol className="connection-route" aria-label="MCP 接入步骤"><li><span>1</span><div><strong>地址与认证</strong><p>填写 MCP 地址与受限凭据</p></div></li><li><span>2</span><div><strong>检查工具能力</strong><p>测试连通与认证，查看工具</p></div></li><li><span>3</span><div><strong>配置助手并验证</strong><p>选择助手和允许的工具，核对答案</p></div></li></ol>
     <details className="connection-server-note"><summary><Network size={16}/>服务端如何连接 MCP<ChevronDown size={15}/></summary><p>由工作台服务端连接，不是你的浏览器。请提供服务端能访问的 Streamable HTTP MCP 地址；当前支持无认证或 Bearer Token。连接测试只读取工具清单。</p></details>
-    <div className="connections-list-heading"><div><h2>启用的连接{!loading && ` · ${items.filter(item => item.enabled).length}`}</h2><p>显示已保存的状态；业务试跑结果需另行核对。</p></div><Button variant="ghost" busy={loading} disabled={!!testing} onClick={() => void load()}><RefreshCw size={16}/>刷新状态</Button></div>
+    <div className="connections-list-heading"><div><h2>启用的连接{!loading && ` · ${items.filter(item => item.enabled).length}`}</h2><p>显示上次连接检查结果，不代表当前在线状态。</p></div><Button variant="ghost" busy={loading} disabled={!!testing} onClick={() => void load()}><RefreshCw size={16}/>刷新状态</Button></div>
     {loading && !items.length ? <Loader/> : !items.length ? error ? <EmptyState icon={<Network size={32}/>} title="连接清单暂未取得" description="请恢复工作台访问后刷新；这不表示没有已保存的连接。"/> : <EmptyState icon={<Network size={32}/>} title="连接你的第一个业务系统" description="准备 MCP 地址与受限凭据。保存后测试工具，再选择助手和允许的能力。" action={<Button onClick={() => setEditor('new')}><Plus size={16}/>新增连接</Button>}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} assistants={assistants} bindingsLoading={loading} testing={testing === item.id} actionsBusy={!!testing || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setTools(item)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onConfigureAssistant={onConfigureAssistant} highlighted={item.id === focusConnectionId} canConfigureAssistant={canConfigureAssistant} onStartAssistant={onStartAssistant}/>}/>}
     {editor && <ConnectionEditor admin={admin} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => {
       setEditor(null); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]);
       setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; });
-      setSuccess('连接配置已保存；保存不代表已经接通或完成业务验证。');
+      setSuccess('配置已保存。请测试连接并验证业务结果。');
       if (shouldTest) await test(saved);
     }}/>}
     {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); setImported(true); setSuccess(`已导入 ${result.connections.length} 个业务连接。请先测试，再配置助手允许使用的工具及审批方式。`); void load(); }}/>}

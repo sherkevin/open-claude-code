@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import AssistantConfiguration, { assistantChanges, assistantDraft, type AssistantResources } from './AssistantConfiguration';
 import AssistantsPage from './AssistantsPage';
 import NewSession, { createNewSession } from './NewSession';
-import { connectionHandoffReadiness, connectionSetupContext, focusConnectionFirst, loadConnectionHandoff } from './connectionHandoff';
+import { connectionHandoffReadiness, connectionSetupContext, connectionTrialSession, focusConnectionFirst, loadConnectionHandoff } from './connectionHandoff';
 import type { Assistant, Connection } from './types';
 
 const connection: Connection = { id: 'target', name: '发货查询', transport: 'http', url: 'https://example.test/mcp', auth_type: 'bearer', credential_present: true, enabled: true, status: 'connected', tools: [{ name: 'shipments', description: '按日期查询', inputSchema: {} }], last_error: null, last_tested_at: '2026-11-15T01:00:00Z', revision: 2, scope: 'team', can_edit: false };
@@ -85,7 +85,7 @@ describe('connection handoff preserves identity and explicit authorization', () 
     expect(html).toContain('新建助手');
     expect(html).toContain('返回该连接');
     expect(html).not.toContain('role="dialog"');
-    expect(html).not.toContain('开始业务试跑');
+    expect(html).not.toContain('验证业务结果');
   });
 });
 
@@ -119,6 +119,25 @@ describe('connection trial session remains scoped to its configured assistant', 
   const setup = connectionSetupContext(connection);
   const other = { ...assistant, id: 'unrelated', name: '无关助手', connections: [] };
   const sessionProps = { assistants: [assistant, other], initialAssistant: assistant, config: { brand_name: 'Flintworks', auth_types: [], model_label: '', upload_max_bytes: 1 }, models: [], modelsLoading: false, modelsError: '', onReloadModels: () => {}, onClose: () => {}, onCreated: () => {} };
+  it('uses the same fixed assistant and target from the connection card and the saved-assistant handoff', () => {
+    const fromCard = connectionTrialSession(assistant, connection);
+    const fromEditor = connectionTrialSession(assistant, setup);
+    expect(fromCard).toEqual(fromEditor);
+    expect(fromCard.connectionSetup).toEqual({ id: 'target', name: '发货查询' });
+    const html = renderToStaticMarkup(<NewSession {...sessionProps} initialAssistant={fromCard.assistant} connectionSetup={fromCard.connectionSetup}/>);
+    expect(html).toContain('本次核对连接：发货查询');
+    expect(html).toMatch(/<select[^>]*disabled=""/);
+    expect(html).not.toContain('无关助手');
+  });
+  it('blocks a direct connection-card trial if its tool grant was revoked after the card was loaded', async () => {
+    const session = connectionTrialSession(assistant, connection);
+    const revoked = { ...assistant, connections: [{ ...assistant.connections[0], allowed_tools: [] }] };
+    const fetch = vi.fn().mockImplementation((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/connections') ? [connection] : [revoked]))));
+    vi.stubGlobal('fetch', fetch);
+    await expect(createNewSession(false, session.assistant.id, selection, true, session.connectionSetup)).rejects.toThrow('尚未允许此连接');
+    expect(fetch.mock.calls.map(([url]) => url).sort()).toEqual(['/api/v1/assistants', '/api/v1/connections']);
+    expect(fetch.mock.calls.every(([, init]) => !init.method)).toBe(true);
+  });
   it('shows the target connection and fixes the assistant only for the guided trial', () => {
     const guided = renderToStaticMarkup(<NewSession {...sessionProps} connectionSetup={setup}/>);
     expect(guided).toContain('本次核对连接：发货查询');

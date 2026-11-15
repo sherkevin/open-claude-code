@@ -36,14 +36,14 @@ export default function AssistantsPage({ onChanged, onOpen, admin, onDirtyChange
   const openEditor = (assistant: Assistant | 'new') => requestNavigation(() => { setSuccess(''); setEditor(assistant); });
   const saved = savedForConnection?.connectionId === connectionSetup?.id ? savedForConnection?.assistant : undefined;
   return <div className="page">
-    <PageHeader eyebrow="把能力组织成助手" title="助手设置" description="定义助手负责什么、可以使用哪些工具，以及谁能够使用它。" actions={!connectionSetup && <Button onClick={() => openEditor('new')}><Plus size={17}/>新建助手</Button>}/>
+    <PageHeader eyebrow="业务配置" title="助手设置" description="设置助手的业务规则、数据连接与成员权限。" actions={!connectionSetup && <Button onClick={() => openEditor('new')}><Plus size={17}/>新建助手</Button>}/>
     {connectionSetup && <section className="connection-setup-context" aria-label="连接配置引导">
       <div><h2>为「{connectionSetup.name}」配置助手</h2><p>选择下方有编辑权限的现有助手，或新建助手。进入配置后，请勾选此连接并选择允许的工具。</p></div>
       <div className="connection-setup-actions"><Button onClick={() => openEditor('new')}><Plus size={16}/>新建助手</Button>{onReturnToConnection && <Button variant="secondary" onClick={onReturnToConnection}>返回该连接</Button>}</div>
     </section>}
     <ErrorNotice message={error} onDismiss={() => setError('')}/><SuccessNotice message={success}/>
     {connectionSetup && saved && !editor && <SavedConnectionHandoff key={`${connectionSetup.id}-${saved.id}-${saved.revision}`} setup={connectionSetup} saved={saved} onReturn={onReturnToConnection} onEdit={() => openEditor(saved)} onStart={onStartAssistant}/>}
-    {loading ? <Loader/> : !items.length ? <EmptyState icon={<Bot size={32}/>} title="创建一个可用的业务助手" description="从一段清晰的业务规则开始，再绑定需要的业务连接。" action={<Button onClick={() => openEditor('new')}><Plus size={17}/>新建助手</Button>}/> : <div className="assistant-settings-list">{items.map(a => <article key={a.id} className="assistant-setting-card">
+    {loading ? <Loader/> : !items.length ? <EmptyState icon={<Bot size={32}/>} title="尚未创建助手" description="新建助手，填写业务规则并选择需要的数据连接。" action={<Button onClick={() => openEditor('new')}><Plus size={17}/>新建助手</Button>}/> : <div className="assistant-settings-list">{items.map(a => <article key={a.id} className="assistant-setting-card">
       <AiIdentity size="small"/><div className="assistant-setting-content"><div className="card-title-line"><h2>{a.name}</h2><ScopeBadge scope={a.scope}/><span className={`badge ${a.enabled ? 'green' : ''}`}>{a.enabled ? '已启用' : '已停用'}</span></div><p>{a.description || '暂无描述'}</p><div className="setting-tags"><span><Network size={14}/>{a.connections.length} 个业务连接</span><span><BookOpen size={14}/>{a.knowledge_base_ids?.length || 0} 个知识库</span><span><Sparkles size={14}/>{a.skill_ids?.length || 0} 个 Skills</span>{a.web_search_enabled && <span><Globe size={14}/>网页搜索</span>}<span><Users size={14}/>{a.scope === 'private' ? '仅自己' : a.access.all_members ? '所有成员' : `${a.access.user_ids.length} 位指定成员`}</span><span><ShieldCheck size={14}/>{a.connections.reduce((n, c) => n + c.allowed_tools.length - c.auto_approved_tools.length, 0)} 个工具需确认</span></div></div>
       <div className="setting-actions"><Button variant="ghost" onClick={() => onOpen(a)}>查看助手<ArrowRight size={14}/></Button>{canEdit(a, admin) && <><Button variant="secondary" onClick={() => openEditor(a)}><Pencil size={15}/>{connectionSetup ? '配置此助手' : '编辑'}</Button><button className="icon-button danger-text" aria-label={`删除 ${a.name}`} onClick={() => setDeleting(a)}><Trash2 size={17}/></button></>}</div>
     </article>)}</div>}
@@ -74,16 +74,16 @@ function SavedConnectionHandoff({ setup, saved, onReturn, onEdit, onStart }: {
       if (controller.signal.aborted) return;
       setSnapshot(next);
       if (openSession && next.ready && next.assistant) start.current?.(next.assistant);
-    } catch (e) { if (!controller.signal.aborted) setError(`试跑条件尚未确认：${errorText(e)}`); }
+    } catch (e) { if (!controller.signal.aborted) setError(`验证条件尚未确认：${errorText(e)}`); }
     finally { if (!controller.signal.aborted) setChecking(false); }
   }, [setup.id, saved.id]);
   useEffect(() => { void verify(); return () => request.current?.abort(); }, [verify]);
   return <section className="connection-setup-context" aria-label="助手保存后的下一步">
-    <div><h2>「{saved.name}」已保存</h2><p role="status">{checking ? '正在核对当前连接、助手和工具权限…' : snapshot?.message || '当前试跑条件未确认，可返回连接页检查。'}</p>{!onStart && <p>当前账号没有新建会话权限，请联系管理员。</p>}<ErrorNotice message={error}/></div>
+    <div><h2>「{saved.name}」已保存</h2><p role="status">{checking ? '正在核对当前连接、助手和工具权限…' : snapshot?.message || '验证条件尚未确认，请返回连接页检查。'}</p>{!onStart && <p>当前账号没有新建会话权限，请联系管理员。</p>}<ErrorNotice message={error}/></div>
     <div className="connection-setup-actions">
       {onReturn && <Button variant="secondary" onClick={onReturn}>返回该连接</Button>}
       <Button variant="secondary" onClick={onEdit}>继续编辑助手</Button>
-      {!checking && snapshot?.ready && onStart && <Button onClick={() => void verify(true)}>开始业务试跑<ArrowRight size={16}/></Button>}
+      {!checking && snapshot?.ready && onStart && <Button onClick={() => void verify(true)}>验证业务结果<ArrowRight size={16}/></Button>}
       {error && <Button variant="ghost" busy={checking} onClick={() => void verify()}><RefreshCw size={15}/>重新核对</Button>}
     </div>
   </section>;
@@ -94,5 +94,5 @@ function AssistantEditor({ id, admin, onClose, onSaved, onDirtyChange, onSavingC
 } & AssistantDraftNavigation) {
   const { snapshot, loading, error, generation, reload } = useAssistantConfiguration(id, admin);
   const close = () => requestNavigation(onClose);
-  return <Modal title={id ? '编辑助手' : '新建助手'} description="选择能力，设置工作规则；每项工作可以建立独立会话。" wide onClose={close}><div className="modal-body assistant-editor-body">{loading ? <Loader text="正在读取助手与可用能力…"/> : error || !snapshot ? <><ErrorNotice message={error || '无法读取配置。'}/><Button variant="secondary" onClick={reload}><RefreshCw size={16}/>重新加载</Button></> : <AssistantConfiguration key={`${generation}-${draftEpoch}`} value={snapshot.assistant} resources={snapshot.resources} admin={admin} focusConnectionId={focusConnectionId} onDirtyChange={onDirtyChange} onSavingChange={onSavingChange} onSaved={onSaved} onReload={() => requestNavigation(reload)} onCancel={close}/>}</div></Modal>;
+  return <Modal title={id ? '编辑助手' : '新建助手'} description="设置业务规则、工具和资料范围。" wide onClose={close}><div className="modal-body assistant-editor-body">{loading ? <Loader text="正在加载助手配置…"/> : error || !snapshot ? <><ErrorNotice message={error || '无法读取配置。'}/><Button variant="secondary" onClick={reload}><RefreshCw size={16}/>重新加载</Button></> : <AssistantConfiguration key={`${generation}-${draftEpoch}`} value={snapshot.assistant} resources={snapshot.resources} admin={admin} focusConnectionId={focusConnectionId} onDirtyChange={onDirtyChange} onSavingChange={onSavingChange} onSaved={onSaved} onReload={() => requestNavigation(reload)} onCancel={close}/>}</div></Modal>;
 }

@@ -35,7 +35,7 @@ describe('business object previews retain result boundaries',()=>{
   });
   it('does not turn an empty result into a zero-value object',()=>{
     const html=renderToStaticMarkup(<BusinessResultCard result={result({rows:[]})} runId="r" eventId={2}/>);
-    expect(html).toContain('本次工具未返回记录');expect(html).not.toContain('class="br-object"');
+    expect(html).toContain('本次查询未返回记录');expect(html).not.toContain('class="br-object"');
   });
 });
 
@@ -61,10 +61,10 @@ describe('MCP business trial is an authorized navigation action',()=>{
   it('hides trial navigation during unknown or stale discovery and restricted management',()=>{
     const props={item:connection,assistants:[assistant],admin:false,onTest:noop,onTools:noop,onEdit:noop,onDelete:noop,onConfigureAssistant:noop,onStartAssistant:noop};
     const ready=renderToStaticMarkup(<ConnectionOnboardingCard {...props}/>);
-    expect(ready).toContain('开始业务试跑');expect(ready).toContain('试跑结果未核');
+    expect(ready).toContain('验证业务结果');expect(ready).toContain('业务结果待验证');
     for(const extra of [{testing:true},{bindingsLoading:true},{testError:'失败'},{actionsBusy:true},{onStartAssistant:undefined}]){
       const html=renderToStaticMarkup(<ConnectionOnboardingCard {...props} {...extra} canConfigureAssistant={false}/>);
-      expect(html).not.toContain('开始业务试跑');expect(html).not.toContain('去配置助手');
+      expect(html).not.toContain('验证业务结果');expect(html).not.toContain('>配置助手<svg');
     }
   });
 });
