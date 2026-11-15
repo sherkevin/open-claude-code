@@ -155,7 +155,7 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
         if capability_enabled("search"):
             tools.append(WorkspaceTool("web_search", "按用户需求实际检索公开互联网，用于联网查询、行业调研、通用概念和原网页查找；不能用内部知识库代替。返回原网页链接、搜索摘要及 source 标记，摘要不代表已读取正文。仅用公开检索词，不发送内部文档、凭据或个人敏感数据。", {"query": str, "limit": int}, True, search_web))
         if capability_enabled("fetch"):
-            tools.append(WorkspaceTool("web_read", "读取公开网页正文并生成可核验来源。url 是原网页；query 可用于定位正文，不需要时传空字符串。", {"url": str, "query": str}, True, read_web))
+            tools.append(WorkspaceTool("web_read", "读取公开网页正文并生成可核验来源。url 是原网页；query 可用于定位正文，不需要时传空字符串。若返回 403、连接失败或超时，不要反复重试同一页面。用户询问一般问题时，可用 web_search 查找其他相关公开来源，再读取至多两个替代页面；先核对主题含义，避免同名缩写混淆。用户指定必须读取的原链接失败时须明确说明；替代来源使用其真实网址引用，搜索摘要不能当作已读取正文。", {"url": str, "query": str}, True, read_web))
 
     if capability_enabled("ocr"):
         async def ocr(arguments):
