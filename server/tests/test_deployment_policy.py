@@ -54,8 +54,10 @@ EXPECTED_TRIAL_ROUTES = {
     ("GET", "/api/v1/assistants"),
     ("GET", "/api/v1/assistants/{item_id}"),
     ("GET", "/api/v1/conversations"),
+    ("GET", "/api/v1/conversations/overview"),
     ("POST", "/api/v1/conversations"),
     ("GET", "/api/v1/conversations/{item_id}"),
+    ("GET", "/api/v1/conversations/{item_id}/trajectory"),
     ("PATCH", "/api/v1/conversations/{item_id}"),
     ("GET", "/api/v1/conversations/{item_id}/messages"),
     ("POST", "/api/v1/conversations/{item_id}/messages"),
@@ -485,6 +487,8 @@ def test_trial_exact_allowlist_routes_are_usable(trial_system):
 
     conversations = hit("GET", "/api/v1/conversations", "/api/v1/conversations")
     assert conversations.status_code == 200
+    overview = hit("GET", "/api/v1/conversations/overview", "/api/v1/conversations/overview")
+    assert overview.status_code == 200 and overview.json()["coverage"]["scope"] == "self"
     created = hit(
         "POST",
         "/api/v1/conversations",
@@ -493,6 +497,8 @@ def test_trial_exact_allowlist_routes_are_usable(trial_system):
     )
     assert created.status_code == 201, created.text
     created = created.json()
+    trace = hit("GET", "/api/v1/conversations/{item_id}/trajectory", f"/api/v1/conversations/{created['id']}/trajectory")
+    assert trace.status_code == 200 and trace.json()["items"] == []
     assert hit(
         "GET",
         "/api/v1/conversations/{item_id}",
