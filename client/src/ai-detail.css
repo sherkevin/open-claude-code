@@ -32,6 +32,8 @@
 .zhixing-theme .chat-proof-bar>.run-status-pill[data-state=interrupted] {color:var(--warning-text);border-color:#f4d5a0;background:#fff5e5}
 .zhixing-theme .chat-proof-bar>.run-status-pill[data-state=running] {color:#5c32a8;border-color:#dbccf5;background:#f5f0fc}
 .zhixing-theme .chat-heading {gap:12px}
+.zhixing-theme .chat-page .run-metrics dl {grid-template-columns:minmax(0,1fr) minmax(0,1.1fr)}
+.zhixing-theme .chat-page .run-metrics :is(dt,dd) {min-width:0;overflow-wrap:anywhere}
 .zhixing-theme .message-label>.fw-ai-identity {vertical-align:middle}
 .zhixing-theme :is(.wr-title-link,.wr-text-action,.chat-actions .icon-button)>svg {stroke-width:1.7}
 @media(max-width:600px) {

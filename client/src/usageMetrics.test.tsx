@@ -71,14 +71,14 @@ describe('provider usage completeness', () => {
 describe('measured duration', () => {
   it('preserves a terminal 1.6 second server measurement without flooring it to one second', () => {
     const html = render({timings:{total_ms:1600}});
-    expect(html).toContain('<dt>执行耗时（服务端）</dt><dd>1.60 秒</dd>');
+    expect(html).toContain('<dt>总耗时（含等待）</dt><dd>1.60 秒</dd>');
   });
   it('labels timestamp differences as elapsed time rather than a server measurement', () => {
     const history = render({});
     const active = render({status:'running',timings:{total_ms:1600}});
     for(const html of [history,active]){
       expect(html).toContain('已用时间（按时间差）');
-      expect(html).not.toContain('执行耗时（服务端）');
+      expect(html).not.toContain('总耗时（含等待）');
     }
   });
 });
