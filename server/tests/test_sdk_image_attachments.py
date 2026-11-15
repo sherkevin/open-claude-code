@@ -314,6 +314,23 @@ def test_pure_text_keeps_string_prompt(system):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Real descriptor-based image reads require POSIX")
+def test_mobile_webp_jpg_uses_verified_jpeg_and_original_receipt(system, monkeypatch):
+    stream = io.BytesIO()
+    Image.new("RGB", (652, 5149), "green").save(stream, format="WEBP")
+    original = stream.getvalue()
+    row = system.upload(original, "mobile-export.jpg", "image/jpeg")
+    monkeypatch.setattr("app.sdk_image_attachments._read_image", real_read_image)
+    run, message = system.prepare([row])
+    prompt = SDKImagePrompt.for_run(system.runtime(), run, message)
+    block = next(item for item in prompt.blocks if item["type"] == "image")
+    with Image.open(io.BytesIO(base64.b64decode(block["source"]["data"]))) as image:
+        assert image.format == "JPEG" and image.size == (652, 5149)
+    assert block["source"]["media_type"] == "image/jpeg"
+    assert Path(row["path"]).read_bytes() == original
+    assert prompt.snapshots[0]["sha256"] == hashlib.sha256(original).hexdigest()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Real descriptor-based image reads require POSIX")
 @pytest.mark.parametrize("case", ["regular", "symlink", "parent_symlink", "hardlink", "fifo", "outside", "bad_mime"])
 def test_real_posix_reader_keeps_original_file_boundary(system, tmp_path, case):
     row = system.upload()

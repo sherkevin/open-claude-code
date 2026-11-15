@@ -75,6 +75,34 @@ def test_text_and_image_are_inline_snapshots_with_private_path_absent(system):
     assert set(recorded[0]) == {"id", "binding", "sha256"}
 
 
+def test_mobile_webp_with_jpg_filename_is_normalized_without_changing_evidence(system):
+    stream = io.BytesIO()
+    Image.new("RGB", (652, 5149), "green").save(stream, format="WEBP")
+    original = stream.getvalue()
+    row = system.upload(original, "mobile-export.jpg", "image/jpeg")
+    run, message = system.prepare([row])
+    prompt = AttachmentPrompt(system.runtime, run, message)
+    peer, calls = client()
+    prompt.dispatch(peer, "owned", "read")
+    block = next(item for item in calls[0][1] if item["type"] == "image")
+    with Image.open(io.BytesIO(base64.b64decode(block["data"]))) as image:
+        assert image.format == "JPEG" and image.size == (652, 5149)
+        image.load()
+    assert block["mimeType"] == "image/jpeg"
+    assert Path(row["path"]).read_bytes() == original
+    assert prompt.snapshots[0]["sha256"] == hashlib.sha256(original).hexdigest()
+
+
+def test_mobile_normalization_still_rejects_animated_images():
+    from app.harness_attachments import inline_image
+    stream = io.BytesIO()
+    Image.new("RGB", (20, 10), "green").save(stream, format="GIF", save_all=True,
+        append_images=[Image.new("RGB", (20, 10), "red")], duration=100)
+    with pytest.raises(AppError) as error:
+        inline_image(stream.getvalue(), "image/jpeg")
+    assert error.value.code == "ATTACHMENT_INVALID"
+
+
 @pytest.mark.parametrize("case,code", [("owner", "NOT_FOUND"), ("conversation", "ATTACHMENT_SCOPE"), ("unsupported", "ATTACHMENT_UNSUPPORTED"), ("duplicate", "ATTACHMENT_LIMIT"), ("too_many", "ATTACHMENT_LIMIT"), ("image_mime", "ATTACHMENT_INVALID"), ("image_large", "ATTACHMENT_LIMIT")])
 def test_metadata_rejection_precedes_run_creation(system, case, code):
     row = system.upload()
