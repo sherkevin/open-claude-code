@@ -464,9 +464,20 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     def conversation_create(data: ConversationCreate, user=Depends(authenticated), service: Service = Depends(svc)):
         return service.create_conversation(data.model_dump(), user)
 
+    @app.get(prefix + "/conversations/overview")
+    def conversation_overview(user=Depends(authenticated), service: Service = Depends(svc)):
+        from .session_observability import overview
+        return overview(service, user)
+
     @app.get(prefix + "/conversations/{item_id}")
     def conversation_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
         return conversation_view(service.require("conversations", item_id, user))
+
+    @app.get(prefix + "/conversations/{item_id}/trajectory")
+    def conversation_trajectory(item_id: str, cursor: str | None = Query(default=None, max_length=1024),
+                                limit: int = Query(default=50, ge=1, le=100), user=Depends(authenticated), service: Service = Depends(svc)):
+        from .session_observability import trajectory
+        return trajectory(service, user, item_id, cursor=cursor, limit=limit)
 
     @app.patch(prefix + "/conversations/{item_id}")
     def conversation_patch(item_id: str, data: ConversationPatch, user=Depends(authenticated), service: Service = Depends(svc)):
