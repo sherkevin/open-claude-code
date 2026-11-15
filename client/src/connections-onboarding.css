@@ -131,3 +131,9 @@
 .connections-onboarding .connection-progress {margin-top:12px;padding:16px 0;gap:12px}
 .import-file-picker {display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
 .import-file-picker input {max-width:100%;font-size:13px}
+@media(min-width:1360px) {.connections-onboarding .connections-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.connections-onboarding .connection-capability-preview {grid-column:1 / -1;font-size:13px;line-height:1.6}
+.connections-onboarding .connection-capability-preview ul {padding-left:18px;margin:8px 0}
+.connections-onboarding .connection-capability-preview .section-help {margin:6px 0 0}
+.connections-onboarding .connection-progress {grid-template-columns:1fr}
+.connections-onboarding .connection-trial-action>div:first-child {min-width:0}

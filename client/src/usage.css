@@ -24,3 +24,4 @@
 .zhixing-theme .usage-page td {min-width:118px;white-space:normal;border-color:var(--line-soft)}
 .zhixing-theme .usage-page td:first-child {min-width:140px}
 .zhixing-theme .usage-page .cost-panel h2 {color:var(--ink);font-size:24px}
+.zhixing-theme .usage-page td,.zhixing-theme .usage-page .section-label {color:var(--ink)}

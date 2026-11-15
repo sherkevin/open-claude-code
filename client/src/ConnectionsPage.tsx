@@ -80,9 +80,10 @@ export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = f
     <div className="connection-meta"><span>{item.tools.length} 项工具能力</span><span>{bindingLabel}</span></div>
     {!!item.tools.length && <div className="connection-capability-preview"><strong>可用功能</strong><ul>{previewTools.map(tool=><li key={tool.name}>{displayToolDescription(tool.description)?.split(/[。\n]/)[0] || `${tool.name}（用途说明未提供）`}</li>)}</ul>{item.tools.length>previewTools.length&&<p className="section-help">另有 {item.tools.length-previewTools.length} 项能力，可在“查看工具”中展开。</p>}</div>}
     {!testError && item.last_error && <p className="inline-error">{item.last_error}</p>}
-    <div className="connection-time">{item.last_tested_at ? `${item.status === 'untested' ? '历史测试' : '最近测试'} ${timeText(item.last_tested_at)} · ${item.status === 'untested' ? '当前配置待重测' : '非实时状态'}` : '尚无测试时间记录'}</div>
+
     {onStartAssistant && selectedTrial && <div className="connection-trial-action"><div><strong>开始业务查询</strong><p>使用已绑定助手查询数据、汇总与分析。</p></div><div>{candidates.length > 1 && <label><span className="sr-only">验证助手</span><select value={selectedTrial.id} onChange={event => setTrialAssistantId(event.target.value)}>{candidates.map(assistant => <option value={assistant.id} key={assistant.id}>{assistant.name}</option>)}</select></label>}<Button onClick={() => onStartAssistant(selectedTrial, item)}>开始查询<ArrowUpRight size={15}/></Button></div></div>}
     <details className="connection-trial-guide"><summary><span>连接详情与接入进度</span><ChevronDown size={15}/></summary>
+    <div className="connection-time">{item.last_tested_at ? `${item.status === 'untested' ? '历史测试' : '最近测试'} ${timeText(item.last_tested_at)} · ${item.status === 'untested' ? '当前配置待重测' : '非实时状态'}` : '尚无测试时间记录'}</div>
       <dl className="connection-technical-details"><div><dt>服务地址</dt><dd>{item.url}</dd></div><div><dt>连接协议</dt><dd>Streamable HTTP</dd></div><div><dt>认证方式</dt><dd>{item.auth_type === 'bearer' ? item.credential_present ? 'Bearer Token · 已保存' : 'Bearer Token · 未保存' : '无需认证'}</dd></div></dl>
     <ol className="connection-progress" aria-label={`${item.name}接入进度`}>
       <li data-state="complete"><span className="connection-step-number">1</span><div><strong>地址与认证</strong><p>配置已保存 · 服务端连接</p></div></li>

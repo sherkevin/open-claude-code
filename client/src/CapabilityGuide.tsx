@@ -16,7 +16,7 @@ const demoDescriptions = new Map<string, string>([
   ['查询合成业务日期2026-11-14向哪些客户发货及数量，按客户汇总；数量单位为件。', '按客户汇总 2026-11-14 的发货数量，数量单位为件。'],
   ['Search synthetic Chinese company rules; always returns source IDs and labels data as demo.', '检索中文企业制度示例资料，返回来源编号，并标明为示例数据。'],
   ['Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.', '创建并保存一条示例工单。此操作需要用户审批；request_key 用于防止重复创建。'],
-  ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '读取已保存的示例工单，可按 request_key 精确筛选，不修改业务记录。'],
+  ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '读取已保存的示例工单，支持精确筛选，不修改业务记录。'],
   ['Query line/batch quality counts and calculate the weighted yield for an inclusive date range. Returns database/table/fields/filter/time/aggregation provenance.', '按产线、批次和日期范围查询示例质量数据，按检验数量加权计算合格率，包含起止日期。返回数据库、数据表、字段、筛选条件、时间和汇总口径。'],
   ['Acceptance-only bounded read delay, useful for checking cancellation. Does not create or modify records.', '连接诊断专用：执行有时长上限的只读延迟查询，用于检查取消操作，不创建或修改记录。'],
 ]);
