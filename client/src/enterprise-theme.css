@@ -92,6 +92,13 @@
 .zhixing-theme .checkbox-row small {color:var(--muted);font-size:12px}
 .zhixing-theme .checkbox-row input {accent-color:var(--brand)}
 .zhixing-theme .checkbox-row.separated {border-color:var(--line)}
+/* MCP import: blue indicates the active step; green remains reserved for success. */
+.zhixing-theme .import-steps li.active {color:var(--brand)}
+.zhixing-theme .import-steps li.active>span {background:var(--brand);border-color:var(--brand);color:var(--white)}
+.zhixing-theme .import-preview-card {background:var(--white);border-color:var(--line);color:var(--ink)}
+.zhixing-theme .import-preview-title {color:var(--ink)}
+.zhixing-theme .import-preview-title>svg,.zhixing-theme .import-help summary {color:var(--brand)}
+.zhixing-theme :is(.import-help,.import-url,.import-preview-card dt,.import-summary p,.import-permission-note) {color:var(--muted)}
 /* Let modal form content scroll while its actions remain visible. */
 .zhixing-theme .modal>form {min-height:0}
 .zhixing-theme th {font-size:12px}
