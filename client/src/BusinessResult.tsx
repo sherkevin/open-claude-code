@@ -62,7 +62,7 @@ export function csvCell(value: unknown): string {
 }
 const scopeLabel:Record<string,string>={organization:'组织',region:'区域',customer:'客户',status:'状态',date:'日期',date_from:'开始日期',date_to:'结束日期',time_range:'时间范围',timezone:'时区',factory:'工厂',aggregation:'统计口径'};
 export function resultCSV(result: BusinessResult, runId: string, eventId: number, answerIncomplete = false) {
-  const meta:unknown[][]=[['结果',result.title],['任务编号',runId],['结果事件',eventId],...(answerIncomplete?[['回答状态','业务数据已返回，回答未完成']]:[]),['数据性质',result.synthetic===true?'合成测试数据':result.synthetic===false?'工具标记非合成':'工具未说明'],['数据时间',result.data_time||'未提供'],['导出范围','仅当前已返回的结果，不代表未取回的明细'],['已返回行数',result.rows.length],['结果总行数',result.total_rows??'未提供'],['覆盖情况',result.truncated?'已截取':result.complete===true?'工具声明完整':result.complete===false?'部分结果':'完整性未说明'],...Object.entries(result.scope||{}).map(([k,v])=>[scopeLabel[k]||k,v]),...result.warnings.map(w=>['提示',w]),...(result.source_ids||[]).map(id=>['来源 ID',id]),[],result.columns.map(c=>c.label+(c.unit?`（${c.unit}）`:'')),...result.rows.map(row=>result.columns.map(c=>row[c.key]))];
+  const meta:unknown[][]=[['结果',result.title],['任务编号',runId],['结果事件',eventId],...(answerIncomplete?[['回答状态','业务数据已返回，回答未完成']]:[]),['数据性质',result.synthetic===true?'合成测试数据':result.synthetic===false?'工具标记非合成':'工具未说明'],['数据时间',result.data_time||'未提供'],['导出范围','仅当前已返回的结果，不代表未取回的明细'],['已返回行数',result.rows.length],['数据源报告总行数',result.total_rows??'未提供'],['覆盖情况',result.truncated?'已截取':result.complete===true?'数据源标记为完整':result.complete===false?'部分结果':'完整性未说明'],...Object.entries(result.scope||{}).map(([k,v])=>[scopeLabel[k]||k,v]),...result.warnings.map(w=>['提示',w]),...(result.source_ids||[]).map(id=>['来源 ID',id]),[],result.columns.map(c=>c.label+(c.unit?`（${c.unit}）`:'')),...result.rows.map(row=>result.columns.map(c=>row[c.key]))];
   return '\uFEFF'+meta.map(row=>row.map(csvCell).join(',')).join('\r\n');
 }
 const displayCell=(v:Cell)=>v===null?'—':typeof v==='boolean'?(v?'是':'否'):typeof v==='number'?(v!==0&&Math.abs(v)<0.000001?String(v):new Intl.NumberFormat('zh-CN',{maximumSignificantDigits:21}).format(v)):v;
@@ -77,10 +77,26 @@ export function objectPreview(result: BusinessResult, row: Record<string, Cell>,
 export function preferredChartMetric(columns: ResultColumn[], question = '') {
   const normalize = (text: string) => text.toLocaleLowerCase().replace(/\s+/g, '');
   const text = normalize(question);
-  const matches = columns.map(column => ({ column, label: normalize(column.label).replace(/[（(][^）)]*[）)]/g, '') }))
-    .filter(({ label }) => label.length > 1 && text.includes(label));
+  const mentions = (label: string) => label.length > 1 && text.split(/[，,。；;！？!?]/).some(clause => {
+    for (let index=clause.indexOf(label);index>=0;index=clause.indexOf(label,index+label.length)) {
+      const before=clause.slice(0,index).split(/只看|只查|只要|而是|改为|改看|请看/).at(-1) || '';
+      const after=clause.slice(index+label.length);
+      if (/不需要|无需|不要|不用|不看|不查|不显示|不展示|不统计|忽略|排除|别看|别查/.test(before)) continue;
+      if (/^(?:的)?(?:升序|降序|倒序|排序|大小排列|从高到低|从低到高|从大到小|从小到大)/.test(after)) continue;
+      if (/(?:排序|升序|降序)(?:按|用|依据|使用)?$/.test(before)) continue;
+      return true;
+    }
+    return false;
+  });
+  const labeled = columns.map(column => ({ column, label: normalize(column.label).replace(/[（(][^）)]*[）)]/g, '') }));
+  const matches = labeled.filter(({ label }) => mentions(label));
   const specific = matches.filter(item => !matches.some(other => other !== item && other.label.length > item.label.length && other.label.includes(item.label)));
-  return (specific.length === 1 ? specific[0].column : columns[0])?.key || '';
+  if (specific.length) return (specific.length===1?specific[0].column:columns[0])?.key || '';
+  // A shorter, explicit metric term may identify a longer returned label, but
+  // never choose between two monetary/quantity fields on the user's behalf.
+  const terms=['金额','数量','记录数'].filter(mentions);
+  const candidates=labeled.filter(({label})=>terms.some(term=>label.includes(term)));
+  return (candidates.length===1?candidates[0].column:columns[0])?.key || '';
 }
 export function questionForRun(messages: Message[], runId: string) {
   for (let index=messages.length-1;index>=0;index--) {
@@ -111,7 +127,7 @@ export function BusinessResultCard({result,runId,eventId,question='',answerIncom
     {answerIncomplete&&<div className="br-warnings" role="status"><p><strong>业务数据已返回，回答未完成。</strong> 可核对下方数据与来源，或导出当前结果。</p></div>}
     {!!primaryScope.length&&<div className="br-condition-tags" aria-label="主要查询条件">{primaryScope.map(([key,value])=><span key={key}><small>{scopeLabel[key]||key}</small>{scopeText(value)}</span>)}</div>}
     {result.summary&&<p className="br-summary">{result.summary}</p>}
-    <p className="br-coverage">已返回 {result.rows.length} 行{result.total_rows!==null?` · 工具报告结果总行数 ${result.total_rows} 行`:' · 结果总行数未提供'} · {result.truncated?'结果已截取':result.complete===true?'工具声明完整':result.complete===false?'部分结果':'完整性未说明'}</p>
+    <p className="br-coverage">已返回 {result.rows.length} 行{result.total_rows!==null?` · 数据源报告共 ${result.total_rows} 行`:' · 结果总行数未提供'} · {result.truncated?'结果已截取':result.complete===true?'数据源标记为完整':result.complete===false?'部分结果':'完整性未说明'}</p>
     {!!result.warnings.length&&<div className="br-warnings">{result.warnings.map((w,i)=><p key={i}>{w}</p>)}</div>}
     <div className="br-toolbar"><div className="br-tabs" aria-label="结果视图"><button type="button" aria-pressed={view==='objects'} onClick={()=>setView('objects')}><LayoutList size={15}/>摘要</button><button type="button" aria-pressed={view==='table'} onClick={()=>setView('table')}><Table2 size={15}/>表格</button>{canChart&&<button type="button" aria-pressed={view==='chart'} onClick={()=>setView('chart')}><BarChart3 size={15}/>图表</button>}</div><button type="button" className="br-export" title="下载当前结果CSV，编号类字段请按文本导入" onClick={download}><Download size={15}/>导出当前结果 CSV</button></div>
     {!result.rows.length?<p className="br-empty">本次查询未返回记录。请核对下方查询范围与依据，调整条件后重新查询。</p>:view==='objects'?<>

@@ -56,9 +56,37 @@ describe('chart metric follows the current question without changing data',()=>{
  it('prefers a specific returned field over an overlapping shorter label',()=>{
    expect(preferredChartMetric([{key:'all',label:'金额'},{key:'open',label:'未结金额（元）'}],'比较未结金额')).toBe('open');
  });
+ it('matches a uniquely identified amount field without assuming that amount always means quantity',()=>{
+   const reported=[columns[0],{key:'order_amount',label:'关联订单金额',unit:'CNY'},{key:'shipped_quantity',label:'发货数量',unit:'件'}];
+   expect(preferredChartMetric(reported,'比较各客户金额')).toBe('order_amount');
+   expect(preferredChartMetric(reported,'比较各客户数量')).toBe('shipped_quantity');
+   expect(preferredChartMetric(reported,'看金额和数量')).toBe('records');
+ });
+ it('keeps the original default when a short amount term could refer to more than one field',()=>{
+   const reported=[columns[0],{key:'orders',label:'关联订单金额'},{key:'paid',label:'已收金额'}];
+   expect(preferredChartMetric(reported,'比较金额')).toBe('records');
+   expect(preferredChartMetric(reported,'比较已收金额')).toBe('paid');
+ });
+ it('does not select an explicitly excluded or sorting-only metric',()=>{
+   const reported=[columns[0],{key:'orders',label:'关联订单金额'},{key:'shipped',label:'发货数量'}];
+   expect(preferredChartMetric(reported,'不要金额')).toBe('records');
+   expect(preferredChartMetric(reported,'不看关联订单金额')).toBe('records');
+   expect(preferredChartMetric(reported,'按金额降序，展示数量')).toBe('shipped');
+   expect(preferredChartMetric(columns,'不看金额，只看数量')).toBe('quantity');
+   expect(preferredChartMetric(columns,'按金额排序，展示数量')).toBe('quantity');
+ });
  it('never takes a newer or assistant-written question from another run',()=>{
    const message=(run_id:string,role:'user'|'assistant',text:string):Message=>({id:text,run_id,role,text,conversation_id:'c',file_ids:[],created_at:''});
    const messages=[message('old','user','数量'),message('old','assistant','金额'),message('new','user','金额')];
    expect(questionForRun(messages,'old')).toBe('数量');expect(questionForRun(messages,'missing')).toBe('');
  });
+});
+
+it('attributes result completeness and totals to the data source in the card and CSV',()=>{
+ const result=parseBusinessResult(sample())!;
+ const html=renderToStaticMarkup(<BusinessResultCard result={result} runId="r" eventId={1}/>);
+ expect(html).toContain('数据源报告共 2 行');expect(html).toContain('数据源标记为完整');
+ expect(html).not.toContain('工具声明完整');
+ const csv=resultCSV(result,'r',1);
+ expect(csv).toContain('数据源报告总行数');expect(csv).toContain('数据源标记为完整');
 });
