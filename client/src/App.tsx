@@ -31,7 +31,7 @@ const AssistantDetailPage = deferredPage(() => import('./AssistantDetailPage'));
 const CapabilitySettingsPage = deferredPage(() => import('./CapabilitySettingsPage'));
 
 type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'assistants' | 'knowledge' | 'business-data' | 'skills' | 'users' | 'usage' | 'memory' | 'benchmark' | 'approvals' | 'capability-settings';
-const fallbackConfig: AppConfig = { brand_name: '开物', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
+const fallbackConfig: AppConfig = { brand_name: 'Flint 开物', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
 
 
 const pendingWorkspaceRead: WorkspaceReadState = { loading: true, loaded: false, error: '' };
