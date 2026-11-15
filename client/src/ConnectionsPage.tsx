@@ -109,7 +109,6 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
   const [bindingsError, setBindingsError] = useState('');
   const [error, setError] = useState('');
   const [importing, setImporting] = useState(false);
-  const [imported, setImported] = useState(false);
   const [success, setSuccess] = useState('');
   const [editor, setEditor] = useState<Connection | 'new' | null>(null);
   const [testing, setTesting] = useState('');
@@ -157,7 +156,6 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
   return <div className="page connections-onboarding">
     <PageHeader eyebrow="系统接入" title="业务连接" description="连接企业系统，让助手查询和使用业务数据。" actions={<><Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入配置</Button><Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>接入 MCP</Button></>}/>
     <ErrorNotice message={error} onDismiss={() => setError('')}/><ErrorNotice message={bindingsError}/><SuccessNotice message={success}/>
-    {imported && <div className="import-next-step"><div><strong>已导入配置，下一步先测试连接</strong><p>导入不代表接通，也不会自动绑定助手或授权工具。</p></div></div>}
     <ol className="connection-route" aria-label="MCP 接入步骤"><li><span>1</span><div><strong>接入服务</strong><p>填写地址，或导入已有 MCP 配置</p></div></li><li><span>2</span><div><strong>检查连接</strong><p>验证认证，读取可用工具</p></div></li><li><span>3</span><div><strong>开始使用</strong><p>绑定助手，选择工具并提问</p></div></li></ol>
     <details className="connection-server-note"><summary><Network size={16}/>服务端如何连接 MCP<ChevronDown size={15}/></summary><p>由工作台服务端连接，不是你的浏览器。首次接入的服务域名（或 IP 地址）须由工作台管理员核准，并确保服务端可达。当前支持 Streamable HTTP、无认证或 Bearer Token；连接测试只读取工具清单。</p></details>
     <div className="connections-list-heading"><div><h2>启用的连接{!loading && ` · ${items.filter(item => item.enabled).length}`}</h2><p>显示上次连接检查结果，不代表当前在线状态。</p></div><Button variant="ghost" busy={loading} disabled={!!testing} onClick={() => void load()}><RefreshCw size={16}/>刷新状态</Button></div>
@@ -168,7 +166,7 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
       setSuccess('配置已保存。请测试连接并验证业务结果。');
       if (shouldTest) await test(saved);
     }}/>}
-    {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); setImported(true); if (result.connections[0]) focusConnection(result.connections[0].id); setSuccess(`已导入 ${result.connections.length} 个业务连接。请先测试，再配置助手允许使用的工具及审批方式。`); void load(); }}/>}
+    {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); if (result.connections[0]) focusConnection(result.connections[0].id); setSuccess(`已导入 ${result.connections.length} 个业务连接。请先测试，再配置助手允许使用的工具及审批方式。`); void load(); }}/>}
     {tools && <Modal title={`${tools.name} · 功能与使用示例`} description={tools.last_tested_at ? `最近测试 ${timeText(tools.last_tested_at)}；以下为服务提供的工具说明` : '先测试连接以发现可用工具'} onClose={() => setTools(null)} wide><div className="modal-body connection-tools onboarding-tools">
       {!tools.tools.length ? <EmptyState icon={<CircleHelp size={26}/>} title={tools.status === 'connected' ? '连接已通，工具清单为空' : '尚无可查看的工具'} description={tools.status === 'connected' ? '请核对 MCP 提供的能力及工具发现权限。空工具清单不是业务查询的空结果。' : '先处理连接或认证问题，再测试发现工具。'}/> : <>
         {tools.status !== 'connected' && <p className="section-help">以下为已保存的工具定义；当前连接尚未通过测试。</p>}

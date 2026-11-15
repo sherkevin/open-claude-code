@@ -10,9 +10,9 @@ const typeNames: Record<string, string> = { string: '文本', number: '数值', 
 // Exact display translations for examples/demo_mcp.py. Never translate by tool
 // name or replace the remote definition used for permissions and digests.
 const demoDescriptions = new Map<string, string>([
-  ['查询演示订单区域总额，业务范围2026-11-01至2026-11-14；后台聚合，不返回全表。', '按区域汇总订单金额，可指定日期、组织和区域。'],
+  ['查询演示订单区域总额，业务范围2026-11-01至2026-11-14；后台聚合，不返回全表。', '按区域汇总 2026-11-01 至 2026-11-14 的订单金额，可选择区域和数据规模。'],
   ['查询演示业务日期2026-11-14向哪些客户发货及数量，按客户汇总；数量单位为件。', '按客户汇总 2026-11-14 的发货数量，数量单位为件。'],
-  ['查询合成订单区域总额，业务范围2026-11-01至2026-11-14；后台聚合，不返回全表。', '按区域汇总订单金额，可指定日期、组织和区域。'],
+  ['查询合成订单区域总额，业务范围2026-11-01至2026-11-14；后台聚合，不返回全表。', '按区域汇总 2026-11-01 至 2026-11-14 的订单金额，可选择区域和数据规模。'],
   ['查询合成业务日期2026-11-14向哪些客户发货及数量，按客户汇总；数量单位为件。', '按客户汇总 2026-11-14 的发货数量，数量单位为件。'],
   ['Search synthetic Chinese company rules; always returns source IDs and labels data as demo.', '检索中文企业制度示例资料，返回来源编号，并标明为示例数据。'],
   ['Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.', '创建并保存一条示例工单。此操作需要用户审批；request_key 用于防止重复创建。'],
