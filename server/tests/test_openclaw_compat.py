@@ -9,6 +9,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -17,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app import openclaw_compat as compat_module
 from app.db import now, uid
 from app.openai_compat import NormalizedResult, NormalizedToolCall, NormalizedUsage
 from app.openclaw_compat import (
@@ -135,6 +139,26 @@ def env(tmp_path):
         yield Env(service, facade, client, executor, qa, sales, tenant_a, tenant_b,
                   token_a, token_b, user_a, user_b)
     service.db.close()
+
+
+@pytest.fixture
+def lease_clock(monkeypatch):
+    class Clock:
+        value = datetime(2040, 1, 1, tzinfo=timezone.utc)
+
+        def now(self):
+            return self.value.isoformat()
+
+        def deadline(self, seconds):
+            return (self.value + timedelta(seconds=seconds)).isoformat()
+
+        def advance(self, seconds):
+            self.value += timedelta(seconds=seconds)
+
+    clock = Clock()
+    monkeypatch.setattr(compat_module, "_now_iso", clock.now)
+    monkeypatch.setattr(compat_module, "_lease_deadline", clock.deadline)
+    return clock
 
 
 def auth(token: str, **extra: str) -> dict[str, str]:
@@ -854,18 +878,21 @@ def test_second_facade_startup_does_not_recover_another_instances_live_turn(env)
         row = env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_id,))
         assert row["status"] == "succeeded"
         assert row["lease_expires_at"] is None
+        assert not first._renew_turn_lease(row["id"])
+        assert not first._fail_turn(row["id"], "failed", 502, "LATE_ERROR", "late")
+        assert env.service.db.one("SELECT * FROM openclaw_turns WHERE run_id=?", (run_id,)) == row
 
     asyncio.run(scenario())
 
 
-def test_expired_lease_recovery_and_live_heartbeat(env):
+def test_expired_and_legacy_leases_recover_once(env, lease_clock):
     client = env.client
     seed = chat(client, env.token_a, text="seed", user="lease-recovery")
     assert seed.status_code == 200
     session = env.service.db.one("SELECT * FROM openclaw_sessions WHERE id=?",
                                  (seed.headers["x-openclaw-session-id"],))
-    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    past = lease_clock.now()  # Equality is already expired, not a live lease.
+    future = lease_clock.deadline(300)
     leases = {"expired": past, "live": future, "legacy": None}
     run_ids: dict[str, str] = {}
     for label, lease in leases.items():
@@ -893,6 +920,10 @@ def test_expired_lease_recovery_and_live_heartbeat(env):
     interrupted = [event for event in facade.audit_events() if event["action"] == "turn.interrupted"]
     assert len(interrupted) == 2
     assert all(event["detail"]["lease_expired"] is True for event in interrupted)
+    assert facade.recover_interrupted() == 0
+
+
+def test_live_heartbeat_renews_before_second_facade_start(env, lease_clock, monkeypatch):
 
     async def heartbeat_case():
         started = asyncio.Event()
@@ -916,7 +947,18 @@ def test_expired_lease_recovery_and_live_heartbeat(env):
         run_id = next(iter(active._active))
         before = env.service.db.one("SELECT lease_expires_at FROM openclaw_turns WHERE run_id=?",
                                     (run_id,))["lease_expires_at"]
-        await asyncio.sleep(0.7)
+        heartbeat_completed = asyncio.Event()
+        renew = active._renew_turn_lease
+
+        def observed_renew(turn_id):
+            renewed = renew(turn_id)
+            heartbeat_completed.set()
+            return renewed
+
+        monkeypatch.setattr(active, "_renew_turn_lease", observed_renew)
+        lease_clock.advance(0.2)
+        # Await the real heartbeat, but let the controlled clock define expiry.
+        await asyncio.wait_for(heartbeat_completed.wait(), 2)
         after = env.service.db.one("SELECT lease_expires_at FROM openclaw_turns WHERE run_id=?",
                                    (run_id,))["lease_expires_at"]
         assert after > before
@@ -934,6 +976,174 @@ def test_expired_lease_recovery_and_live_heartbeat(env):
         assert row["lease_expires_at"] is None
 
     asyncio.run(heartbeat_case())
+
+
+@pytest.mark.parametrize("ownership", ["recovered", "expired", "changed"])
+@pytest.mark.parametrize("late_error", [None, "mapped", "generic"])
+def test_late_turn_cannot_change_terminal_state_or_publish_references(env, lease_clock, ownership, late_error):
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+
+        class Blocking:
+            async def execute(self, request, context, cancelled):
+                started.set()
+                await release.wait()
+                if late_error == "mapped":
+                    raise OpenClawError(429, "RATE_LIMITED", "synthetic late error")
+                if late_error == "generic":
+                    raise UpstreamFailure(500)
+                return NormalizedResult(
+                    tool_calls=(NormalizedToolCall("late_call", "lookup", {"q": "x"}),),
+                    finish_reason="tool_calls",
+                )
+
+        first = OpenClawFacade(env.service, executor=Blocking(), lease_seconds=60)
+        second = OpenClawFacade(env.service)
+        principal = first.store.authenticate(auth(env.token_a))
+        task = asyncio.create_task(first.execute(
+            principal, "responses", {"model": "openclaw/default", "input": "late", "user": "late-user"},
+            auth(env.token_a),
+        ))
+        await asyncio.wait_for(started.wait(), 2)
+        active = next(iter(first._active.values()))
+        turn_id = active.turn_id
+        if ownership == "changed":
+            env.service.db.execute("UPDATE openclaw_turns SET owner_instance=? WHERE id=?",
+                                   (second.instance_id, turn_id))
+        else:
+            lease_clock.advance(60)
+            if ownership == "recovered":
+                assert second.recover_interrupted() == 1
+        before = env.service.db.one("SELECT * FROM openclaw_turns WHERE id=?", (turn_id,))
+        assert not first._renew_turn_lease(turn_id)
+        release.set()
+        with pytest.raises(OpenClawError) as exc:
+            await asyncio.wait_for(task, 2)
+        if ownership != "expired" or not late_error:
+            assert (exc.value.status, exc.value.code) == (503, "INTERRUPTED")
+        after = env.service.db.one("SELECT * FROM openclaw_turns WHERE id=?", (turn_id,))
+        if ownership == "expired":
+            assert after["status"] == "failed"
+        else:
+            assert after == before
+        assert not first._renew_turn_lease(turn_id)
+        assert not first._fail_turn(turn_id, "failed", 502, "LATE_ERROR", "late")
+        assert env.service.db.one("SELECT * FROM openclaw_turns WHERE id=?", (turn_id,)) == after
+        assert env.service.db.all("SELECT * FROM openclaw_tool_calls WHERE session_id=?", (active.session_id,)) == []
+        assert env.service.db.all("SELECT * FROM openclaw_responses WHERE turn_id=?", (turn_id,)) == []
+        assert not any(event["action"] == "turn.completed" and event["run_id"] == active.run_id
+                       for event in first.audit_events())
+        if ownership != "expired":
+            events = [event for event in first.audit_events() if event["run_id"] == active.run_id]
+            assert any(event["action"] == "turn.result_discarded" for event in events)
+            assert not any(event["action"] == "turn.failed" for event in events)
+
+    asyncio.run(scenario())
+
+
+def test_turn_heartbeat_stops_executor_after_expiry(env, lease_clock):
+    async def scenario():
+        started, stopped = asyncio.Event(), asyncio.Event()
+
+        class Blocking:
+            async def execute(self, request, context, cancelled):
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    stopped.set()
+
+        facade = OpenClawFacade(env.service, executor=Blocking(), lease_seconds=0.3)
+        principal = facade.store.authenticate(auth(env.token_a))
+        task = asyncio.create_task(facade.execute(
+            principal, "chat.completions", {"model": "openclaw/default", "user": "expired-user",
+                                           "messages": [{"role": "user", "content": "expires"}]},
+            auth(env.token_a),
+        ))
+        await asyncio.wait_for(started.wait(), 2)
+        lease_clock.advance(0.3)
+        with pytest.raises(OpenClawError) as exc:
+            await asyncio.wait_for(task, 2)
+        assert (exc.value.status, exc.value.code) == (503, "INTERRUPTED")
+        assert stopped.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_turn_recovery_rechecks_lease_after_scan(env, lease_clock, monkeypatch):
+    seed = responses(env.client, env.token_a, user="recovery-cas")
+    assert seed.status_code == 200
+    turn = env.service.db.one("SELECT * FROM openclaw_turns WHERE status='succeeded'")
+    env.service.db.execute(
+        "UPDATE openclaw_turns SET status='running',lease_expires_at=? WHERE id=?",
+        (lease_clock.now(), turn["id"]),
+    )
+    query = env.service.db.all
+
+    def scan_then_renew(sql, values=()):
+        rows = query(sql, values)
+        if sql.startswith("SELECT * FROM openclaw_turns WHERE status='running'"):
+            env.service.db.execute("UPDATE openclaw_turns SET lease_expires_at=? WHERE id=?",
+                                   (lease_clock.deadline(60), turn["id"]))
+        return rows
+
+    monkeypatch.setattr(env.service.db, "all", scan_then_renew)
+    assert env.facade.recover_interrupted() == 0
+    row = env.service.db.one("SELECT * FROM openclaw_turns WHERE id=?", (turn["id"],))
+    assert row["status"] == "running"
+    assert row["lease_expires_at"] == lease_clock.deadline(60)
+
+
+def test_response_references_commit_with_success_or_rollback_together(env, lease_clock, monkeypatch):
+    remember = env.facade._remember_tool_calls
+
+    def remember_then_fail(session_id, calls):
+        remember(session_id, calls)
+        raise RuntimeError("synthetic failure after reference insertion")
+
+    monkeypatch.setattr(env.facade, "_remember_tool_calls", remember_then_fail)
+    result = responses(env.client, env.token_a, text="tool", user="atomic-refs")
+    assert result.status_code == 503
+    assert result.json()["error"]["code"] == "MODEL_SERVICE_UNAVAILABLE"
+    row = env.service.db.one("SELECT * FROM openclaw_turns")
+    assert row["status"] == "failed"
+    assert row["response_json"] is None
+    assert env.service.db.all("SELECT * FROM openclaw_tool_calls") == []
+    assert env.service.db.all("SELECT * FROM openclaw_responses") == []
+
+
+def test_turn_renewal_checks_clock_after_waiting_for_write_lock(env, lease_clock, monkeypatch):
+    seed = responses(env.client, env.token_a, user="lease-lock")
+    assert seed.status_code == 200
+    db = env.service.db
+    turn = db.one("SELECT * FROM openclaw_turns WHERE status='succeeded'")
+    db.execute("UPDATE openclaw_turns SET status='running',lease_expires_at=? WHERE id=?",
+               (lease_clock.deadline(60), turn["id"]))
+    attempting_write = threading.Event()
+    execute, transaction = db.execute, db.transaction
+
+    def observed_execute(sql, values=()):
+        if sql.startswith("UPDATE openclaw_turns"):
+            attempting_write.set()
+        return execute(sql, values)
+
+    @contextmanager
+    def observed_transaction():
+        attempting_write.set()
+        with transaction():
+            yield
+
+    monkeypatch.setattr(db, "execute", observed_execute)
+    monkeypatch.setattr(db, "transaction", observed_transaction)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.lock:
+            pending = pool.submit(env.facade._renew_turn_lease, turn["id"])
+            assert attempting_write.wait(2)
+            lease_clock.advance(60)
+        assert pending.result(timeout=2) is False
+    row = db.one("SELECT * FROM openclaw_turns WHERE id=?", (turn["id"],))
+    assert row["status"] == "running"
+    assert row["lease_expires_at"] == lease_clock.now()
 
 
 # -------------------------------- contract boundary versus delivered fields (F4)

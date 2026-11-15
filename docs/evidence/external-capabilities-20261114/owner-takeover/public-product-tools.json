@@ -1,0 +1,124 @@
+{
+  "commit": "ad3bf3b2dedbab4fa8159e7722278cdd86c7e878",
+  "scope": "public_synthetic_product_tools",
+  "automatic_retries": 0,
+  "real_customer_data": false,
+  "checks": [
+    {
+      "name": "web_search",
+      "result_status": null,
+      "usage": {},
+      "result_count": 3,
+      "status": "passed",
+      "authorized_source_count": 3,
+      "elapsed_seconds": 1.124
+    },
+    {
+      "name": "web_read",
+      "result_status": null,
+      "usage": {},
+      "characters": 2851,
+      "status": "passed",
+      "authorized_source_count": 1,
+      "elapsed_seconds": 0.584
+    },
+    {
+      "name": "ocr",
+      "result_status": "complete",
+      "usage": {
+        "input_tokens": 257,
+        "output_tokens": 70,
+        "total_tokens": 327
+      },
+      "fields": {
+        "DEMO-PUMP-042": true,
+        "0.80": true,
+        "0.76": true,
+        "2026-11-14": true,
+        "PASS": true
+      },
+      "extraction_status": "complete",
+      "status": "passed",
+      "authorized_source_count": 1,
+      "elapsed_seconds": 2.655
+    },
+    {
+      "name": "text_image_search",
+      "status": "not_configured",
+      "required_input": "Authorized Brave Images credential"
+    },
+    {
+      "name": "reverse_image_search",
+      "result_status": "results",
+      "usage": {
+        "input_tokens": 15178,
+        "output_tokens": 335,
+        "cache_read_input_tokens": 1920,
+        "service_tier": "standard",
+        "tool_image_search": 2
+      },
+      "result_count": 3,
+      "status": "passed",
+      "authorized_source_count": 3,
+      "elapsed_seconds": 6.142
+    }
+  ],
+  "status": "partial",
+  "duplicate_execution": "CAPABILITY_REPLAY",
+  "attempts": [
+    {
+      "capability": "search",
+      "provider": "deepseek_api",
+      "provider_revision": 1,
+      "attempt_index": 0,
+      "state": "ok",
+      "error_code": null
+    },
+    {
+      "capability": "fetch",
+      "provider": "deepseek_api",
+      "provider_revision": 1,
+      "attempt_index": 0,
+      "state": "ok",
+      "error_code": null
+    },
+    {
+      "capability": "ocr",
+      "provider": "deepseek_api",
+      "provider_revision": 1,
+      "attempt_index": 0,
+      "state": "ok",
+      "error_code": null
+    },
+    {
+      "capability": "image_search",
+      "provider": "deepseek_webtools",
+      "provider_revision": 1,
+      "attempt_index": 0,
+      "state": "ok",
+      "error_code": null
+    }
+  ],
+  "robot_license": {
+    "page": "https://commons.wikimedia.org/wiki/File:Robot_ABB_1.jpg",
+    "author": "Peter Potrowl",
+    "license": "CC BY 2.5"
+  },
+  "image_protocol_trace": [
+    {
+      "http_status": 200,
+      "blocks": [
+        {
+          "type": "server_tool_use",
+          "kind": "image_search",
+          "name": "deepseek_web_search"
+        },
+        {
+          "type": "web_search_tool_result",
+          "kind": "image_search",
+          "name": null
+        }
+      ]
+    }
+  ]
+}

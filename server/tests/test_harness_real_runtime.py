@@ -265,7 +265,7 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         message = service.require("messages", service.require("runs", first)["assistant_message_id"])
         assert message["text"] == "实时回复成功"
         assert "/permission CASE_STREAM" in json.dumps(requests[0], ensure_ascii=False)
-        assert {tool["name"] for tool in requests[0]["tools"]} == {"knowledge_search", "knowledge_read", "generate_xlsx", "generate_image", "memory_list", "memory_read", "memory_write"}
+        assert {tool["name"] for tool in requests[0]["tools"]} == {"knowledge_search", "knowledge_read", "generate_xlsx", "generate_image", "file_read", "file_write", "file_search", "memory_list", "memory_read", "memory_write"}
         assert json.loads(service.require("runs", first)["usage"])["output_tokens"] == 8
         assert requests[0]["max_tokens"] == settings.harness_max_output_tokens
 

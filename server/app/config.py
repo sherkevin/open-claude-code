@@ -65,6 +65,16 @@ class Settings:
     origins: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().rstrip("/") for x in os.getenv("AGENT_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if x.strip()))
     mcp_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().lower() for x in os.getenv("AGENT_MCP_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if x.strip()))
     cookie_secure: bool = field(default_factory=lambda: os.getenv("AGENT_COOKIE_SECURE", "false").lower() == "true")
+    # Credential writes require authentic transport.  Forwarded headers are
+    # only honored by a constrained middleware and only when the immediate
+    # socket peer is one of these explicitly configured proxy addresses.  An
+    # empty list means no forwarded header is ever trusted.
+    trusted_proxy_peers: tuple[str, ...] = field(default_factory=lambda: tuple(
+        item.strip() for item in os.getenv("AGENT_TRUSTED_PROXY_PEERS", "").split(",") if item.strip()))
+    # Explicit local-development escape hatch.  It still requires the real
+    # socket peer and request host to be loopback; it is never inferred from a
+    # client-supplied Host header alone.
+    capability_local_dev: bool = field(default_factory=lambda: os.getenv("AGENT_CAPABILITY_LOCAL_DEV", "false").lower() == "true")
     upload_max_bytes: int = 20 * 1024 * 1024
     session_hours: int = 24
     idle_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_IDLE_SECONDS", "600")))

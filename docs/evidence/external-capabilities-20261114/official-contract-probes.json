@@ -1,0 +1,221 @@
+{
+  "environment": "school-cloud",
+  "scope": "direct official API contract probes, not product integration or release acceptance",
+  "date": "2026-11-14",
+  "customer_data": false,
+  "automatic_retries": 0,
+  "probes": [
+    {
+      "source_summary": "summary.json",
+      "name": "search",
+      "endpoint": "/v1/tools/search",
+      "attempts": 1,
+      "http_status": 200,
+      "response_sha256": "1fa07abff2f1824eb71f9b04a7c2ad886a2dda8bcc53a1e2273aa1b498457b3d",
+      "top_level_fields": [
+        "results"
+      ],
+      "has_error": false,
+      "results_count": 3,
+      "transport_completed": true,
+      "elapsed_seconds": 0.618,
+      "artifact_filename": "search-response.json",
+      "artifact_sha256": "59ae67309eb02d593d7e83af24950e2df0e5086394a3c1330e57db1860a6b79f",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
+    },
+    {
+      "source_summary": "summary.json",
+      "name": "fetch",
+      "endpoint": "/v1/tools/fetch",
+      "attempts": 1,
+      "http_status": 200,
+      "response_sha256": "76e794aaf057c2016d2736570d6455c65d22cf03ecf9c30caf628fab22d1d372",
+      "top_level_fields": [
+        "content",
+        "title"
+      ],
+      "has_error": false,
+      "content_chars": 1266,
+      "transport_completed": true,
+      "elapsed_seconds": 7.843,
+      "artifact_filename": "fetch-response.json",
+      "artifact_sha256": "f70d5464ccc8a792a5e2c2b3206acfda8462a3d857f675a912c07e3ce4e2506f",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
+    },
+    {
+      "source_summary": "summary.json",
+      "name": "ocr",
+      "endpoint": "/v1/tools/ocr",
+      "attempts": 1,
+      "http_status": 200,
+      "response_sha256": "7c9d09c332295f8c626e18edbc31a40aa0a7838f0fb9952907f90a8032a033eb",
+      "top_level_fields": [
+        "created",
+        "id",
+        "object",
+        "page_count",
+        "pages",
+        "purpose",
+        "usage"
+      ],
+      "has_error": false,
+      "page_count": 1,
+      "returned_pages": 1,
+      "finish_reasons": [
+        "stop"
+      ],
+      "expected_fields_present": {
+        "DEMO-PUMP-042": false,
+        "0.80": false,
+        "0.76": false,
+        "2026-11-14": false,
+        "PASS": false
+      },
+      "transport_completed": true,
+      "elapsed_seconds": 2.438,
+      "artifact_filename": "ocr-response.json",
+      "artifact_sha256": "f07d5cf24cd9511a40e70c403dc5a68c6c8ad4fcd9ec4e46b897c8252e20e553",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
+    },
+    {
+      "source_summary": "summary-image-followup.json",
+      "name": "ocr-png",
+      "endpoint": "/v1/tools/ocr",
+      "attempts": 1,
+      "http_status": 200,
+      "response_sha256": "63d78d619f870e4b8b26e83e5863107331183cceee431b22a2914e5170a49c1f",
+      "top_level_fields": [
+        "created",
+        "id",
+        "object",
+        "page_count",
+        "pages",
+        "purpose",
+        "usage"
+      ],
+      "has_error": false,
+      "page_count": 1,
+      "returned_pages": 1,
+      "finish_reasons": [
+        "stop"
+      ],
+      "expected_fields_present": {
+        "DEMO-PUMP-042": true,
+        "0.80": true,
+        "0.76": true,
+        "2026-11-14": true,
+        "PASS": true
+      },
+      "transport_completed": true,
+      "elapsed_seconds": 2.52,
+      "artifact_filename": "ocr-png-image-followup-response.json",
+      "artifact_sha256": "1aabbfecbd28a63ce87a650f2ad4faf05e6b69352f702b9d8a65817c5fc580dc",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
+    },
+    {
+      "source_summary": "summary-reverse-only.json",
+      "name": "reverse-image",
+      "endpoint": "/anthropic/v1/messages",
+      "attempts": 1,
+      "http_status": 200,
+      "response_sha256": "2d1f8c734f602085c0dd7e52c141935147c005bdc1fd77c3fcec231073888918",
+      "top_level_fields": [
+        "content",
+        "id",
+        "model",
+        "role",
+        "stop_reason",
+        "stop_sequence",
+        "type",
+        "usage"
+      ],
+      "has_error": false,
+      "blocks": [
+        {
+          "type": "server_tool_use",
+          "kind": "image_search",
+          "name": "deepseek_web_search"
+        },
+        {
+          "type": "web_search_tool_result",
+          "kind": "image_search"
+        },
+        {
+          "type": "text"
+        }
+      ],
+      "image_results": 11,
+      "usage": {
+        "input_tokens": 16142,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 1024,
+        "output_tokens": 222,
+        "service_tier": "standard",
+        "server_tool_use": {
+          "web_search_requests": 1,
+          "web_fetch_requests": 0,
+          "tool_search": 0,
+          "tool_fetch": 0,
+          "tool_image_search": 2
+        }
+      },
+      "transport_completed": true,
+      "elapsed_seconds": 5.35,
+      "artifact_filename": "reverse-image-reverse-only-response.json",
+      "artifact_sha256": "0de483f2bb30fe8598fad2937340f42e15e32e2eb10e51e4a8383011d9527200",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
+    },
+    {
+      "source_summary": "summary-pdf-text-only.json",
+      "name": "ocr-pdf-text",
+      "endpoint": "/v1/tools/ocr",
+      "attempts": 1,
+      "http_status": 200,
+      "response_sha256": "0b1b7a1a9af75331ea33d34890435f2eeef3b4ffdc61681e0a0254bd8cce681b",
+      "top_level_fields": [
+        "created",
+        "id",
+        "object",
+        "page_count",
+        "pages",
+        "purpose",
+        "usage"
+      ],
+      "has_error": false,
+      "page_count": 1,
+      "returned_pages": 1,
+      "finish_reasons": [
+        "stop"
+      ],
+      "expected_fields_present": {
+        "DEMO-PUMP-042": true,
+        "0.80": true,
+        "0.76": true,
+        "2026-11-14": true,
+        "PASS": true
+      },
+      "transport_completed": true,
+      "elapsed_seconds": 2.329,
+      "artifact_filename": "ocr-pdf-text-pdf-text-only-response.json",
+      "artifact_sha256": "cf3d291331dac9faccc043b730180e8e88cdeabb5e30939b5263481234e283cf",
+      "response_sha256_scope": "reported raw HTTP body; raw bytes not archived, cannot independently recompute from formatted artifact"
+    }
+  ],
+  "notes": [
+    "Initial rich-layout PDF returned empty text and FAILED quality; default text recognition subsequently passed PDF and PNG as explicit separate diagnostics.",
+    "Initial script lacked asyncio.timeout in Python3.10 and sent no request; fixed to anyio.fail_after.",
+    "Public Wikimedia fixture download initially timed out / returned403; successful original URL used for one image API request.",
+    "API credential not stored in artifacts; existing scoped owner-authorized credential used in memory."
+  ],
+  "image_fixture": {
+    "source": "https://commons.wikimedia.org/wiki/File:Robot_ABB_1.jpg",
+    "url": "https://upload.wikimedia.org/wikipedia/commons/1/17/Robot_ABB_1.jpg",
+    "credit": "Peter Potrowl",
+    "license": "CC BY 2.5",
+    "license_url": "https://creativecommons.org/licenses/by/2.5/",
+    "modified": false,
+    "sha256": "094464032f31a85d6f729edc087ab9c9c4ad77da13e631044f43501e2517f654",
+    "bytes": 251747
+  },
+  "image_usage_note": "Provider-reported input_tokens16142, cache_read_input_tokens1024, output_tokens222; no manual summation into a claimed billed total."
+}

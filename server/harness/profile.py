@@ -19,6 +19,7 @@ TOOL_NAMES = frozenset({
     "knowledge_search", "knowledge_read", "web_search", "web_read",
     "generate_xlsx", "generate_image",
     "file_read", "file_write", "file_search",
+    "ocr", "image_search",
     "memory_list", "memory_read", "memory_write",
 })
 EXTERNAL_TOOL_NAME = re.compile(r"external_[0-9a-f]{32}")

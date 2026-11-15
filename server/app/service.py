@@ -34,7 +34,7 @@ def connection_view(row, user=None):
 
 
 def assistant_view(row, user=None):
-    return {"id": row["id"], "name": row["name"], "description": row["description"], "instructions": row["instructions"], "enabled": bool(row["enabled"]), "access": json.loads(row["access"]), "connections": json.loads(row["connections"]), "revision": row["revision"], **scope_fields(row, user), "knowledge_base_ids": json.loads(row.get("knowledge_base_ids") or "[]"), "skill_ids": json.loads(row.get("skill_ids") or "[]"), "web_search_enabled": bool(row.get("web_search_enabled")), "default_model_id": row.get("default_model_id"), "default_reasoning_level": row.get("default_reasoning_level")}
+    return {"id": row["id"], "name": row["name"], "description": row["description"], "instructions": row["instructions"], "enabled": bool(row["enabled"]), "access": json.loads(row["access"]), "connections": json.loads(row["connections"]), "revision": row["revision"], **scope_fields(row, user), "knowledge_base_ids": json.loads(row.get("knowledge_base_ids") or "[]"), "skill_ids": json.loads(row.get("skill_ids") or "[]"), "web_search_enabled": bool(row.get("web_search_enabled")), "capabilities": json.loads(row.get("capabilities") or "{}"), "default_model_id": row.get("default_model_id"), "default_reasoning_level": row.get("default_reasoning_level")}
 
 
 def conversation_runtime_type(row):
@@ -402,8 +402,21 @@ class Service:
             raise AppError(409, "ASSISTANT_CONFLICT", "助手配置已更新，请重新加载后再保存")
         scope, owner_id = choose_scope(data, old_row, user)
         defaults = [row["id"] for row in self.db.all("SELECT * FROM knowledge_bases WHERE deleted=0 AND enabled=1 AND default_for_new_assistants=1 AND scope='team'")] if not item_id and self.db.one("SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_bases'") else []
-        old = assistant_view(old_row) if old_row else {"name": "", "description": "", "instructions": "", "enabled": True, "access": {"all_members": True, "user_ids": []}, "connections": [], "knowledge_base_ids": defaults, "skill_ids": [], "web_search_enabled": False, "default_model_id": None, "default_reasoning_level": None}
+        old = assistant_view(old_row) if old_row else {"name": "", "description": "", "instructions": "", "enabled": True, "access": {"all_members": True, "user_ids": []}, "connections": [], "knowledge_base_ids": defaults, "skill_ids": [], "web_search_enabled": False, "capabilities": {}, "default_model_id": None, "default_reasoning_level": None}
         merged = {**old, **{k: v for k, v in data.items() if v is not None}}
+        # A legacy boolean write must not silently overwrite an existing
+        # fine-grained capability object. The new editor must send the object.
+        if old_row and "web_search_enabled" in data and "capabilities" not in data:
+            existing_caps = json.loads(old_row.get("capabilities") or "{}")
+            if existing_caps:
+                raise AppError(409, "CAPABILITY_GRANT_CONFLICT", "该助手已使用细粒度能力授权，请使用新版权限编辑器保存")
+        if "capabilities" in data and data["capabilities"] is not None:
+            merged["capabilities"] = data["capabilities"]
+        if merged.get("capabilities"):
+            from .capability_settings import CapabilitySettings
+            is_admin = user is None or (isinstance(user, dict) and user.get("role") == "admin")
+            merged["capabilities"] = CapabilitySettings(self).narrow_assistant_grants(
+                merged["capabilities"], is_admin=is_admin)
         for key in ("default_model_id", "default_reasoning_level"):
             if key in data:
                 merged[key] = data[key] or None
@@ -435,17 +448,17 @@ class Service:
             merged[field] = list(dict.fromkeys(merged[field]))
             for resource_id in merged[field]:
                 bound(table, resource_id)
-        values = (merged["name"], merged["description"], merged["instructions"], merged["enabled"], dump(merged["access"]), dump(merged["connections"]), scope, owner_id, dump(merged["knowledge_base_ids"]), dump(merged["skill_ids"]), merged["web_search_enabled"], merged["default_model_id"], merged["default_reasoning_level"])
+        values = (merged["name"], merged["description"], merged["instructions"], merged["enabled"], dump(merged["access"]), dump(merged["connections"]), scope, owner_id, dump(merged["knowledge_base_ids"]), dump(merged["skill_ids"]), merged["web_search_enabled"], dump(merged.get("capabilities") or {}), merged["default_model_id"], merged["default_reasoning_level"])
         if item_id:
-            updated = self.db.execute("UPDATE assistants SET name=?,description=?,instructions=?,enabled=?,access=?,connections=?,scope=?,owner_id=?,knowledge_base_ids=?,skill_ids=?,web_search_enabled=?,default_model_id=?,default_reasoning_level=?,revision=revision+1 WHERE id=? AND revision=? AND deleted=0", (*values, item_id, old_row["revision"]))
+            updated = self.db.execute("UPDATE assistants SET name=?,description=?,instructions=?,enabled=?,access=?,connections=?,scope=?,owner_id=?,knowledge_base_ids=?,skill_ids=?,web_search_enabled=?,capabilities=?,default_model_id=?,default_reasoning_level=?,revision=revision+1 WHERE id=? AND revision=? AND deleted=0", (*values, item_id, old_row["revision"]))
             if updated.rowcount != 1:
                 raise AppError(409, "ASSISTANT_CONFLICT", "助手配置已更新，请重新加载后再保存")
         else:
             item_id = uid()
-            self.db.execute("INSERT INTO assistants(id,name,description,instructions,enabled,access,connections,scope,owner_id,knowledge_base_ids,skill_ids,web_search_enabled,default_model_id,default_reasoning_level) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, *values))
+            self.db.execute("INSERT INTO assistants(id,name,description,instructions,enabled,access,connections,scope,owner_id,knowledge_base_ids,skill_ids,web_search_enabled,capabilities,default_model_id,default_reasoning_level) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, *values))
         # Return exactly the authorized version written by this request. A
         # global reread could expose a subsequent editor's now-private version.
-        written = dict(zip(("name", "description", "instructions", "enabled", "access", "connections", "scope", "owner_id", "knowledge_base_ids", "skill_ids", "web_search_enabled", "default_model_id", "default_reasoning_level"), values))
+        written = dict(zip(("name", "description", "instructions", "enabled", "access", "connections", "scope", "owner_id", "knowledge_base_ids", "skill_ids", "web_search_enabled", "capabilities", "default_model_id", "default_reasoning_level"), values))
         return assistant_view({**written, "id": item_id, "revision": old_row["revision"] + 1 if old_row else 1}, user)
 
     def run_view(self, row):
@@ -721,8 +734,14 @@ class Service:
                     authorized.append(item_id)
             if authorized:
                 return True
-        if tool_name in {"mcp__workspace__web_search", "mcp__workspace__web_read"} and assistant.get("web_search_enabled") and (not snapshot or snapshot.get("web_search_enabled")):
-            return True
+        if tool_name in {"mcp__workspace__web_search", "mcp__workspace__web_read",
+                         "mcp__workspace__ocr", "mcp__workspace__image_search"}:
+            # One shared effective-permission computation: deployment, user,
+            # assistant grant, run snapshot and global route all intersect.
+            from .capability_policy import CapabilityPolicy
+            return CapabilityPolicy(self).authorize(
+                conversation_id, tool_name, arguments, conversation=conversation,
+                user=user, assistant=assistant, snapshot=snapshot)
         if tool_name == "mcp__workspace__generate_xlsx":
             # Local export is intentionally never auto-approved: it creates a
             # durable user-visible artifact and must pass the normal approval

@@ -1,0 +1,34 @@
+
+ RUN  v3.0.5 /media/data3/dengkw/projects/open-claude-code-capability-integration/client
+
+ ✓ src/display.test.ts (2 tests) 7ms
+ ✓ src/stream.test.ts (7 tests) 18ms
+ ✓ src/feishu.test.ts (2 tests) 7ms
+ ✓ src/api.test.ts (4 tests) 17ms
+ ✓ src/workflowFlowgram.test.ts (3 tests) 11ms
+ ✓ src/memory.test.ts (11 tests) 78ms
+ ✓ src/integration.test.ts (4 tests) 16ms
+ ✓ src/runtimeBadge.test.tsx (3 tests) 28ms
+ ✓ src/knowledgeSearch.test.ts (10 tests) 18ms
+ ✓ src/knowledgeRetrievalStatus.test.tsx (4 tests) 19ms
+ ✓ src/components.test.tsx (3 tests) 28ms
+ ✓ src/workflow.test.tsx (38 tests) 44ms
+ ✓ src/approvals.test.tsx (1 test) 5ms
+ ✓ src/plugins.test.tsx (3 tests) 9ms
+ ✓ src/memoryApproval.test.tsx (4 tests) 79ms
+ ✓ src/benchmark.test.tsx (5 tests) 112ms
+ ✓ src/context.test.ts (11 tests) 117ms
+ ✓ src/models.test.tsx (10 tests) 76ms
+ ✓ src/capabilitySettings.test.tsx (7 tests) 177ms
+ ✓ src/assistantConfiguration.test.tsx (10 tests) 144ms
+ ✓ src/chatModel.test.ts (3 tests) 10ms
+ ✓ src/Sources.test.tsx (13 tests) 135ms
+ ✓ src/deploymentPolicyRequests.test.ts (4 tests) 58ms
+ ✓ src/workspace.test.tsx (10 tests) 98ms
+ ✓ src/runMetrics.test.tsx (2 tests) 17ms
+
+ Test Files  25 passed (25)
+      Tests  174 passed (174)
+   Start at  22:53:04
+   Duration  2.53s (transform 6.08s, setup 0ms, collect 30.91s, tests 1.33s, environment 12ms, prepare 4.74s)
+

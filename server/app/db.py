@@ -89,6 +89,8 @@ def dump(value) -> str:
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS capability_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, config TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS capability_settings_audit(revision INTEGER PRIMARY KEY, config TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS connections(id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, auth_type TEXT NOT NULL, secret TEXT, enabled INTEGER NOT NULL, status TEXT NOT NULL, tools TEXT NOT NULL DEFAULT '[]', last_error TEXT, last_tested_at TEXT, revision INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0);
@@ -246,7 +248,7 @@ class Database:
                 self.conn.execute(f"ALTER TABLE approvals ADD COLUMN {column} {definition}")
         additions = {
             "connections": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "source_metadata": "TEXT NOT NULL DEFAULT '{}'"},
-            "assistants": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "knowledge_base_ids": "TEXT NOT NULL DEFAULT '[]'", "skill_ids": "TEXT NOT NULL DEFAULT '[]'", "web_search_enabled": "INTEGER NOT NULL DEFAULT 0", "default_model_id": "TEXT", "default_reasoning_level": "TEXT"},
+            "assistants": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "knowledge_base_ids": "TEXT NOT NULL DEFAULT '[]'", "skill_ids": "TEXT NOT NULL DEFAULT '[]'", "web_search_enabled": "INTEGER NOT NULL DEFAULT 0", "capabilities": "TEXT NOT NULL DEFAULT '{}'", "default_model_id": "TEXT", "default_reasoning_level": "TEXT"},
             "conversations": {
                 "category": "TEXT NOT NULL DEFAULT ''", "tags": "TEXT NOT NULL DEFAULT '[]'",
                 # Upgrade old rows to Claude regardless of the current default.
@@ -418,6 +420,105 @@ CREATE TABLE IF NOT EXISTS plugin_catalog_events(
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS plugin_catalog_events_created ON plugin_catalog_events(created_at,id);
+-- Capability governance: one logical call, one row per actual provider attempt.
+-- Credentials are stored only as SecretStore ciphertext; no plaintext column.
+CREATE TABLE IF NOT EXISTS capability_dispatch_claims(
+    run_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments_digest TEXT NOT NULL,
+    owner_token TEXT NOT NULL UNIQUE,
+    started_at TEXT NOT NULL,
+    PRIMARY KEY(run_id,tool_call_id)
+);
+CREATE TABLE IF NOT EXISTS capability_calls(
+    call_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    assistant_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    state TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS capability_calls_run ON capability_calls(run_id,started_at);
+CREATE TABLE IF NOT EXISTS capability_attempts(
+    id TEXT PRIMARY KEY,
+    call_id TEXT NOT NULL REFERENCES capability_calls(call_id),
+    attempt_index INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    assistant_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_revision INTEGER NOT NULL DEFAULT 1,
+    settings_revision INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER,
+    error_code TEXT,
+    bytes_sent INTEGER NOT NULL DEFAULT 0,
+    bytes_received INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS capability_attempts_call ON capability_attempts(call_id,attempt_index);
+-- One receipt per exact host invocation; a receipt is claimed once and then
+-- only its own call may re-verify it. Never select the latest allowed row.
+CREATE TABLE IF NOT EXISTS capability_approval_receipts(
+    receipt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments_digest TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    source TEXT NOT NULL,
+    approval_id TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    claimed_by_call TEXT,
+    claimed_at TEXT,
+    UNIQUE(run_id,tool_call_id,tool_name,arguments_digest)
+);
+CREATE TABLE IF NOT EXISTS capability_run_counters(
+    run_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(run_id,capability)
+);
+CREATE TABLE IF NOT EXISTS capability_day_counters(
+    actor_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    day_key TEXT NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(actor_id,capability,day_key)
+);
+CREATE TABLE IF NOT EXISTS capability_credentials(
+    provider_id TEXT PRIMARY KEY,
+    secret TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS capability_provider_verification(
+    provider_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    status TEXT NOT NULL,
+    checked_at TEXT,
+    provider_revision INTEGER NOT NULL DEFAULT 1,
+    settings_revision INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER,
+    sample_id TEXT,
+    error_code TEXT,
+    PRIMARY KEY(provider_id,capability)
+);
+CREATE TABLE IF NOT EXISTS capability_credential_audit(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    updated_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 COMMIT;""")
         operation_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(memory_operations)")}
         if "old_content_sha256" not in operation_columns:

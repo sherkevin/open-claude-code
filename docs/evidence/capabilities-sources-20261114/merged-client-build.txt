@@ -1,0 +1,21 @@
+SOURCE_COMMIT=5eed11a199d09e063292fbde1005b2f6a4b0c910
+2026-11-14T16:27:22+08:00
+
+> zhixing-client@0.4.2 build
+> tsc -b && vite build
+
+vite v6.1.0 building for production...
+transforming...
+✓ 1867 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.56 kB │ gzip:   0.43 kB
+dist/assets/index-I_U7jHkY.css  194.01 kB │ gzip:  35.92 kB
+dist/assets/index-B8OP4EDW.js   534.53 kB │ gzip: 172.41 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 6.29s
+BUILD_EXIT_CODE=0

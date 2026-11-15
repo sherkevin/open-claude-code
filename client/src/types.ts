@@ -56,10 +56,20 @@ export interface MemoryFile extends MemoryMutationResult { path: string; content
 export interface MemoryApprovalContent { conversation_id: string; old_content_sha256: string|null; content_digest: string; path: string; content: string; expected_revision: number; native_epoch: number; operation_id: string }
 export interface ReadOnlyConfirmation { connection_revision: number; definition_digest: string; basis: string }
 export interface AssistantBinding { connection_id: string; allowed_tools: string[]; auto_approved_tools: string[]; argument_constraints?: Record<string, Record<string, unknown>>; read_only_confirmations?: Record<string, ReadOnlyConfirmation> }
+export type AssistantCapabilityKind = 'search' | 'fetch' | 'ocr' | 'image_search';
+/** Exactly the narrowed grant object the server persists; unknown fields are kept on round-trip. */
+export interface AssistantCapabilityGrant {
+  enabled: boolean; auto_approved?: boolean;
+  domains?: {mode: 'public' | 'allowlist'; hosts: string[]};
+  egress?: {query?: 'deny' | 'approval' | 'allow'; url?: 'deny' | 'approval' | 'allow'; upload?: 'deny' | 'approval' | 'allow'};
+  limits?: {calls_per_run?: number; calls_per_day?: number; max_upload_bytes?: number};
+  max_attempts?: number;
+}
+export type AssistantCapabilities = Partial<Record<AssistantCapabilityKind, AssistantCapabilityGrant>>;
 export interface Assistant extends ScopedResource {
   id: string; name: string; description: string; instructions: string; enabled: boolean;
   access: { all_members: boolean; user_ids: string[] }; connections: AssistantBinding[]; revision: number;
-  knowledge_base_ids?: string[]; skill_ids?: string[]; web_search_enabled?: boolean; default_model_id?: string | null; default_reasoning_level?: string | null;
+  knowledge_base_ids?: string[]; skill_ids?: string[]; web_search_enabled?: boolean; capabilities?: AssistantCapabilities; default_model_id?: string | null; default_reasoning_level?: string | null;
 }
 export type WorkflowNodeType = 'input' | 'agent' | 'skill' | 'knowledge_search' | 'mcp_read' | 'condition' | 'approval' | 'artifact';
 export interface WorkflowNode { id: string; type: WorkflowNodeType; label: string; config: Record<string, unknown> }
@@ -124,7 +134,7 @@ export interface KnowledgeSearchResponse { results:KnowledgeHit[]; retrieval:Kno
 export interface KnowledgeMediaEvidence { kind:'image'|'page_preview'; document_id:string; version:number; sha256:string; mime_type?:string; width:number|null; height:number|null; page?:number|null; thumbnail_url:string|null; regions?:KnowledgeImageRegion[]; ocr_status?:string; visual_index_status:string; evidence_boundary:string }
 export interface KnowledgeHit { document_id:string; name?:string; title?:string; text?:string; excerpt?:string; page?:number; section?:string; version?:number; score?:number; rank?:number; lexical_score?:number; vector_score?:number; graph_score?:number; graph_trace?:KnowledgeRetrievalTrace; retrieval_algorithm?:string; evidence_type?:string; retrieval_mode?:KnowledgeRetrievalMode; url?:string; original_url?:string; source_url?:string; locator?:Record<string,unknown>; content_url?:string; media?:KnowledgeMediaEvidence }
 export interface KnowledgeGraph { versioned:boolean; source:string; query:string; quality?:{status:string;quality_scope?:string;reviewed_entity_count?:number;reviewed_edge_count?:number;source_resolution_rate?:number;unresolved_entity_count?:number;candidate_noise_rate?:number|null;core_entity_recall?:number|null;acceptance_targets?:{candidate_noise_rate:number;core_entity_recall:number};note?:string;source_documents?:string[]}|null; nodes:Array<{id:string;label:string;kind:string;confidence?:number;evidence_boundary?:string;source:{document_id:string;version:number;page:number|null;paragraph:number|null;start:number|null;end:number|null;region_id?:string|null}}> ; edges:Array<{id:string;source:string;target:string;relation:string;confidence?:number;evidence_boundary?:string;provenance:{document_id:string;version:number;page:number|null;paragraph:number|null;start:number|null;end:number|null;region_id?:string|null}}>; multimodal?:{images:Array<{document_id:string;version:number;name:string;width:number;height:number;thumbnail_width:number;thumbnail_height:number;ocr_status:string;visual_index_status:string;region_count?:number;regions_url?:string;regions?:KnowledgeImageRegion[]}>;visual_embedding:string;entity_extraction:string;region_segmentation?:string;evidence_boundary:string} }
-export interface EvidenceSource { id:string; number?:number; kind:'data'|'knowledge'|'web'; title:string; locator:Record<string,unknown>; excerpt:string; created_at:string; original_url?:string; document_id?:string; document_version?:number; content_url?:string }
+export interface EvidenceSource { attribution?:'cited'|'read'|'search_candidate'; id:string; number?:number; kind:'data'|'knowledge'|'web'; title:string; locator:Record<string,unknown>; excerpt:string; created_at:string; original_url?:string; document_id?:string; document_version?:number; content_url?:string }
 export interface RunTimings { runtime_ready_ms?:number; first_server_progress_ms?:number; first_tool_attempt_ms?:number; first_tool_success_ms?:number; first_model_event_ms?:number; first_text_ms?:number; total_ms?:number }
 export interface StoredFile { id: string; name: string; mime_type: string; size: number; created_at: string }
 export interface Approval { id: string; run_id: string; tool_name: string; arguments: Record<string, unknown>; status: string; created_at: string; expires_at: string; risk_level?: 'low' | 'medium' | 'high'; approval_policy?: string; impact?: string; argument_digest?: string; decided_at?: string | null; decided_by?: string | null; decision_source?: string | null; strategy?: 'user' | 'model' | 'dual'; approval_mode?: 'single' | 'dual'; required_approvals?: number; approver_ids?: string[]; approval_policy_id?: string | null; approval_policy_revision?: number | null; approval_decision_reason?: string | null }

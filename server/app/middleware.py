@@ -1,4 +1,44 @@
+import ipaddress
+
 from .db import dump
+
+
+class TrustedProxySchemeMiddleware:
+    """Honor ``X-Forwarded-Proto: https`` only from an explicit proxy peer.
+
+    Application code never reads the raw forwarded header itself.  It trusts
+    ``scope["scheme"]``, which this middleware rewrites solely when the actual
+    socket peer address is in the configured set.  Host and port are never
+    rewritten, so spoofed forwarding headers from any other peer are ignored.
+    """
+
+    def __init__(self, app, peers):
+        self.app = app
+        allowed = set()
+        for item in peers or ():
+            try:
+                allowed.add(ipaddress.ip_address(item).compressed)
+            except ValueError:
+                continue
+        self.peers = frozenset(allowed)
+
+    @staticmethod
+    def _canonical(value) -> str | None:
+        try:
+            return ipaddress.ip_address(str(value or "")).compressed
+        except ValueError:
+            return None
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and self.peers:
+            peer = self._canonical((scope.get("client") or (None, None))[0])
+            if peer in self.peers:
+                headers = dict(scope.get("headers") or [])
+                forwarded = (headers.get(b"x-forwarded-proto") or b"").split(b",")[0].strip().lower()
+                if forwarded == b"https":
+                    scope = dict(scope)
+                    scope["scheme"] = "https"
+        await self.app(scope, receive, send)
 
 
 class BodyLimitMiddleware:

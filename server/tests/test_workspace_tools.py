@@ -121,7 +121,20 @@ def test_sdk_wrapper_preserves_registry_metadata_and_server_contract(runtime, mo
     for sdk_tool, definition in zip(actual, expected, strict=True):
         assert sdk_tool.name == definition.name
         assert sdk_tool.description == definition.description
-        assert sdk_tool.input_schema == definition.input_schema
+        if definition.name in {"web_search", "web_read"}:
+            schema = sdk_tool.input_schema
+            assert schema["type"] == "object" and schema["additionalProperties"] is False
+            assert set(schema["properties"]) == set(definition.input_schema)
+            assert schema["required"] == ["query" if definition.name == "web_search" else "url"]
+            assert schema["properties"]["query"]["type"] == "string"
+            assert "__oc_capability_ticket" not in schema["properties"]
+            if definition.name == "web_search":
+                assert schema["properties"]["limit"] == {"type": "integer", "minimum": 1, "maximum": 10}
+                assert schema["properties"]["query"]["maxLength"] == 500
+            else:
+                assert schema["properties"]["url"]["maxLength"] == 4096
+        else:
+            assert sdk_tool.input_schema == definition.input_schema
         assert sdk_tool.annotations.readOnlyHint is definition.read_only
         assert sdk_tool.annotations.destructiveHint is False
 
@@ -191,25 +204,37 @@ def test_image_handler_keeps_unconfigured_route_fail_closed(runtime):
 
 def test_web_handlers_preserve_defaults_and_source_links(runtime, monkeypatch):
     calls = []
+    host_bindings = []
     source = {"marker": "[source:web:public]", "url": "https://example.com/evidence"}
 
     class Web:
         def __init__(self, service):
             assert service is runtime.service
 
-        async def search_for_run(self, user, assistant, run_id, query, limit):
+        async def search_for_run(self, user, assistant, run_id, query, limit, *, call_id=None, approval_id=None):
             calls.append(("search", user, assistant, run_id, query, limit))
+            host_bindings.append((call_id, approval_id))
             return {"results": [{"source": source}]}
 
-        async def read_for_run(self, user, assistant, run_id, url, query):
+        async def read_for_run(self, user, assistant, run_id, url, query, *, call_id=None, approval_id=None):
             calls.append(("read", user, assistant, run_id, url, query))
+            host_bindings.append((call_id, approval_id))
             return {"source": source}
 
     monkeypatch.setattr("app.workspace_tools.WebTools", Web)
     tools = registry(runtime)
-    result = asyncio.run(tools["web_search"].handler({"query": "public"}))
-    assert json.loads(result["content"][0]["text"])["results"][0]["source"] == source
-    result = asyncio.run(tools["web_read"].handler({"url": source["url"]}))
+    async def invoke_with_host_binding():
+        from app.workspace_tools import APPROVAL_ID, TOOL_CALL_ID
+        call_token, approval_token = TOOL_CALL_ID.set("host-web-call"), APPROVAL_ID.set("receipt-web-call")
+        try:
+            result = await tools["web_search"].handler({"query": "public"})
+            assert json.loads(result["content"][0]["text"])["results"][0]["source"] == source
+            return await tools["web_read"].handler({"url": source["url"]})
+        finally:
+            TOOL_CALL_ID.reset(call_token)
+            APPROVAL_ID.reset(approval_token)
+    result = asyncio.run(invoke_with_host_binding())
     assert json.loads(result["content"][0]["text"])["source"] == source
     assert calls[0][3:] == ("run", "public", 5)
     assert calls[1][3:] == ("run", source["url"], "")
+    assert host_bindings == [("host-web-call", "receipt-web-call")] * 2
