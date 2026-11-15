@@ -107,6 +107,10 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
         except AppError as exc:
             record = getattr(runtime, "record_workspace_error", None)
             details = record(name, TOOL_CALL_ID.get(), run_id, exc) if callable(record) else None
+            if name == "web_read":
+                from .tool_error_details import workspace_web_error
+                details = details or workspace_web_error("mcp__workspace__web_read", exc)
+                return {"is_error": True, "content": [{"type": "text", "text": dump(details)}]}
             return {"is_error": True, "content": [{"type": "text", "text": (details or {}).get("error_message", exc.message)}]}
         except Exception:
             return {"is_error": True, "content": [{"type": "text", "text": "资料读取暂时失败，请调整检索范围或稍后重试"}]}

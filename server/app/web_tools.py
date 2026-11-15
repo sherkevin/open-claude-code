@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+import hashlib
 import ipaddress
 import json
 import os
@@ -30,6 +32,10 @@ SEARCH_PROVIDERS = {"bing_rss", "searxng", "brave"}
 TRACKING_QUERY_KEYS = frozenset({"fbclid", "gclid", "dclid", "mc_cid", "mc_eid"})
 MAX_SEARCH_RESULTS = 8
 MAX_SEARCH_RESPONSE_BYTES = 500_000
+WEB_FAILURE_TTL = 60
+MAX_RECENT_WEB_FAILURES = 256
+_RECOVERABLE_READ_ERRORS = frozenset({"WEB_FETCH_FAILED", "WEB_TIMEOUT", "WEB_NETWORK_UNAVAILABLE",
+    "WEB_DNS_UNAVAILABLE", "WEB_EMPTY", "WEB_ACCESS_CHALLENGE", "WEB_JAVASCRIPT_REQUIRED"})
 
 
 def global_unicast(value):
@@ -231,32 +237,76 @@ class PageText(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts, self.title_parts, self.suppressed = [], [], []
         self.in_title = False
+        self.in_head = False
+        self.body_parts = []
+        self.has_script = False
+        self.challenge_markup = False
 
     def handle_starttag(self, tag, attrs):
-        if tag in {"script", "style", "noscript", "svg"}:
+        if tag in {"body", "main", "article", "p", "div", "section", "h1", "ul", "table"}:
+            # HTML permits an omitted </head>; body text must still be readable.
+            self.in_head = False
+        if tag in {"script", "style", "noscript", "svg", "template"}:
             self.suppressed.append(tag)
+        if tag == "head":
+            self.in_head = True
+        if tag == "script":
+            self.has_script = True
+        attributes = dict(attrs)
+        if (tag == "script" and "/cdn-cgi/challenge-platform/" in (attributes.get("src") or "")
+                or tag == "form" and attributes.get("id") in {"challenge-form", "challenge-running"}):
+            self.challenge_markup = True
         if tag == "title":
             self.in_title = True
         if tag in {"p", "div", "br", "li", "h1", "h2", "h3", "tr", "section"}:
             self.parts.append("\n")
+            if not self.in_head:
+                self.body_parts.append("\n")
 
     def handle_endtag(self, tag):
         if self.suppressed and tag == self.suppressed[-1]:
             self.suppressed.pop()
         if tag == "title":
             self.in_title = False
+        if tag == "head":
+            self.in_head = False
         if tag in {"p", "div", "li", "h1", "h2", "h3", "tr"}:
             self.parts.append("\n")
+            if not self.in_head:
+                self.body_parts.append("\n")
 
     def handle_data(self, data):
         if not self.suppressed:
             self.parts.append(data)
             if self.in_title:
                 self.title_parts.append(data)
+            elif not self.in_head:
+                self.body_parts.append(data)
 
     @property
     def text(self):
         return re.sub(r"\n{3,}", "\n\n", re.sub(r"[^\S\n]+", " ", "".join(self.parts))).strip()
+
+    def readable_body(self):
+        """Reject strong gate/shell evidence, never merely a short real page."""
+        body = re.sub(r"\n{3,}", "\n\n", re.sub(r"[^\S\n]+", " ", "".join(self.body_parts))).strip()
+        title = " ".join("".join(self.title_parts).casefold().split()).strip(" .!…")
+        challenge_title = title in {"just a moment", "attention required", "attention required | cloudflare",
+            "security verification", "verify you are human", "安全验证", "人机验证", "访问验证"}
+        prompt = " ".join(body.split()).casefold().strip(" .!…")
+        standalone_gate = re.fullmatch(
+            r"(?:please )?verify (?:that )?you are human|checking your browser|enable javascript and cookies to continue|请完成安全验证|正在验证您的浏览器",
+            prompt)
+        if challenge_title and (self.challenge_markup or standalone_gate):
+            raise AppError(422, "WEB_ACCESS_CHALLENGE", "网页要求访问验证，未提供可读取的正文")
+        javascript_prompt = re.fullmatch(
+            r"(?:please |you need to )?(?:enable|turn on) javascript(?: to (?:continue|run this app|view (?:this page|the site)))?[.! ]*|请(?:开启|启用)\s*javascript(?:以|来|后)?(?:继续|访问|浏览|使用)(?:此页面|本页面|本网站)?[。！ ]*",
+            " ".join(body.split()), re.I)
+        if self.has_script and (not body or javascript_prompt):
+            raise AppError(422, "WEB_JAVASCRIPT_REQUIRED", "网页仅提供 JavaScript 页面外壳，未提供可读取的正文")
+        if not body:
+            raise AppError(422, "WEB_EMPTY", "该网页未提供可读取的正文")
+        return body
 
 
 async def fetch_public(url: str, *, max_bytes: int = 2_000_000, deadline: float | None = None,
@@ -330,7 +380,7 @@ async def _fetch_public(url: str, *, max_bytes: int, recheck=None) -> tuple[str,
                     url = public_url(urljoin(url, response.headers.get("location", "")))
                     continue
                 if response.status_code >= 400:
-                    raise AppError(502, "WEB_FETCH_FAILED", f"网页返回 HTTP {response.status_code}，可尝试其他来源")
+                    raise AppError(response.status_code, "WEB_FETCH_FAILED", f"网页返回 HTTP {response.status_code}，可尝试其他来源")
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     body.extend(chunk)
@@ -376,6 +426,37 @@ def _result_item(raw: dict, *, fallback_title: str = "") -> dict | None:
 class WebTools:
     def __init__(self, service):
         self.service = service
+        # Shared only within this service process, bounded by TTL and capacity.
+        # Keys contain a URL digest, not a search query or retained page body.
+        if service is not None and not hasattr(service, "_recent_web_read_failures"):
+            service._recent_web_read_failures = OrderedDict()
+        self._read_failures = getattr(service, "_recent_web_read_failures", OrderedDict())
+
+    def _failure_key(self, run_id, provider, revision, url):
+        parts = urlsplit(url)
+        target = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, ""))
+        return run_id, provider, revision, hashlib.sha256(target.encode()).hexdigest()
+
+    def _recent_failure(self, key):
+        for old_key, record in list(self._read_failures.items()):
+            if record["expires"] <= time.monotonic():
+                self._read_failures.pop(old_key, None)
+        record = self._read_failures.get(key)
+        if record is not None:
+            self._read_failures.move_to_end(key)
+        return record
+
+    def _remember_failure(self, key, call_id, error, attempts):
+        from .tool_error_details import workspace_web_error
+        details = workspace_web_error("mcp__workspace__web_read", error)
+        message = details["error_message"]
+        if details.get("http_status"):
+            message = f"网页返回 HTTP {details['http_status']}，可尝试其他来源"
+        self._read_failures[key] = {"expires": time.monotonic() + WEB_FAILURE_TTL,
+            "call_id": call_id, "attempts": attempts, "error": AppError(error.status, error.code, message)}
+        self._read_failures.move_to_end(key)
+        while len(self._read_failures) > MAX_RECENT_WEB_FAILURES:
+            self._read_failures.popitem(last=False)
 
     def _provider_config(self) -> tuple[str, str, str, str, bool]:
         settings = getattr(self.service, "settings", None)
@@ -580,13 +661,7 @@ class WebTools:
         from .capability_policy import domain_allows
         executor = CapabilityExecutor(self.service)
 
-        async def operation(provider, deadline, recheck):
-            def check_url(target):
-                recheck()
-                domains = executor.effective(context, "fetch", arguments)["domains"]
-                if not domain_allows(domains, target):
-                    raise AppError(403, "CAPABILITY_DOMAIN_DENIED", "目标地址不在当前能力允许的域名范围内")
-
+        async def retrieve(provider, deadline, check_url):
             if provider == "deepseek_api":
                 client = self._deepseek_client()
                 if client is None:
@@ -607,10 +682,43 @@ class WebTools:
             parser = PageText()
             if "html" in mime or "<html" in decoded[:300].lower():
                 parser.feed(decoded)
-                text, title = parser.text, "".join(parser.title_parts).strip()
+                text, title = parser.readable_body(), "".join(parser.title_parts).strip()
             else:
                 text, title = decoded, final_url
             return final_url, text, title
+
+        async def operation(provider, deadline, recheck):
+            from .capability_policy import classify_error
+            from .tool_error_details import RecentWebReadFailure
+            def check_url(target):
+                recheck()
+                domains = executor.effective(context, "fetch", arguments)["domains"]
+                if not domain_allows(domains, target):
+                    raise AppError(403, "CAPABILITY_DOMAIN_DENIED", "目标地址不在当前能力允许的域名范围内")
+            # A remembered network failure never overrides current permission,
+            # domain, egress or run ownership checks, including on every retry.
+            check_url(url)
+            revision = executor.effective(context, "fetch", arguments)["settings_revision"]
+            key = self._failure_key(run_id, provider, revision, url)
+            previous = self._recent_failure(key)
+            attempts = 1
+            if previous:
+                # Retain at most one policy-authorized transient retry within
+                # this invocation. New call IDs cannot reset that retry budget.
+                if (previous["call_id"] != context.tool_call_id or previous["attempts"] >= 2
+                        or classify_error(previous["error"]) != "transient"):
+                    raise RecentWebReadFailure(previous["error"])
+                attempts += previous["attempts"]
+            try:
+                page = await retrieve(provider, deadline, check_url)
+                if not page[1].strip():
+                    raise AppError(422, "WEB_EMPTY", "该网页未提供可读取的正文")
+                self._read_failures.pop(key, None)
+                return page
+            except AppError as error:
+                if error.code in _RECOVERABLE_READ_ERRORS:
+                    self._remember_failure(key, context.tool_call_id, error, attempts)
+                raise
 
         route = await executor.execute_for_run(
             context, "fetch", arguments, operation, target_url=url)
