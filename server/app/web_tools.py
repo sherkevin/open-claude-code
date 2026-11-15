@@ -54,6 +54,12 @@ async def public_dns_answers(hostname, timeout=6):
         try:
             with anyio.fail_after(timeout):
                 transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
+                if os.getenv("AGENT_WEB_EGRESS_SOCKS5", "").strip():
+                    # Use the same explicit egress for DNS and page traffic.
+                    # Resolver endpoints are fixed literal public IPs, so this
+                    # backend cannot recurse into hostname/DoH resolution.
+                    # TLS still verifies the resolver's literal IP certificate.
+                    transport._pool._network_backend = PublicNetworkBackend()
                 async with httpx.AsyncClient(transport=transport, trust_env=False, timeout=timeout,
                                             follow_redirects=False, headers={"Accept": "application/dns-json"}) as client:
                     async with client.stream("GET", endpoint, params={"name": hostname, "type": "A", "edns_client_subnet": "0.0.0.0/0"}) as response:
