@@ -81,6 +81,26 @@ def _compression_difference(record):
     return first - last, 'estimated' if 'estimated' in {first_precision, last_precision} else 'observed'
 
 
+def _compression_measurement(record):
+    difference, precision = _compression_difference(record)
+    cost = None
+    if record.get('measurement_schema') == 'compaction-measurement/v1':
+        receipt = _object(record.get('cost_usage'))
+        stages = _object(receipt.get('token_accounting')).get('stages')
+        # Only the operation's own committed summary receipt is a cost. Never
+        # substitute the whole run, an answer, or historical guessed usage.
+        if isinstance(stages, list) and len(stages) == 1:
+            stage = _object(stages[0])
+            if (stage.get('stage') == 'compression' and stage.get('provider_call') is True
+                    and stage.get('source') == 'harness_provider'):
+                usage = _object(stage.get('provider_usage'))
+                counts = [_number(usage.get(key)) for key in
+                    ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_write_input_tokens')]
+                if all(value is not None for value in counts):
+                    cost = sum(counts)
+    return {'difference': difference, 'precision': precision, 'cost': cost}
+
+
 def _compressions(service, rows):
     events = defaultdict(list)
     truncated = False
@@ -111,18 +131,27 @@ def _compressions(service, rows):
             records = boundaries[:-1] + [finished[-1]] if boundaries else [finished[-1]]
         else:
             records = boundaries
-        result[row['conversation_id']].extend(_compression_difference(item) for item in records)
+        result[row['conversation_id']].extend(_compression_measurement(item) for item in records)
     return result, truncated
 
 
 def _compression_summary(records, incomplete=False):
-    known = [value for value, _ in records if value is not None]
+    known = [item['difference'] for item in records if item['difference'] is not None]
     value = sum(known) if records and len(known) == len(records) and not incomplete else None
-    precision = _precision(value, len(known), estimated=any(kind == 'estimated' for _, kind in records))
+    precision = _precision(value, len(known), estimated=any(item['precision'] == 'estimated' for item in records))
     if incomplete:
         precision = 'partial'
+    costs = [item['cost'] for item in records if item['cost'] is not None]
+    cost = sum(costs) if records and len(costs) == len(records) and not incomplete else None
+    net = value - cost if value is not None and cost is not None else None
+    # This is a what-if for ONE reuse per operation, never actual billed savings.
+    # A single-operation token break-even is meaningful; pooling successive
+    # overlapping compactions into a reuse count would invent a future workload.
+    break_even = math.ceil(cost / value) if len(records) == 1 and cost is not None and value is not None and value > 0 else None
     return {'compression_count': len(records), 'compression_saved_tokens': value,
-            'compression_precision': precision, 'net_saved_tokens': None, 'compression_return_usd': None}
+            'compression_precision': precision, 'compression_cost_tokens': cost,
+            'net_saved_tokens': net, 'net_precision': _precision(net, sum(item['cost'] is not None and item['difference'] is not None for item in records), estimated=True),
+            'compression_break_even_reuses': break_even, 'compression_return_usd': None}
 
 
 def overview(service, user):
@@ -166,8 +195,14 @@ def overview(service, user):
             f"已核验 {all_usage['known_model_calls']} 次；{all_usage['unknown_call_records']} 条执行记录未报告完整调用次数。SDK 汇总回执不等于一次请求。")
         add('compression_saved_tokens', '压缩上下文减少', saved['compression_saved_tokens'], 'Token', saved['compression_precision'],
             '仅累计可核验的压缩前后上下文差额，估算另行标注；不代表累计请求节省或账单节省。无完整前后回执时保持未知。')
-        add('net_saved_tokens', '净节省', None, 'Token', 'unavailable', '尚无可核验的摘要与上下文重建成本回执，不能计算净节省。')
-        add('compression_return_usd', '压缩回本', None, 'USD', 'unavailable', '尚无完整压缩成本与价格依据，不换算美元收益。')
+        cost_note = f"已记录摘要成本 {saved['compression_cost_tokens']} Token。" if saved['compression_cost_tokens'] is not None else '摘要完整成本未记录，历史缺失回执不补造。'
+        add('net_saved_tokens', '净节省（单次回用估算）', saved['net_saved_tokens'], 'Token', saved['net_precision'],
+            '假设每次压缩后的上下文完整回用 1 次：前后差额减去该次摘要的全部输入（含缓存）与输出 Token；可为负值。'
+            '这是单次回用估算，不是实际请求或账单节省，不假定未来回用次数或缓存价格。' + cost_note)
+        return_note = (f"当前单次压缩按相同上下文差额回用约 {saved['compression_break_even_reuses']} 次可抵摘要 Token 成本；这不是美元回本。"
+                       if saved['compression_break_even_reuses'] is not None else '')
+        add('compression_return_usd', '压缩回本', None, 'USD', 'unavailable',
+            '未记录未压缩对照请求的实际输入、缓存变化与适用价格，不换算美元收益。' + return_note)
         denominator = _total_input(all_usage)
         rate = all_usage['cache_read_input_tokens'] / denominator if denominator is not None and denominator > 0 else None
         add('cache_hit_rate', '缓存命中率', rate, 'ratio', _precision(rate),

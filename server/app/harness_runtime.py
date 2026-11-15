@@ -93,6 +93,34 @@ class _CompactionUsage(BaseModel):
     reasoningTokens: int | None = Field(default=None, ge=0, le=1_000_000_000_000)
 
 
+def _compaction_cost_usage(usage):
+    """One successful pinned summarizer stream, separate from answer usage.
+
+    The pinned translator initializes input/output to zero even if absent on
+    the wire. Positive values prove presence; ambiguous zeros remain unknown.
+    Optional cache counters have no such default. Never use totalTokens (which
+    also adds default zeros), nor add reasoning tokens to inclusive output.
+    """
+    raw = usage if isinstance(usage, dict) else {}
+    tokens = {}
+    for upstream, public in (("inputTokens", "input_tokens"), ("outputTokens", "output_tokens"),
+                             ("cacheReadTokens", "cache_read_input_tokens"),
+                             ("cacheWriteTokens", "cache_write_input_tokens")):
+        value = raw.get(upstream)
+        valid = type(value) is int and 0 <= value <= 1_000_000_000_000
+        if public in {"input_tokens", "output_tokens"} and value == 0:
+            valid = False
+        tokens[public] = value if valid else None
+    ledger = TokenAccounting()
+    ledger.record("compression", tokens, source="harness_provider",
+                  note="One committed manual summary; adapter-default input/output zeros remain unknown.")
+    return {"input_tokens": tokens["input_tokens"], "output_tokens": tokens["output_tokens"],
+            "cache_read_input_tokens": tokens["cache_read_input_tokens"],
+            "cache_creation_input_tokens": tokens["cache_write_input_tokens"],
+            "estimated_cost_usd": None, "currency": "USD", "cost_is_estimate": True,
+            "source": "harness_provider", "token_accounting": ledger.summary()}
+
+
 def _event_compaction(notifications, session_id, command_id):
     """Validate the lifecycle and summary frames without trusting model text."""
     command_run = compaction_start = summary = ended = done = None
@@ -504,23 +532,11 @@ class HarnessRuntime(WorkspaceRuntime):
         except Exception:
             return harness_context_snapshot(error="压缩前上下文统计不可用")
 
-    async def _compact_usage(self, run, usage):
-        tokens = {}
-        for upstream, public in (("inputTokens", "input_tokens"), ("outputTokens", "output_tokens"),
-                                 ("cacheReadTokens", "cache_read_input_tokens"),
-                                 ("cacheWriteTokens", "cache_creation_input_tokens")):
-            value = usage.get(upstream) if isinstance(usage, dict) else None
-            if type(value) is int and value >= 0:
-                tokens[public] = tokens.get(public, 0) + value
-        if not tokens:
-            return
-        row = await offload(self.service.require, "runs", run["id"])
-        current = json.loads(row.get("usage") or "{}")
-        await self.emit("usage.updated", {**tokens, "estimated_cost_usd": None, "currency": "USD",
-                                          "cost_is_estimate": True, "source": "harness_provider"})
-        for key, value in tokens.items():
-            current[key] = current.get(key, 0) + value
-        await offload_write(self.service.db.execute, "UPDATE runs SET usage=? WHERE id=?", (dump(current), run["id"]))
+    async def _compact_usage(self, run, receipt):
+        # A compact run has exactly one committed summary, not an answer stage.
+        # Persist the same receipt in the run and its bound compaction record.
+        await offload_write(self.service.db.execute, "UPDATE runs SET usage=? WHERE id=?", (dump(receipt), run["id"]))
+        await self.emit("usage.updated", receipt)
 
     def _recheck_compaction_run(self, run):
         current = self.service.require("runs", run["id"])
@@ -571,9 +587,12 @@ class HarnessRuntime(WorkspaceRuntime):
             raise AppError(422, "COMPACTION_INSTRUCTIONS_INVALID", "压缩要求无效")
 
         before = await self._compact_before()
+        await offload(self._recheck_compaction_run, run)
+        binding = context_binding(self.config, self.session_id)
+        before = {**before, "_binding": binding}
         progress = {"status": "started", "trigger": "manual",
                     "pre_tokens": before.get("total_tokens") if isinstance(before, dict) else None,
-                    "before": before, "after": None}
+                    "before": before, "after": None, "measurement_schema": "compaction-measurement/v1"}
         await offload_write(self.service.db.execute, "UPDATE runs SET compaction=? WHERE id=?", (dump(progress), run["id"]))
         await self.emit("context.compaction_started", {"trigger": "manual"})
 
@@ -645,14 +664,16 @@ class HarnessRuntime(WorkspaceRuntime):
                     "shadowed_items": len(summary["shadowedSeqs"]),
                     "shadowed_tokens": summary["shadowedTokenCount"],
                 }
-                progress.update(boundary, status="completed", boundary_observed=True)
+                cost_usage = _compaction_cost_usage(summary.get("usage"))
+                progress.update(boundary, status="completed", boundary_observed=True, cost_usage=cost_usage)
                 await offload_write(self.service.db.execute, "UPDATE runs SET compaction=? WHERE id=?", (dump(progress), run["id"]))
                 await self.emit("context.compacted", boundary)
-                await self._compact_usage(run, summary.get("usage") or {})
+                await self._compact_usage(run, cost_usage)
 
             await offload(self._recheck_compaction_run, run)
             after = await self._compact_before()
             await offload(self._recheck_compaction_run, run)
+            after = {**after, "_binding": binding}
             status = "completed" if boundary_observed else "not_needed"
             value = {**progress, "status": status, "trigger": "manual",
                      "boundary_observed": boundary_observed, "after": after}

@@ -8,7 +8,7 @@ import pytest
 
 from app.config import Settings
 from app.db import dump
-from app.harness_runtime import HarnessRuntime, _CompactExecution, _event_compaction
+from app.harness_runtime import HarnessRuntime, _CompactExecution, _compaction_cost_usage, _event_compaction
 from app.runtime import RunManager
 from app.security import AppError
 from app.service import Service
@@ -81,6 +81,23 @@ def test_compaction_event_validator_requires_correlated_complete_boundary():
 def test_compaction_event_validator_fails_closed(frames, error):
     with pytest.raises(AppError, match=error):
         _event_compaction(frames, "owned", COMMAND_ID)
+
+
+@pytest.mark.parametrize("usage,expected", [
+    ({"inputTokens": 9, "outputTokens": 4, "cacheReadTokens": 80, "cacheWriteTokens": 0,
+      "reasoningTokens": 3, "totalTokens": 99999}, [9, 4, 80, 0]),
+    ({"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}, [None, None, None, None]),
+    ({"inputTokens": True, "outputTokens": -1, "cacheReadTokens": 0}, [None, None, 0, None]),
+    (None, [None, None, None, None]),
+])
+def test_compaction_cost_preserves_missing_usage_and_does_not_double_count_reasoning(usage, expected):
+    cost = _compaction_cost_usage(usage)
+    assert [cost[key] for key in ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')] == expected
+    assert cost['estimated_cost_usd'] is None
+    stage = cost['token_accounting']['stages']
+    assert len(stage) == 1 and stage[0]['stage'] == 'compression'
+    assert stage[0]['provider_call'] is True
+    assert cost['token_accounting']['provider_usage_complete'] == all(value is not None for value in expected)
 
 
 @pytest.fixture
@@ -210,6 +227,47 @@ def test_harness_compaction_success_usage_and_focus(compaction_service):
         "context.compaction_result",
     ]
     assert client.subscription.closed
+
+
+@pytest.mark.parametrize("usage,expected_input", [
+    ({"inputTokens": 9, "outputTokens": 4, "cacheReadTokens": 80, "cacheWriteTokens": 0}, 9),
+    ({"inputTokens": 0, "outputTokens": 4}, None),
+])
+def test_compaction_keeps_bound_measurements_and_its_own_cost_receipt(compaction_service, usage, expected_input):
+    service, cid, user = compaction_service
+    run, config = prepare_compaction(service, cid, user)
+    emitted = []
+
+    async def emit(kind, data):
+        emitted.append((kind, data))
+        service.db.event(run["id"], kind, data)
+
+    runtime = runtime_with(service, cid, config, emit, Client(lifecycle(usage=usage)))
+    snapshots = iter([1000, 200])
+
+    async def snapshot():
+        return {"source": "harness_token_meter", "status": "partial", "precision": "estimated",
+                "total_tokens": next(snapshots), "model": "fixture", "stale": False}
+
+    runtime._compact_before = snapshot
+    asyncio.run(runtime._execute_compact(run, {"text": "/compact"}))
+    stored = service.run_view(service.require("runs", run["id"]))
+    record = stored["compaction"]
+    assert record["measurement_schema"] == "compaction-measurement/v1"
+    assert record["before"]["_binding"] == record["after"]["_binding"]
+    assert len(record["before"]["_binding"]) == 64
+    assert record["before"]["total_tokens"] == 1000 and record["after"]["total_tokens"] == 200
+    cost = record["cost_usage"]
+    assert cost == stored["usage"]
+    assert cost["input_tokens"] == expected_input
+    assert cost["output_tokens"] == 4
+    assert cost["estimated_cost_usd"] is None
+    stage = cost["token_accounting"]["stages"]
+    assert len(stage) == 1 and stage[0]["stage"] == "compression"
+    assert stage[0]["provider_call"] is True
+    if expected_input is None:
+        assert cost["cache_read_input_tokens"] is None and cost["cache_creation_input_tokens"] is None
+    assert len(runtime.client.requests) == 1
 
 
 def test_harness_compaction_not_needed_never_fabricates_boundary(compaction_service):

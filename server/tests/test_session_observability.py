@@ -138,6 +138,50 @@ def test_compression_boundary_and_result_are_one_receipt_not_tool_savings(env, s
     assert values['net_saved_tokens']['value'] is values['compression_return_usd']['value'] is None
 
 
+def compression_cost(*, input=100, output=20, read=0, write=0):
+    ledger = TokenAccounting()
+    ledger.record('compression', {'input_tokens': input, 'output_tokens': output,
+        'cache_read_input_tokens': read, 'cache_write_input_tokens': write}, source='harness_provider')
+    return {'token_accounting': ledger.summary(), 'estimated_cost_usd': None, 'source': 'harness_provider'}
+
+
+@pytest.mark.parametrize('cost,net,break_even', [
+    (compression_cost(read=80), 600, 1),
+    (compression_cost(input=900), -120, 2),
+])
+def test_compression_cost_and_single_reuse_estimate_are_distinct_from_actual_savings(env, cost, net, break_even):
+    _, service, user, cid = env
+    record = compact(source='harness_token_meter', measurement_schema='compaction-measurement/v1', cost_usage=cost)
+    run(service, user, cid, compaction=record, usage=receipt(input=99999))
+    report = overview(service, user)
+    values = metrics(report)
+    assert values['net_saved_tokens']['value'] == net
+    assert values['net_saved_tokens']['precision'] == 'estimated'
+    assert '单次回用' in values['net_saved_tokens']['note']
+    assert '账单' in values['net_saved_tokens']['note']
+    assert values['compression_return_usd']['value'] is None
+    session = report['sessions'][0]
+    assert session['compression_cost_tokens'] == 800 - net
+    assert session['compression_break_even_reuses'] == break_even
+    assert session['net_saved_tokens'] == net
+
+
+@pytest.mark.parametrize('mutation', ['no_cost', 'missing_cache', 'wrong_stage', 'unknown_history', 'unbound_after'])
+def test_compression_cost_coverage_never_uses_answer_usage_or_invents_old_cost(env, mutation):
+    _, service, user, cid = env
+    record = compact(source='harness_token_meter', measurement_schema='compaction-measurement/v1',
+        cost_usage=compression_cost())
+    if mutation == 'no_cost': record.pop('cost_usage')
+    if mutation == 'missing_cache': record['cost_usage'] = compression_cost(read=None)
+    if mutation == 'wrong_stage': record['cost_usage'] = receipt()
+    if mutation == 'unknown_history': run(service, user, cid, compaction=compact())
+    if mutation == 'unbound_after': record['after']['_binding'] = 'changed'
+    run(service, user, cid, compaction=record, usage=receipt())
+    report = overview(service, user)
+    assert metrics(report)['net_saved_tokens']['value'] is None
+    assert metrics(report)['compression_return_usd']['value'] is None
+
+
 @pytest.mark.parametrize('mutation', ['missing_after', 'changed_model', 'changed_binding', 'stale', 'unproven', 'boundary_only'])
 def test_unverifiable_compression_does_not_claim_savings(env, mutation):
     _, service, user, cid = env
