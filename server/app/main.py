@@ -289,6 +289,11 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         from .model_recommendation import provider_completion, public_router_result
         return public_router_result(await provider_completion(service, data.text))
 
+    @app.post(prefix + "/models/followups")
+    async def model_followups(data: ModelFollowupsRequest, user=Depends(authenticated), service: Service = Depends(svc)):
+        from .model_followups import conversation_followups
+        return await conversation_followups(service, data.conversation_id, data.run_id, user)
+
     @app.get(prefix + "/health/live")
     def live():
         return {"status": "ok"}

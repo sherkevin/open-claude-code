@@ -161,7 +161,7 @@
 .wr-workspace .wr-connection-title{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:14px}
 .wr-workspace .wr-connection-title strong{font-weight:600}
 .wr-workspace .wr-connection-panel p{font-size:14px;line-height:1.6;color:var(--muted);margin:12px 0}
-.wr-workspace .wr-connection-panel ul{list-style:none;padding:0;margin:8px 0 12px;max-height:250px;overflow-y:auto}
+.wr-workspace .wr-connection-panel ul{list-style:none;padding:0;margin:8px 0 12px;max-height:none;overflow:visible}
 .wr-workspace .wr-connection-panel li{display:grid;gap:4px;padding:12px 0;border-bottom:1px solid var(--wr-border);font-size:14px;overflow-wrap:anywhere}
 .wr-workspace .wr-connection-panel li:last-child{border-bottom:0}
 .wr-workspace .wr-connection-panel li small{font-size:12px;color:var(--muted)}
@@ -174,3 +174,23 @@
 @media(max-width:600px){.wr-workspace .wr-content{padding:18px 16px 28px}.wr-workspace .wr-assistant-list{grid-template-columns:1fr}.wr-workspace .wr-question-panel{padding:12px}.wr-workspace .wr-question-hint{display:none}.wr-workspace .wr-assistant-select select{max-width:200px}.wr-workspace .wr-recent-columns,.wr-workspace .wr-recent-row{grid-template-columns:minmax(0,1fr) 16px}.wr-workspace .wr-recent-row time,.wr-workspace .wr-time-unknown,.wr-workspace .wr-recent-columns>span:nth-child(3){display:none}}
 @media(prefers-reduced-motion:no-preference){.wr-workspace :is(button,textarea,select){transition:background-color 120ms,border-color 120ms,color 120ms}}
 @media(max-width:600px){.wr-workspace .wr-recent-columns{display:none}.wr-workspace .wr-recent-row time,.wr-workspace .wr-time-unknown{display:block;grid-column:1;grid-row:2;padding-left:25px}.wr-workspace .wr-recent-row>svg{grid-column:2;grid-row:1 / span 2}}
+
+/* Flexible cards fill an incomplete final row, instead of leaving a half-page gap. */
+.wr-workspace .wr-assistant-list {display:flex;flex-wrap:wrap;gap:12px}
+.wr-workspace .wr-assistant {flex:1 1 270px;min-width:0;border-radius:8px}
+.wr-workspace .wr-assistant-heading {align-items:flex-start}
+.wr-workspace .wr-title-link {min-height:30px;align-items:center}
+.wr-workspace .scope-badge {font-size:12px;line-height:18px}
+.wr-workspace .wr-assistant>p {font-size:14px;line-height:1.65}
+.wr-workspace .wr-assistant-footer {gap:12px}
+.wr-workspace .wr-assistant-footer>.button {font-size:13px;min-height:34px}
+.wr-workspace .wr-connection-panel {border-radius:8px}
+.wr-workspace .wr-connection-panel li {padding:10px 0;gap:3px}
+.wr-workspace .wr-connection-panel li>span {line-height:1.5}
+.wr-workspace .wr-connection-panel .wr-text-action {white-space:normal;justify-content:flex-start}
+.wr-workspace .wr-connection-title .icon-button {width:32px;height:32px}
+@media(max-width:600px) {
+  .wr-workspace .wr-assistant {flex-basis:100%}
+  .wr-workspace .wr-assistant-footer>.button,.wr-workspace .wr-text-action,.wr-workspace .wr-disabled-connections {min-height:44px}
+  .wr-workspace .wr-connection-title .icon-button {width:44px;height:44px}
+}

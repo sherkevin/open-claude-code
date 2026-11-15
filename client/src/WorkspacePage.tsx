@@ -42,16 +42,19 @@ export function workspaceConnectionStatus(connection: Connection) {
   return '待测试';
 }
 
-export function workspaceConnectionOverview(connections: Connection[]) {
+export function workspaceConnectionOverview(connections: Connection[], boundIds: string[] = []) {
   const priority = { failed: 0, needs_auth: 0, connected: 1, untested: 2 };
+  const bound = new Set(boundIds);
   const enabled = connections.filter(connection => connection.enabled)
-    .sort((a, b) => priority[a.status] - priority[b.status]);
-  return { visible: enabled.slice(0, 4), enabledCount: enabled.length,
+    .sort((a, b) => Number(priority[a.status] !== 0) - Number(priority[b.status] !== 0)
+      || Number(bound.has(b.id)) - Number(bound.has(a.id))
+      || priority[a.status] - priority[b.status]);
+  return { visible: enabled.slice(0, 3), enabledCount: enabled.length,
     disabledCount: connections.length - enabled.length };
 }
 
-export function WorkspaceConnectionSummary({ connections, onManage }: { connections: Connection[]; onManage: () => void }) {
-  const { visible, enabledCount, disabledCount } = workspaceConnectionOverview(connections);
+export function WorkspaceConnectionSummary({ connections, boundIds = [], onManage }: { connections: Connection[]; boundIds?:string[]; onManage: () => void }) {
+  const { visible, enabledCount, disabledCount } = workspaceConnectionOverview(connections, boundIds);
   return <>
     {visible.length ? <ul>{visible.map(connection => <li key={connection.id}><span>{connection.name}</span><small data-tone={connection.status === 'connected' && connection.tools.length ? 'success' : ['failed', 'needs_auth', 'connected'].includes(connection.status) ? 'warning' : 'neutral'}>{workspaceConnectionStatus(connection)}</small></li>)}</ul>
       : <p>{disabledCount ? '暂无启用连接，可在业务连接中启用已有配置。' : '尚未配置业务连接。接入 MCP 后，为助手选择所需工具。'}</p>}
@@ -72,14 +75,15 @@ export default function WorkspacePage({
   const [question, setQuestion] = useState('');
   const [connections, setConnections] = useState<Connection[] | null>(null);
   const [connectionError, setConnectionError] = useState(false);
+  const [connectionsLoading, setConnectionsLoading] = useState(true);
   const [connectionRevision, setConnectionRevision] = useState(0);
   useEffect(() => {
     if (!canManageConnections) return;
     const controller = new AbortController();
-    setConnections(null); setConnectionError(false);
+    setConnectionsLoading(true); setConnectionError(false);
     void api<Connection[]>('/connections', { signal: controller.signal }).then(value => {
       if (!controller.signal.aborted) setConnections(value);
-    }).catch(() => { if (!controller.signal.aborted) setConnectionError(true); });
+    }).catch(() => { if (!controller.signal.aborted) setConnectionError(true); }).finally(() => { if (!controller.signal.aborted) setConnectionsLoading(false); });
     return () => controller.abort();
   }, [canManageConnections, connectionRevision]);
   const [assistantId, setAssistantId] = useState('');
@@ -151,8 +155,10 @@ export default function WorkspacePage({
         {hasResources && <section className="wr-resources" aria-labelledby="wr-resources-heading">
           <div className="wr-section-heading"><h2 id="wr-resources-heading">连接与资料</h2></div>
           {canManageConnections && <div className="wr-connection-panel">
-            <div className="wr-connection-title"><strong>业务连接状态</strong><button type="button" className="icon-button" aria-label="重新读取连接状态" onClick={() => setConnectionRevision(value => value + 1)}><RefreshCw size={15}/></button></div>
-            {connectionError ? <p role="status">连接状态暂未取得，请重新读取。</p> : connections === null ? <p role="status">正在读取连接状态…</p> : <WorkspaceConnectionSummary connections={connections} onManage={() => onNavigate('connections')}/>}
+            <div className="wr-connection-title"><strong>连接检查</strong><button type="button" className="icon-button" disabled={connectionsLoading} aria-label="重新读取连接状态" onClick={() => setConnectionRevision(value => value + 1)}><RefreshCw size={15}/></button></div>
+            {connectionError && <p role="status">{connections ? '更新未完成，仍显示上次检查记录。' : '连接状态暂未取得，请重新读取。'}</p>}
+            {connectionsLoading && <p role="status">{connections ? '正在更新检查记录…' : '正在读取连接状态…'}</p>}
+            {connections !== null && <WorkspaceConnectionSummary connections={connections} boundIds={available.flatMap(assistant=>assistant.connections.map(binding=>binding.connection_id))} onManage={() => onNavigate('connections')}/>}
             <small className="wr-snapshot-note">上次检查结果，不代表当前在线状态。</small>
           </div>}
           <div className="wr-resource-list">

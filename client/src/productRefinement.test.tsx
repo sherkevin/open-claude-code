@@ -77,12 +77,19 @@ describe('workspace continues real work before showing capabilities',()=>{
       {...connection,id:'ready2'}, {...connection,id:'untested',status:'untested' as const}];
     const original=items.slice();
     const overview=workspaceConnectionOverview(items);
-    expect(overview.visible.map(item=>item.id)).toEqual(['auth','failed','ready','ready2']);
+    expect(overview.visible.map(item=>item.id)).toEqual(['auth','failed','ready']);
     expect(overview).toMatchObject({enabledCount:5,disabledCount:5});expect(items).toEqual(original);
     const html=renderToStaticMarkup(<WorkspaceConnectionSummary connections={items} onManage={noop}/>);
     expect(html).toContain('正式业务连接');expect(html).toContain('另有 5 个停用连接');expect(html).toContain('查看全部 5 个启用连接');
     expect(html).not.toContain('停用测试');
     expect(renderToStaticMarkup(<WorkspaceConnectionSummary connections={items.slice(0,5)} onManage={noop}/>)).toContain('暂无启用连接');
+  });
+  it('prioritizes actual assistant bindings without hiding failures or deleting similarly named connections',()=>{
+    const items=[{...connection,id:'unbound',name:'订单演示'}, {...connection,id:'bound',name:'订单演示'},
+      {...connection,id:'failed',status:'failed' as const}, {...connection,id:'bound-untested',status:'untested' as const}];
+    expect(workspaceConnectionOverview(items,['bound','bound-untested']).visible.map(item=>item.id)).toEqual(['failed','bound','bound-untested']);
+    expect(workspaceConnectionOverview(items,['bound']).enabledCount).toBe(4);
+    expect(items.map(item=>item.id)).toEqual(['unbound','bound','failed','bound-untested']);
   });
   it('keeps the question entry and assistant start without duplicated page-header or empty-state creation buttons',()=>{
     const html=renderToStaticMarkup(<WorkspacePage assistants={[assistant]} conversations={[]} onAssistant={noop} onConversation={noop} onNavigate={noop} onNew={noop} onStart={noop}/>);

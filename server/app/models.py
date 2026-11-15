@@ -154,6 +154,11 @@ class ModelCompletionRequest(InputModel):
     text: str = Field(min_length=1, max_length=500)
 
 
+class ModelFollowupsRequest(InputModel):
+    conversation_id: str = Field(min_length=1, max_length=100)
+    run_id: str = Field(min_length=1, max_length=100)
+
+
 class XlsxSheet(InputModel):
     """Bounded table input for a user-visible local Excel export."""
     name: str = Field(default="Sheet 1", min_length=1, max_length=80)

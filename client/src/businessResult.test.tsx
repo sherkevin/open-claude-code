@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import BusinessResults, { BusinessResultCard, csvCell, parseBusinessResult, preferredChartMetric, questionForRun, resultCSV, resultsFromEvents } from './BusinessResult';
+import BusinessResults, { BusinessResultCard, csvCell, displayBusinessCell, parseBusinessResult, preferredChartMetric, questionForRun, resultCSV, resultsFromEvents } from './BusinessResult';
 import type { Message, StreamEvent } from './types';
 const sample=()=>({schema_version:'business-result/v1',title:'发货汇总',columns:[{key:'customer',label:'客户'},{key:'amount',label:'金额',unit:'CNY'}],rows:[{customer:'甲厂',amount:1200},{customer:'乙厂',amount:2400}],scope:{region:'华北',date:'2026-11-14'},complete:true,synthetic:true,truncated:false,total_rows:2,warnings:[],data_time:'2026-11-14T10:00:00+08:00'});
 const event=(success:unknown=true,run='run-1'):StreamEvent=>({id:1,run_id:run,type:'tool.completed',created_at:'2026-11-14',data:{success,business_result:sample(),source_ids:['src_1']}});
@@ -89,4 +89,19 @@ it('attributes result completeness and totals to the data source in the card and
  expect(html).not.toContain('工具声明完整');
  const csv=resultCSV(result,'r',1);
  expect(csv).toContain('数据源报告总行数');expect(csv).toContain('数据源标记为完整');
+});
+
+it('formats explicit monetary units with two minimum decimals without changing scale or losing source precision',()=>{
+ const money={key:'amount',label:'金额',unit:'CNY'};
+ expect(displayBusinessCell(7112374.3,money)).toBe('7,112,374.30');
+ expect(displayBusinessCell(0,money)).toBe('0.00');
+ expect(displayBusinessCell(-12.5,money)).toBe('-12.50');
+ expect(displayBusinessCell(12345,{...money,unit:'分'})).toBe('12,345');
+ expect(displayBusinessCell(1.2345,money)).toBe('1.2345');
+ expect(displayBusinessCell(null,money)).toBe('—');
+ expect(displayBusinessCell(0.0000001,money)).toBe('1e-7');
+ expect(displayBusinessCell(12.5,{key:'quantity',label:'数量',unit:'吨'})).toBe('12.5');
+ const data=parseBusinessResult({...sample(),rows:[{customer:'甲厂',amount:7112374.3}]})!;
+ expect(renderToStaticMarkup(<BusinessResultCard result={data} runId="money" eventId={1}/>)).toContain('7,112,374.30');
+ expect(resultCSV(data,'money',1)).toContain('"7112374.3"');
 });

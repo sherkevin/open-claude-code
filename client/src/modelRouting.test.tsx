@@ -13,15 +13,16 @@ afterEach(()=>vi.unstubAllGlobals());
 describe('explicit model routing mode',()=>{
   it('keeps the manual model and level visible in a native closed disclosure',()=>{
     const html=renderToStaticMarkup(<ModelSettingsDisclosure automatic={false} selection={selection} models={models}><ModelRoutingControl automatic={false} onChange={()=>{}}/></ModelSettingsDisclosure>);
-    expect(html).toContain('<details class="chat-model-settings"><summary>');
-    expect(html).toContain('手动固定 · Dano · high');expect(html).toContain('调整模型');
+    expect(html).toContain('class="chat-model-settings fw-model-settings"');
+    expect(html).toContain('<summary class="fw-model-pill" aria-label="模型设置：Dano · 高">');
+    expect(html).toContain('Dano · 高');expect(html).not.toContain('调整模型');
     expect(html).not.toMatch(/<details[^>]*\bopen=/);expect(html).toContain('aria-label="选模方式"');
   });
   it('summarizes automatic selection without pretending the base model will execute',()=>{
     const html=renderToStaticMarkup(<ModelSettingsDisclosure automatic selection={selection} models={models}><span>设置内容</span></ModelSettingsDisclosure>);
     expect(html).toContain('>自动选择</span>');expect(html).not.toContain('Dano');
     const loading=renderToStaticMarkup(<ModelSettingsDisclosure automatic={false} loading selection={selection} models={models}><span>设置内容</span></ModelSettingsDisclosure>);
-    expect(loading).toContain('正在读取模型设置');expect(loading).not.toContain('手动固定 · Dano');
+    expect(loading).toContain('正在读取模型设置');expect(loading).not.toContain('Dano');
   });
   it('labels automatic selection without presenting a fixed Dano selection',()=>{
     const html=renderToStaticMarkup(<ModelRoutingControl automatic onChange={()=>{}}/>);

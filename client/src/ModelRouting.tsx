@@ -1,26 +1,47 @@
-import type { ReactNode } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { useEffect, useRef, type ReactNode } from 'react';
+import { ChevronDown, SlidersHorizontal } from 'lucide-react';
 import type { ModelOption, ModelSelection, Run } from './types';
 import { publicModelLabel } from './models';
+import { reasoningLevelLabel } from './ModelSelector';
+import './model-picker.css';
 
 export function ModelRoutingControl({ automatic, disabled = false, onChange }: {
   automatic: boolean; disabled?: boolean; onChange: (automatic: boolean) => void;
 }) {
-  return <div className="model-routing-control"><label><span>选模方式</span><select aria-label="选模方式" value={automatic ? 'auto' : 'manual'} disabled={disabled} onChange={event => onChange(event.target.value === 'auto')}><option value="auto">自动选择</option><option value="manual">手动固定</option></select></label><p>{automatic ? '根据当前任务选择模型，实际使用的模型显示在会话顶部。' : '使用你选择的模型和推理级别，不自动切换。'}</p></div>;
+  return <div className="model-routing-control fw-model-routing"><label><span>选模方式</span><select aria-label="选模方式" value={automatic ? 'auto' : 'manual'} disabled={disabled} onChange={event => onChange(event.target.value === 'auto')}><option value="auto">自动选择</option><option value="manual">手动固定</option></select></label><p>{automatic ? '根据当前任务选择模型，实际使用的模型显示在会话顶部。' : '使用你选择的模型和推理级别，不自动切换。'}</p></div>;
 }
 
 export function ModelSettingsDisclosure({ automatic, selection, models, loading = false, pending = false, children }: {
   automatic: boolean; selection: ModelSelection; models: ModelOption[]; loading?: boolean; pending?: boolean; children: ReactNode;
 }) {
+  const disclosure = useRef<HTMLDetailsElement>(null);
+  const positionPanel = () => {
+    const node = disclosure.current, panel = node?.querySelector<HTMLElement>('.fw-model-panel');
+    if (!node?.open || !panel) return;
+    const left = node.getBoundingClientRect().left, width = panel.getBoundingClientRect().width;
+    const target = Math.max(16, Math.min(left, window.innerWidth - width - 16));
+    panel.style.setProperty('--fw-panel-left', `${target - left}px`);
+  };
+  useEffect(() => {
+    const outside = (event: PointerEvent) => { const node = disclosure.current; if (node?.open && !node.contains(event.target as Node)) node.open = false; };
+    const focusOutside = (event: FocusEvent) => { const node = disclosure.current; if (node?.open && !node.contains(event.target as Node)) node.open = false; };
+    const escape = (event: KeyboardEvent) => {
+      const node = disclosure.current;
+      if (event.key !== 'Escape' || event.defaultPrevented || !node?.open || !node.contains(document.activeElement)) return;
+      event.preventDefault(); node.open = false; node.querySelector<HTMLElement>('summary')?.focus();
+    };
+    document.addEventListener('pointerdown', outside); document.addEventListener('focusin', focusOutside); document.addEventListener('keydown', escape); window.addEventListener('resize', positionPanel);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('focusin', focusOutside); document.removeEventListener('keydown', escape); window.removeEventListener('resize', positionPanel); };
+  }, []);
   const model = models.find(item => item.id === selection.model_id);
-  const level = model?.reasoning_levels.find(item => item.id === selection.reasoning_level)?.label;
-  const label = loading ? '正在读取模型设置…' : automatic ? '自动选择' : `手动固定 · ${publicModelLabel(models, selection.model_id)}${level ? ` · ${level}` : ''}`;
-  return <details className="chat-model-settings"><summary><span className="model-settings-current">{label}</span><span className="model-settings-action">{pending ? '正在保存…' : '调整模型'}<ChevronDown size={14}/></span></summary><div className="model-settings-body">{children}</div></details>;
+  const level = reasoningLevelLabel(model?.reasoning_levels.find(item => item.id === selection.reasoning_level));
+  const label = loading ? '正在读取模型设置…' : automatic ? '自动选择' : `${publicModelLabel(models, selection.model_id)}${level ? ` · ${level}` : ''}`;
+  return <details ref={disclosure} className="chat-model-settings fw-model-settings" aria-busy={pending} onToggle={positionPanel}><summary className="fw-model-pill" aria-label={`模型设置：${label}`}><SlidersHorizontal size={14}/><span className="model-settings-current">{label}</span><span className="model-settings-action">{pending ? '正在保存…' : null}<ChevronDown size={14}/></span></summary><div className="model-settings-body fw-model-panel" role="group" aria-label="模型与推理设置">{children}</div></details>;
 }
 
 export function RunModelIdentity({ run, models }: { run: Run; models: ModelOption[] }) {
   if (run.execution_kind === 'product_metadata' || run.model_call_count === 0) return <span className="model-run-identity">本次无模型调用</span>;
   const model = models.find(item => item.id === run.model_id);
-  const level = model?.reasoning_levels.find(item => item.id === run.reasoning_level)?.label;
+  const level = reasoningLevelLabel(model?.reasoning_levels.find(item => item.id === run.reasoning_level));
   return <span className="model-run-identity"><small>本次任务模型</small><strong>{run.model_id ? publicModelLabel(models, run.model_id) : '模型信息待确认'}{level && ` · ${level}`}</strong></span>;
 }

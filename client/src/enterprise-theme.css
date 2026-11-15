@@ -1,7 +1,7 @@
 /* Morning Horizon, verified 2026-11-15. One semantic palette for 开物.
    Values are mapped to product roles; AI identity and business status stay separate. */
-html,body {background:#f5f6f7}
-.zhixing-theme{--brand:#0070f2;--brand-soft:#ebf8ff;--ink:#131e29;--muted:#556b82;--paper:#f5f6f7;--white:#fff;--line:#d9d9d9;--line-soft:#e5e5e5;--control-border:#758ca4;--panel:#eff1f2;--green:#256f3a;--green-dark:#1e5430;--green-soft:#f5fae5;--ai-accent:#5d36ff;--red:#aa0808;--shadow:0 8px 28px #17324c0a}
+html:root,body {background:#f5f6f7}
+.zhixing-theme{--brand:#0070f2;--brand-soft:#ebf8ff;--ink:#131e29;--muted:#556b82;--paper:#f5f6f7;--white:#fff;--line:#d9d9d9;--line-soft:#e5e5e5;--control-border:#758ca4;--panel:#eff1f2;--green:#256f3a;--green-dark:#1e5430;--green-soft:#f5fae5;--brand-purple:#660874;--ai-accent:#5d36ff;--ai-accent-soft:color-mix(in srgb,var(--ai-accent) 8%,var(--white));--red:#aa0808;--shadow:0 8px 28px #17324c0a}
 .zhixing-theme .button.primary,.zhixing-theme .new-conversation,.zhixing-theme .send-button{background:var(--brand);border-color:var(--brand);color:#fff}
 .zhixing-theme .button.primary:hover:not(:disabled),.zhixing-theme .new-conversation:hover{background:#0064d9;border-color:#0064d9}
 .zhixing-theme .nav-item.selected{background:var(--brand);color:#fff;border-radius:6px}
@@ -168,3 +168,9 @@ html,body {background:#f5f6f7}
   .zhixing-theme :is(.import-next-step,.cost-panel) {padding:16px}
   .zhixing-theme :is(.knowledge-search>select,.search-field input,.memory-content) {font-size:16px}
 }
+
+/* Product accent references Tsinghua VI RGB 102/8/116 (not affiliation).
+   https://vi.tsinghua.edu.cn/gk/xxbz/scgf.htm — operational actions remain SAP blue. */
+.zhixing-theme .brand.fw-brand .fw-brand-mark {background:var(--brand-purple)}
+.zhixing-theme .fw-brand-text {letter-spacing:0;color:var(--brand-purple)}
+.zhixing-theme .fw-brand-text small {font-weight:400;letter-spacing:0}

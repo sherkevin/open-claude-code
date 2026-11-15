@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Database, Download, Filter, Network, RefreshCw, Search } from 'lucide-react';
+import { useEffect, useId, useState } from 'react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, Database, Download, Filter, Network, RefreshCw, Search } from 'lucide-react';
 import { api, errorText } from './api';
 import { Button, EmptyState, ErrorNotice, Loader } from './components';
 import './business-data.css';
@@ -15,6 +15,8 @@ export const dataPageCsv=(value:DataPage)=> {
   return '\ufeff'+[value.table.columns.map(c=>safe(c.label)).join(','),...value.rows.map(row=>value.table.columns.map(c=>safe(dataCell(row[c.key],c))).join(','))].join('\r\n');
 };
 export default function BusinessDataPage({onConnections}:{onConnections:()=>void}) {
+  const [filtersExpanded,setFiltersExpanded]=useState(false);
+  const filtersId=useId();
   const [tables,setTables]=useState<DataTable[]>([]),[selected,setSelected]=useState(''),[catalogLoading,setCatalogLoading]=useState(true),[catalogError,setCatalogError]=useState('');
   const [q,setQ]=useState(''),[field,setField]=useState(''),[value,setValue]=useState('');
   const [query,setQuery]=useState({q:'',filter_column:'',filter_value:'',offset:0,sort:'',direction:'asc'});
@@ -34,7 +36,8 @@ export default function BusinessDataPage({onConnections}:{onConnections:()=>void
       <nav className="data-table-tabs" aria-label="业务数据表">{tables.map(t=><button key={t.id} aria-current={selected===t.id?'page':undefined} onClick={()=>choose(t.id)}><Database size={16}/>{t.name}</button>)}</nav>
       <div className="data-sheet">
         <div className="data-sheet-heading"><div><h2>{table.name}<span className="data-provenance">{provenance[table.scope]}</span><span className="data-provenance">只读</span></h2><p>{table.description}</p></div><Button variant="secondary" busy={loading} onClick={()=>setEpoch(e=>e+1)}><RefreshCw size={15}/>刷新</Button></div>
-        <form className="data-filters" onSubmit={e=>{e.preventDefault();setQuery(old=>({...old,q,filter_column:field,filter_value:value,offset:0}));}}>
+        <button type="button" className="data-filter-toggle" aria-expanded={filtersExpanded} aria-controls={filtersId} onClick={()=>setFiltersExpanded(open=>!open)}><span><Filter size={16}/>筛选记录</span><span>{query.q.trim()||query.filter_column&&query.filter_value?'已应用筛选':'全部记录'}<ChevronDown size={16}/></span></button>
+        <form id={filtersId} className={`data-filters${filtersExpanded?' is-expanded':''}`} onSubmit={e=>{e.preventDefault();setQuery(old=>({...old,q,filter_column:field,filter_value:value,offset:0}));setFiltersExpanded(false);}}>
           <label className="data-search"><span>搜索记录</span><div><Search size={16}/><input value={q} maxLength={100} onChange={e=>setQ(e.target.value)} placeholder="客户、区域或记录编号"/></div></label>
           <label><span>筛选字段</span><select value={field} onChange={e=>{setField(e.target.value);setValue('');}}><option value="">不限</option>{table.columns.filter(c=>c.format!=='currency_cents').map(c=><option key={c.key} value={c.key}>{c.label}</option>)}</select></label>
           <label><span>等于</span><input value={value} onChange={e=>setValue(e.target.value)} disabled={!field} placeholder={field?'输入完整值':'先选字段'} maxLength={100}/></label>

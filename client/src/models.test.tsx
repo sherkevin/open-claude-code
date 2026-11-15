@@ -24,7 +24,7 @@ describe('public model selection', () => {
     const unavailable = [{ ...models[0], available: false, unavailable_reason: '线路尚未启用' }, models[1]];
     expect(modelSelection(unavailable, { default_model_id: 'dano-v2.1' }).model_id).toBe('dano-v2.1');
     const html = renderToStaticMarkup(<ModelSelector models={unavailable} value={{ model_id: 'dano-v2.1', reasoning_level: 'high' }} onChange={() => {}}/>);
-    expect(html).toContain('value="dano-v2.1" disabled="" selected=""');
+    expect(html).toMatch(/role="option" aria-selected="true" tabindex="0" disabled=""/);
     expect(html).toContain('线路尚未启用');
   });
   it('never renders unknown internal routing IDs as public labels', () => {
@@ -34,10 +34,9 @@ describe('public model selection', () => {
   });
   it('locks both model controls while a change or task is pending', () => {
     const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'max' }} disabled onChange={() => {}}/>);
-    const selects = html.match(/<select\b[^>]*>/g) || [];
-    expect(selects).toHaveLength(2);
-    expect(selects.every(select => select.includes('disabled=""'))).toBe(true);
-    expect(html).toContain('value="max" selected=""');
+    expect(html.match(/<button[^>]*aria-label="选择模型"[^>]*>/)?.[0]).toContain('disabled=""');
+    expect(html.match(/<input[^>]*type="range"[^>]*>/)?.[0]).toContain('disabled=""');
+    expect(html).toContain('aria-valuetext="最高"');
   });
   it('blocks both directions of incompatible native history, but allows same-model levels and compatible switches', () => {
     expect(modelSwitchRequiresNewConversation(models, 'dano-v2.1', 'glm-5.3', true)).toBe(true);
@@ -55,18 +54,20 @@ describe('public model selection', () => {
   });
   it('marks incompatible chat options and preserves an enabled reasoning selector on Dano', () => {
     const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'high' }} hasHistory onChange={() => {}}/>);
-    expect(html).toContain('<option value="glm-5.3" disabled="">GLM-5.3 · 需新对话</option>');
-    expect(html).toContain('<option value="deepseek-v4.1-flash">');
+    expect(html).toMatch(/role="option"[^>]*disabled=""[^>]*><span><strong>GLM-5.3<\/strong><small>需新对话/);
+    expect(html).toMatch(/role="option" aria-selected="false" tabindex="-1" class="fw-model-option"><span><strong>deepseek-v4.1-flash/);
     expect(html).toContain('当前对话和记忆保留');
-    expect(html.match(/<select[^>]*aria-label="推理级别"[^>]*>/)?.[0]).not.toContain('disabled');
+    expect(html.match(/<input[^>]*type="range"[^>]*>/)?.[0]).not.toContain('disabled');
     const glm = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'glm-5.3', reasoning_level: 'default' }} hasHistory onChange={() => {}}/>);
-    expect(glm).toContain('<option value="dano-v2.1" disabled="">');
-    expect(glm).toContain('<option value="deepseek-v4.1-flash" disabled="">');
-    expect(glm).toContain('<option value="glm-5.3" selected="">GLM-5.3</option>');
+    expect(glm).toMatch(/role="option"[^>]*disabled=""[^>]*><span><strong>Dano-v2.1/);
+    expect(glm).toMatch(/role="option"[^>]*disabled=""[^>]*><span><strong>deepseek-v4.1-flash/);
+    expect(glm).toMatch(/role="option" aria-selected="true" tabindex="0" class="fw-model-option"><span><strong>GLM-5.3/);
+    expect(glm).not.toContain('type="range"');
+    expect(glm).toContain('固定推理级别');
   });
   it('keeps all enabled models selectable in a new or empty conversation', () => {
     const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'high' }} onChange={() => {}}/>);
-    expect(html).toContain('<option value="glm-5.3">GLM-5.3</option>');
+    expect(html).toMatch(/role="option" aria-selected="false" tabindex="-1" class="fw-model-option"><span><strong>GLM-5.3/);
     expect(html).not.toContain('需新对话');
   });
   it('explicitly reconnects an unchanged public selection with PATCH and never submits a message', async () => {

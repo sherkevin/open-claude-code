@@ -1,12 +1,11 @@
 /* Small AI accents follow the user's blue/violet reference; business states keep their own meaning. */
 .zhixing-theme .fw-ai-identity {
   display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
-  width:36px;height:36px;border-radius:9px;overflow:hidden;
+  width:36px;height:36px;border-radius:9px;overflow:hidden;position:relative;isolation:isolate;
   color:#fff;background:linear-gradient(115deg,var(--brand) 0%,var(--ai-accent) 100%);
-  background-size:160% 100%;background-position:25% 50%;
   box-shadow:inset 0 0 0 1px #ffffff26;
 }
-.zhixing-theme .fw-ai-identity>svg {color:#fff;width:20px;height:20px;stroke-width:2.4}
+.zhixing-theme .fw-ai-identity>svg {position:relative;z-index:1;color:#fff;width:20px;height:20px;stroke-width:2.4}
 .zhixing-theme .fw-ai-small {width:30px;height:30px;border-radius:7px}
 .zhixing-theme .fw-ai-small>svg {width:17px;height:17px}
 .zhixing-theme .fw-ai-large {width:48px;height:48px;border-radius:12px}
@@ -75,12 +74,24 @@
   .zhixing-theme .chat-page .chat-actions {align-self:flex-end;flex-wrap:nowrap;gap:4px}
   .zhixing-theme .chat-page .chat-actions :is(.icon-button,.feed-toggle) {min-height:44px;min-width:44px}
 }
+/* Only the real active run mounts these decorations; no numeric progress is implied. */
+.zhixing-theme .fw-ai-shimmer {position:absolute;inset:-60%;background:linear-gradient(110deg,transparent 38%,#ffffff70 50%,transparent 62%);opacity:0;pointer-events:none}
+.zhixing-theme .fw-ai-particles {position:absolute;inset:0;pointer-events:none}
+.zhixing-theme .fw-ai-particles i {position:absolute;width:2px;height:2px;border-radius:50%;background:#fff;opacity:.6}
+.zhixing-theme .fw-ai-particles i:nth-child(1) {left:15%;top:20%}
+.zhixing-theme .fw-ai-particles i:nth-child(2) {right:12%;top:48%}
+.zhixing-theme .fw-ai-particles i:nth-child(3) {left:25%;bottom:12%}
 @media(prefers-reduced-motion:no-preference) {
-  .zhixing-theme .fw-ai-identity.is-working {animation:fw-ai-working 3.2s ease-in-out infinite alternate}
-  @keyframes fw-ai-working {from {background-position:0% 50%} to {background-position:100% 50%}}
+  .zhixing-theme .fw-ai-shimmer {animation:fw-ai-light 3.6s ease-in-out infinite}
+  .zhixing-theme .fw-ai-particles i {animation:fw-ai-spark 2.8s ease-in-out infinite alternate}
+  .zhixing-theme .fw-ai-particles i:nth-child(2) {animation-delay:-1s}
+  .zhixing-theme .fw-ai-particles i:nth-child(3) {animation-delay:-1.8s}
+  @keyframes fw-ai-light {0%,15% {transform:translateX(-70%);opacity:0} 35%,65% {opacity:.65} 85%,100% {transform:translateX(70%);opacity:0}}
+  @keyframes fw-ai-spark {from {transform:translateY(2px) scale(.7);opacity:.25} to {transform:translateY(-2px) scale(1);opacity:.9}}
 }
 @media(prefers-reduced-motion:reduce) {
-  .zhixing-theme .fw-ai-identity.is-working {animation:none}
+  .zhixing-theme .fw-ai-shimmer {display:none}
+  .zhixing-theme .fw-ai-particles i {animation:none;transform:none;opacity:.5}
 }
 /* A closed mobile drawer must not remain in keyboard or screen-reader order. */
 @media (max-width: 760px) {
