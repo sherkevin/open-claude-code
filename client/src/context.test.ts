@@ -91,7 +91,8 @@ describe('Harness context evidence display', () => {
   });
   it('separates estimates from unverified provider counts, capacity and composition', () => {
     const html = summary(measured);
-    expect(html).toContain('Harness 上下文估算');
+    expect(html).toContain('上下文估算');
+    expect(html).not.toMatch(/DeepSeek|Harness|Claude Agent SDK/i);
     expect(html).toContain('当前上下文占用（估算 Token）');
     expect(html).toContain('运行时归一化的用量记录');
     expect(html).toContain('原始用量完整性尚未核验');

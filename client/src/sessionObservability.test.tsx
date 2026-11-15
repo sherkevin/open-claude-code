@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { SessionOverviewCards, SessionRowUsage } from './SessionObservability';
+import { SessionOverviewCards, SessionRowUsage, sessionOverviewDisplayMetrics } from './SessionObservability';
 import { TrajectoryContent } from './SessionTrajectory';
 import { appendTrajectory, durationText, filterTrajectory, metricDefinitions, metricValue, overviewMetrics, trajectoryDetails, trajectoryPath, trajectoryPositions, type SessionOverview, type SessionUsage, type TrajectoryItem } from './sessionObservationData';
 
@@ -12,6 +12,20 @@ const items:TrajectoryItem[]=[
 ];
 
 describe('session metric evidence boundaries',()=>{
+  it('keeps preview off by default and isolates its ten fixed readings from actual receipts',()=>{
+    const original=JSON.stringify(overview);
+    const html=renderToStaticMarkup(<SessionOverviewCards value={overview} loading={false} error="" onRefresh={()=>{}}/>);
+    expect(html).toContain('aria-pressed="false"');expect(html).toContain('预览效果');
+    expect(sessionOverviewDisplayMetrics(overview)).toEqual(overviewMetrics(overview));
+    const preview=sessionOverviewDisplayMetrics(overview,true);
+    expect(preview).toHaveLength(10);
+    expect(preview.every(metric=>metric.value!==null&&metric.precision==='estimated'&&metric.note.includes('仅用于界面预览，不计入实际用量'))).toBe(true);
+    const values=Object.fromEntries(preview.map(metric=>[metric.id,metric.value!]));
+    expect(values.cache_read_tokens/values.input_tokens).toBe(values.cache_hit_rate);
+    expect(values.compression_saved_tokens-values.net_saved_tokens).toBe(6000);
+    expect(sessionOverviewDisplayMetrics(overview,false)).toEqual(overviewMetrics(overview));
+    expect(JSON.stringify(overview)).toBe(original);
+  });
   it('keeps all ten requested metrics, ignores unexpected fields and retains the fixed display order',()=>{
     const values=overviewMetrics({...overview,metrics:[{id:'private_extra',title:'Private',unit:'count',value:999,precision:'observed' as const,note:'hidden'},...overview.metrics].reverse()});
     expect(values.map(v=>v.id)).toEqual(metricDefinitions.map(([id])=>id));

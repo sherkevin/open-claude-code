@@ -21,7 +21,7 @@ export function contextStatus(context: NativeContext | null): string {
   if (context?.stale_reason === 'request_unobserved') return '尚无当前请求的可用统计';
   if (context?.stale) return '统计快照已过期，请刷新';
   if (context?.status === 'not_measured') return '尚未测量';
-  if (context?.source === 'harness_token_meter') return context.precision === 'estimated' && ['available', 'partial'].includes(context.status) ? 'Harness 上下文估算' : '上下文估算暂不可用';
+  if (context?.source === 'harness_token_meter') return context.precision === 'estimated' && ['available', 'partial'].includes(context.status) ? '上下文估算' : '上下文估算暂不可用';
   return context?.status === 'available' ? '原生统计可用' : '原生统计暂不可用';
 }
 

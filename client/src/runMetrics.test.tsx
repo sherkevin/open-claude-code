@@ -132,6 +132,6 @@ describe('execution metrics boundaries',()=>{
   });
   it('shows measured token stages only when the runtime reports them',()=>{
     const html=renderToStaticMarkup(<RunMetrics run={{...run,usage:{input_tokens:12,output_tokens:4,token_accounting:{stages:[{stage:'answer',source:'harness_provider',provider_usage:{input_tokens:12,output_tokens:4,cache_read_input_tokens:2}}]}}}}/>);
-    expect(html).toContain('Token 阶段');expect(html).toContain('answer</strong> · harness_provider');expect(html).toContain('入 12 · 出 4 · 缓 2');
+    expect(html).toContain('Token 阶段');expect(html).toContain('answer</strong> · 标准引擎用量');expect(html).not.toContain('harness_provider');expect(html).toContain('入 12 · 出 4 · 缓 2');
   });
 });
