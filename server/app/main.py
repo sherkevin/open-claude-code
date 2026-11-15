@@ -450,7 +450,9 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
 
     @app.delete(prefix + "/assistants/{item_id}", status_code=204)
     def assistant_delete(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
-        service.require_resource("assistants", item_id, user, edit=True)
+        row = service.require_resource("assistants", item_id, user, edit=True)
+        if row.get("scope", "team") == "team" and user["role"] != "admin":
+            raise AppError(403, "ADMIN_REQUIRED", "团队助手的删除由管理员处理")
         service.db.execute("UPDATE assistants SET deleted=1,enabled=0,revision=revision+1 WHERE id=?", (item_id,))
         return Response(status_code=204)
 

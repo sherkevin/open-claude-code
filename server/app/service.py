@@ -399,6 +399,10 @@ class Service:
 
     def save_assistant(self, data, item_id=None, user=None):
         old_row = (self.require_resource("assistants", item_id, user, edit=True) if user else self.require("assistants", item_id)) if item_id else None
+        delegated = bool(old_row and user and user["role"] != "admin" and old_row.get("scope", "team") == "team")
+        if delegated:
+            if ("scope" in data and data["scope"] != "team") or ("access" in data and data["access"] != json.loads(old_row["access"])) or "editor_user_ids" in data:
+                raise AppError(403, "ASSISTANT_ACCESS_ADMIN_REQUIRED", "可以编辑此助手的业务配置；共享范围与编辑授权由管理员维护")
         if old_row and data.get("expected_revision") is not None and data["expected_revision"] != old_row["revision"]:
             raise AppError(409, "ASSISTANT_CONFLICT", "助手配置已更新，请重新加载后再保存")
         scope, owner_id = choose_scope(data, old_row, user)
@@ -416,8 +420,12 @@ class Service:
         if merged.get("capabilities"):
             from .capability_settings import CapabilitySettings
             is_admin = user is None or (isinstance(user, dict) and user.get("role") == "admin")
+            # Editing a description must not silently revoke an administrator's
+            # existing automatic approvals. Changed grants are still narrowed
+            # under the member policy and cannot introduce new auto-approval.
+            unchanged_grants = bool(delegated and merged["capabilities"] == json.loads(old_row.get("capabilities") or "{}"))
             merged["capabilities"] = CapabilitySettings(self).narrow_assistant_grants(
-                merged["capabilities"], is_admin=is_admin)
+                merged["capabilities"], is_admin=is_admin or unchanged_grants)
         for key in ("default_model_id", "default_reasoning_level"):
             if key in data:
                 merged[key] = data[key] or None
@@ -460,7 +468,8 @@ class Service:
         # Return exactly the authorized version written by this request. A
         # global reread could expose a subsequent editor's now-private version.
         written = dict(zip(("name", "description", "instructions", "enabled", "access", "connections", "scope", "owner_id", "knowledge_base_ids", "skill_ids", "web_search_enabled", "capabilities", "default_model_id", "default_reasoning_level"), values))
-        return assistant_view({**written, "id": item_id, "revision": old_row["revision"] + 1 if old_row else 1}, user)
+        return assistant_view({**written, "id": item_id, "revision": old_row["revision"] + 1 if old_row else 1,
+                               "editor_user_ids": old_row.get("editor_user_ids", "[]") if old_row else "[]"}, user)
 
     def run_view(self, row):
         result = {key: row[key] for key in ("id", "conversation_id", "status", "assistant_message_id", "error", "created_at", "completed_at")}

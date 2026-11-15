@@ -6,7 +6,7 @@
       "label": "deepseek-v4.1-flash",
       "upstream_model": "deepseek-v4.1-flash",
       "enabled": true,
-      "capabilities": ["general", "coding", "reasoning"],
+      "capabilities": ["general", "coding", "reasoning", "multimodal"],
       "reasoning_levels": {"default": null},
       "default_reasoning_level": "default"
     },
@@ -25,7 +25,7 @@
       "label": "Dano-v2.1",
       "upstream_model": "",
       "enabled": false,
-      "capabilities": ["industrial", "chinese", "reasoning"],
+      "capabilities": ["industrial", "chinese", "reasoning", "multimodal"],
       "reasoning_levels": {"light": "low", "high": "high", "max": "max"},
       "default_reasoning_level": "high"
     },

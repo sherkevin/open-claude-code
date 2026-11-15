@@ -255,7 +255,7 @@ class Database:
                 self.conn.execute(f"ALTER TABLE approvals ADD COLUMN {column} {definition}")
         additions = {
             "connections": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "source_metadata": "TEXT NOT NULL DEFAULT '{}'"},
-            "assistants": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "knowledge_base_ids": "TEXT NOT NULL DEFAULT '[]'", "skill_ids": "TEXT NOT NULL DEFAULT '[]'", "web_search_enabled": "INTEGER NOT NULL DEFAULT 0", "capabilities": "TEXT NOT NULL DEFAULT '{}'", "default_model_id": "TEXT", "default_reasoning_level": "TEXT"},
+            "assistants": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "knowledge_base_ids": "TEXT NOT NULL DEFAULT '[]'", "skill_ids": "TEXT NOT NULL DEFAULT '[]'", "web_search_enabled": "INTEGER NOT NULL DEFAULT 0", "capabilities": "TEXT NOT NULL DEFAULT '{}'", "default_model_id": "TEXT", "default_reasoning_level": "TEXT", "editor_user_ids": "TEXT NOT NULL DEFAULT '[]'"},
             "conversations": {
                 "category": "TEXT NOT NULL DEFAULT ''", "tags": "TEXT NOT NULL DEFAULT '[]'",
                 # Upgrade old rows to Claude regardless of the current default.
