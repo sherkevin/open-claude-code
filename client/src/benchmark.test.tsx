@@ -5,7 +5,7 @@ import BenchmarkPage, { serializeBenchmarkReport, syntheticStage0Benchmark } fro
 describe('synthetic benchmark evidence page', () => {
   it('renders measured chart values and keeps missing metrics as pending', () => {
     const html = renderToStaticMarkup(<BenchmarkPage admin/>);
-    expect(html).toContain('演示夹具运行器');
+    expect(html).toContain('离线基准运行器');
     expect(html).toContain('任务正确性');
     expect(html).toContain('100%');
     expect(html).toContain('待测');

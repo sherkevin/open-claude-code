@@ -79,11 +79,11 @@ export const syntheticStage0Benchmark: BenchmarkReport = {
   participants: [
     {
       id: 'enhanced-agent',
-      label: '演示夹具运行器（增强方案）',
+      label: '离线基准运行器（增强方案）',
       kind: 'synthetic',
       metrics: [
         { id: 'correctness', label: '任务正确性', value: 100, unit: '%', status: 'measured', note: '3/3 已支持的离线任务通过；图片语义任务待视觉模型' },
-        { id: 'source-coverage', label: '来源覆盖率', value: 100, unit: '%', status: 'measured', note: '3/3 已支持任务有演示来源；图片区域实体尚未索引' },
+        { id: 'source-coverage', label: '来源覆盖率', value: 100, unit: '%', status: 'measured', note: '3/3 已支持任务已关联非生产资料来源；图片区域实体尚未索引' },
         { id: 'tokens', label: '总 Token（估算）', value: 187, unit: 'tokens', status: 'measured', note: '只计入压缩后送入模型的上下文；压缩过程不计入；未调用模型' },
         { id: 'input-tokens', label: '输入 Token（估算）', value: 153, unit: 'tokens', status: 'measured', note: '只计入压缩后的记忆摘要与来源标记' },
         { id: 'compression-savings', label: '上下文压缩节省 Token', value: 83, unit: 'tokens', status: 'measured', note: '固定文本中原始上下文与压缩上下文的差值；不计入总 Token' },
@@ -91,7 +91,7 @@ export const syntheticStage0Benchmark: BenchmarkReport = {
         { id: 'context-management', label: '上下文管理能力', value: 100, unit: '%', status: 'measured', note: '已支持任务的检索和来源可追溯；图片任务未测' },
         { id: 'multimodal-evidence', label: '图片语义证据', value: null, unit: '%', status: 'not_measured', note: '图片区域和实体索引需要获批视觉模型' },
         { id: 'latency', label: '模型响应速度', value: null, unit: 'ms', status: 'not_measured', note: '未调用模型；真实速度需授权模型端点' },
-        { id: 'local-overhead', label: '本地编排耗时', value: 1, unit: 'ms', status: 'measured', note: '仅为本地演示编排耗时，不等于模型响应速度' },
+        { id: 'local-overhead', label: '本地编排耗时', value: 1, unit: 'ms', status: 'measured', note: '仅为本地离线编排耗时，不等于模型响应速度' },
       ],
     },
     {
@@ -174,19 +174,19 @@ export default function BenchmarkPage({ admin, report = syntheticStage0Benchmark
   }, [admin, report]);
   const activeReport = remoteReport ?? report;
   if (!admin) {
-    return <div className="page"><PageHeader eyebrow="可控的证据边界" title="对标基准" description="对标报告只对有权限的管理员开放。"/><EmptyState icon={<LockKeyhole size={30}/>} title="需要管理员权限" description="请联系工作台管理员查看演示基准和导出报告。"/></div>;
+    return <div className="page"><PageHeader eyebrow="可控的证据边界" title="对标基准" description="对标报告只对有权限的管理员开放。"/><EmptyState icon={<LockKeyhole size={30}/>} title="需要管理员权限" description="请联系工作台管理员查看离线基准和导出报告。"/></div>;
   }
   if (!activeReport) {
-    return <div className="page"><PageHeader eyebrow="可控的证据边界" title="对标基准" description="固定任务、数据和工具后，才能比较助手能力。" actions={<Button variant="secondary" disabled><RefreshCw size={16}/>暂无报告</Button>}/><EmptyState icon={<Gauge size={30}/>} title="还没有可视化报告" description="先运行演示基准 runner，再把经过校验的 JSON 报告导入这里。缺失指标不会被估算。"/></div>;
+    return <div className="page"><PageHeader eyebrow="可控的证据边界" title="对标基准" description="固定任务、数据和工具后，才能比较助手能力。" actions={<Button variant="secondary" disabled><RefreshCw size={16}/>暂无报告</Button>}/><EmptyState icon={<Gauge size={30}/>} title="还没有可视化报告" description="先运行离线基准，再导入经过校验的 JSON 报告。缺失指标不会被估算。"/></div>;
   }
   return <div className="page benchmark-page">
-    <PageHeader eyebrow="用证据比较能力" title="对标基准" description="固定演示任务的安全可视化；客户真实助手和未测指标保持待测。" actions={<Button variant="secondary" onClick={() => downloadBenchmarkReport(activeReport)}><Download size={16}/>导出 JSON</Button>}/>
-    <div className="benchmark-notice"><Gauge size={17}/><div><strong>演示消融证据 · {activeReport.fixture_id} v{activeReport.fixture_version}</strong><p>种子 {activeReport.seed} · 对比键 <code>{activeReport.comparison_key}</code> · {activeReport.passed_tasks}/{activeReport.task_count} 项离线任务通过</p></div><span className="badge green">synthetic only</span></div>
+    <PageHeader eyebrow="用证据比较能力" title="对标基准" description="固定任务的离线评测结果；客户真实助手和未测指标保持待测。" actions={<Button variant="secondary" onClick={() => downloadBenchmarkReport(activeReport)}><Download size={16}/>导出 JSON</Button>}/>
+    <div className="benchmark-notice"><Gauge size={17}/><div><strong>离线消融结果 · {activeReport.fixture_id} v{activeReport.fixture_version}</strong><p>种子 {activeReport.seed} · 对比键 <code>{activeReport.comparison_key}</code> · {activeReport.passed_tasks}/{activeReport.task_count} 项离线任务通过</p></div><span className="badge green">非生产数据</span></div>
     {activeReport.task_results && <section className="benchmark-task-coverage" aria-label="固定任务证据范围"><div className="section-label"><span>固定任务证据范围</span><span>图片语义任务未测</span></div><div className="benchmark-task-list">{activeReport.task_results.map(task => <div className={`benchmark-task ${task.status}`} key={task.id}><span>{task.id}</span><strong>{task.status === 'measured' ? '已测' : '待测'}</strong>{task.note && <small>{task.note}</small>}</div>)}</div></section>}
     {activeReport.ablation_switches && <div className="benchmark-switches" aria-label="消融开关"><span>增强开关</span>{Object.entries(activeReport.ablation_switches['enhanced-agent'] ?? {}).map(([name, enabled]) => <code key={name} className={enabled ? 'on' : ''}>{name}</code>)}</div>}
     <section className="benchmark-chart-card" aria-labelledby="benchmark-chart-heading">
       <header className="section-label"><span id="benchmark-chart-heading">能力指标对比</span><span>缺失数据显示“待测”</span></header>
-      <p className="section-help">本地演示消融实验，不是客户真实调用。增强方案只把压缩后的上下文计入 Token，压缩过程不计入；模型速度没有授权端点时保持“待测”。</p>
+      <p className="section-help">本地离线消融实验，使用非生产数据。增强方案只把压缩后的上下文计入 Token，压缩过程不计入；模型速度没有授权端点时保持“待测”。</p>
       <div className="benchmark-legend" aria-label="图例"><span><i className="benchmark-legend-swatch synthetic"/>增强方案</span><span><i className="benchmark-legend-swatch baseline"/>最简单 Agent 基线</span><span><i className="benchmark-legend-swatch pending"/>待测</span></div>
       <BenchmarkBars participants={activeReport.participants}/>
     </section>

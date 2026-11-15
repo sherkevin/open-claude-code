@@ -84,7 +84,7 @@ export default function ApprovalPolicyPanel({ assistantId, admin }: { assistantI
       <div className="approval-policy-card" aria-label="模型代审策略">
         <h3>模型代审（仅低风险）</h3>
         <p className="section-help">仅允许 Read、Glob、Grep；中高风险和未知工具始终转人工。</p>
-        <label className="checkbox-row"><input type="checkbox" checked={model.enabled} onChange={event => setModel(previous => ({ ...previous, enabled: event.target.checked }))}/><span>启用本地演示代审<small>未启用或异常时默认拒绝</small></span></label>
+        <label className="checkbox-row"><input type="checkbox" checked={model.enabled} onChange={event => setModel(previous => ({ ...previous, enabled: event.target.checked }))}/><span>启用本地策略代审<small>未启用或异常时默认拒绝</small></span></label>
         <Field label="低风险工具（逗号分隔）"><input value={listText(model.allowed_tools)} onChange={event => setModel(previous => ({ ...previous, allowed_tools: parsePolicyList(event.target.value) }))} placeholder="Read, Glob, Grep"/></Field>
         <Field label="数据范围白名单"><input value={listText(model.allowed_data_scopes)} onChange={event => setModel(previous => ({ ...previous, allowed_data_scopes: parsePolicyList(event.target.value) }))} placeholder="workspace, knowledge:quality"/></Field>
         <Field label="操作白名单"><input value={listText(model.allowed_operations)} onChange={event => setModel(previous => ({ ...previous, allowed_operations: parsePolicyList(event.target.value) }))} placeholder="read, list"/></Field>

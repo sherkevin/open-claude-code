@@ -14,10 +14,10 @@ const demoDescriptions = new Map<string, string>([
   ['查询演示业务日期2026-11-14向哪些客户发货及数量，按客户汇总；数量单位为件。', '按客户汇总 2026-11-14 的发货数量，数量单位为件。'],
   ['查询合成订单区域总额，业务范围2026-11-01至2026-11-14；后台聚合，不返回全表。', '按区域汇总 2026-11-01 至 2026-11-14 的订单金额，可选择区域和数据规模。'],
   ['查询合成业务日期2026-11-14向哪些客户发货及数量，按客户汇总；数量单位为件。', '按客户汇总 2026-11-14 的发货数量，数量单位为件。'],
-  ['Search synthetic Chinese company rules; always returns source IDs and labels data as demo.', '检索中文企业制度示例资料，返回来源编号，并标明为示例数据。'],
-  ['Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.', '创建并保存一条示例工单。此操作需要用户审批；request_key 用于防止重复创建。'],
-  ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '读取已保存的示例工单，支持精确筛选，不修改业务记录。'],
-  ['Query line/batch quality counts and calculate the weighted yield for an inclusive date range. Returns database/table/fields/filter/time/aggregation provenance.', '按产线、批次和日期范围查询示例质量数据，按检验数量加权计算合格率，包含起止日期。返回数据库、数据表、字段、筛选条件、时间和汇总口径。'],
+  ['Search synthetic Chinese company rules; always returns source IDs and labels data as demo.', '检索中文企业制度资料，返回来源编号。'],
+  ['Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.', '创建并保存工单；需要审批，支持防止重复创建。'],
+  ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '按条件读取已保存的工单，不修改业务记录。'],
+  ['Query line/batch quality counts and calculate the weighted yield for an inclusive date range. Returns database/table/fields/filter/time/aggregation provenance.', '按产线、批次和日期查询质量数据，计算加权合格率并返回来源。'],
   ['Acceptance-only bounded read delay, useful for checking cancellation. Does not create or modify records.', '连接诊断专用：执行有时长上限的只读延迟查询，用于检查取消操作，不创建或修改记录。'],
 ]);
 export function displayToolDescription(description: string) {
@@ -78,7 +78,7 @@ export function toolExample(connection: Connection, tool: MCPTool, binding?: Ass
   };
   const region = preset('region'); const rows = preset('dataset_rows');
   const dates = [...new Set(description.match(/\b\d{4}-\d{2}-\d{2}\b/g) || [])];
-  const scope = [typeof rows === 'number' ? `${rows.toLocaleString('zh-CN')}条${demo ? '示例' : ''}数据` : '', dates.length === 1 ? dates[0] : dates.length === 2 ? `${dates[0]}至${dates[1]}` : '', region !== undefined ? `区域“${region}”` : ''].filter(Boolean).join('，');
+  const scope = [typeof rows === 'number' ? `${rows.toLocaleString('zh-CN')}条${demo ? '非生产' : ''}数据` : '', dates.length === 1 ? dates[0] : dates.length === 2 ? `${dates[0]}至${dates[1]}` : '', region !== undefined ? `区域“${region}”` : ''].filter(Boolean).join('，');
   // Business wording requires an explicit description, never a suggestive tool name.
   const shipment = /发货/.test(description) && /客户/.test(description) && /数量|件/.test(description);
   const orders = /订单/.test(description) && /总额|金额/.test(description);
@@ -127,10 +127,10 @@ export function AssistantCapabilityGuide({ assistant, connections, knowledge, di
   const boundKnowledge = knowledge.filter(item => assistant.knowledge_base_ids?.includes(item.id));
   const readyKnowledge = boundKnowledge.filter(item => item.enabled && item.document_count > 0);
   const examples = assistantExamples(assistant, connections, knowledge);
-  return <section className="assistant-capability-guide" aria-label="助手用途与提问示例"><div className="capability-section-heading"><h2>这个助手能做什么</h2><span>根据已保存的配置</span></div>
+  return <section className="assistant-capability-guide" aria-label="助手用途与提问参考"><div className="capability-section-heading"><h2>这个助手能做什么</h2><span>根据已保存的配置</span></div>
     <div className="capability-overview"><div><Database size={19}/><strong>{tools.length} 项业务工具</strong><p>{tools.length ? '查看已授权工具的用途、条件与审批方式。' : '暂无已接通且授权的业务工具。'}</p></div><div><BookOpen size={19}/><strong>{readyKnowledge.length} 个已绑定知识库</strong><p>{readyKnowledge.length ? readyKnowledge.map(item => `${item.name}（${item.document_count}份）`).join('、') : '尚未绑定包含文档的启用知识库。'}</p></div></div>
     <ExampleQuestions examples={examples} disabled={disabled || !assistant.enabled} onChoose={onChoose}/>
-    {!examples.length && <p className="capability-note">接入资料或可查询工具后，这里会显示对应的提问示例。你也可以新建会话，说明需要完成的工作。</p>}
+    {!examples.length && <p className="capability-note">接入资料或可查询工具后，这里会显示对应的提问参考。你也可以新建会话，说明需要完成的工作。</p>}
     {tools.length > 0 && <details className="capability-tool-list"><summary>查看业务能力与适用条件 · {tools.length} 项<ChevronDown size={16}/></summary>{tools.map(({ connection, tool, binding }) => <ToolCapability key={`${connection.id}:${tool.name}`} connection={connection} tool={tool} binding={binding} onChoose={!disabled && assistant.enabled ? onChoose : undefined}/>)}</details>}
     {assistant.connections.length > 0 && tools.length === 0 && <p className="capability-note">已保存连接绑定，但当前未发现可用的已授权工具，请核对连接状态与工具选择。</p>}
     {boundKnowledge.some(item => !item.enabled || item.document_count === 0) && <p className="capability-note">部分已绑定知识库处于停用或无文档状态，未列为可提问资料。</p>}
