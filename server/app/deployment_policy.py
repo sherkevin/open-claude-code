@@ -83,7 +83,7 @@ _TRIAL_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/conversations/overview"): "conversations.read",
     ("POST", "/api/v1/conversations"): "conversations.write",
     ("GET", "/api/v1/conversations/{item_id}"): "conversations.read",
-    ("GET", "/api/v1/conversations/{item_id}/trajectory"): "conversations.read",
+    ("GET", "/api/v1/conversations/{item_id}/trajectory"): "messages.read",
     ("PATCH", "/api/v1/conversations/{item_id}"): "conversations.write",
     ("GET", "/api/v1/conversations/{item_id}/messages"): "messages.read",
     ("POST", "/api/v1/conversations/{item_id}/messages"): "messages.send",
@@ -113,6 +113,14 @@ _TRIAL_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/sources/{source_id}"): "sources.read",
 }
 TRIAL_ROUTES = MappingProxyType(_TRIAL_ROUTES)
+
+# Composite projections must preserve every existing data boundary. Metadata
+# access alone cannot reveal message bodies or run/tool receipts through a new
+# route. Enforce these exact requirements in the middleware before handlers.
+_TRIAL_ROUTE_REQUIREMENTS = MappingProxyType({
+    ("GET", "/api/v1/conversations/overview"): frozenset({"runs.read"}),
+    ("GET", "/api/v1/conversations/{item_id}/trajectory"): frozenset({"conversations.read", "runs.read"}),
+})
 
 
 def _disabled(message: str = "此功能未在当前工作空间开放") -> AppError:
@@ -171,8 +179,10 @@ class DeploymentPolicy:
     def route_allowed(self, method: str, template: str | None) -> bool:
         if not self.is_trial:
             return True
-        capability = TRIAL_ROUTES.get((method.upper(), template))
-        return bool(capability and capability in self._capabilities)
+        route = (method.upper(), template)
+        capability = TRIAL_ROUTES.get(route)
+        return bool(capability and capability in self._capabilities
+                    and _TRIAL_ROUTE_REQUIREMENTS.get(route, frozenset()) <= self._capabilities)
 
     def require_route(self, method: str, template: str | None) -> None:
         if not self.route_allowed(method, template):

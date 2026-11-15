@@ -334,6 +334,58 @@ def test_deployment_policy_is_exact_read_only_and_fail_closed(tmp_path, monkeypa
         Settings(provider_settings="")
 
 
+@pytest.mark.parametrize("missing", ["conversations.read", "messages.read", "runs.read", None])
+def test_observability_routes_require_all_exposed_data_capabilities(tmp_path, monkeypatch, missing):
+    """A new projection cannot bypass a disabled message or run read boundary."""
+    from app import session_observability
+
+    required = {"conversations.read", "messages.read", "runs.read"}
+    selected = required - {missing}
+    settings = Settings(
+        data_dir=tmp_path / "observability-capabilities",
+        provider_settings="",
+        deployment_mode="trial",
+        trial_capabilities=tuple(sorted({"auth", *selected})),
+        origins=("http://testserver",),
+    )
+    calls = []
+    def projected_overview(service, user):
+        calls.append("overview")
+        return {"projection": "overview"}
+    def projected_trajectory(service, user, conversation_id, **kwargs):
+        calls.append("trajectory")
+        return {"projection": "trajectory"}
+    monkeypatch.setattr(session_observability, "overview", projected_overview)
+    monkeypatch.setattr(session_observability, "trajectory", projected_trajectory)
+    runtime_connects = FakeRuntime.connects
+    app = create_app(settings, runtime_factory=FakeRuntime)
+    with TestClient(app) as client:
+        service = app.state.service
+        service.create_user({"username": "member", "display_name": "成员", "password": PASSWORD, "role": "member"})
+        login(client, "member")
+        before = table_counts(service)
+        expectations = [
+            ("overview", "/api/v1/conversations/overview", "/api/v1/conversations/overview",
+             {"conversations.read", "runs.read"} <= selected),
+            ("trajectory", "/api/v1/conversations/owned/trajectory", "/api/v1/conversations/{item_id}/trajectory",
+             required <= selected),
+        ]
+        for name, path, template, allowed in expectations:
+            assert service.policy.route_allowed("GET", template) is allowed
+            response = client.get(path)
+            if allowed:
+                assert response.status_code == 200, response.text
+                assert response.json() == {"projection": name}
+            else:
+                assert_feature_disabled(response)
+            # CORS preflight cannot advertise a denied composite route either.
+            preflight = client.options(path, headers={"Origin": "http://testserver", "Access-Control-Request-Method": "GET"})
+            assert preflight.status_code == (200 if allowed else 403)
+        assert calls == [name for name, _, _, allowed in expectations if allowed]
+        assert table_counts(service) == before
+        assert FakeRuntime.connects == runtime_connects
+
+
 @pytest.mark.parametrize("mode", ["", "unknown", "NORMAL", "TRIAL", "Trial", " trial ", "normal ", " normal"])
 def test_deployment_mode_explicit_values_are_never_normalized(mode, monkeypatch):
     with pytest.raises(ValueError, match="AGENT_DEPLOYMENT_MODE"):
