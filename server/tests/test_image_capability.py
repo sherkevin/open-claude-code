@@ -117,6 +117,28 @@ def test_image_requires_explicit_capability(entry):
     with pytest.raises(AppError) as exc: require_image_capability(service,'selected')
     assert exc.value.code=='VISION_UNAVAILABLE'
 
+
+def test_text_model_rejection_names_only_public_available_visual_choices():
+    catalog=SimpleNamespace(models={'glm-5.3':{'label':'GLM-5.3','capabilities':['general','chinese']},
+        'unknown-capability':{'label':'默认模型','capabilities':[]}},public=lambda:[
+        {'label':'Dano','available':True,'capabilities':['multimodal'],'upstream_model':'private-route'},
+        {'label':'DeepSeek','available':True,'capabilities':['multimodal']},
+        {'label':'混元 4','available':True,'capabilities':['multimodal']},
+        {'label':'尚未开通视觉','available':False,'capabilities':['multimodal']},
+        {'label':'GLM-5.3','available':True,'capabilities':['general','chinese']},
+    ])
+    with pytest.raises(AppError) as error:
+        require_image_capability(SimpleNamespace(catalog=catalog),'glm-5.3')
+    assert error.value.code=='VISION_UNAVAILABLE'
+    assert 'GLM-5.3 当前仅支持文字输入' in error.value.message
+    assert 'Dano、DeepSeek、混元 4' in error.value.message
+    assert '保留图片' in error.value.message and '新建会话并重新附图' in error.value.message
+    assert 'private-route' not in error.value.message and '尚未开通视觉' not in error.value.message
+    with pytest.raises(AppError) as unknown:
+        require_image_capability(SimpleNamespace(catalog=catalog),'unknown-capability')
+    assert '仅支持文字' not in unknown.value.message
+    assert '尚未启用图片理解' in unknown.value.message
+
 def test_image_capability_is_rechecked_after_admin_revocation():
     entry={'capabilities':['multimodal']}
     service=SimpleNamespace(catalog=SimpleNamespace(models={'selected':entry}))

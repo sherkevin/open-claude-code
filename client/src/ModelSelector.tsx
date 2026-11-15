@@ -78,7 +78,9 @@ export default function ModelSelector({ models, value, disabled = false, disable
         options[next]?.focus();
       }}>{models.map(option => {
         const reason = !option.available ? option.unavailable_reason || '暂不可用' : requiresNew(option.id) ? `${onNewConversation ? '新建会话使用' : '需新对话'} · 当前对话和记忆保留` : '';
-        return <button key={option.id} type="button" role="option" aria-selected={option.id === value.model_id} tabIndex={option.id === value.model_id?0:-1} disabled={locked || !option.available || (requiresNew(option.id) && !onNewConversation)} className="fw-model-option" onClick={() => choose(option)}><span><strong>{option.label}</strong>{reason && <small>{reason}</small>}</span>{option.id === value.model_id && <Check size={17} aria-hidden="true"/>}</button>;
+        const inputSupport = option.available && option.capabilities?.length ? option.capabilities.includes('multimodal') ? '支持图片' : '仅文字' : '';
+        const detail = [reason, inputSupport].filter(Boolean).join(' · ');
+        return <button key={option.id} type="button" role="option" aria-selected={option.id === value.model_id} tabIndex={option.id === value.model_id?0:-1} disabled={locked || !option.available || (requiresNew(option.id) && !onNewConversation)} className="fw-model-option" onClick={() => choose(option)}><span><strong>{option.label}</strong>{detail && <small>{detail}</small>}</span>{option.id === value.model_id && <Check size={17} aria-hidden="true"/>}</button>;
       })}</div>
     </div>
     {model && <div className="fw-reasoning-control">

@@ -71,6 +71,20 @@ describe('public model selection', () => {
     expect(html).toMatch(/role="option" aria-selected="false" tabindex="-1" class="fw-model-option"><span><strong>GLM-5.3/);
     expect(html).not.toContain('需新对话');
   });
+  it('makes verified image capability visible without advertising unavailable or unknown routes', () => {
+    const catalog = [
+      { ...models[0], capabilities: ['industrial', 'multimodal'] },
+      { ...models[1], capabilities: ['general', 'chinese'] },
+      { ...models[2], available: false, capabilities: ['multimodal'], unavailable_reason: '尚未开通' },
+    ];
+    const html = renderToStaticMarkup(<ModelSelector models={catalog} value={{ model_id: 'glm-5.3', reasoning_level: 'default' }} onChange={() => {}}/>);
+    expect(html).toContain('<strong>Dano-v2.1</strong><small>支持图片</small>');
+    expect(html).toContain('<strong>GLM-5.3</strong><small>仅文字</small>');
+    expect(html).toContain('<strong>deepseek-v4.1-flash</strong><small>尚未开通</small>');
+    const unknown = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'glm-5.3', reasoning_level: 'default' }} onChange={() => {}}/>);
+    expect(unknown).not.toContain('仅文字');
+    expect(unknown).not.toContain('支持图片');
+  });
   it('offers an actionable new-conversation choice without disabling an available protected model', () => {
     const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'high' }} hasHistory onChange={() => {}} onNewConversation={() => {}}/>);
     const option = html.match(/<button[^>]*role="option"[^>]*><span><strong>GLM-5.3[\s\S]*?<\/button>/)?.[0];

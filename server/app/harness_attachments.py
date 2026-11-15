@@ -183,7 +183,19 @@ def _text(service, row, data):
 def require_image_capability(service, model_id):
     model = service.catalog.models.get(model_id, {})
     if not model.get("enabled", True) or "multimodal" not in model.get("capabilities", []):
-        raise AppError(422, "VISION_UNAVAILABLE", "当前模型未配置图片理解能力。请保留图片并选择支持图片的模型，或移除图片、补充文字说明后发送")
+        message = "当前模型尚未启用图片理解能力。"
+        label = model.get("label")
+        if label and model.get("enabled", True) and model.get("capabilities"):
+            message = f"{label} 当前仅支持文字输入，无法直接识别图片。"
+        # Public availability includes configured routes and provider readiness;
+        # never recommend an unopened model or expose its private upstream ID.
+        choices = [item["label"] for item in service.catalog.public()
+                   if item["available"] and "multimodal" in item.get("capabilities", [])] if label else []
+        if choices:
+            message += f"请保留图片，选择{'、'.join(choices[:3])}后重试；需要新会话时，可新建会话并重新附图。"
+        else:
+            message += "请保留图片并选择支持图片的模型，或移除图片、补充文字说明后发送。"
+        raise AppError(422, "VISION_UNAVAILABLE", message)
 
 
 def _frozen_model_id(run):
