@@ -1,0 +1,234 @@
+{
+  "schema": "knowledge-expansion/v1",
+  "corpus_id": "knowledge-expansion-20261115",
+  "scope": "public-reference-not-company-policy",
+  "paid_model_calls": 0,
+  "auto_bind_assistants": false,
+  "knowledge_bases": [
+    {
+      "id": "maintenance",
+      "name": "设备维护与运维管理",
+      "description": "设备维护策略、运维数据和持续改进的公开技术资料。",
+      "scope": "team"
+    },
+    {
+      "id": "quality",
+      "name": "质量测量与统计过程",
+      "description": "测量可靠性、控制图和过程能力的公开技术资料。",
+      "scope": "team"
+    },
+    {
+      "id": "ot-security",
+      "name": "工业网络与运行韧性",
+      "description": "OT资产、网络隔离和事件响应的公开技术资料。",
+      "scope": "team"
+    }
+  ],
+  "documents": [
+    {
+      "id": "maintenance-strategies",
+      "knowledge_base": "maintenance",
+      "title": "设备维护策略：预防、预测与可靠性",
+      "path": "documents/maintenance-strategies.md",
+      "sha256": "0691e3202f5955d924d56d3aaf8da352d1bce2797872159cff9aca8669a5e2ef",
+      "bytes": 1395,
+      "source_url": "https://www.pnnl.gov/projects/om-best-practices/maintenance-approaches",
+      "publisher": "PNNL",
+      "retrieved_on": "2026-11-15",
+      "source_kind": "official_public",
+      "content_kind": "independent_chinese_summary",
+      "upstream_body_archived": false,
+      "rights_note": "Concise independent paraphrase with official link; no full copyrighted source, proprietary data or media redistributed.",
+      "suggested_questions": [
+        "预防性维护与预测性维护有什么区别？",
+        "设备有振动数据就算实现预测性维护了吗？"
+      ],
+      "retrieval_terms": [
+        "预防性维护",
+        "预测性维护",
+        "设备状态"
+      ]
+    },
+    {
+      "id": "maintenance-data-action",
+      "knowledge_base": "maintenance",
+      "title": "运维数据如何转化为可执行任务",
+      "path": "documents/maintenance-data-action.md",
+      "sha256": "b0bf22654f72db38b301e22bbc837e665bc5ba16eb90db1ecd88c1661ee50d5c",
+      "bytes": 1354,
+      "source_url": "https://www.energy.gov/cmei/femp/operations-and-maintenance-challenges-and-solutions",
+      "publisher": "美国能源部 FEMP",
+      "retrieved_on": "2026-11-15",
+      "source_kind": "official_public",
+      "content_kind": "independent_chinese_summary",
+      "upstream_body_archived": false,
+      "rights_note": "Concise independent paraphrase with official link; no full copyrighted source, proprietary data or media redistributed.",
+      "suggested_questions": [
+        "运维数据很多但没有行动，应补齐哪些环节？",
+        "运行维护工程培训管理之间有什么关系？"
+      ],
+      "retrieval_terms": [
+        "运维",
+        "数据",
+        "行动"
+      ]
+    },
+    {
+      "id": "quality-control-charts",
+      "knowledge_base": "quality",
+      "title": "控制图：异常点、趋势与控制界限",
+      "path": "documents/quality-control-charts.md",
+      "sha256": "a26f82ce2a69b5a03b9a5a957e2d7362dad9803b9d895f9dc9cfc95a1caab9ef",
+      "bytes": 1223,
+      "source_url": "https://www.itl.nist.gov/div898/handbook/pmc/section3/pmc31.htm",
+      "publisher": "NIST/SEMATECH",
+      "retrieved_on": "2026-11-15",
+      "source_kind": "official_public",
+      "content_kind": "independent_chinese_summary",
+      "upstream_body_archived": false,
+      "rights_note": "Concise independent paraphrase with official link; no full copyrighted source, proprietary data or media redistributed.",
+      "suggested_questions": [
+        "所有点在控制界限内就代表过程稳定吗？",
+        "控制图为什么要保留采样顺序？"
+      ],
+      "retrieval_terms": [
+        "控制图",
+        "控制界限",
+        "非随机"
+      ]
+    },
+    {
+      "id": "quality-capability",
+      "knowledge_base": "quality",
+      "title": "过程能力：Cp、Cpk及计算前提",
+      "path": "documents/quality-capability.md",
+      "sha256": "8d1a3f16096bc9d2196cfdaad0af76d9fe45f273ec74c2e1fda6fcfaef118ef2",
+      "bytes": 1217,
+      "source_url": "https://www.itl.nist.gov/div898/handbook/pmc/section1/pmc16.htm",
+      "publisher": "NIST/SEMATECH",
+      "retrieved_on": "2026-11-15",
+      "source_kind": "official_public",
+      "content_kind": "independent_chinese_summary",
+      "upstream_body_archived": false,
+      "rights_note": "Concise independent paraphrase with official link; no full copyrighted source, proprietary data or media redistributed.",
+      "suggested_questions": [
+        "Cp与Cpk分别考虑什么？",
+        "过程没有稳定时能直接比较Cpk吗？"
+      ],
+      "retrieval_terms": [
+        "Cp",
+        "Cpk",
+        "稳定"
+      ]
+    },
+    {
+      "id": "quality-measurement-control",
+      "knowledge_base": "quality",
+      "title": "测量过程：偏差、精密度与检查标准",
+      "path": "documents/quality-measurement-control.md",
+      "sha256": "878d4ed9ec46193fc72c1bb76fc60f7e4906707bd5473051e57eec5984b00abb",
+      "bytes": 1247,
+      "source_url": "https://www.itl.nist.gov/div898/handbook/mpc/section2/mpc21.htm",
+      "publisher": "NIST/SEMATECH",
+      "retrieved_on": "2026-11-15",
+      "source_kind": "official_public",
+      "content_kind": "independent_chinese_summary",
+      "upstream_body_archived": false,
+      "rights_note": "Concise independent paraphrase with official link; no full copyrighted source, proprietary data or media redistributed.",
+      "suggested_questions": [
+        "仪器每次读数接近是否就说明准确？",
+        "检查标准如何发现测量过程漂移？"
+      ],
+      "retrieval_terms": [
+        "检查标准",
+        "偏差",
+        "校准"
+      ]
+    },
+    {
+      "id": "ot-asset-inventory",
+      "knowledge_base": "ot-security",
+      "title": "OT资产清单与分类维护",
+      "path": "documents/ot-asset-inventory.md",
+      "sha256": "12846717689fba3807bf304cb8c528f948abf9368c8d772f1fefdabd313411ee",
+      "bytes": 1356,
+      "source_url": "https://www.cyber.gov.au/publication/foundations-for-ot-cybersecurity-asset-inventory-guidance-for-owners-and-operators",
+      "publisher": "ASD ACSC及联合发布机构",
+      "retrieved_on": "2026-11-15",
+      "source_kind": "official_public",
+      "content_kind": "independent_chinese_summary",
+      "upstream_body_archived": false,
+      "rights_note": "Concise independent paraphrase with official link; no full copyrighted source, proprietary data or media redistributed.",
+      "suggested_questions": [
+        "OT资产清单为什么需要分类和持续维护？",
+        "资产清单除了设备名称还要关注什么？"
+      ],
+      "retrieval_terms": [
+        "OT",
+        "资产清单",
+        "生命周期"
+      ]
+    },
+    {
+      "id": "ot-network-decisions",
+      "knowledge_base": "ot-security",
+      "title": "OT连接与远程维护的安全决策",
+      "path": "documents/ot-network-decisions.md",
+      "sha256": "c66e6139d08c891933915e0eb419e07f12abffc97dc8213c5961284c7cf5bab2",
+      "bytes": 1311,
+      "source_url": "https://www.cyber.gov.au/publication/principles-of-operational-technology-cyber-security",
+      "publisher": "ASD ACSC及联合发布机构",
+      "retrieved_on": "2026-11-15",
+      "source_kind": "official_public",
+      "content_kind": "independent_chinese_summary",
+      "upstream_body_archived": false,
+      "rights_note": "Concise independent paraphrase with official link; no full copyrighted source, proprietary data or media redistributed.",
+      "suggested_questions": [
+        "OT网络隔离为什么还要检查管理账户和管理路径？",
+        "远程维护为什么需要通知现场人员？"
+      ],
+      "retrieval_terms": [
+        "OT",
+        "管理",
+        "远程维护"
+      ]
+    },
+    {
+      "id": "incident-response-management",
+      "knowledge_base": "ot-security",
+      "title": "事件响应如何进入日常风险管理",
+      "path": "documents/incident-response-management.md",
+      "sha256": "8913e5fb931b93a49d24793eb3710263aab850a2c586f416c38457827b8770c0",
+      "bytes": 1261,
+      "source_url": "https://csrc.nist.gov/pubs/sp/800/61/r3/final",
+      "publisher": "NIST",
+      "retrieved_on": "2026-11-15",
+      "source_kind": "official_public",
+      "content_kind": "independent_chinese_summary",
+      "upstream_body_archived": false,
+      "rights_note": "Concise independent paraphrase with official link; no full copyrighted source, proprietary data or media redistributed.",
+      "suggested_questions": [
+        "事件响应为什么需要纳入日常风险管理？",
+        "事件记录应区分已核实事实和哪些内容？"
+      ],
+      "retrieval_terms": [
+        "事件响应",
+        "风险管理",
+        "恢复"
+      ]
+    }
+  ],
+  "excluded_existing_material": {
+    "fixture": "huawi-company-kb-v1",
+    "reason": "manifest.school_cloud_only=true; not included in this Tencent expansion package",
+    "candidate_documents": 18,
+    "existing_remote_hash_matches": 0
+  },
+  "inventory_baseline": {
+    "knowledge_bases": 6,
+    "documents": 47,
+    "pages": 621,
+    "chunks": 2049,
+    "source": "read-only Tencent knowledge metadata at preparation time"
+  }
+}
