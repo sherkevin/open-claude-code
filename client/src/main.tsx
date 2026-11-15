@@ -11,5 +11,7 @@ import './source-evidence.css';
 import './business-result.css';
 import './connections-onboarding.css';
 import './capability-settings.css';
+import './capability-guide.css';
+import './business-data.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);

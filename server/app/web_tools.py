@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import os
 import re
 import socket
 import time
@@ -24,6 +25,7 @@ PROXY_FAKE_IPS = ipaddress.ip_network("198.18.0.0/15")
 # Fixed public-IP HTTPS endpoints avoid resolving the resolver through fake DNS.
 # TLS certificates are verified against each literal endpoint address.
 DOH_ENDPOINTS = ("https://1.1.1.1/dns-query", "https://8.8.8.8/resolve")
+ALIDNS_ENDPOINTS = ("https://223.5.5.5/resolve",)
 SEARCH_PROVIDERS = {"bing_rss", "searxng", "brave"}
 TRACKING_QUERY_KEYS = frozenset({"fbclid", "gclid", "dclid", "mc_cid", "mc_eid"})
 MAX_SEARCH_RESULTS = 8
@@ -41,7 +43,14 @@ async def public_dns_answers(hostname, timeout=6):
     The public resolver receives the requested hostname, never page content,
     knowledge documents or credentials. Private answers remain a hard failure.
     """
-    for endpoint in DOH_ENDPOINTS:
+    # Deployment-only opt-in; no user/tool argument can choose a resolver.
+    # Default egress remains unchanged. AliDNS receives only the public host,
+    # never the search query, page contents, credentials or internal documents.
+    provider = os.getenv("AGENT_WEB_DNS_PROVIDER", "default").strip().lower()
+    if provider not in {"default", "alidns"}:
+        raise AppError(503, "WEB_DNS_CONFIG_INVALID", "网页域名解析配置无效，请联系管理员")
+    endpoints = ALIDNS_ENDPOINTS if provider == "alidns" else DOH_ENDPOINTS
+    for endpoint in endpoints:
         try:
             with anyio.fail_after(timeout):
                 transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
@@ -102,10 +111,63 @@ class PublicNetworkBackend(httpcore.AsyncNetworkBackend):
     """
     def __init__(self):
         self.backend = AutoBackend()
+        self.egress = None
+        configured = os.getenv("AGENT_WEB_EGRESS_SOCKS5", "").strip()
+        if configured:
+            match = re.fullmatch(r"(127\.0\.0\.1|\[::1\]):([0-9]{1,5})", configured)
+            if not match or not 1 <= int(match[2]) <= 65535:
+                raise AppError(503, "WEB_EGRESS_CONFIG_INVALID", "网页出站配置无效，请联系管理员")
+            self.egress = (match[1].strip("[]"), int(match[2]))
+
+    async def _connect_approved_ip(self, address, port, timeout, local_address, socket_options):
+        if self.egress is None:
+            return await self.backend.connect_tcp(address, port, timeout, local_address, socket_options)
+        # Only an administrator-configured loopback relay is reachable here.
+        # DNS/SSRF validation has already succeeded for every answer. Send a
+        # literal IP, never a hostname that the proxy could resolve differently.
+        stream = None
+        try:
+            with anyio.fail_after(timeout or 15):
+                stream = await self.backend.connect_tcp(*self.egress, timeout, local_address, socket_options)
+
+                async def read_exact(size):
+                    data = bytearray()
+                    while len(data) < size:
+                        chunk = await stream.read(size - len(data), timeout)
+                        if not chunk:
+                            raise httpcore.ConnectError("Web egress handshake ended early")
+                        data.extend(chunk)
+                    return bytes(data)
+
+                await stream.write(b"\x05\x01\x00", timeout)
+                if await read_exact(2) != b"\x05\x00":
+                    raise httpcore.ConnectError("Web egress authentication is unsupported")
+                approved = ipaddress.ip_address(address)
+                request = b"\x05\x01\x00" + (b"\x01" if approved.version == 4 else b"\x04")
+                await stream.write(request + approved.packed + int(port).to_bytes(2, "big"), timeout)
+                reply = await read_exact(4)
+                if reply[:3] != b"\x05\x00\x00" or reply[3] not in {1, 3, 4}:
+                    raise httpcore.ConnectError("Web egress connection was refused")
+                size = {1: 4, 4: 16}.get(reply[3])
+                if size is None:
+                    size = (await read_exact(1))[0]
+                await read_exact(size + 2)
+                # httpcore still owns TLS and validates the original hostname.
+                return stream
+        except BaseException:
+            if stream is not None:
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await stream.aclose()
+                    except Exception:
+                        pass
+            raise
 
     async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
         hostname = host.decode() if isinstance(host, bytes) else host
         try:
+            if port not in {80, 443}:
+                raise AppError(422, "WEB_URL_DENIED", "网页地址仅支持 HTTP 或 HTTPS 标准端口")
             try:
                 literal = ipaddress.ip_address(hostname)
             except ValueError:
@@ -125,7 +187,7 @@ class PublicNetworkBackend(httpcore.AsyncNetworkBackend):
             if not addresses or any(not global_unicast(address) for address in addresses):
                 raise AppError(422, "WEB_URL_DENIED", "网页地址指向非公开网络")
             # No second hostname resolution: the transport connects to this IP.
-            return await self.backend.connect_tcp(addresses[0], port, timeout, local_address, socket_options)
+            return await self._connect_approved_ip(addresses[0], port, timeout, local_address, socket_options)
         except AppError:
             raise
         except (OSError, ValueError, asyncio.TimeoutError) as exc:
@@ -271,7 +333,7 @@ def _result_item(raw: dict, *, fallback_title: str = "") -> dict | None:
     if not url:
         return None
     title = str(raw.get("title") or raw.get("name") or fallback_title or url)[:500]
-    excerpt = str(raw.get("excerpt") or raw.get("snippet") or raw.get("content") or "")[:3000]
+    excerpt = str(raw.get("excerpt") or raw.get("snippet") or raw.get("description") or raw.get("content") or "")[:3000]
     published = raw.get("published_at") or raw.get("publishedDate") or raw.get("date")
     return {"title": title, "url": url, "excerpt": excerpt,
             "published_at": str(published)[:100] if published else None}

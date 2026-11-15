@@ -85,7 +85,7 @@ function DefaultNodeForm({ editable, models, defaultModelId }: { editable: boole
       <Field<Record<string, unknown>> name="config">
         {({ field }) => {
           const config = field.value || {};
-          const mode = config.mode === 'model' ? '模型执行' : '合成执行';
+          const mode = config.mode === 'model' ? '模型执行' : '演示执行';
           const selectedModelId = typeof config.model_id === 'string' && config.model_id ? config.model_id : config.mode === 'model' ? defaultModelId : undefined;
           const selectedModel = selectedModelId ? models.find(item => item.id === selectedModelId) : undefined;
           const model = selectedModel ? ` · ${selectedModel.label}` : typeof config.model_id === 'string' && config.model_id ? ` · ${config.model_id}` : '';

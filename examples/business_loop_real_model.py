@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import business_loop_preview as fixture
 
-BRAND = "知行工作台 · 真实模型合成验收"
+BRAND = "知行工作台 · 真实模型演示验收"
 MARKER = "real-model-synthetic-business/v1"
 TOOLS = ("order_summary", "shipment_summary", "slow_order_summary", "oversized_order_rows")
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
@@ -61,8 +61,8 @@ def private_json(path: Path) -> dict:
 def business_result(path, kind, dataset_rows, region):
     from decimal import Decimal
     result = fixture.aggregate(path, kind, dataset_rows, region)
-    result["summary"] = f"合成业务数据：匹配 {result['scope']['匹配原始记录数']} 条原始记录，返回 {len(result['rows'])} 行汇总。"
-    result["warnings"] = ["本页为合成测试数据，不代表华微业务数据。"]
+    result["summary"] = f"演示业务数据：匹配 {result['scope']['匹配原始记录数']} 条原始记录，返回 {len(result['rows'])} 行汇总。"
+    result["warnings"] = ["本页为演示测试数据，不代表华微业务数据。"]
     # This fixture owns the SQL contract: these three columns are additive,
     # disjoint group sums in the same scope/unit. General MCP tools must make
     # their own explicit declaration; the host never guesses from a column name.
@@ -100,24 +100,24 @@ def create_mcp(path: Path, token: str):
     @mcp.tool(annotations=annotations, structured_output=True)
     async def order_summary(dataset_rows: Literal[10000, 100000] = 10000,
                             region: Literal["全部", "华北", "华东", "华南"] = "华北") -> dict[str, Any]:
-        """查询合成订单区域总额，业务范围2026-11-01至2026-11-14；后台聚合，不返回全表。"""
+        """查询演示订单区域总额，业务范围2026-11-01至2026-11-14；后台聚合，不返回全表。"""
         return await query("order_summary", "orders", dataset_rows, region)
 
     @mcp.tool(annotations=annotations, structured_output=True)
     async def shipment_summary(dataset_rows: Literal[10000, 100000] = 10000,
                                region: Literal["全部", "华北", "华东", "华南"] = "全部") -> dict[str, Any]:
-        """查询合成业务日期2026-11-14向哪些客户发货及数量，按客户汇总；数量单位为件。"""
+        """查询演示业务日期2026-11-14向哪些客户发货及数量，按客户汇总；数量单位为件。"""
         return await query("shipment_summary", "shipments", dataset_rows, region)
 
     @mcp.tool(annotations=annotations, structured_output=True)
     async def slow_order_summary(dataset_rows: Literal[10000, 100000] = 10000,
                                  region: Literal["全部", "华北", "华东", "华南"] = "华北") -> dict[str, Any]:
-        """取消验收专用，等待20秒再查询合成订单；只在用户明确要求取消测试时使用。"""
+        """取消验收专用，等待20秒再查询演示订单；只在用户明确要求取消测试时使用。"""
         return await query("slow_order_summary", "orders", dataset_rows, region, slow=True)
 
     @mcp.tool(annotations=annotations, structured_output=True)
     async def oversized_order_rows() -> dict[str, Any]:
-        """超限验收专用：故意返回201行合成数据；宿主应拒绝，不得把样本当全量。"""
+        """超限验收专用：故意返回201行演示数据；宿主应拒绝，不得把样本当全量。"""
         calls.append({"tool": "oversized_order_rows", "started_at": time.time(), "completed": True})
         fixture.secure_json(path.parent / "mcp-calls.json", {"synthetic_dataset": True, "calls": calls})
         return {"title": "超限验收", "rows": [{"order": i} for i in range(201)], "complete": True, "synthetic": True}
@@ -191,7 +191,7 @@ def create_product(args, directory, credentials):
             service = application.state.service
             if not service.db.one("SELECT id FROM users WHERE username=?", (credentials["username"],)):
                 service.create_user({"username": credentials["username"], "password": credentials["password"],
-                                     "display_name": "真实模型合成验收", "role": "admin"})
+                                     "display_name": "真实模型演示验收", "role": "admin"})
             yield
     app.router.lifespan_context = lifespan
     return app
@@ -216,16 +216,16 @@ def client_for(directory):
 def bootstrap(directory):
     with client_for(directory) as (client, metadata):
         credentials = private_json(directory / "credentials.json")
-        connection = fixture.request(client, "POST", "/api/v1/connections", {"name": "真实模型验收 · 合成MCP",
+        connection = fixture.request(client, "POST", "/api/v1/connections", {"name": "真实模型验收 · 演示MCP",
             "url": metadata["mcp_url"], "auth_type": "bearer", "credential": credentials["mcp_bearer"], "scope": "private"}, expected=201)
         tested = fixture.request(client, "POST", f"/api/v1/connections/{connection['id']}/test")
         if tested["status"] != "connected" or {tool["name"] for tool in tested["tools"]} != set(TOOLS):
             raise RuntimeError("Synthetic MCP discovery did not return the expected tools")
         confirmations = {tool["name"]: {"connection_revision": tested["revision"], "definition_digest": tool["definition_digest"],
-            "basis": "已核对独立合成MCP的固定只读SELECT实现；不授权任何生产业务工具。"}
+            "basis": "已核对独立演示MCP的固定只读SELECT实现；不授权任何生产业务工具。"}
             for tool in tested["tools"] if tool.get("read_only_confirmation_eligible")}
-        assistant = fixture.request(client, "POST", "/api/v1/assistants", {"name": "真实模型 · 合成业务验收", "scope": "private",
-            "description": "真实模型与合成业务数据，不含华微数据。",
+        assistant = fixture.request(client, "POST", "/api/v1/assistants", {"name": "真实模型 · 演示业务验收", "scope": "private",
+            "description": "真实模型与演示业务数据，不含华微数据。",
             "instructions": "使用已授权业务工具回答，保留时间、组织、金额与数量单位。无数据不编造，超限需说明不能视为完整数据。引用工具登记的来源。",
             "connections": [{"connection_id": connection["id"], "allowed_tools": list(TOOLS), "auto_approved_tools": list(TOOLS),
                              "read_only_confirmations": confirmations}],
@@ -275,10 +275,10 @@ def serve(args):
 
 
 CASES = {
-    "orders_10k": ("orders", 10000, "华北", "查询1万条合成订单中，华北区域在2026-11-01至14日的订单总额，给出准确元金额、订单数和来源。"),
-    "orders_100k": ("orders", 100000, "华北", "查询10万条合成订单中，华北区域在2026-11-01至14日的订单总额，给出准确元金额、订单数和来源。"),
-    "shipments_100k": ("shipments", 100000, "全部", "业务日期是2026-11-14：10万条合成订单中今天向哪些客户发货，各多少件？给出客户、件数和来源。"),
-    "cancel": ("orders", 10000, "华北", "执行取消验收：请调用slow_order_summary查询1万条华北合成订单，等待20秒的测试工具，其他工具不要调用。"),
+    "orders_10k": ("orders", 10000, "华北", "查询1万条演示订单中，华北区域在2026-11-01至14日的订单总额，给出准确元金额、订单数和来源。"),
+    "orders_100k": ("orders", 100000, "华北", "查询10万条演示订单中，华北区域在2026-11-01至14日的订单总额，给出准确元金额、订单数和来源。"),
+    "shipments_100k": ("shipments", 100000, "全部", "业务日期是2026-11-14：10万条演示订单中今天向哪些客户发货，各多少件？给出客户、件数和来源。"),
+    "cancel": ("orders", 10000, "华北", "执行取消验收：请调用slow_order_summary查询1万条华北演示订单，等待20秒的测试工具，其他工具不要调用。"),
     "oversize": (None, None, None, "执行超限验收：请仅调用一次oversized_order_rows，然后说明结果能否作为完整订单数据使用，不改用其他工具。"),
 }
 
@@ -346,7 +346,7 @@ def verify(args):
             kind, size, region, prompt = CASES[case]
             before = len(private_json(directory / "mcp-calls.json")["calls"])
             conversation = fixture.request(client, "POST", "/api/v1/conversations", {"assistant_id": metadata["assistant_id"],
-                "title": "真实模型合成验收 · " + case, "model_id": metadata["model_id"], "reasoning_level": metadata["reasoning_level"]}, expected=201)
+                "title": "真实模型演示验收 · " + case, "model_id": metadata["model_id"], "reasoning_level": metadata["reasoning_level"]}, expected=201)
             submitted_at = time.monotonic()
             run = fixture.request(client, "POST", f"/api/v1/conversations/{conversation['id']}/messages",
                 {"text": prompt, "file_ids": [], "client_request_id": "real-acceptance-" + secrets.token_hex(12)}, expected=202)

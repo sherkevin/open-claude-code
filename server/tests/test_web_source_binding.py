@@ -7,10 +7,14 @@ import json
 from dataclasses import replace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.evidence import create_evidence_router
 from app.harness_runtime import HarnessRuntime
 from app.runtime import RunManager, SDKRuntime
+from app.security import AppError
 from app.service import Service
 from app.workspace_tools import build_workspace_tools
 from app.web_tools import WebTools
@@ -234,3 +238,86 @@ def test_disabled_account_cannot_bind_previously_completed_sources(system):
     service.db.event(run['id'], 'tool.completed', {'success': True, 'source_ids': [item['id']]})
     service.db.execute('UPDATE users SET enabled=0 WHERE id=?', (owner['id'],))
     assert service.evidence.finalize(run['id'], f"Claim [[source:{item['id']}]]")['citations'] == []
+
+
+@pytest.mark.parametrize('mode', ['search_candidate', 'read', 'cited', 'search_failed'])
+def test_real_search_handler_keeps_public_origin_through_ledger_and_source_api(system, monkeypatch, mode):
+    """Only HTTP is synthetic; the real tool, registry, ledger and API all run."""
+    service, owner, assistant, run = system
+    original = 'https://example.org/reference/rsi'
+    calls = []
+
+    async def fetch(url, **kwargs):
+        calls.append(url)
+        if url.startswith('https://www.bing.com/search?'):
+            if mode == 'search_failed':
+                raise AppError(502, 'WEB_DNS_UNAVAILABLE', '公开域名解析暂时不可用，请稍后重试')
+            return url, 'application/rss+xml', (
+                '<rss><channel><item><title>Public terminology reference</title>'
+                f'<link>{original}</link><description>Public synthetic search excerpt.</description>'
+                '</item></channel></rss>').encode()
+        assert url == original
+        if kwargs.get('recheck'):
+            kwargs['recheck'](url)
+        return url, 'text/html', b'<html><title>Public terminology reference</title><p>Public synthetic page.</p></html>'
+
+    monkeypatch.setattr('app.web_tools.fetch_public', fetch)
+    runtime = runtime_for(system, HarnessRuntime)
+
+    async def invoke(name, arguments):
+        return await runtime.bridge.invoke({'schema': 'workspace-tool/v1', 'sessionId': runtime.session_id,
+            'callId': name + '-origin', 'toolName': name, 'arguments': arguments})
+
+    async def scenario():
+        internal = await invoke('knowledge_search', {'query': 'Pressure'})
+        internal_id = json.loads(internal['content'][0]['text'])['results'][0]['source_id']
+        result = await invoke('web_search', {'query': 'RSI terminology', 'limit': 1})
+        if mode == 'search_failed':
+            assert result.get('is_error') or result.get('isError')
+            return internal_id, None
+        item = json.loads(result['content'][0]['text'])['results'][0]
+        assert item['url'] == original
+        source_id = item['source_id']
+        if mode in {'read', 'cited'}:
+            result = await invoke('web_read', {'url': original, 'query': ''})
+            page = json.loads(result['content'][0]['text'])
+            assert page['url'] == original
+            source_id = page['source_id']
+        return internal_id, source_id
+
+    internal_id, source_id = asyncio.run(scenario())
+    answer = f'Internal fact [[source:{internal_id}]]'
+    if mode == 'cited':
+        answer += f' Public fact [[source:{source_id}]]'
+    citations = finish(system, answer)
+    assert citations[0]['kind'] == 'knowledge'
+    external = [row for row in citations if row['kind'] == 'web']
+    completions = [event['data'] for event in service.db.events(run['id'], 0)
+                   if event['type'] == 'tool.completed' and event['data']['tool_name'].endswith('web_search')]
+    assert len(completions) == 1
+    if mode == 'search_failed':
+        assert external == []
+        assert completions[0]['success'] is False and completions[0]['source_ids'] == []
+        assert not service.db.all("SELECT id FROM evidence_sources WHERE run_id=? AND kind='web'", (run['id'],))
+        return
+    assert completions[0]['success'] is True and completions[0]['source_ids']
+    selected = next(row for row in external if row['id'] == source_id)
+    assert selected['attribution'] == mode
+    # The summary retains an authenticated evidence endpoint. The frontend
+    # must retrieve its original_url afresh, so revocation cannot be bypassed.
+    assert selected['url'] == f'/api/v1/sources/{source_id}'
+    app = FastAPI()
+    app.include_router(create_evidence_router(lambda: service, lambda: owner))
+    client = TestClient(app)
+    response = client.get(selected['url'])
+    assert response.status_code == 200
+    public = response.json()
+    assert public['kind'] == 'web' and public['original_url'] == original
+    assert public['locator']['url'] == original
+    assert public['locator']['content_type'] == ('search_excerpt' if mode == 'search_candidate' else 'page_text')
+    assert client.get(f'/api/v1/sources/{internal_id}').json()['original_url'] is None
+    service.db.execute('UPDATE assistants SET web_search_enabled=0 WHERE id=?', (assistant['id'],))
+    with pytest.raises(AppError) as error:
+        client.get(selected['url'])
+    assert error.value.status == 404
+    assert client.get(f'/api/v1/sources/{internal_id}').status_code == 200

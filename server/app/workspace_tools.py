@@ -136,7 +136,7 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
             return await invoke("knowledge_read", arguments, lambda active, current_user, run_id:
                 service.knowledge.read_for_run(current_user, active, run_id, arguments["document_id"], page=arguments.get("page") or None))
         tools.extend([
-            WorkspaceTool("knowledge_search", "检索当前助手授权的公司及业务知识库，返回文件、页码、摘录和真实 source 引用标记。关于 Better AI 的问题先检索公司资料。", {"query": str, "limit": int}, True, search),
+            WorkspaceTool("knowledge_search", "检索当前助手授权的公司及业务知识库，返回文件、页码、摘录和真实 source 引用标记。用于内部事实和公司材料；公开概念或互联网调研使用 web_search，不把内部同名术语当作通用定义。", {"query": str, "limit": int}, True, search),
             WorkspaceTool("knowledge_read", "按文件 ID 和页码读取授权的知识库原文。document_id 来自检索结果，page 为页码；0 表示读取文件开头。返回可引用 source 标记。", {"document_id": str, "page": int}, True, read),
         ])
     if capability_enabled("search") or capability_enabled("fetch"):
@@ -150,7 +150,7 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
                 web.read_for_run(current_user, active, run_id, arguments["url"], query=arguments.get("query", ""),
                                  call_id=TOOL_CALL_ID.get(), approval_id=APPROVAL_ID.get()))
         if capability_enabled("search"):
-            tools.append(WorkspaceTool("web_search", "搜索公开互联网信息，返回原网页链接、搜索摘要及 source 标记。仅用公开检索词，不发送内部文档、凭据或个人敏感数据。", {"query": str, "limit": int}, True, search_web))
+            tools.append(WorkspaceTool("web_search", "按用户需求实际检索公开互联网，用于联网查询、行业调研、通用概念和原网页查找；不能用内部知识库代替。返回原网页链接、搜索摘要及 source 标记，摘要不代表已读取正文。仅用公开检索词，不发送内部文档、凭据或个人敏感数据。", {"query": str, "limit": int}, True, search_web))
         if capability_enabled("fetch"):
             tools.append(WorkspaceTool("web_read", "读取公开网页正文并生成可核验来源。url 是原网页；query 可用于定位正文，不需要时传空字符串。", {"url": str, "query": str}, True, read_web))
 

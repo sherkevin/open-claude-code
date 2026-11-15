@@ -40,11 +40,11 @@ if str(SERVER_ROOT) not in sys.path:
 
 API_PORT = 8000
 MCP_PORT = 8877
-ORGANIZATION = "合成验收组织"
+ORGANIZATION = "演示业务中心"
 DATA_DATE = "2026-11-14"
 DATA_TIME = "2026-11-14T12:00:00+08:00"
-BRAND = "知行工作台 · 合成验收"
-NOTICE = "合成验收，无模型推理"
+BRAND = "知行工作台 · 演示验收"
+NOTICE = "演示验收，无模型推理"
 REGIONS = ("华北", "华东", "华南")
 TOOLS = ("order_summary", "shipment_summary", "slow_order_summary")
 
@@ -91,7 +91,7 @@ def seed_database(path: Path) -> None:
             customer TEXT NOT NULL, amount_cents INTEGER NOT NULL, quantity INTEGER NOT NULL,
             order_date TEXT NOT NULL, shipment_date TEXT NOT NULL)""")
         db.executemany("INSERT INTO orders VALUES(?,?,?,?,?,?,?,?)", (
-            (i, ORGANIZATION, REGIONS[(i - 1) % 3], f"合成客户{(i - 1) % 8 + 1:02d}",
+            (i, ORGANIZATION, REGIONS[(i - 1) % 3], f"演示客户{(i - 1) % 8 + 1:02d}",
              10000 + (i % 997) * 123, 1 + i % 40,
              f"2026-11-{1 + (i - 1) % 14:02d}", DATA_DATE if i % 5 else "2026-11-13")
             for i in range(1, 100001)))
@@ -126,20 +126,20 @@ def aggregate(path: Path, kind: str, dataset_rows: int = 10000, region: str = "�
     rows = [{group: row[0], "record_count": row[1], "amount": row[2] / 100, "quantity": row[3]} for row in records]
     scope = {"organization": organization, "region": region,
              "date": DATA_DATE if kind == "shipments" else "2026-11-01 至 2026-11-14",
-             "timezone": "Asia/Shanghai", "aggregation": f"按{'区域' if kind == 'orders' else '客户'}汇总；金额为合成含税金额",
+             "timezone": "Asia/Shanghai", "aggregation": f"按{'区域' if kind == 'orders' else '客户'}汇总；金额为演示含税金额",
              "数据集记录数": dataset_rows, "匹配原始记录数": matched}
-    title = "合成订单区域汇总" if kind == "orders" else "合成客户发货汇总"
+    title = "演示订单区域汇总" if kind == "orders" else "演示客户发货汇总"
     result = {"schema_version": "business-result/v1", "title": title, "columns": columns, "rows": rows,
-              "summary": f"{NOTICE}。真实查询 {dataset_rows:,} 行合成数据中的授权范围，匹配 {matched:,} 条原始记录，返回 {len(rows)} 行汇总。",
+              "summary": f"{NOTICE}。真实查询 {dataset_rows:,} 行演示数据中的授权范围，匹配 {matched:,} 条原始记录，返回 {len(rows)} 行汇总。",
               "scope": scope, "synthetic": True, "complete": True, "truncated": False,
               "total_rows": len(rows), "returned_rows": len(rows), "original_rows": dataset_rows,
               "data_time": DATA_TIME, "cache_hit": False, "warnings": ["仅验证产品链路与聚合取数，不代表华微数据、模型质量或模型响应速度。"],
-              "business_domain": "订单" if kind == "orders" else "发货", "process": "只读合成验收",
+              "business_domain": "订单" if kind == "orders" else "发货", "process": "只读演示验收",
               "object": "orders", "metrics": ["record_count", "amount", "quantity"],
               "fields": [column["key"] for column in columns], "filters": scope,
               "aggregation": "database_group_by", "row_count": len(rows), "time_range": scope["date"]}
     query_digest = hashlib.sha256(json.dumps([kind, dataset_rows, region, organization], ensure_ascii=False).encode()).hexdigest()[:20]
-    result["sources"] = [{"kind": "data", "title": title + " · 合成记录",
+    result["sources"] = [{"kind": "data", "title": title + " · 演示记录",
         "locator": {"database": "synthetic-orders-v1", "table": "orders", "fields": result["fields"],
                     "record_keys": [str(row[group]) for row in rows], "time_range": scope["date"],
                     "timezone": "Asia/Shanghai", "queried_at": datetime.now(timezone.utc).isoformat(),
@@ -154,7 +154,7 @@ def create_mcp(path: Path, token: str, observations: dict):
     from mcp.types import ToolAnnotations
     from starlette.responses import JSONResponse
     mcp = FastMCP("business-loop-synthetic", host="127.0.0.1", port=MCP_PORT,
-        instructions=NOTICE + "。仅查询本地合成订单，无生产数据或写入工具。",
+        instructions=NOTICE + "。仅查询本地演示订单，无生产数据或写入工具。",
         streamable_http_path="/mcp", stateless_http=True, json_response=True, log_level="WARNING")
     annotations = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
@@ -174,22 +174,22 @@ def create_mcp(path: Path, token: str, observations: dict):
     @mcp.tool(annotations=annotations, structured_output=True)
     async def order_summary(dataset_rows: Literal[10000, 100000] = 10000,
             region: Literal["全部", "华北", "华东", "华南"] = "华北",
-            organization: Literal["合成验收组织"] = ORGANIZATION) -> dict[str, Any]:
-        """查询1万或10万行合成订单，数据库按区域聚合；仅返1至3行。"""
+            organization: Literal["演示业务中心"] = ORGANIZATION) -> dict[str, Any]:
+        """查询1万或10万行演示订单，数据库按区域聚合；仅返1至3行。"""
         return await query("orders", dataset_rows, region, organization)
 
     @mcp.tool(annotations=annotations, structured_output=True)
     async def shipment_summary(dataset_rows: Literal[10000, 100000] = 10000,
             region: Literal["全部", "华北", "华东", "华南"] = "全部",
-            organization: Literal["合成验收组织"] = ORGANIZATION) -> dict[str, Any]:
-        """查询合成日期2026-11-14的发货，数据库按客户聚合；最多8行。"""
+            organization: Literal["演示业务中心"] = ORGANIZATION) -> dict[str, Any]:
+        """查询演示日期2026-11-14的发货，数据库按客户聚合；最多8行。"""
         return await query("shipments", dataset_rows, region, organization)
 
     @mcp.tool(annotations=annotations, structured_output=True)
     async def slow_order_summary(dataset_rows: Literal[10000, 100000] = 10000,
             region: Literal["全部", "华北", "华东", "华南"] = "华北",
-            organization: Literal["合成验收组织"] = ORGANIZATION) -> dict[str, Any]:
-        """取消验收专用：等待20秒后再执行只读合成订单汇总。"""
+            organization: Literal["演示业务中心"] = ORGANIZATION) -> dict[str, Any]:
+        """取消验收专用：等待20秒后再执行只读演示订单汇总。"""
         return await query("orders", dataset_rows, region, organization, delay=20)
 
     inner = mcp.streamable_http_app()
@@ -235,12 +235,12 @@ def runtime_class():
             text = message["text"]
             if not any(word in text for word in ("订单", "发货", "取消", "慢速")):
                 await self.emit("message.delta", {"message_id": run["assistant_message_id"],
-                    "text": NOTICE + "。本预览仅支持固定合成验收题：10万条华北订单总额、1万条今日发货、取消测试。"})
+                    "text": NOTICE + "。本预览仅支持固定演示验收题：10万条华北订单总额、1万条今日发货、取消测试。"})
                 return
             name = "slow_order_summary" if any(word in text for word in ("取消", "慢速")) else "shipment_summary" if "发货" in text else "order_summary"
             candidates = [tool for tool in self.bridge.business_tools.values() if tool.server_tool == name]
             if len(candidates) != 1:
-                raise AppError(409, "PREVIEW_TOOL_UNAVAILABLE", "合成验收工具未绑定或不可用，请检查业务连接")
+                raise AppError(409, "PREVIEW_TOOL_UNAVAILABLE", "演示验收工具未绑定或不可用，请检查业务连接")
             arguments = {"dataset_rows": 100000 if any(word in text for word in ("10万", "十万", "100000", "100,000", "100k")) else 10000,
                          "region": next((region for region in REGIONS if region in text), "全部" if name == "shipment_summary" else "华北"),
                          "organization": ORGANIZATION}
@@ -250,7 +250,7 @@ def runtime_class():
             if self.interrupted:
                 raise asyncio.CancelledError()
             if result.get("is_error") or result.get("isError"):
-                raise AppError(502, "PREVIEW_TOOL_FAILED", "合成验收工具未完成，请查看执行记录")
+                raise AppError(502, "PREVIEW_TOOL_FAILED", "演示验收工具未完成，请查看执行记录")
             structured = result.get("structuredContent") or {}
             markers = []
             for block in result.get("content", []):
@@ -282,7 +282,7 @@ def create_product(directory: Path, credentials: dict):
     os.environ["AGENT_KNOWLEDGE_EMBEDDING_MODEL"] = "local-lexical-v1"
     catalog_path = directory / "model-catalog.json"
     secure_json(catalog_path, {"default_model_id": "synthetic-no-model", "models": [{
-        "id": "synthetic-no-model", "label": "合成验收 · 无模型推理", "upstream_model": "synthetic-no-model",
+        "id": "synthetic-no-model", "label": "演示验收 · 无模型推理", "upstream_model": "synthetic-no-model",
         "reasoning_levels": {"default": None}, "default_reasoning_level": "default",
         "provider_env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9", "ANTHROPIC_API_KEY": "unused-synthetic-only"}}]})
     settings = Settings(data_dir=directory / "product-data", brand_name=BRAND,
@@ -302,7 +302,7 @@ def create_product(directory: Path, credentials: dict):
             service = application.state.service
             if not service.db.one("SELECT id FROM users WHERE username=?", (credentials["username"],)):
                 service.create_user({"username": credentials["username"], "password": credentials["password"],
-                                     "display_name": "合成验收管理员", "role": "admin"})
+                                     "display_name": "演示验收管理员", "role": "admin"})
             yield
     app.router.lifespan_context = lifespan
     if (ROOT / "client" / "dist" / "index.html").is_file():
@@ -376,19 +376,19 @@ def request(client, method, path, payload=None, expected=200):
 def bootstrap(directory: Path, credentials: dict) -> dict:
     with api_client(directory) as client:
         connections = request(client, "GET", "/api/v1/connections")
-        connection = next((value for value in connections if value["name"] == "合成订单与发货 · 本机MCP"), None)
+        connection = next((value for value in connections if value["name"] == "演示订单与发货 · 本机MCP"), None)
         if not connection:
-            connection = request(client, "POST", "/api/v1/connections", {"name": "合成订单与发货 · 本机MCP",
+            connection = request(client, "POST", "/api/v1/connections", {"name": "演示订单与发货 · 本机MCP",
                 "url": f"http://127.0.0.1:{MCP_PORT}/mcp", "auth_type": "bearer", "credential": credentials["mcp_bearer"],
                 "scope": "team", "source_metadata": {"synthetic": "true", "purpose": "本地验收，无客户数据"}}, expected=201)
         tested = request(client, "POST", f"/api/v1/connections/{connection['id']}/test")
         if tested["status"] != "connected" or {tool["name"] for tool in tested["tools"]} != set(TOOLS):
             raise RuntimeError("Actual MCP discovery did not return the expected read-only synthetic tools")
         confirmations = {tool["name"]: {"connection_revision": tested["revision"], "definition_digest": tool["definition_digest"],
-            "basis": "本地合成数据库仅开放固定只读聚合工具，已检查实现；不代表生产工具验收。"}
+            "basis": "本地演示数据库仅开放固定只读聚合工具，已检查实现；不代表生产工具验收。"}
             for tool in tested["tools"] if tool.get("definition_digest") and tool.get("read_only_confirmation_eligible")}
-        body = {"name": "业务查询 · 合成验收", "description": "仅合成验收，无模型推理。可试：10万条华北订单总额、1万条今日发货、取消测试。",
-                "instructions": NOTICE + "。只调用授权的合成工具，不执行生产写入。", "scope": "team",
+        body = {"name": "业务查询 · 演示验收", "description": "仅演示验收，无模型推理。可试：10万条华北订单总额、1万条今日发货、取消测试。",
+                "instructions": NOTICE + "。只调用授权的演示工具，不执行生产写入。", "scope": "team",
                 "connections": [{"connection_id": connection["id"], "allowed_tools": list(TOOLS), "auto_approved_tools": list(TOOLS),
                                  "read_only_confirmations": confirmations}], "knowledge_base_ids": [], "skill_ids": [], "web_search_enabled": False,
                 "default_model_id": "synthetic-no-model", "default_reasoning_level": "default"}
@@ -442,7 +442,7 @@ def verify(directory: Path) -> dict:
                 "original_rows": dataset_rows, "returned_rows": len(result["rows"]), "matched_records": expected["scope"]["匹配原始记录数"],
                 "source_count": len(sources), "duration_ms": trace["run"]["duration_ms"], "model_tokens": None})
 
-        bad = request(client, "POST", "/api/v1/connections", {"name": "合成验收 · 错误凭据",
+        bad = request(client, "POST", "/api/v1/connections", {"name": "演示验收 · 错误凭据",
             "url": metadata["mcp_url"], "auth_type": "bearer", "credential": "intentionally-invalid-preview-credential"}, expected=201)
         tested = request(client, "POST", f"/api/v1/connections/{bad['id']}/test")
         if tested["status"] != "needs_auth" or tested["tools"]:
@@ -499,7 +499,7 @@ def benchmark(directory: Path) -> dict:
             case = {"index": index + 1, "original_rows": size, "status": "failed"}
             try:
                 conversation = request(client, "POST", "/api/v1/conversations", {
-                    "assistant_id": metadata["assistant_id"], "title": f"合成链路测量 {index + 1:02d} · {text}"}, expected=201)
+                    "assistant_id": metadata["assistant_id"], "title": f"演示链路测量 {index + 1:02d} · {text}"}, expected=201)
                 observed_start = time.monotonic()
                 submitted = request(client, "POST", f"/api/v1/conversations/{conversation['id']}/messages",
                     {"text": text, "file_ids": [], "client_request_id": "measure-" + secrets.token_hex(8)}, expected=202)

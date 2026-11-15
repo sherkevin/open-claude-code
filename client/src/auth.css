@@ -2,32 +2,32 @@
 .auth-page {min-height:100dvh;display:flex;flex-direction:column;background:var(--paper);color:var(--ink)}
 .auth-header {display:flex;align-items:center;justify-content:space-between;gap:24px;min-height:96px;padding:24px 40px;background:var(--white);border-bottom:1px solid var(--line)}
 .auth-header>span {font-size:13px;color:var(--muted);letter-spacing:.04em}
-.zhixing-theme .fw-brand {display:flex;align-items:center;gap:12px;color:var(--ink);font-size:23px;font-weight:700;letter-spacing:-.4px;line-height:1.2;min-width:0}
+.zhixing-theme .fw-brand {display:flex;align-items:center;gap:12px;color:var(--ink);font-size:24px;font-weight:600;letter-spacing:0;line-height:1.2;min-width:0}
 .zhixing-theme .fw-brand .fw-brand-mark {display:block;width:40px;height:40px;flex-shrink:0;background:var(--brand);mask-size:contain;mask-repeat:no-repeat;mask-position:center;-webkit-mask-size:contain;-webkit-mask-repeat:no-repeat;-webkit-mask-position:center}
 .zhixing-theme .fw-brand-text {min-width:0;overflow-wrap:anywhere}
 .zhixing-theme .fw-brand small {display:block;color:var(--muted);font-size:12px;font-weight:400;line-height:1.5;letter-spacing:.02em;margin-top:5px}
-.zhixing-theme .fw-brand.compact {gap:10px;font-size:20px;letter-spacing:-.35px}
+.zhixing-theme .fw-brand.compact {gap:10px;font-size:22px;letter-spacing:0}
 .zhixing-theme .fw-brand.compact .fw-brand-mark {width:32px;height:32px}
-.zhixing-theme .fw-brand.compact small {font-size:11px;margin-top:4px;letter-spacing:0}
+.zhixing-theme .fw-brand.compact small {font-size:12px;margin-top:4px;letter-spacing:0}
 .auth-main {display:flex;align-items:center;justify-content:center;flex:1;padding:48px 32px}
 .auth-surface {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);width:min(100%,960px);border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--white);box-shadow:0 12px 40px #1d2d3e08}
-.auth-context {padding:48px 44px;background:#f5f8fc;border-right:1px solid var(--line)}
+.auth-context {padding:48px 44px;background:var(--paper);border-right:1px solid var(--line)}
 .auth-kicker {display:block;color:var(--brand);font-size:12px;font-weight:600;letter-spacing:.08em;margin-bottom:16px}
 .auth-context h2 {font-family:inherit;font-size:30px;line-height:1.45;font-weight:600;color:var(--ink);letter-spacing:-.02em}
 .auth-context>p {font-size:14px;line-height:1.8;color:var(--muted);margin:16px 0 0}
 .auth-capabilities {display:grid;gap:24px;list-style:none;padding:0;margin:36px 0 0}
 .auth-capabilities li {display:flex;align-items:flex-start;gap:14px}
-.auth-capabilities li>svg {flex-shrink:0;color:var(--brand);margin-top:2px;stroke-width:1.6}
+.auth-capabilities li>svg {flex-shrink:0;color:var(--brand);margin-top:2px;stroke-width:2.4}
 .auth-capabilities strong {display:block;font-size:14px;font-weight:600;line-height:1.5;color:var(--ink)}
 .auth-capabilities span {display:block;font-size:12px;line-height:1.7;color:var(--muted);margin-top:3px}
 .auth-panel {display:flex;align-items:center;padding:48px 44px;min-width:0}
 .auth-form {width:100%;min-width:0}
-.auth-form h1 {font:600 25px/1.4 "72 Product","PingFang SC","Microsoft YaHei",sans-serif;letter-spacing:0;color:var(--ink);margin:0}
+.auth-form h1 {font:600 24px/1.4 "72 Product","PingFang SC","Microsoft YaHei",sans-serif;letter-spacing:0;color:var(--ink);margin:0}
 .auth-description {margin:10px 0 30px;color:var(--muted);font-size:14px;line-height:1.7}
 .auth-field {margin:0 0 20px}
 .auth-field>label {display:block;color:var(--ink);font-size:14px;line-height:20px;font-weight:500;margin-bottom:8px}
-.auth-field input {width:100%;min-width:0;height:44px;border:1px solid #a8b3bf;border-radius:5px;background:var(--white);color:var(--ink);font-family:inherit;font-size:15px;line-height:22px;font-weight:400;padding:10px 12px;transition:border-color 120ms,box-shadow 120ms}
-.auth-field input::placeholder {color:#687d91;opacity:1;font-size:14px}
+.auth-field input {width:100%;min-width:0;height:44px;border:1px solid var(--control-border);border-radius:5px;background:var(--white);color:var(--ink);font-family:inherit;font-size:15px;line-height:22px;font-weight:400;padding:10px 12px;transition:border-color 120ms,box-shadow 120ms}
+.auth-field input::placeholder {color:var(--muted);opacity:1;font-size:14px}
 .auth-field input:hover:not(:disabled) {border-color:var(--muted)}
 .auth-field input:focus {border-color:var(--brand);outline:2px solid var(--brand);outline-offset:2px;box-shadow:none}
 .auth-field input:disabled {background:var(--paper);color:var(--muted)}

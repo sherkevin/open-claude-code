@@ -53,6 +53,7 @@ class Settings:
     # manufactures a completed summary.
     harness_compaction_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_HARNESS_COMPACTION_TIMEOUT_SECONDS", "600")))
     brand_name: str = field(default_factory=lambda: os.getenv("AGENT_BRAND_NAME", "知行工作台"))
+    business_data_catalog: str = field(default_factory=lambda: os.getenv("AGENT_BUSINESS_DATA_CATALOG", "").strip())
     model: str = field(default_factory=lambda: os.getenv("AGENT_MODEL", ""))
     effort: str | None = field(default_factory=lambda: os.getenv("AGENT_EFFORT"))
     legacy_effort: str = field(init=False)

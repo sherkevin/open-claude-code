@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, BookOpen, ChartNoAxesCombined, FolderOpen, House, LogOut, Menu, Network, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, Users, X } from 'lucide-react';
+import { ArrowUpRight, BookOpen, ChartNoAxesCombined, Database, FolderOpen, House, LogOut, Menu, Network, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, Users, X } from 'lucide-react';
 import { api, errorText, post, timeText } from './api';
 import { configAllows, type AppConfig, type Assistant, type Conversation, type ModelOption, type User } from './types';
 import { Button, ErrorNotice, Loader, Modal } from './components';
@@ -19,6 +19,7 @@ const AssistantsPage = deferredPage(() => import('./AssistantsPage'));
 const SessionsPage = deferredPage(() => import('./SessionsPage'));
 const SkillsPage = deferredPage(() => import('./SkillsPage'));
 const KnowledgePage = deferredPage(() => import('./KnowledgePage'));
+const BusinessDataPage = deferredPage(() => import('./BusinessDataPage'));
 const ApprovalsPage = deferredPage(async () => ({ default: (await import('./AdminPages')).ApprovalsPage }));
 const UsersPage = deferredPage(async () => ({ default: (await import('./AdminPages')).UsersPage }));
 const UsagePage = deferredPage(async () => ({ default: (await import('./AdminPages')).UsagePage }));
@@ -26,8 +27,8 @@ const BenchmarkPage = deferredPage(() => import('./BenchmarkPage'));
 const AssistantDetailPage = deferredPage(() => import('./AssistantDetailPage'));
 const CapabilitySettingsPage = deferredPage(() => import('./CapabilitySettingsPage'));
 
-type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'assistants' | 'knowledge' | 'skills' | 'users' | 'usage' | 'memory' | 'benchmark' | 'approvals' | 'capability-settings';
-const fallbackConfig: AppConfig = { brand_name: 'Flintworks', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
+type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'assistants' | 'knowledge' | 'business-data' | 'skills' | 'users' | 'usage' | 'memory' | 'benchmark' | 'approvals' | 'capability-settings';
+const fallbackConfig: AppConfig = { brand_name: '开物', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
 
 
 const pendingWorkspaceRead: WorkspaceReadState = { loading: true, loaded: false, error: '' };
@@ -88,8 +89,8 @@ export default function App() {
   const protectMemory=(action:()=>void)=>{if(memorySavingRef.current){setError('会话记忆正在保存，请稍候再离开。');return;}if(savingRef.current){setError('助手配置正在保存，请稍候再离开。');return;}if(assistantDirty||(view==='memory'&&memoryDirty)){setPendingKind(assistantDirty?'assistant':'memory');setPendingNavigation(()=>action);}else action();};
   const snapshotAssistant=(assistant:Assistant)=>{setAssistantDetail(assistant);setAssistants(previous=>previous.map(item=>item.id===assistant.id?assistant:item));};
   const showView=(next:View)=>{if(next!=='assistants'&&next!=='connections')setConnectionSetup(null);setView(next);setSidebarOpen(false);setError('');};const navigate=(next:View)=>{if(next==='workspace'){protectMemory(()=>{setSelected(null);showView('workspace');});return;}if(next===view){setSidebarOpen(false);return;}protectMemory(()=>showView(next));};
-  const newChat=(assistant?:Assistant)=>protectMemory(()=>{setNewSession({assistant});setSidebarOpen(false);});
-  const startConnectionAssistant=(assistant:Assistant,connection:Readonly<ConnectionSetupContext>)=>protectMemory(()=>{setAssistants(previous=>previous.some(item=>item.id===assistant.id)?previous.map(item=>item.id===assistant.id?assistant:item):[...previous,assistant]);setNewSession(connectionTrialSession(assistant,connection));setSidebarOpen(false);});
+  const newChat=(assistant?:Assistant,question?:string)=>protectMemory(()=>{setNewSession({assistant,question});setSidebarOpen(false);});
+  const startConnectionAssistant=(assistant:Assistant,connection:Readonly<ConnectionSetupContext>,question?:string)=>protectMemory(()=>{setAssistants(previous=>previous.some(item=>item.id===assistant.id)?previous.map(item=>item.id===assistant.id?assistant:item):[...previous,assistant]);setNewSession({...connectionTrialSession(assistant,connection),...(question?{question}: {})});setSidebarOpen(false);});
   const startConfiguredAssistant=(assistant:Assistant)=>{if(!connectionSetup){setError('本次连接信息已失效，请返回连接页重新开始。');return;}startConnectionAssistant(assistant,connectionSetup);};
   const openConversation=(conversation:Conversation)=>protectMemory(()=>{setInitialDraft(null);setSelected(conversation);showView('workspace');});
   const openAssistant=(assistant:Assistant)=>protectMemory(()=>{setAssistantDetail(assistant);showView('assistant-detail');});
@@ -105,6 +106,7 @@ export default function App() {
     {id:'workspace',label:'首页',icon:<House size={18}/>},
     ...(configAllows(config,'conversations.read')?[{id:'sessions' as View,label:'业务会话',icon:<FolderOpen size={18}/>}]:[]),
     ...(canManageAssistants?[{id:'assistants' as View,label:'助手设置',icon:<Settings2 size={18}/>}]:[]),
+    ...(configAllows(config,'business_data.read')?[{id:'business-data' as View,label:'业务数据',icon:<Database size={18}/>}]:[]),
     ...(configAllows(config,'knowledge.read')?[{id:'knowledge' as View,label:'知识库',icon:<BookOpen size={18}/>}]:[]),
     ...(configAllows(config,'connections.write')?[{id:'connections' as View,label:'业务连接',icon:<Network size={18}/>}]:[]),
     ...(canManageCapabilities(admin,config)?[{id:'capability-settings' as View,label:'能力与来源',icon:<Settings2 size={18}/>}]:[]),
@@ -120,6 +122,7 @@ export default function App() {
     {view==='workspace'&&(selected?<ChatPage key={selected.id} conversation={selected} assistant={assistants.find(a=>a.id===selected.assistant_id)} config={config} models={models} modelsLoading={modelsLoading} initialDraft={initialDraft?.conversationId===selected.id?initialDraft.text:undefined} onChanged={refresh} onArchived={()=>{setSelected(null);showView(configAllows(config,'conversations.read')?'sessions':'workspace');}}/>:<WorkspacePage assistants={assistants} conversations={conversations} assistantsRead={assistantsRead} conversationsRead={conversationsRead} onReload={()=>void refresh()} onAssistant={openAssistant} onConversation={openConversation} onNew={newChat} onNavigate={navigate} canCreate={canCreateConversation} canManage={canManageAssistants} canReadKnowledge={configAllows(config,'knowledge.read')} canManageConnections={configAllows(config,'connections.write')} canReadSessions={configAllows(config,'conversations.read')} onStart={(question,assistant)=>protectMemory(()=>{setNewSession({assistant,question});setSidebarOpen(false);})}/>) }
     {view==='assistant-detail'&&assistantDetail&&<AssistantDetailPage key={assistantDetail.id} assistantId={assistantDetail.id} assistants={assistants} admin={admin} onOpen={openConversation} onNew={newChat} onChanged={refresh} onSnapshot={snapshotAssistant} onDirtyChange={setAssistantDirty} onSavingChange={changeAssistantSaving} requestNavigation={protectMemory} draftEpoch={draftEpoch}/>}
     {view==='sessions'&&<SessionsPage assistants={assistants} onOpen={openConversation} onNew={newChat} onChanged={refresh}/>}
+    {view==='business-data'&&<BusinessDataPage onConnections={()=>navigate('connections')}/>}
     {view==='connections'&&<ConnectionsPage admin={admin} canConfigureAssistant={canManageAssistants} focusConnectionId={connectionSetup?.id} onStartAssistant={canCreateConversation?startConnectionAssistant:undefined} onConfigureAssistant={connection=>{if(canManageAssistants)protectMemory(()=>{setConnectionSetup(connectionSetupContext(connection));showView('assistants');});}}/>}
     {view==='capability-settings'&&canManageCapabilities(admin,config)&&<CapabilitySettingsPage admin={admin} config={config}/>}
     {view==='assistants'&&<AssistantsPage admin={admin} connectionSetup={connectionSetup} onReturnToConnection={()=>navigate('connections')} onStartAssistant={canCreateConversation?startConfiguredAssistant:undefined} onChanged={refresh} onOpen={openAssistant} onDirtyChange={setAssistantDirty} onSavingChange={changeAssistantSaving} requestNavigation={protectMemory} draftEpoch={draftEpoch}/>}

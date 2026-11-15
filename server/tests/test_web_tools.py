@@ -143,6 +143,9 @@ def test_brave_provider_uses_header_without_putting_key_in_url(tmp_path, monkeyp
     async def scenario():
         result = await WebTools(service).search_for_run(user, assistant, run_id, "public query")
         assert result["provider"] == "brave"
+        assert result["results"][0]["excerpt"] == "ok"
+        assert service.evidence.items[0][0][4] == "ok"
+        assert service.evidence.items[0][1]["original_url"] == "https://example.com/"
         called_url = fetch.await_args.args[0]
         assert "secret-key" not in called_url
         assert fetch.await_args.kwargs["headers"]["X-Subscription-Token"] == "secret-key"

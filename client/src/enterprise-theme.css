@@ -1,14 +1,15 @@
-/* Product palette: SAP Horizon source tokens recorded in the approved plan.
-   The same palette also governs sign-in and the Flintworks brand application. */
-.zhixing-theme{--brand:#0070f2;--brand-soft:#edf5ff;--ink:#131e29;--muted:#556b80;--paper:#f5f6f7;--white:#fff;--line:#dce3eb;--panel:#edf1f5;--green:#256f3a;--green-dark:#1e5430;--green-soft:#eff8f0;--red:#aa0808;--shadow:0 8px 28px #17324c0a}
+/* Morning Horizon, verified 2026-11-15. One semantic palette for 开物.
+   Values are mapped to product roles; AI identity and business status stay separate. */
+html,body {background:#f5f6f7}
+.zhixing-theme{--brand:#0070f2;--brand-soft:#ebf8ff;--ink:#131e29;--muted:#556b82;--paper:#f5f6f7;--white:#fff;--line:#d9d9d9;--line-soft:#e5e5e5;--control-border:#758ca4;--panel:#eff1f2;--green:#256f3a;--green-dark:#1e5430;--green-soft:#f5fae5;--ai-accent:#5d36ff;--red:#aa0808;--shadow:0 8px 28px #17324c0a}
 .zhixing-theme .button.primary,.zhixing-theme .new-conversation,.zhixing-theme .send-button{background:var(--brand);border-color:var(--brand);color:#fff}
 .zhixing-theme .button.primary:hover:not(:disabled),.zhixing-theme .new-conversation:hover{background:#0064d9;border-color:#0064d9}
 .zhixing-theme .nav-item.selected{background:var(--brand);color:#fff;border-radius:6px}
 .zhixing-theme .nav-item.selected:before{display:none}
 .zhixing-theme .history-item.selected{background:var(--brand-soft);color:#0064d9}
 .zhixing-theme .brand-symbol{background:#131e29}
-.zhixing-theme .badge.green{color:#256f3a;background:#eff8f0}
-.zhixing-theme .badge.amber{color:#8d5100;background:#fff5e5}
+.zhixing-theme .badge.green{color:var(--green);background:var(--white);border-color:var(--green)}
+.zhixing-theme .badge.amber{color:var(--warning-text);background:var(--white);border-color:var(--warning-text)}
 .zhixing-theme .button{border-radius:6px}
 .zhixing-theme .page-header h1{font-size:24px;font-weight:600}
 .zhixing-theme .message.user .message-content{border-color:#d8e5f6;background:#f1f6fd}
@@ -77,7 +78,8 @@
 .zhixing-theme .model-run-identity {border:0;background:transparent;padding:0 0 0 8px;gap:8px}
 .zhixing-theme .model-run-identity strong {padding:0;border:0;background:transparent;margin:0;color:var(--ink)}
 .zhixing-theme .notice.error {color:var(--red);background:#fff1f1;border-color:#ffd5d5}
-.zhixing-theme .notice.success {color:var(--green);background:var(--green-soft);border-color:#b8d8bd}
+.zhixing-theme .notice.success {color:var(--ink);background:var(--white);border-color:var(--line);border-left:3px solid var(--green)}
+.zhixing-theme .notice.success>svg {color:var(--green)}
 .zhixing-theme .resource-card {background:var(--white);border-color:var(--line);box-shadow:none}
 .zhixing-theme .resource-card>h2 {color:var(--ink)}
 .zhixing-theme .page-header {border-color:var(--line)}
@@ -115,4 +117,54 @@
   .zhixing-theme .model-routing-control select,
   .auth-field input {font-size:16px}
   .zhixing-theme .sidebar :is(.nav-item,.icon-button),.zhixing-theme .wr-workspace .button {min-height:44px}
+}
+
+
+/* Shared surfaces replace the legacy warm/green panels, including secondary routes. */
+.zhixing-theme :is(.info-strip,.import-next-step,.knowledge-context,.knowledge-results,.document-list,.memory-files,.context-statistics,.compaction-message,.archive-banner,.cost-panel,.live-activity,.assistant-card,.skill-picker) {background:var(--white);border-color:var(--line);color:var(--ink)}
+.zhixing-theme :is(.inline-empty,.text-preview,.pdf-preview,.memory-content[readonly],.knowledge-hit-media>img,.knowledge-thumbnail,.graph-region-grid,.graph-preview-body,.welcome-models,.model-recovery,.skill-chip,.message-skill-record>span,.transport-badge) {background:var(--panel);border-color:var(--line);color:var(--ink)}
+.zhixing-theme :is(.info-strip,.import-next-step,.compaction-message,.archive-banner,.live-activity) {font-size:14px;line-height:1.6}
+.zhixing-theme :is(.info-strip,.import-next-step,.compaction-message,.live-activity) p {font-size:14px;line-height:1.6;color:var(--muted)}
+.zhixing-theme :is(.import-next-step,.import-summary) strong {color:var(--ink);font-size:16px;font-weight:600}
+.zhixing-theme .import-summary {color:var(--ink)}
+.zhixing-theme .import-summary>svg {color:var(--green)}
+.zhixing-theme .import-summary p {font-size:14px;line-height:1.6}
+.zhixing-theme .import-next-step {border-left:3px solid var(--brand)}
+.zhixing-theme :is(.live-activity-icon,.info-strip>svg,.memory-files-heading>svg) {color:var(--brand)}
+.zhixing-theme .live-activity-current strong {font-size:14px;font-weight:600;color:var(--ink)}
+.zhixing-theme .live-activity-trail {border-color:var(--line-soft)}
+.zhixing-theme .live-activity-trail span {font-size:12px;color:var(--muted)}
+.zhixing-theme .live-activity-trail span.failed {color:var(--red)}
+.zhixing-theme .live-activity.waiting {background:var(--white);border-color:var(--line);border-left:3px solid var(--warning-text)}
+.zhixing-theme .live-activity.waiting .live-activity-icon {color:var(--warning-text)}
+.zhixing-theme .approval-banner {background:var(--white);border-color:var(--line);border-left:3px solid var(--warning-text);color:var(--ink);font-size:14px}
+.zhixing-theme .approval-banner>svg:first-child {color:var(--warning-text)}
+.zhixing-theme .approval-card {border-color:var(--line);border-left:3px solid var(--warning-text)}
+.zhixing-theme .cost-panel h2 {font-family:inherit;font-size:24px;font-weight:600;color:var(--ink)}
+.zhixing-theme .cost-panel p {font-size:14px;color:var(--muted)}
+.zhixing-theme .cost-icon {background:var(--panel);color:var(--brand);border-color:var(--line)}
+.zhixing-theme :is(.metric-card>p,.metric-label,.cost-panel .eyebrow,.context-statistics dt,.memory-file-item small) {color:var(--muted);font-size:12px}
+.zhixing-theme .context-statistics dd {color:var(--ink);font-variant-numeric:tabular-nums}
+.zhixing-theme .knowledge-context pre {color:var(--ink);font-size:13px}
+.zhixing-theme :is(.memory-files-heading,.memory-file-item) {color:var(--ink)}
+.zhixing-theme .memory-files-heading h2 {font-size:14px}
+.zhixing-theme .memory-file-item strong {font-size:13px}
+.zhixing-theme :is(.memory-file-item.selected,.memory-file-item:hover:not(:disabled),.skill-picker>button:hover,.skill-picker>button.highlighted) {background:var(--brand-soft);border-color:var(--line);color:var(--brand)}
+.zhixing-theme :is(.knowledge-search>select,.search-field,.memory-content,.model-select-field select) {background:var(--white);color:var(--ink);border-color:var(--control-border)}
+.zhixing-theme .binding-heading {background:var(--panel);border-color:var(--line);color:var(--ink)}
+.zhixing-theme .tool-detail :is(strong,summary) {color:var(--ink)}
+.zhixing-theme .tool-detail small {color:var(--muted)}
+.zhixing-theme .tool-detail pre {background:var(--panel);color:var(--ink)}
+/* Lucide uses a 24-unit viewBox: 2.4 yields 1.6px at 16px and 2px at 20px. */
+.zhixing-theme svg.lucide {stroke-width:2.4;flex-shrink:0}
+.zhixing-theme :is(.button,.attach-button,.feed-toggle,.wr-text-action)>svg.lucide {width:16px;height:16px}
+.zhixing-theme .icon-button>svg.lucide {width:18px;height:18px}
+.zhixing-theme .nav-item svg {width:18px;height:18px;stroke-width:2.4}
+.zhixing-theme :is(.field input,.field select,.field textarea) {border-color:var(--control-border)}
+.zhixing-theme :is(.page-header h1,.wr-heading h1) {line-height:1.4}
+.zhixing-theme :is(.form-section-title h3,.resource-card h2) {font-size:16px;font-weight:600;line-height:1.5}
+.zhixing-theme :is(.section-help,.form-note,.inline-empty) {font-size:14px;line-height:1.6}
+@media(max-width:600px) {
+  .zhixing-theme :is(.import-next-step,.cost-panel) {padding:16px}
+  .zhixing-theme :is(.knowledge-search>select,.search-field input,.memory-content) {font-size:16px}
 }

@@ -35,7 +35,7 @@ describe('low-code workflow canvas contracts', () => {
   it('labels the execution boundary recorded by a run trace', () => {
     expect(workflowRunTraceExecutionLabel({ external_call: true })).toBe('真实模型调用');
     expect(workflowRunTraceExecutionLabel({ tool_call: true })).toBe('实时只读工具');
-    expect(workflowRunTraceExecutionLabel({ external_call: false, tool_call: false })).toBe('合成执行');
+    expect(workflowRunTraceExecutionLabel({ external_call: false, tool_call: false })).toBe('演示执行');
   });
 
   it('exposes declared template fields without accepting arbitrary secret inputs', () => {

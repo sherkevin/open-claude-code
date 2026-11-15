@@ -213,6 +213,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     from .evidence import create_evidence_router
     app.include_router(create_knowledge_router(svc, authenticated))
     app.include_router(create_evidence_router(svc, authenticated))
+    from .business_data import create_business_data_router
+    app.include_router(create_business_data_router(svc, authenticated))
     from .memory import create_memory_router
     app.include_router(create_memory_router(svc, authenticated))
     from .context import create_context_router

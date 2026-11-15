@@ -5,7 +5,7 @@ import type { Assistant, Connection } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import McpImportDialog from './McpImportDialog';
-import { RemoteToolDeclaration } from './ToolReadOnlyConfirmation';
+import { ToolCapability } from './CapabilityGuide';
 import './connections-onboarding.css';
 
 export function connectionDiscoveryState(item: Connection) {
@@ -61,7 +61,7 @@ export function ConnectionGroups({ items, renderCard }: { items: Connection[]; r
 export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = false, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onConfigureAssistant, canConfigureAssistant = true, onStartAssistant, highlighted = false }: {
   item: Connection; assistants: Assistant[] | null; bindingsLoading?: boolean; testing?: boolean; actionsBusy?: boolean; testError?: string; admin: boolean;
   onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onConfigureAssistant: (connection: Connection) => void; highlighted?: boolean;
-  canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant, connection: Connection) => void;
+  canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant, connection: Connection, question?: string) => void;
 }) {
   const [trialAssistantId, setTrialAssistantId] = useState('');
   const discovery = connectionDiscoveryState(item);
@@ -78,6 +78,7 @@ export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = f
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
     <p className="connection-url" title={item.url}>{item.url}</p>
     <div className="connection-meta"><span>{item.auth_type === 'bearer' ? 'Bearer Token' : '无认证'}{item.auth_type === 'bearer' && !item.credential_present ? ' · 未保存凭据' : ''}</span><span>Streamable HTTP</span></div>
+    {!!item.tools.length && <div className="connection-capability-preview"><strong>这个连接提供什么</strong><ul>{item.tools.slice(0,3).map(tool=><li key={tool.name}>{tool.description?.split(/[。\n]/)[0] || `${tool.name}（用途说明未提供）`}</li>)}</ul>{item.tools.length>3&&<p className="section-help">另有 {item.tools.length-3} 项能力，可在“查看工具”中展开。</p>}</div>}
     <ol className="connection-progress" aria-label={`${item.name}接入进度`}>
       <li data-state="complete"><span className="connection-step-number">1</span><div><strong>地址与认证</strong><p>配置已保存 · 服务端连接</p></div></li>
       <li data-state={currentTestPassed ? 'complete' : 'pending'}><span className="connection-step-number">2</span><div><strong>检查工具能力</strong><span className="connection-step-status">{statusLabel}</span><p>{testing ? '正在请求 MCP 服务并读取工具定义，不执行业务查询。' : testError || discovery.detail}</p></div></li>
@@ -97,7 +98,7 @@ export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = f
 }
 
 export default function ConnectionsPage({ onConfigureAssistant, admin, canConfigureAssistant = true, onStartAssistant, focusConnectionId }: {
-  onConfigureAssistant: (connection: Connection) => void; focusConnectionId?: string; admin: boolean; canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant, connection: Connection) => void;
+  onConfigureAssistant: (connection: Connection) => void; focusConnectionId?: string; admin: boolean; canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant, connection: Connection, question?: string) => void;
 }) {
   const [items, setItems] = useState<Connection[]>([]);
   const [assistants, setAssistants] = useState<Assistant[] | null>(null);
@@ -111,6 +112,7 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
   const [testing, setTesting] = useState('');
   const [testErrors, setTestErrors] = useState<Record<string, string>>({});
   const [tools, setTools] = useState<Connection | null>(null);
+  const [toolAssistantId, setToolAssistantId] = useState('');
   const [deleting, setDeleting] = useState<Connection | null>(null);
   const [busyDelete, setBusyDelete] = useState(false);
   const [localFocusId, setLocalFocusId] = useState<string>();
@@ -147,6 +149,8 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
     } catch (e) { setTestErrors(previous => ({ ...previous, [item.id]: connectionTestError(e) })); }
     finally { setTesting(''); }
   };
+  const toolAssistants = tools && !testing && !loading && !testErrors[tools.id] ? trialAssistants(tools,assistants) : [];
+  const toolAssistant = toolAssistants.find(item=>item.id===toolAssistantId) || toolAssistants[0];
   return <div className="page connections-onboarding">
     <PageHeader eyebrow="系统接入" title="业务连接" description="接入企业 MCP，选择工具与助手，验证业务结果。" actions={<><Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入 MCP 配置</Button><Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>新增连接</Button></>}/>
     <ErrorNotice message={error} onDismiss={() => setError('')}/><ErrorNotice message={bindingsError}/><SuccessNotice message={success}/>
@@ -162,7 +166,13 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
       if (shouldTest) await test(saved);
     }}/>}
     {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); setImported(true); if (result.connections[0]) focusConnection(result.connections[0].id); setSuccess(`已导入 ${result.connections.length} 个业务连接。请先测试，再配置助手允许使用的工具及审批方式。`); void load(); }}/>}
-    {tools && <Modal title={`${tools.name} · 工具定义`} description={tools.last_tested_at ? `最近测试 ${timeText(tools.last_tested_at)}；工具定义不等于业务结果已验证` : '先测试连接以发现可用工具'} onClose={() => setTools(null)} wide><div className="modal-body connection-tools onboarding-tools">{!tools.tools.length ? <EmptyState icon={<CircleHelp size={26}/>} title={tools.status === 'connected' ? '连接已通，工具清单为空' : '尚无可查看的工具'} description={tools.status === 'connected' ? '请核对 MCP 提供的能力及工具发现权限。空工具清单不是业务查询的空结果。' : '先处理连接或认证问题，再测试发现工具。'}/> : <>{tools.status !== 'connected' && <p className="section-help">以下为已保存的工具定义；当前连接尚未通过测试。</p>}{tools.tools.map(tool => <details key={tool.name} className="tool-detail"><summary><span><strong>{tool.name}</strong><small>{tool.description || '此工具没有提供描述。'}</small></span><ChevronDown size={16}/></summary><RemoteToolDeclaration tool={tool}/><p className="section-help">工作流只读确认须在具体助手的能力配置中登记；此处不授予只读执行权限。</p><pre>{JSON.stringify(tool.inputSchema, null, 2)}</pre></details>)}</>}</div><footer className="modal-footer"><Button variant="secondary" onClick={() => setTools(null)}>关闭</Button></footer></Modal>}
+    {tools && <Modal title={`${tools.name} · 功能与使用示例`} description={tools.last_tested_at ? `最近测试 ${timeText(tools.last_tested_at)}；以下为服务提供的工具说明` : '先测试连接以发现可用工具'} onClose={() => setTools(null)} wide><div className="modal-body connection-tools onboarding-tools">
+      {!tools.tools.length ? <EmptyState icon={<CircleHelp size={26}/>} title={tools.status === 'connected' ? '连接已通，工具清单为空' : '尚无可查看的工具'} description={tools.status === 'connected' ? '请核对 MCP 提供的能力及工具发现权限。空工具清单不是业务查询的空结果。' : '先处理连接或认证问题，再测试发现工具。'}/> : <>
+        {tools.status !== 'connected' && <p className="section-help">以下为已保存的工具定义；当前连接尚未通过测试。</p>}
+        {onStartAssistant && toolAssistant ? <label className="connection-tool-trial">使用哪个助手<select value={toolAssistant.id} onChange={event=>setToolAssistantId(event.target.value)}>{toolAssistants.map(assistant=><option key={assistant.id} value={assistant.id}>{assistant.name}</option>)}</select><span>选择示例后只填入草稿，不会自动执行。</span></label> : <p className="section-help">配置已启用的助手并授权相应工具后，可点击提问示例验证结果。</p>}
+        {tools.tools.map(tool=>{const binding=toolAssistant?.connections.find(item=>item.connection_id===tools.id && item.allowed_tools.includes(tool.name)) || toolAssistant?.connections.find(item=>item.connection_id===tools.id);return <ToolCapability key={tool.name} connection={tools} tool={tool} binding={binding} onChoose={onStartAssistant && toolAssistant && binding?.allowed_tools.includes(tool.name) ? question=>{setTools(null);onStartAssistant(toolAssistant,tools,question);} : undefined}/>;})}
+      </>}
+    </div><footer className="modal-footer"><Button variant="secondary" onClick={() => setTools(null)}>关闭</Button></footer></Modal>}
     {deleting && <Modal title="删除业务连接" onClose={() => { if (!busyDelete) setDeleting(null); }}><div className="modal-body"><p>删除「{deleting.name}」后，绑定它的助手将无法继续调用这个连接。历史对话仍然保留。</p></div><footer className="modal-footer"><Button variant="secondary" disabled={busyDelete} onClick={() => setDeleting(null)}>保留连接</Button><Button variant="danger" busy={busyDelete} onClick={async () => { setBusyDelete(true); try { await remove(`/connections/${encodeURIComponent(deleting.id)}`); setDeleting(null); setSuccess('连接已删除。'); await load(); } catch (e) { setError(errorText(e)); setDeleting(null); } finally { setBusyDelete(false); } }}>确认删除</Button></footer></Modal>}
   </div>;
 }

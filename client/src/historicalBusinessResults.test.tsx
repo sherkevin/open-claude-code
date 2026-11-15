@@ -10,7 +10,7 @@ const trace = () => ({
   run: { id: 'run-1', conversation_id: 'conversation-1', assistant_message_id: 'answer-1', status: 'succeeded' },
   events: [
     { id: 1, run_id: 'run-1', type: 'tool.completed', created_at: '2026-11-15T12:00:00Z', data: {
-      success: true, source_ids: ['registered-source'], business_result: { schema_version: 'business-result/v1', title: '上次发货结果', columns: [{ key: 'customer', label: '客户' }], rows: [{ customer: '合成客户甲' }], synthetic: true, complete: false, source_ids: ['untrusted-source'] },
+      success: true, source_ids: ['registered-source'], business_result: { schema_version: 'business-result/v1', title: '上次发货结果', columns: [{ key: 'customer', label: '客户' }], rows: [{ customer: '演示客户甲' }], synthetic: true, complete: false, source_ids: ['untrusted-source'] },
     } },
     { id: 2, run_id: 'run-1', type: 'run.completed', created_at: '2026-11-15T12:00:01Z', data: { status: 'succeeded' } },
   ],
@@ -72,7 +72,7 @@ describe('historical trace is bound to the exact answer', () => {
     const html=renderToStaticMarkup(<BusinessResults events={result.events} runId={result.runId} status={result.status}/>);
     expect(html).toContain('业务数据已返回，回答未完成');
     expect(html.match(/class="business-result br-object-result"/g)).toHaveLength(1);
-    expect(html).toContain('合成客户甲');expect(html).not.toContain('untrusted-source');
+    expect(html).toContain('演示客户甲');expect(html).not.toContain('untrusted-source');
   });
   it('rejects mixed-run events and conflicting completion status', () => {
     const mixed = trace(); mixed.events[0].run_id = 'another-run';
@@ -86,8 +86,8 @@ describe('historical trace is bound to the exact answer', () => {
   it('reuses result validation, source registration and the historical data labels', () => {
     const result = parseHistoricalResult(trace(), target);
     const html = renderToStaticMarkup(<BusinessResults events={result.events} runId={result.runId} status={result.status}/>);
-    expect(html).toContain('上次发货结果'); expect(html).toContain('合成客户甲');
-    expect(html).toContain('合成测试数据'); expect(html).toContain('部分结果');
+    expect(html).toContain('上次发货结果'); expect(html).toContain('演示客户甲');
+    expect(html).toContain('演示测试数据'); expect(html).toContain('部分结果');
     expect(html).toContain('查看依据 1'); expect(html).not.toContain('untrusted-source');
   });
   it('allows a completed answer without business cards to show the explicit empty state', () => {
