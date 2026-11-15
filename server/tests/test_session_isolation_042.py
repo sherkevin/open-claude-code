@@ -89,8 +89,9 @@ def test_session_memory_revision_fingerprint_context_and_context_busy_are_isolat
 def test_legacy_snapshot_migration_is_once_per_existing_session_and_new_sessions_start_empty(client):
     service, user, assistant, a, b = sessions(client)
     legacy = service.memory.legacy_root(user["id"], assistant["id"])
-    legacy.mkdir(parents=True)
+    legacy.mkdir(parents=True, mode=0o700)
     (legacy / "MEMORY.md").write_text("Preserved shared original", encoding="utf-8")
+    (legacy / "MEMORY.md").chmod(0o600)
     # Emulate the schema before 0.4.2, then execute the real startup backfill.
     service.db.execute("DELETE FROM conversation_memory_scopes")
     reopened = Database(service.settings.data_dir / "app.sqlite3")
@@ -126,9 +127,10 @@ def test_legacy_snapshot_migration_is_once_per_existing_session_and_new_sessions
 def test_invalid_legacy_memory_preserves_original_and_retries_only_that_session(client):
     service, user, assistant, a, b = sessions(client)
     legacy = service.memory.legacy_root(user["id"], assistant["id"])
-    legacy.mkdir(parents=True)
+    legacy.mkdir(parents=True, mode=0o700)
     source = legacy / "MEMORY.md"
     source.write_bytes(b"x" * (MAX_FILE + 1))
+    source.chmod(0o600)
     service.db.execute("UPDATE conversation_memory_scopes SET origin='legacy_pending' WHERE conversation_id=?", (a["id"],))
     with pytest.raises(AppError) as too_big:
         service.memory.view(user, a["id"])

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from http.cookies import SimpleCookie
 
 from fastapi.testclient import TestClient
 
@@ -46,6 +47,24 @@ def test_h5_login_exchanges_identity_and_sets_existing_session(tmp_path, monkeyp
         assert response.status_code == 200, response.text
         assert response.json()["username"] == "admin"
         assert client.get("/api/v1/auth/me").json()["id"] == response.json()["id"]
+
+
+def test_h5_login_uses_preview_cookie_scope(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, session_cookie_name="zhixing_preview_20261115", cookie_path="/zhixing-next/")
+    app = create_app(settings, runtime_factory=FakeRuntime)
+    async def fake_exchange(_settings, _code):
+        return {"open_id": "ou-owner", "display_name": "飞书用户"}
+    monkeypatch.setattr(feishu_h5, "exchange_feishu_identity", fake_exchange)
+    with TestClient(app) as client:
+        app.state.service.create_user({"username": "admin", "display_name": "管理员", "password": PASSWORD, "role": "admin"})
+        response = client.post("/api/v1/feishu/h5/login", json={"code": "one-time-code"})
+        assert response.status_code == 200
+        cookie = SimpleCookie(response.headers["set-cookie"])
+        assert set(cookie) == {settings.session_cookie_name}
+        value = cookie[settings.session_cookie_name]
+        assert value["path"] == settings.cookie_path
+        assert client.get("/api/v1/auth/me", headers={"cookie": settings.session_cookie_name + "=" + value.value}).status_code == 200
+        assert client.get("/api/v1/auth/me", headers={"cookie": "zhixing_session=" + value.value}).status_code == 401
 
 
 def test_feishu_identity_exchange_uses_server_side_token_sequence(tmp_path, monkeypatch):

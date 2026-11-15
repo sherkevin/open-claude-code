@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Activity, ArrowDownLeft, ArrowUpRight, Check, CheckCircle2, CircleDollarSign, Pencil, Plus, RefreshCw, ShieldCheck, Users, X } from 'lucide-react';
 import { api, errorText, patch, post } from './api';
-import type { Approval, UsageSummary, User } from './types';
+import type { Approval, UsageField, UsageSummary, UsageTotals, User } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 
 export function UsersPage({ currentUser }: { currentUser: User }) {
@@ -20,11 +20,25 @@ const numberText = (value: unknown) => Number.isFinite(Number(value)) ? Number(v
 const costText = (value: unknown) => value === null || value === undefined ? '未提供' : Number.isFinite(Number(value)) ? `$${Number(value).toFixed(4)}` : '未提供';
 export const approvalProgress = (approval: Approval) => ({ votes: approval.approver_ids?.length || 0, required: approval.required_approvals || 2 });
 
+export function usageValue(usage: UsageTotals, field: UsageField): string {
+  const value = usage[field];
+  if (value === null || value === undefined || typeof value !== 'number' || !Number.isFinite(value) || (usage.field_coverage?.[field]?.unknown_runs ?? 0) > 0) return '未完整报告';
+  return field === 'estimated_cost_usd' ? costText(value) : numberText(value);
+}
+export function usageCoverage(usage: UsageTotals, field: UsageField): string {
+  const coverage = usage.field_coverage?.[field];
+  if (!coverage) return '报告覆盖范围未提供';
+  const label = `${coverage.known_runs} / ${usage.total_runs} 个任务已报告`;
+  const subtotal = usage.known_subtotals?.[field];
+  if (coverage.known_runs === 0 || typeof subtotal !== 'number' || !Number.isFinite(subtotal)) return label;
+  return `已知小计 ${field === 'estimated_cost_usd' ? costText(subtotal) : numberText(subtotal)} · ${label}`;
+}
+
 export function UsagePage({ admin }: { admin: boolean }) {
   const [usage, setUsage] = useState<UsageSummary | null>(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   const load = useCallback(async () => { setBusy(true); setError(''); try { setUsage(await api<UsageSummary>('/usage')); } catch (e) { setError(errorText(e)); } finally { setBusy(false); } }, []);
   useEffect(() => { void load(); }, [load]);
-  return <div className="page"><PageHeader eyebrow="让投入清晰可见" title="用量记录" description={admin ? '查看工作台累计执行情况与成员用量。' : '查看你的累计执行情况与用量。'} actions={<Button variant="secondary" busy={busy} onClick={() => void load()}><RefreshCw size={16}/>刷新记录</Button>}/><ErrorNotice message={error}/>{!usage ? busy ? <Loader/> : <EmptyState icon={<Activity size={28}/>} title="暂时无法读取用量" description="请点击刷新记录重试。"/> : <><div className="usage-grid"><Metric icon={<Activity size={19}/>} label="任务执行" value={numberText(usage.total_runs)} unit="次" footnote="包含已完成及未完成的运行"/><Metric icon={<CheckCircle2 size={19}/>} label="成功完成" value={numberText(usage.successful_runs)} unit="次" footnote={usage.total_runs ? `${Math.round(usage.successful_runs / usage.total_runs * 100)}% 执行成功率` : '开始工作后记录会显示在这里'}/><Metric icon={<ArrowDownLeft size={19}/>} label="输入 Token" value={numberText(usage.input_tokens)} footnote="按服务端实际记录汇总"/><Metric icon={<ArrowUpRight size={19}/>} label="输出 Token" value={numberText(usage.output_tokens)} footnote="按服务端实际记录汇总"/></div><div className="cost-panel"><span className="cost-icon"><CircleDollarSign size={26}/></span><div><span className="eyebrow">费用估算 · {usage.currency}</span><h2>{costText(usage.estimated_cost_usd)}</h2></div><p>{usage.estimated_cost_usd == null ? '当前模型服务未提供可靠费用数据。账单请以模型服务商记录为准。' : '这里展示运行时的费用估算，实际账单以模型服务商记录为准。'}</p></div>{admin && <section className="member-usage"><div className="section-label"><span>成员用量</span><span>{usage.users.length} 位成员</span></div>{usage.users.length === 0 ? <p className="section-help">暂无成员用量记录。</p> : <div className="table-container"><table><thead><tr><th>成员</th><th>执行次数</th><th>成功次数</th><th>输入 Token</th><th>输出 Token</th><th>估算费用</th></tr></thead><tbody>{usage.users.map((item, i) => <tr key={String(item.user_id || item.id || i)}><td>{String(item.display_name || item.username || item.user_id || '成员')}</td><td>{numberText(item.total_runs)}</td><td>{numberText(item.successful_runs)}</td><td>{numberText(item.input_tokens)}</td><td>{numberText(item.output_tokens)}</td><td>{costText(item.estimated_cost_usd)}</td></tr>)}</tbody></table></div>}</section>}</> }</div>;
+  return <div className="page"><PageHeader eyebrow="让投入清晰可见" title="用量记录" description={admin ? '查看工作台累计执行情况与成员用量。' : '查看你的累计执行情况与用量。'} actions={<Button variant="secondary" busy={busy} onClick={() => void load()}><RefreshCw size={16}/>刷新记录</Button>}/><ErrorNotice message={error}/>{!usage ? busy ? <Loader/> : <EmptyState icon={<Activity size={28}/>} title="暂时无法读取用量" description="请点击刷新记录重试。"/> : <><div className="usage-grid"><Metric icon={<Activity size={19}/>} label="任务执行" value={numberText(usage.total_runs)} unit="次" footnote="包含已完成及未完成的运行"/><Metric icon={<CheckCircle2 size={19}/>} label="成功完成" value={numberText(usage.successful_runs)} unit="次" footnote={usage.total_runs ? `${Math.round(usage.successful_runs / usage.total_runs * 100)}% 执行成功率` : '开始工作后记录会显示在这里'}/><Metric icon={<ArrowDownLeft size={19}/>} label="输入 Token" value={usageValue(usage,'input_tokens')} footnote={usageCoverage(usage,'input_tokens')}/><Metric icon={<ArrowUpRight size={19}/>} label="输出 Token" value={usageValue(usage,'output_tokens')} footnote={usageCoverage(usage,'output_tokens')}/></div><div className="cost-panel"><span className="cost-icon"><CircleDollarSign size={26}/></span><div><span className="eyebrow">费用估算 · {usage.currency}</span><h2>{usageValue(usage,'estimated_cost_usd')}</h2><small className="usage-coverage">{usageCoverage(usage,'estimated_cost_usd')}</small></div><p>{usage.estimated_cost_usd == null ? '部分任务未完整报告费用；已知小计不能代表总费用。账单以模型服务商记录为准。' : '这里展示运行时的费用估算，实际账单以模型服务商记录为准。'}</p></div>{admin && <section className="member-usage"><div className="section-label"><span>成员用量</span><span>{usage.users.length} 位成员</span></div>{usage.users.length === 0 ? <p className="section-help">暂无成员用量记录。</p> : <div className="table-container"><table><thead><tr><th>成员</th><th>执行次数</th><th>成功次数</th><th>输入 Token</th><th>输出 Token</th><th>估算费用</th></tr></thead><tbody>{usage.users.map((item, i) => <tr key={String(item.user_id || item.id || i)}><td>{String(item.display_name || item.username || item.user_id || '成员')}</td><td>{numberText(item.total_runs)}</td><td>{numberText(item.successful_runs)}</td><td>{usageValue(item,'input_tokens')}<small className="usage-coverage">{usageCoverage(item,'input_tokens')}</small></td><td>{usageValue(item,'output_tokens')}<small className="usage-coverage">{usageCoverage(item,'output_tokens')}</small></td><td>{usageValue(item,'estimated_cost_usd')}<small className="usage-coverage">{usageCoverage(item,'estimated_cost_usd')}</small></td></tr>)}</tbody></table></div>}</section>}</> }</div>;
 }
 
 export function ApprovalsPage() {

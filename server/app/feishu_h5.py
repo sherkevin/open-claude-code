@@ -189,13 +189,13 @@ def create_feishu_h5_router(service_dependency):
         expires_at = (datetime.now(timezone.utc) + timedelta(hours=service.settings.session_hours)).isoformat()
         service.db.execute("INSERT INTO sessions VALUES(?,?,?)", (token_hash(token), user["id"], expires_at))
         response.set_cookie(
-            COOKIE,
+            service.settings.session_cookie_name,
             token,
             httponly=True,
             secure=service.settings.cookie_secure,
             samesite="lax",
             max_age=service.settings.session_hours * 3600,
-            path="/",
+            path=service.settings.cookie_path,
         )
         return user_view(user)
 

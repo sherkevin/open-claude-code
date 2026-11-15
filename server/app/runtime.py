@@ -468,6 +468,18 @@ class SDKRuntime(WorkspaceRuntime):
                         replacement = exc.message
                         extra = {"error_code": exc.code, "error_message": exc.message}
                 result_facts = result_fact_metadata(success, response, sources)
+                if replacement is not None and success and result_facts.get("business_result"):
+                    from .business_results import presentation_receipt
+                    from .mcp_tools import enforce_model_result_budget
+                    combined = replacement + "\n" + presentation_receipt(response)
+                    try:
+                        extra["model_input_bytes"] = enforce_model_result_budget({"content": [{"type": "text", "text": combined}]})
+                        replacement = combined
+                    except AppError as exc:
+                        success, response, sources = False, None, []
+                        replacement = exc.message
+                        extra = {"error_code": exc.code, "error_message": exc.message}
+                        result_facts = result_fact_metadata(False, None, [])
                 if business_server and replacement is not None:
                     try:
                         await offload(self.require_active_tool_result, expected_run_id)
@@ -842,6 +854,21 @@ class SessionActor:
             run = self.service.require("runs", run_id)
             data = dict(data)
             expected = data.pop("_expected_run_id", None)
+            guarded_call_id = data.pop("_expected_tool_call_id", None)
+            if kind == "tool.completed" and guarded_call_id is not None:
+                try:
+                    # Events remain JSON-safe for every emit adapter. The
+                    # callable stays in the owned runtime, never in event data.
+                    bridge = getattr(getattr(self, "runtime", None), "bridge", None)
+                    guard = getattr(bridge, "response_guards", {}).get((expected, guarded_call_id))
+                    if guard is None:
+                        raise AppError(409, "HARNESS_RESULT_STALE", "工具结果不再属于当前执行器，迟到结果未发布。")
+                    guard()
+                except AppError as exc:
+                    self.service.db.event(expected or run_id, "tool.discarded", {
+                        "tool_call_id": data.get("tool_call_id"), "tool_name": data.get("tool_name"),
+                        "success": False, "error_code": exc.code, "error_message": exc.message})
+                    return
             if kind == "tool.completed" and expected:
                 original = self.service.require("runs", expected)
                 conversation = self.service.require("conversations", original["conversation_id"])
@@ -1343,7 +1370,28 @@ class RunManager:
             # revalidates every ID against this run and the current ACLs; the
             # argument is never accepted as model-controlled input.
             used_source_ids = [source["id"] for source in self.service.evidence.used_sources(run_id, user)]
-            result = self.service.evidence.finalize(run_id, message["text"], used_source_ids=used_source_ids)
+            answer_text = message["text"]
+            if status == "succeeded":
+                from .business_facts import check_answer, conflict_answer
+                business_results = []
+                for event in self.service.db.events(run_id, 0):
+                    data = event["data"]
+                    if event["type"] == "tool.completed" and data.get("success") and data.get("business_result"):
+                        business = data["business_result"]
+                        sources = set(business.get("source_ids", []))
+                        if sources and sources <= set(used_source_ids):
+                            business_results.append(business)
+                if business_results:
+                    validation = check_answer(answer_text, business_results)
+                    self.service.db.event(run_id, "business.answer_validation", {
+                        **validation, "original_answer": answer_text,
+                        "source_ids": sorted({source for value in business_results for source in value.get("source_ids", [])}),
+                    })
+                    if validation["status"] == "conflict":
+                        status, error_code = "failed", "BUSINESS_FACT_CONFLICT"
+                        error = "模型回答与宿主核验的业务合计冲突；原始回答已保留，不能作为已核验结论"
+                        answer_text = conflict_answer(answer_text, business_results[0])
+            result = self.service.evidence.finalize(run_id, answer_text, used_source_ids=used_source_ids)
             self.service.db.execute("UPDATE messages SET text=?,citations=? WHERE id=?", (result["text"], dump(result["citations"]), message["id"]))
             self.service.db.event(run_id, "message.updated", {"message_id": message["id"], **result})
         if run.get("kind") == "compact" and status in {"failed", "cancelled", "interrupted"}:

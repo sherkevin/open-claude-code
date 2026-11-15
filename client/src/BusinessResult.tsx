@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { BarChart3, Database, Download, Table2 } from 'lucide-react';
+import { BarChart3, ChevronDown, Database, Download, LayoutList, Table2 } from 'lucide-react';
 import type { RunStatus, StreamEvent } from './types';
 import { SourceDialog } from './Sources';
 import './business-result.css';
@@ -65,29 +65,49 @@ export function resultCSV(result: BusinessResult, runId: string, eventId: number
   return '\uFEFF'+meta.map(row=>row.map(csvCell).join(',')).join('\r\n');
 }
 const displayCell=(v:Cell)=>v===null?'—':typeof v==='boolean'?(v?'是':'否'):typeof v==='number'?(v!==0&&Math.abs(v)<0.000001?String(v):new Intl.NumberFormat('zh-CN',{maximumSignificantDigits:21}).format(v)):v;
+/** Preview returned fields only; never calculate a total from a partial result. */
+export function objectPreview(result: BusinessResult, row: Record<string, Cell>, index: number) {
+  const identity = result.columns.find(column => typeof row[column.key] === 'string' && row[column.key] !== '')
+    || result.columns.find(column => /^(id|.*_id|code|.*编号)$/i.test(column.key) && row[column.key] !== null);
+  return { title: identity ? `${identity.label}：${displayCell(row[identity.key])}` : `结果 ${index + 1}`,
+    fields: result.columns.filter(column => column.key !== identity?.key) };
+}
 export function BusinessResultCard({result,runId,eventId}:{result:BusinessResult;runId:string;eventId:number}) {
   const numeric=result.columns.filter(c=>!/^(id|.*_id|code|.*编号)$/i.test(c.key)&&result.rows.some(r=>typeof r[c.key]==='number')&&result.rows.every(r=>r[c.key]===null||(typeof r[c.key]==='number'&&Number(r[c.key])>=0)));
   const labels=result.columns.filter(c=>result.rows.some(r=>typeof r[c.key]==='string'));
-  const [view,setView]=useState<'table'|'chart'>('table');
+  const [view,setView]=useState<'objects'|'table'|'chart'>('objects');
+  const [visibleObjects,setVisibleObjects]=useState(6);const [visibleTableRows,setVisibleTableRows]=useState(20);
   const [metric,setMetric]=useState(numeric[0]?.key||'');const [label,setLabel]=useState(labels[0]?.key||'');
   const [source,setSource]=useState<string|null>(null);const [notice,setNotice]=useState('');
   const chartRows=result.rows.filter(r=>typeof r[metric]==='number').slice(0,20);
   const max=Math.max(0,...chartRows.map(r=>Number(r[metric])));
   const metricColumn=numeric.find(c=>c.key===metric);
   const canChart=numeric.length>0&&labels.length>0&&result.rows.length>1;
+  const scope=Object.entries(result.scope||{});
+  const primaryScope=scope.filter(([key])=>['organization','region','customer','status','date','time_range','factory'].includes(key)).slice(0,4);
+  const scopeText=(value:unknown)=>value===null||value===undefined?'未提供':typeof value==='object'?JSON.stringify(value):String(value);
+  const field=(column:ResultColumn,row:Record<string,Cell>)=><div key={column.key}><dt>{column.label}{column.unit&&<small> · {column.unit}</small>}</dt><dd className={typeof row[column.key]==='number'?'br-number':''}>{displayCell(row[column.key])}</dd></div>;
   const download=()=>{const blob=new Blob([resultCSV(result,runId,eventId)],{type:'text/csv;charset=utf-8;'});const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download=`业务结果-${runId.replace(/[^A-Za-z0-9_-]/g,'').slice(0,50)}-${eventId}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);setNotice('已生成 CSV，包含查询范围与单位。CSV 不保存列类型；编号、日期等列请按文本导入。');};
-  return <section className="business-result" aria-label={result.title}>
-    <header className="business-result-heading"><div><span className="br-eyebrow"><Database size={14}/>工具返回的业务结果</span><h3>{result.title}</h3></div>{result.synthetic===true&&<span className="br-synthetic">合成测试数据</span>}</header>
+  return <section className="business-result br-object-result" aria-label={result.title}>
+    <header className="business-result-heading"><div><span className="br-eyebrow"><Database size={14}/>业务查询结果</span><h3>{result.title}</h3></div>{result.synthetic===true&&<span className="br-synthetic">合成测试数据</span>}</header>
+    {!!primaryScope.length&&<div className="br-condition-tags" aria-label="主要查询条件">{primaryScope.map(([key,value])=><span key={key}><small>{scopeLabel[key]||key}</small>{scopeText(value)}</span>)}</div>}
     {result.summary&&<p className="br-summary">{result.summary}</p>}
-    <div className="br-scope">{Object.entries(result.scope||{}).map(([key,value])=><span key={key}><small>{scopeLabel[key]||key}</small>{typeof value==='object'?JSON.stringify(value):String(value??'未提供')}</span>)}<span><small>数据时间</small>{result.data_time||'未提供'}</span></div>
-    <div className="br-toolbar"><div className="br-tabs" aria-label="结果视图"><button type="button" aria-pressed={view==='table'} onClick={()=>setView('table')}><Table2 size={15}/>表格</button>{canChart&&<button type="button" aria-pressed={view==='chart'} onClick={()=>setView('chart')}><BarChart3 size={15}/>图表</button>}</div><button type="button" className="br-export" title="下载当前结果CSV，编号类字段请按文本导入" onClick={download}><Download size={15}/>导出当前结果 CSV</button></div>
     <p className="br-coverage">已返回 {result.rows.length} 行{result.total_rows!==null?` · 工具报告结果总行数 ${result.total_rows} 行`:' · 结果总行数未提供'} · {result.truncated?'结果已截取':result.complete===true?'工具声明完整':result.complete===false?'部分结果':'完整性未说明'}</p>
-    {!result.rows.length?<p className="br-empty">本次查询未返回记录，请核对上方范围。</p>:view==='table'?<div className="br-table-scroll" tabIndex={0} aria-label="业务结果表格，可横向滚动"><table><thead><tr>{result.columns.map(c=><th key={c.key} scope="col">{c.label}{c.unit&&<small>（{c.unit}）</small>}</th>)}</tr></thead><tbody>{result.rows.map((row,i)=><tr key={i}>{result.columns.map(c=><td key={c.key} className={typeof row[c.key]==='number'?'br-number':''}>{displayCell(row[c.key])}</td>)}</tr>)}</tbody></table></div>:<div className="br-chart"><div className="br-chart-options"><label>分组<select aria-label="图表分组" value={label} onChange={e=>setLabel(e.target.value)}>{labels.map(c=><option value={c.key} key={c.key}>{c.label}</option>)}</select></label><label>指标<select aria-label="图表指标" value={metric} onChange={e=>setMetric(e.target.value)}>{numeric.map(c=><option value={c.key} key={c.key}>{c.label}{c.unit?`（${c.unit}）`:''}</option>)}</select></label></div><p className="br-chart-caption">{metricColumn?.label}{metricColumn?.unit?` · ${metricColumn.unit}`:''} · 零起点 · 当前结果前 {chartRows.length} 行，不重新聚合</p>{chartRows.map((row,i)=><div className="br-bar-row" key={i}><span title={String(row[label]??'未提供')}>{String(row[label]??'未提供')}</span><div className="br-bar-track"><div style={{width:`${max>0?Number(row[metric])/max*100:0}%`}}/></div><strong>{displayCell(row[metric])}</strong></div>)}</div>}
     {!!result.warnings.length&&<div className="br-warnings">{result.warnings.map((w,i)=><p key={i}>{w}</p>)}</div>}
-    <footer className="br-footer"><span>结果编号 {eventId} · 本次回包版本</span><div>{result.source_ids?.map((id,i)=><button key={id} onClick={()=>setSource(id)}><Database size={13}/>依据 {i+1}</button>)}</div></footer>
+    <div className="br-toolbar"><div className="br-tabs" aria-label="结果视图"><button type="button" aria-pressed={view==='objects'} onClick={()=>setView('objects')}><LayoutList size={15}/>摘要</button><button type="button" aria-pressed={view==='table'} onClick={()=>setView('table')}><Table2 size={15}/>表格</button>{canChart&&<button type="button" aria-pressed={view==='chart'} onClick={()=>setView('chart')}><BarChart3 size={15}/>图表</button>}</div><button type="button" className="br-export" title="下载当前结果CSV，编号类字段请按文本导入" onClick={download}><Download size={15}/>导出当前结果 CSV</button></div>
+    {!result.rows.length?<p className="br-empty">本次查询未返回记录，请核对上方范围。</p>:view==='objects'?<>
+      <div className={`br-objects${result.rows.length===1?' br-single-object':''}`}>{result.rows.slice(0,visibleObjects).map((row,index)=>{
+        const preview=objectPreview(result,row,index);
+        return <article className="br-object" key={index}><h4>{preview.title}</h4><dl className="br-object-fields">{preview.fields.slice(0,3).map(column=>field(column,row))}</dl>{preview.fields.length>3&&<details className="br-field-details"><summary>查看全部 {result.columns.length} 个字段<ChevronDown size={14}/></summary><dl className="br-object-fields">{result.columns.map(column=>field(column,row))}</dl></details>}</article>;
+      })}</div>
+      {result.rows.length>visibleObjects&&<div className="br-more"><span>已显示 {visibleObjects} / {result.rows.length} 行已返回结果</span><button type="button" onClick={()=>setVisibleObjects(count=>count+6)}>再显示 {Math.min(6,result.rows.length-visibleObjects)} 行<ChevronDown size={14}/></button></div>}
+    </>:view==='table'?<><div className="br-table-scroll" tabIndex={0} aria-label="业务结果表格，可横向滚动"><table><thead><tr>{result.columns.map(c=><th key={c.key} scope="col">{c.label}{c.unit&&<small>（{c.unit}）</small>}</th>)}</tr></thead><tbody>{result.rows.slice(0,visibleTableRows).map((row,i)=><tr key={i}>{result.columns.map(c=><td key={c.key} className={typeof row[c.key]==='number'?'br-number':''}>{displayCell(row[c.key])}</td>)}</tr>)}</tbody></table></div>{result.rows.length>visibleTableRows&&<div className="br-more"><span>已显示 {visibleTableRows} / {result.rows.length} 行已返回结果</span><button type="button" onClick={()=>setVisibleTableRows(count=>count+20)}>再显示 {Math.min(20,result.rows.length-visibleTableRows)} 行<ChevronDown size={14}/></button></div>}</>:<div className="br-chart"><div className="br-chart-options"><label>分组<select aria-label="图表分组" value={label} onChange={e=>setLabel(e.target.value)}>{labels.map(c=><option value={c.key} key={c.key}>{c.label}</option>)}</select></label><label>指标<select aria-label="图表指标" value={metric} onChange={e=>setMetric(e.target.value)}>{numeric.map(c=><option value={c.key} key={c.key}>{c.label}{c.unit?`（${c.unit}）`:''}</option>)}</select></label></div><p className="br-chart-caption">{metricColumn?.label}{metricColumn?.unit?` · ${metricColumn.unit}`:''} · 零起点 · 当前结果前 {chartRows.length} 行，不重新聚合</p>{chartRows.map((row,i)=><div className="br-bar-row" key={i}><span title={String(row[label]??'未提供')}>{String(row[label]??'未提供')}</span><div className="br-bar-track"><div style={{width:`${max>0?Number(row[metric])/max*100:0}%`}}/></div><strong>{displayCell(row[metric])}</strong></div>)}</div>}
+    <details className="br-evidence"><summary><span><Database size={15}/>查询范围与依据{result.source_ids?.length?` · ${result.source_ids.length}`:''}</span><ChevronDown size={15}/></summary><div className="br-evidence-body"><dl className="br-evidence-scope">{scope.map(([key,value])=><div key={key}><dt>{scopeLabel[key]||key}</dt><dd>{scopeText(value)}</dd></div>)}<div><dt>数据时间</dt><dd>{result.data_time||'未提供'}</dd></div></dl><div className="br-source-actions">{result.source_ids?.length?result.source_ids.map((id,i)=><button type="button" key={id} onClick={()=>setSource(id)}><Database size={14}/>查看依据 {i+1}</button>):<span>本次结果未提供可打开的依据。</span>}</div><p>仅展示本次工具返回的字段。摘要、表格、图表和导出使用同一结果版本。</p></div></details>
+    <footer className="br-footer"><span>结果编号 {eventId} · 本次回包版本</span><span>数据时间：{result.data_time||'未提供'}</span></footer>
     {notice&&<p className="br-coverage" role="status">{notice}</p>}{source&&<SourceDialog id={source} onClose={()=>setSource(null)}/>}
   </section>;
 }
+
 export default function BusinessResults({events,runId,status}:{events:StreamEvent[];runId:string;status:RunStatus}) {
   const results=useMemo(()=>resultsFromEvents(events,runId,status),[events,runId,status]);
   return <>{results.map(({event,result})=><BusinessResultCard key={`${runId}-${event.id}`} result={result} runId={runId} eventId={event.id}/>)}</>;

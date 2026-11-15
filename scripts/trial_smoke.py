@@ -258,6 +258,8 @@ class SyntheticTrialServer:
             data_dir=data_dir,
             provider_settings="",
             model="synthetic-trial-runtime",
+            model_catalog="",
+            default_model_id="",
             origins=origins,
             idle_seconds=idle_seconds,
             approval_seconds=approval_seconds,
@@ -272,6 +274,9 @@ class SyntheticTrialServer:
             # never the configuration used for trial acceptance evidence.
             sqlite_synchronous=sqlite_synchronous,
         )
+        # This runner injects its runtime explicitly. Never inherit host model
+        # credentials or provider routes into the synthetic application.
+        settings.provider_env = lambda: {}
         app = create_app(settings, runtime_factory=runtime_factory)
         config = uvicorn.Config(
             app,
@@ -757,7 +762,10 @@ async def run_trial_smoke(config: TrialSmokeConfig | None = None) -> dict[str, A
     config = config or TrialSmokeConfig()
     generated_at = now()
     temp_owned = config.data_dir is None
-    data_dir = Path(config.data_dir) if config.data_dir else Path(tempfile.mkdtemp(prefix="trial-smoke-"))
+    # macOS tempfile may return /var, an OS symlink to /private/var. Resolve
+    # this synthetic runner's path before the private-memory boundary checks
+    # every ancestor; the application must continue rejecting symlink paths.
+    data_dir = (Path(config.data_dir) if config.data_dir else Path(tempfile.mkdtemp(prefix="trial-smoke-"))).resolve()
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -1042,11 +1050,21 @@ async def run_trial_smoke(config: TrialSmokeConfig | None = None) -> dict[str, A
             async def usage_endpoint():
                 payload = await request_json(client, "GET", "/api/v1/usage")
                 require(payload["total_runs"] >= 3, "usage did not aggregate the synthetic runs")
-                require(payload["input_tokens"] >= 24, "usage input tokens are missing")
+                known = payload["known_subtotals"]
+                require(known["input_tokens"] >= 24, "known synthetic input tokens are missing")
+                # The cancelled wait never emits usage. Its contribution is
+                # unknown, so the account total cannot be the known subtotal.
+                require(payload["missing_usage_runs"] >= 1, "cancelled usage was not kept missing")
+                require(payload["usage_complete"] is False, "partial usage was marked complete")
+                require(all(payload[field] is None for field in ("input_tokens", "output_tokens", "estimated_cost_usd")),
+                        "unknown cancelled usage became a complete total")
                 return {
                     "total_runs": payload["total_runs"],
                     "successful_runs": payload["successful_runs"],
                     "input_tokens": payload["input_tokens"],
+                    "known_subtotals": known,
+                    "missing_usage_runs": payload["missing_usage_runs"],
+                    "usage_complete": payload["usage_complete"],
                 }
 
             async def member_isolation():

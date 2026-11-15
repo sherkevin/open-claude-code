@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,6 +66,8 @@ class Settings:
     origins: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().rstrip("/") for x in os.getenv("AGENT_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if x.strip()))
     mcp_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().lower() for x in os.getenv("AGENT_MCP_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if x.strip()))
     cookie_secure: bool = field(default_factory=lambda: os.getenv("AGENT_COOKIE_SECURE", "false").lower() == "true")
+    session_cookie_name: str = field(default_factory=lambda: os.getenv("AGENT_SESSION_COOKIE_NAME", "zhixing_session"))
+    cookie_path: str = field(default_factory=lambda: os.getenv("AGENT_COOKIE_PATH", "/"))
     # Credential writes require authentic transport.  Forwarded headers are
     # only honored by a constrained middleware and only when the immediate
     # socket peer is one of these explicitly configured proxy addresses.  An
@@ -169,6 +172,17 @@ class Settings:
     feishu_h5_user_map: str = field(default_factory=lambda: os.getenv("AGENT_FEISHU_H5_USER_MAP", "").strip())
 
     def __post_init__(self) -> None:
+        if not isinstance(self.session_cookie_name, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}", self.session_cookie_name):
+            raise ValueError("AGENT_SESSION_COOKIE_NAME must be a safe cookie token")
+        if self.session_cookie_name.lower() in {"expires", "path", "comment", "domain", "max-age", "secure", "httponly", "version", "samesite", "partitioned"}:
+            raise ValueError("AGENT_SESSION_COOKIE_NAME must not be a reserved cookie attribute")
+        if (not isinstance(self.cookie_path, str) or not self.cookie_path.startswith("/")
+                or len(self.cookie_path) > 512 or any(ord(char) < 33 or ord(char) > 126 or char in ';,\\"' for char in self.cookie_path)):
+            raise ValueError("AGENT_COOKIE_PATH must be an absolute ASCII cookie path")
+        if self.session_cookie_name.startswith("__Secure-") and not self.cookie_secure:
+            raise ValueError("__Secure- session cookies require AGENT_COOKIE_SECURE=true")
+        if self.session_cookie_name.startswith("__Host-") and (not self.cookie_secure or self.cookie_path != "/"):
+            raise ValueError("__Host- session cookies require Secure and Path=/")
         if not isinstance(self.runtime_type, str) or self.runtime_type.strip().lower() not in RUNTIME_TYPES:
             raise ValueError("AGENT_RUNTIME_TYPE must be claude or harness")
         self.runtime_type = self.runtime_type.strip().lower()

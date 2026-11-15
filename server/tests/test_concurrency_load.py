@@ -149,9 +149,34 @@ def test_sse_helper_counts_post_response_failures_as_unknown_reconnects():
 
 
 
-def test_trial_smoke_covers_vertical_slice_without_external_resources(tmp_path):
+@pytest.mark.parametrize("temporary_alias", [False, True])
+def test_trial_smoke_covers_vertical_slice_without_external_resources(tmp_path, monkeypatch, temporary_alias):
+    # Even a credentialed host must not configure a real provider in this
+    # explicitly injected synthetic runtime or read the host model catalog.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-ambient-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://ambient-provider.example.com")
+    monkeypatch.setenv("AGENT_MODEL_CATALOG", str(tmp_path / "must-not-read-model-catalog.json"))
+    monkeypatch.setenv("AGENT_DEFAULT_MODEL_ID", "ambient-model")
+    data_dir = tmp_path / "trial-smoke"
+    config = trial_smoke.TrialSmokeConfig(data_dir=data_dir)
+    if temporary_alias:
+        actual = tmp_path / "physical-temp"
+        actual.mkdir()
+        alias = tmp_path / "temp-alias"
+        alias.symlink_to(actual, target_is_directory=True)
+        data_dir = actual / "trial-smoke"
+        data_dir.mkdir()
+        original_mkdtemp = trial_smoke.tempfile.mkdtemp
+
+        def aliased_mkdtemp(*args, **kwargs):
+            if kwargs.get("prefix") == "trial-smoke-":
+                return str(alias / "trial-smoke")
+            return original_mkdtemp(*args, **kwargs)
+
+        monkeypatch.setattr(trial_smoke.tempfile, "mkdtemp", aliased_mkdtemp)
+        config = trial_smoke.TrialSmokeConfig()
     report = asyncio.run(
-        trial_smoke.run_trial_smoke(trial_smoke.TrialSmokeConfig(data_dir=tmp_path / "trial-smoke"))
+        trial_smoke.run_trial_smoke(config)
     )
     assert report["synthetic"] is True
     assert report["summary"]["total"] == 21, report["checks"]
@@ -175,6 +200,10 @@ def test_trial_smoke_covers_vertical_slice_without_external_resources(tmp_path):
     assert report["runtime"]["model_calls"] == 0
     assert report["runtime"]["executions"] >= 3
     assert any("真实模型" in item for item in report["external_validation_limits"])
+    assert report["data_dir"] == str(data_dir.resolve())
+    if temporary_alias:
+        assert report["data_dir_retained"] is False
+        assert not data_dir.exists()
 
 
 def test_concurrency_matrix_records_every_layer_and_metric(tmp_path):

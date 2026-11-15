@@ -4,13 +4,23 @@ import json
 
 import pytest
 
-from app.business_results import project_business_result
+from app.business_results import project_business_result, presentation_receipt
 from app.mcp_tools import (MAX_MODEL_RESULT_BYTES, clean_mcp_value,
                            enforce_model_result_budget, include_structured_text)
 from app.runtime import result_fact_metadata
 from app.security import AppError
 from test_harness_mcp_tools import (SYNTHETIC_CREDENTIAL, completed, mcp_server,
                                    request, system)  # noqa: F401
+
+
+@pytest.mark.parametrize("response", [
+    {"structuredContent": {"schema_version": "business-result/v1"}},
+    {"content": [{"type": "text", "text": '{"schema_version":"business-result/v1","rows":[{"x":1}]}'}]},
+    {"structuredContent": {"rows": [{"x": 10**309}]}},
+    {"isError": True, "structuredContent": {"rows": [{"x": 1}]}},
+])
+def test_unprojected_or_failed_data_cannot_claim_a_result_card(response):
+    assert presentation_receipt(response) is None
 
 
 def payload(**changes):
@@ -37,6 +47,19 @@ def test_projection_preserves_values_units_scope_and_host_sources():
     assert result["source_ids"] == ["host_source"]
     assert result["synthetic"] is True and result["complete"] is True
     assert result["returned_rows"] == 1 and result["total_rows"] == 1
+
+
+def test_display_receipt_distinguishes_business_data_and_query_times_without_fabricating_one():
+    body = envelope(payload())
+    original = copy.deepcopy(body)
+    receipt = presentation_receipt(body)
+    assert "scope.date是业务日期" in receipt
+    assert "data_time/data_timestamp是数据时点" in receipt
+    assert "sources.locator.queried_at才是实际取数时间" in receipt
+    assert "不能把数据时点叫查询时间" in receipt
+    assert "用户未问且不影响结论时" in receipt
+    assert "不追加时间戳、trace、库表名称或无关指标" in receipt
+    assert body == original and "queried_at" not in body["structuredContent"]
 
 
 def test_unknown_coverage_is_not_inferred_and_explicit_zero_survives():

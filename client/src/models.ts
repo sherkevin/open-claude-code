@@ -27,5 +27,9 @@ export function conversationHasModelHistory(hasNativeSession: boolean | undefine
 /** Explicit reconnection must PATCH even when the public selection is unchanged. */
 export async function saveModelSelection(conversationId: string, current: ModelSelection, next: ModelSelection, reconnect = false): Promise<Conversation | null> {
   if (!reconnect && next.model_id === current.model_id && next.reasoning_level === current.reasoning_level) return null;
-  return patch<Conversation>(`/conversations/${encodeURIComponent(conversationId)}`, next);
+  return patch<Conversation>(`/conversations/${encodeURIComponent(conversationId)}`, { ...next, auto_model_routing: false });
 }
+
+/** Routing changes are explicit, independent of task submission. */
+export const saveModelRouting = (conversationId: string, automatic: boolean) =>
+  patch<Conversation>(`/conversations/${encodeURIComponent(conversationId)}`, { auto_model_routing: automatic });

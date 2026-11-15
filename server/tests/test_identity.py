@@ -26,6 +26,15 @@ def test_selected_identity_is_public_and_not_coding_preset():
     assert "业务范围：合成设备记录" in dano
 
 
+def test_business_time_policy_keeps_source_timestamps_distinct_and_default_answer_short():
+    prompt = build_system_prompt(public_model_id="dano-v2.1", public_model_label="Dano-v2.1")
+    assert "scope.date表示业务记录所属日期" in prompt
+    assert "data_time/data_timestamp表示数据或快照时点" in prompt
+    assert "sources.locator.queried_at表示本次实际取数时刻" in prompt
+    assert "不能把数据时点、业务日期或当前时间改称查询时间" in prompt
+    assert "用户未问且不影响结论时" in prompt
+
+
 @pytest.mark.parametrize("label", ["", "x\ny", "x\ry", "x\x00y"])
 def test_public_identity_cannot_insert_multiline_policy(label):
     with pytest.raises(ValueError):

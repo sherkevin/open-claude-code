@@ -131,3 +131,45 @@
 @media (prefers-reduced-motion:reduce) {
   .wr-workspace :is(button,a,input,textarea,select) {transition:none;}
 }
+
+/* 2026-11-15: SAP Horizon worklist density and task-first section order. */
+.wr-workspace .wr-content{max-width:1380px;padding:24px 28px 40px}
+.wr-workspace .wr-heading{margin-bottom:18px}
+.wr-workspace .wr-heading p,.wr-workspace .wr-assistant>p,.wr-workspace .wr-text-action,.wr-workspace .wr-recent-row,.wr-workspace .wr-recent-empty p,.wr-workspace .wr-resource-list strong{font-size:14px}
+.zhixing-theme .wr-workspace .button{min-height:36px;font-size:14px}
+.wr-workspace .wr-question-panel{display:flex;align-items:center;gap:16px;margin-bottom:24px;padding:12px 16px;border:1px solid var(--wr-border);border-radius:8px;overflow:visible}
+.wr-workspace .wr-question-heading{padding:0;flex-shrink:0}
+.wr-workspace .wr-question-panel form{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
+.wr-workspace .wr-question-panel textarea{flex:1;min-width:0;height:42px;min-height:42px;max-height:160px;padding:9px 12px;border:1px solid var(--wr-border);border-radius:5px;font-size:14px;line-height:22px}
+.wr-workspace .wr-question-footer{position:relative;flex-shrink:0;padding:0;border:0;background:transparent;gap:8px}
+.wr-workspace .wr-assistant-select>svg{display:none}
+.wr-workspace .wr-assistant-select select{min-width:0;max-width:180px;min-height:36px;font-size:14px}
+.wr-workspace .wr-question-hint{position:absolute;right:0;top:calc(100% + 17px);white-space:nowrap}
+.wr-workspace .wr-overview{grid-template-columns:minmax(0,1fr) 280px;margin-top:30px}
+.wr-workspace .wr-overview-full{grid-template-columns:minmax(0,1fr)}
+.wr-workspace .wr-main-work{min-width:0;display:grid;gap:24px}
+.wr-workspace .wr-recent{margin-top:0}
+.wr-workspace .wr-section-heading h2{font-size:16px}
+.wr-workspace .wr-assistant{padding:14px 16px}
+.wr-workspace .wr-assistant>p{margin-top:10px}
+.wr-workspace .wr-assistant-capabilities{margin-top:10px}
+.wr-workspace .wr-assistant-footer{margin-top:10px;padding-top:10px}
+.wr-workspace .wr-recent-columns,.wr-workspace .wr-recent-row{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) 110px 16px;gap:14px}
+.wr-workspace .wr-resource-list{margin-top:12px}
+.wr-workspace .wr-resource-list:empty{display:none}
+.wr-workspace .wr-connection-panel{padding:14px 16px;border:1px solid var(--wr-border);border-radius:6px;background:var(--wr-surface)}
+.wr-workspace .wr-connection-title{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:14px}
+.wr-workspace .wr-connection-title strong{font-weight:600}
+.wr-workspace .wr-connection-panel p{font-size:14px;line-height:1.6;color:var(--muted);margin:12px 0}
+.wr-workspace .wr-connection-panel ul{list-style:none;padding:0;margin:8px 0 12px;max-height:250px;overflow-y:auto}
+.wr-workspace .wr-connection-panel li{display:grid;gap:4px;padding:12px 0;border-bottom:1px solid var(--wr-border);font-size:14px;overflow-wrap:anywhere}
+.wr-workspace .wr-connection-panel li:last-child{border-bottom:0}
+.wr-workspace .wr-connection-panel li small{font-size:12px;color:var(--muted)}
+.wr-workspace .wr-connection-panel [data-tone=success]{color:var(--green)}
+.wr-workspace .wr-snapshot-note{display:block;margin-top:6px;font-size:12px;line-height:1.6;color:var(--muted)}
+.wr-workspace .wr-disabled-connections{display:flex;align-items:center;gap:5px;min-height:30px;margin-top:4px;padding:3px 0;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;text-align:left}
+.wr-workspace .wr-disabled-connections:hover{color:var(--wr-accent);text-decoration:underline;text-underline-offset:3px}
+@media(max-width:1200px){.wr-workspace .wr-overview{grid-template-columns:minmax(0,1fr) 250px;gap:18px}.wr-workspace .wr-overview-full{grid-template-columns:minmax(0,1fr)}.wr-workspace .wr-assistant-list{grid-template-columns:1fr}.wr-workspace .wr-question-heading{display:none}.wr-workspace .wr-recent-columns,.wr-workspace .wr-recent-row{grid-template-columns:minmax(0,1fr) 106px 16px}.wr-workspace .wr-conversation-assistant,.wr-workspace .wr-recent-columns>span:nth-child(2){display:none}}
+@media(max-width:850px){.wr-workspace .wr-overview{grid-template-columns:1fr}.wr-workspace .wr-question-panel form{flex-wrap:wrap}.wr-workspace .wr-question-panel textarea{flex-basis:100%}.wr-workspace .wr-question-footer{width:100%;justify-content:space-between}.wr-workspace .wr-question-hint{position:static;white-space:normal;margin-left:auto}.wr-workspace .wr-assistant-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.wr-workspace .wr-content{padding:18px 16px 28px}.wr-workspace .wr-assistant-list{grid-template-columns:1fr}.wr-workspace .wr-question-panel{padding:12px}.wr-workspace .wr-question-hint{display:none}.wr-workspace .wr-assistant-select select{max-width:200px}.wr-workspace .wr-recent-columns,.wr-workspace .wr-recent-row{grid-template-columns:minmax(0,1fr) 16px}.wr-workspace .wr-recent-row time,.wr-workspace .wr-time-unknown,.wr-workspace .wr-recent-columns>span:nth-child(3){display:none}}
+@media(prefers-reduced-motion:no-preference){.wr-workspace :is(button,textarea,select){transition:background-color 120ms,border-color 120ms,color 120ms}}

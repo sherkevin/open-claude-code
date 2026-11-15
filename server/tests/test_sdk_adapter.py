@@ -11,6 +11,32 @@ from app.security import AppError
 from app.service import Service
 
 
+def assert_unknown_usage_only(emitted):
+    # An attempted provider call belongs in the ledger even when no usage was
+    # returned. It must not become an answer, a zero-token bill, or a cost claim.
+    assert [kind for kind, _ in emitted] == ["usage.updated"]
+    usage = emitted[0][1]
+    assert usage["estimated_cost_usd"] is None
+    assert "text" not in usage
+    assert not {"input_tokens", "output_tokens", "cache_read_input_tokens",
+                "cache_creation_input_tokens", "cache_write_input_tokens"}.intersection(usage)
+    ledger = usage["token_accounting"]
+    fields = {"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_write_input_tokens"}
+    assert ledger["provider_totals"] == dict.fromkeys(fields)
+    assert ledger["provider_usage_complete"] is False
+    assert ledger["cost_is_authoritative"] is False
+    assert len(ledger["stages"]) == 1
+    stage = ledger["stages"][0]
+    assert stage["stage"] == "answer" and stage["source"] == "sdk_provider"
+    assert stage["provider_call"] is True
+    assert {field: stage["provider_usage"][field] for field in fields} == dict.fromkeys(fields)
+    assert set(stage["provider_usage"]["unknown_fields"]) == fields
+    assert stage["provider_usage"]["invalid_fields"] == []
+    assert len(ledger["unknown_stages"]) == 1
+    assert ledger["unknown_stages"][0]["stage"] == "answer"
+    assert set(ledger["unknown_stages"][0]["fields"]) == fields
+
+
 def test_sdk_options_fail_closed_and_stream_deduplicates(tmp_path, monkeypatch):
     settings = Settings(data_dir=tmp_path, provider_settings="", runtime_type="claude", provider_cost_reliable=True)
     service = Service(settings)
@@ -153,7 +179,8 @@ def test_sdk_api_error_uses_safe_status_mapping(sdk_run, status, code, phrase):
 
     asyncio.run(scenario())
     assert len(queries) == 1
-    assert not emitted  # No synthetic reply, made-up tokens, or made-up cost.
+    assert_unknown_usage_only(emitted)
+    assert raw_error not in json.dumps(emitted)
     raw = service.db.all("SELECT payload FROM raw_events")
     assert len(raw) == 2 and raw_error in raw[0]["payload"]
 
@@ -215,6 +242,7 @@ def test_actor_fails_success_subtype_without_leaking_synthetic_message(sdk_run, 
 ])
 def test_result_failure_flags_override_success_subtype(sdk_run, flags):
     service, conversation, run = sdk_run
+    emitted = []
     event = ResultMessage(subtype="success", duration_ms=10, duration_api_ms=5,
                           num_turns=1, session_id="error-session", **flags)
 
@@ -225,7 +253,7 @@ def test_result_failure_flags_override_success_subtype(sdk_run, flags):
             yield event
 
     async def emit(kind, value):
-        pytest.fail("Unknown usage must remain absent")
+        emitted.append((kind, value))
 
     async def scenario():
         runtime = SDKRuntime(service, conversation["id"], service.runtime_config(conversation["id"]), None, emit)
@@ -234,6 +262,7 @@ def test_result_failure_flags_override_success_subtype(sdk_run, flags):
             await runtime.execute(run, service.require("messages", run["message_id"]))
 
     asyncio.run(scenario())
+    assert_unknown_usage_only(emitted)
 
 
 @pytest.mark.parametrize("text", ["/mcp", "/compact", "读取 @/home/ubuntu/.claude/settings.json", "/data/reports 是普通路径"])

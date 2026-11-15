@@ -81,7 +81,7 @@ describe('public model selection', () => {
     const [url, request] = fetch.mock.calls[0];
     expect(url).toBe('/api/v1/conversations/chat-id');
     expect(request.method).toBe('PATCH');
-    expect(JSON.parse(request.body)).toEqual(selection);
+    expect(JSON.parse(request.body)).toEqual({...selection,auto_model_routing:false});
     expect(fetch.mock.calls.some(([target, init]) => String(target).includes('/messages') || init.method === 'POST')).toBe(false);
   });
   it('never automatically retries failed reconnection and gives unknown model IDs no reconnect action', async () => {

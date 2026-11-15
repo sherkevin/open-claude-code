@@ -189,7 +189,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         return request.app.state.service
 
     def authenticated(request: Request, service: Service = Depends(svc)):
-        token = request.cookies.get(COOKIE)
+        token = request.cookies.get(settings.session_cookie_name)
         if not token:
             raise AppError(401, "UNAUTHENTICATED", "请先登录")
         row = service.db.one("SELECT users.* FROM sessions JOIN users ON sessions.user_id=users.id WHERE sessions.token_hash=? AND sessions.expires_at>? AND users.enabled=1", (token_hash(token), now()))
@@ -339,7 +339,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         token = secrets.token_urlsafe(48)
         service.db.execute("DELETE FROM sessions WHERE expires_at<?", (now(),))
         service.db.execute("INSERT INTO sessions VALUES(?,?,?)", (token_hash(token), user["id"], (datetime.now(timezone.utc) + timedelta(hours=settings.session_hours)).isoformat()))
-        response.set_cookie(COOKIE, token, httponly=True, secure=settings.cookie_secure, samesite="lax", max_age=settings.session_hours * 3600, path="/")
+        response.set_cookie(settings.session_cookie_name, token, httponly=True, secure=settings.cookie_secure, samesite="lax", max_age=settings.session_hours * 3600, path=settings.cookie_path)
         return user_view(user)
 
     @app.get(prefix + "/auth/me")
@@ -348,10 +348,10 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
 
     @app.post(prefix + "/auth/logout")
     def logout(request: Request, response: Response, service: Service = Depends(svc)):
-        token = request.cookies.get(COOKIE)
+        token = request.cookies.get(settings.session_cookie_name)
         if token:
             service.db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(token),))
-        response.delete_cookie(COOKIE, path="/")
+        response.delete_cookie(settings.session_cookie_name, path=settings.cookie_path, secure=settings.cookie_secure, httponly=True, samesite="lax")
         return {"ok": True}
 
     @app.get(prefix + "/users")

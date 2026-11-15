@@ -592,8 +592,9 @@ class OpenClawTenantStore:
     credential systems cannot be confused.
     """
 
-    def __init__(self, db):
+    def __init__(self, db, *, session_cookie_name="zhixing_session"):
         self.db = db
+        self.employee_cookie_names = frozenset({"zhixing_session", session_cookie_name})
         with self.db.lock:
             self.db.conn.executescript(_SCHEMA)
         _ensure_columns(self.db, "openclaw_turns",
@@ -687,7 +688,7 @@ class OpenClawTenantStore:
 
     def authenticate(self, headers: Mapping[str, Any] | None) -> TenantPrincipal:
         cookie = _header(headers, "cookie")
-        if cookie and "zhixing_session=" in cookie:
+        if cookie and any(name + "=" in cookie for name in self.employee_cookie_names):
             self._audit(tenant_id=None, principal_id=None, action="auth.failed", outcome="denied",
                         detail={"reason": "employee_cookie_not_accepted"})
             raise OpenClawError(401, "EMPLOYEE_SESSION_NOT_ALLOWED", "兼容入口不接受员工网页会话，请使用租户访问令牌")
@@ -1281,7 +1282,7 @@ class OpenClawFacade:
         if not isinstance(lease_seconds, (int, float)) or not 0 < lease_seconds <= 3600:
             raise ValueError("lease_seconds must be between 0 and 3600")
         self.service = service
-        self.store = OpenClawTenantStore(service.db)
+        self.store = OpenClawTenantStore(service.db, session_cookie_name=service.settings.session_cookie_name)
         self.executor = executor or UnavailableExecutor()
         self.executor_timeout_seconds = float(executor_timeout_seconds)
         self.lease_seconds = float(lease_seconds)

@@ -471,7 +471,32 @@ def test_handshake_wheel_pins_fail_closed():
         shutil.rmtree(root, ignore_errors=True)
 
 
-def test_install_plan_is_dry_run_and_requires_empty_target(project):
+@pytest.mark.parametrize("target", [
+    Path("/tmp/trial-install-outside-approved-root"),
+    Path("/media/data3/dengkw-sibling/install"),
+    Path("/media/data3/dengkw/../outside/install"),
+])
+def test_install_target_default_rejects_escape_from_approved_root(target, tmp_path):
+    with pytest.raises(trial_release_install.InstallFailure, match="Install target must be under"):
+        trial_release_install.validate_target(target, tmp_path / "package")
+
+
+def test_install_target_rejects_symlink_escape_from_allowed_root(tmp_path):
+    allowed = tmp_path / "approved"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    (allowed / "alias").symlink_to(outside, target_is_directory=True)
+    target = allowed / "alias" / "install"
+    with pytest.raises(trial_release_install.InstallFailure, match="Install target must be under"):
+        trial_release_install.validate_target(target, tmp_path / "package", allowed_root=allowed)
+    assert not (outside / "install").exists()
+
+
+def test_install_plan_is_dry_run_and_requires_empty_target(project, monkeypatch):
+    original_validate = trial_release_install.validate_target
+    monkeypatch.setattr(trial_release_install, "validate_target", lambda target, package:
+                        original_validate(target, package, allowed_root=project.parent))
     package, manifest = build(project)
     expected = manifest["source_tree_sha256"]
     target = project.parent / f"install-target-{os.getpid()}"

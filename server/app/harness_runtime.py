@@ -321,11 +321,12 @@ class HarnessRuntime(WorkspaceRuntime):
                 request = await asyncio.to_thread(client.next_request)
                 try:
                     if request.method == "workspace/tool":
+                        expected_run_id = (self.current_run or {}).get("id")
                         self.tool_call_id = request.payload.get("callId")
                         self.tool_task = asyncio.create_task(self.bridge.invoke(request.payload))
                         try:
                             result = await self.tool_task
-                            await asyncio.to_thread(client.respond, request.id, result)
+                            await asyncio.to_thread(self.bridge.respond, client, request.id, request.payload, result, expected_run_id)
                         except asyncio.CancelledError:
                             if self.interrupted or self.client is None:
                                 raise

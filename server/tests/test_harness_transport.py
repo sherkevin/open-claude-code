@@ -1,5 +1,6 @@
 """Adapter failure and timing contracts; actual Node is tested separately."""
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -60,7 +61,7 @@ def adapter(finish="completed", finish_observed=True):
     runtime = object.__new__(HarnessRuntime)
     runtime.service = SimpleNamespace(settings=SimpleNamespace(approval_seconds=600),
         require=lambda *_args: {"created_at": "2026-11-10T00:00:00+00:00", "timings": "{}"},
-        db=SimpleNamespace(execute=lambda *_args: None, event=lambda *_args: None))
+        db=SimpleNamespace(lock=threading.RLock(), execute=lambda *_args: None, event=lambda *_args: None))
     runtime.conversation_id, runtime.session_id = "conversation", "owned"
     runtime.config = {"fingerprint": "synthetic-transport"}
     runtime.client, runtime.emit, runtime.bridge = Client(), emit, SimpleNamespace(calls=set())

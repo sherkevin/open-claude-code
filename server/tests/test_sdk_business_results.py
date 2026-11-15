@@ -68,7 +68,9 @@ def test_sdk_callback_keeps_one_text_copy_and_uses_cleaned_structured_data(env, 
     body = {"content": [{"type": "text", "text": dump(value)}] * 2, "structuredContent": value}
     result, event = exercise(env, monkeypatch, body)
     replacement = result["hookSpecificOutput"]["updatedToolOutput"]
-    assert json.loads(replacement)["rows"][0]["customer"] == "[redacted]"
+    structured, end = json.JSONDecoder().raw_decode(replacement)
+    assert structured["rows"][0]["customer"] == "[redacted]"
+    assert "工作台显示回执" in replacement[end:] and '"rows"' not in replacement[end:]
     assert "synthetic-sdk-response-secret" not in dump(result) + dump(event)
     assert event["success"] is True
     assert event["business_result"]["rows"][0]["quantity"] == 18

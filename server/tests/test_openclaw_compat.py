@@ -28,6 +28,7 @@ from app.openclaw_compat import (
     CANDIDATE_OPENCLAW_VERSION,
     OpenClawError,
     OpenClawFacade,
+    OpenClawTenantStore,
     UnavailableExecutor,
     create_openclaw_sidecar_app,
     harness_contract_manifest,
@@ -193,6 +194,14 @@ def error_code(response) -> str:
 
 
 # ----------------------------------------------------------------------- auth
+def test_custom_employee_cookie_cannot_mix_with_tenant_bearer(env):
+    store = OpenClawTenantStore(env.service.db, session_cookie_name="zhixing_preview_20261115")
+    for name in ("zhixing_session", "zhixing_preview_20261115"):
+        with pytest.raises(OpenClawError) as error:
+            store.authenticate({**auth(env.token_a), "Cookie": name + "=employee-session"})
+        assert error.value.code == "EMPLOYEE_SESSION_NOT_ALLOWED"
+
+
 def test_auth_rejects_cookie_management_and_invalid_tokens(env):
     client = env.client
     cookie = client.get("/v1/models", headers={"Cookie": "zhixing_session=employee-session"})

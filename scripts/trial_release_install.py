@@ -384,12 +384,14 @@ def clean_environment(target: Path) -> dict[str, str]:
     }
 
 
-def validate_target(target: Path, package: Path) -> dict:
+def validate_target(target: Path, package: Path, *, allowed_root: Path | None = None) -> dict:
     target = target.resolve()
     package = package.resolve()
-    allowed_root = Path("/media/data3/dengkw").resolve()
+    # The installer entry points retain their original approved deployment
+    # root. Tests can exercise the same checks inside a disposable fixture.
+    allowed_root = (allowed_root or Path("/media/data3/dengkw")).resolve()
     if target != allowed_root and allowed_root not in target.parents:
-        raise InstallFailure("Install target must be under /media/data3/dengkw")
+        raise InstallFailure(f"Install target must be under {allowed_root}")
     if target == package or package in target.parents:
         raise InstallFailure("Install target must be a new directory outside the package")
     if target.exists() and any(target.iterdir()):

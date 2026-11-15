@@ -1,4 +1,4 @@
-"""Bounded display projection of explicit business tables, never a calculator.
+"""Bounded display projection of explicit business tables, no implicit totals.
 
 Only structured MCP data is accepted. Coverage, dates, units and synthetic
 labels are tool declarations; no completeness or total is inferred from rows.
@@ -14,6 +14,24 @@ MAX_COLUMNS = 24
 MAX_RESULT_BYTES = 48_000
 MAX_CELL_CHARS = 2_000
 _UNSAFE_KEYS = {"__proto__", "constructor", "prototype"}
+
+
+def presentation_receipt(result):
+    """Host-generated display status; a remote schema label alone is insufficient."""
+    projection = project_business_result(result)
+    if projection is None:
+        return None
+    facts = projection.get("host_verified_aggregates", [])
+    verified = ("宿主按工具明确的同单位可加声明核对本次返回行合计："
+                + "；".join(f"{fact['label']}={fact['value']} {fact['unit']}" for fact in facts)
+                + "。使用这些已核合计，不自行重新求和或把返回行小计称为全量。") if facts else ""
+    return ("【工作台显示回执 business-result/v1】本次返回的表格、查询范围、单位与覆盖情况已提供结果卡。"
+            "回答给出用户所问的简短业务结论、必要数字和来源即可，不重复整表及元数据；"
+            "询问有哪些客户及数量已由结果卡承载，不表示要求正文复写；只有明确要求用文字逐项复述才再列明细。"
+            "scope.date是业务日期，data_time/data_timestamp是数据时点，sources.locator.queried_at才是实际取数时间；"
+            "实际取数时间缺失就说未提供，不能把数据时点叫查询时间。"
+            "用户未问且不影响结论时，不追加时间戳、trace、库表名称或无关指标。"
+            "未返回差额或排除原因时说明未提供，不推测日期、状态或口径原因。此回执不证明数据完整，也不增加任何操作权限。" + verified)
 
 
 def scalar(value):
@@ -122,6 +140,10 @@ def project_business_result(result, source_ids=()):
     summary = _short(payload.get("summary"), 2_000)
     if summary is not None:
         output["summary"] = summary
+    from .business_facts import verify_aggregates
+    aggregates = verify_aggregates(payload, columns, projected)
+    if aggregates:
+        output["host_verified_aggregates"] = aggregates
     try:
         size = len(json.dumps(output, ensure_ascii=False, allow_nan=False).encode("utf-8"))
     except (ValueError, TypeError, UnicodeError, RecursionError):

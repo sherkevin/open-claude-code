@@ -8,9 +8,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
+import threading
 import time
 
 from .db import uid
+from .business_results import presentation_receipt
 from .external_capabilities import CAPABILITY_TOOL_SHORT_NAMES, record_approval_receipt
 from .harness_bridge import _arguments as knowledge_arguments
 from .harness_memory import HarnessMemoryTools, MEMORY_NAMES
@@ -21,6 +24,43 @@ from .workspace_tools import APPROVAL_ID, TOOL_CALL_ID, build_workspace_tools
 
 OCR_PURPOSES = frozenset({"text_recognition", "rich_layout_recognition"})
 IMAGE_MODES = frozenset({"text_search", "reverse_image"})
+RESULT_DELIVERY_TIMEOUT_SECONDS = 1.0
+
+
+def bounded_respond(client, request_id, result):
+    """Bound pinned SDK's blocking stdin write without taking its writer lock.
+
+    The reviewed SDK has no write timeout. Killing only its owned process
+    closes the pipe and releases blocked writers, including a writer holding
+    the SDK lock. The watchdog never calls client.close or touches the DB.
+    """
+    process = getattr(client, "_proc", None)
+    if not isinstance(process, subprocess.Popen):
+        raise AppError(503, "HARNESS_RESULT_DELIVERY_UNAVAILABLE", "执行进程已关闭，工具结果未交付")
+    state, state_lock = {"done": False, "expired": False}, threading.Lock()
+    def expire():
+        with state_lock:
+            if state["done"]:
+                return
+            state["expired"] = True
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+    timer = threading.Timer(RESULT_DELIVERY_TIMEOUT_SECONDS, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        client.respond(request_id, result)
+    except Exception:
+        if not state["expired"]:
+            raise
+    finally:
+        with state_lock:
+            state["done"] = True
+        timer.cancel()
+    if state["expired"]:
+        raise AppError(504, "HARNESS_RESULT_DELIVERY_TIMEOUT", "工具结果交付超时，执行进程已终止；本次未自动重试")
 
 
 class HarnessToolBridge:
@@ -30,6 +70,7 @@ class HarnessToolBridge:
         self.business_tools = build_mcp_tools(runtime)
         self.memory = HarnessMemoryTools(self)
         self.calls = set()
+        self.response_guards = {}
 
     def definitions(self):
         types = {str: "string", int: "integer", list: "array"}
@@ -139,6 +180,32 @@ class HarnessToolBridge:
         if self.policy_snapshot() != expected:
             raise AppError(403, "HARNESS_APPROVAL_CHANGED", "审批策略已变化，请重新发送任务")
 
+    def discard(self, run_id, call_id, tool_name, error):
+        self.runtime.service.db.event(run_id, "tool.discarded", {
+            "tool_call_id": call_id, "tool_name": tool_name, "success": False,
+            "error_code": error.code, "error_message": error.message})
+        return {"is_error": True, "content": [{"type": "text", "text": error.message}]}
+
+    def respond(self, client, request_id, payload, result, run_id):
+        """Last host handoff, on a worker, with no await after authorization.
+
+        Cancellation/config changes cannot interleave with the final bounded
+        RPC write. Keep this separate from invoke's event-persistence awaits.
+        """
+        with self.runtime.service.db.lock:
+            guard = self.response_guards.pop((run_id, payload.get("callId")), None)
+            try:
+                if guard:
+                    guard()
+                self.active(run_id)
+            except AppError as exc:
+                result = self.discard(run_id, payload.get("callId"), payload.get("toolName"), exc)
+            try:
+                bounded_respond(client, request_id, result)
+            except AppError as exc:
+                self.discard(run_id, payload.get("callId"), payload.get("toolName"), exc)
+                raise
+
     async def invoke(self, payload):
         runtime, service = self.runtime, self.runtime.service
         run_id = (runtime.current_run or {}).get("id")
@@ -169,6 +236,8 @@ class HarnessToolBridge:
         sources = []
         error = None
         model_input_bytes = None
+        result = {"is_error": True, "content": [{"type": "text", "text": "工具调用未完成"}]}
+        recheck = None
         try:
             self.active(run_id)
             automatic = runtime.check_tool(tool_name, arguments)
@@ -200,11 +269,13 @@ class HarnessToolBridge:
                     service, run_id=run_id, tool_call_id=call_id, tool_name=tool_name,
                     arguments=arguments, receipt=allowed)
             def recheck():
-                self.active(run_id)
                 runtime.check_tool(tool_name, arguments)
                 self.unchanged_policy(policies)
                 if business:
                     business.current()
+                self.active(run_id)
+
+            self.response_guards[(run_id, call_id)] = recheck
 
             if business:
                 result = await business.invoke(arguments, recheck)
@@ -232,6 +303,9 @@ class HarnessToolBridge:
                     # Other tools can finish while the HTTP call is pending.
                     # Attribute only this result's sources, including reused IDs.
                     sources = [source["id"] for source in registered][:30]
+                    display_status = presentation_receipt(result)
+                    if display_status:
+                        result["content"].append({"type": "text", "text": display_status})
                     # Citation context is real model input too; do not exempt it.
                     model_input_bytes = enforce_model_result_budget(result)
                 else:
@@ -241,20 +315,37 @@ class HarnessToolBridge:
                     user = service.require("users", run["user_id"])
                     sources = [source["id"] for source in service.evidence.trusted_sources(run_id, candidates, user)]
                 success = True
-            return result
         except asyncio.CancelledError:
             raise
         except AppError as exc:
             error = {"error_code": exc.code, "error_message": exc.message}
-            return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
+            result = {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
         finally:
             # Failure to persist completion also fails the RPC; the child must
             # not see a successful unaudited result.
             await runtime.emit("run.stage", {"stage": "evidence", "tool_name": tool_name,
                                "status": "reported" if success and sources else "unknown",
                                "source_count": len(sources)})
+            if success:
+                try:
+                    with service.db.lock:
+                        recheck()
+                except AppError as exc:
+                    success, sources = False, []
+                    error = {"error_code": exc.code, "error_message": exc.message}
+                    result = {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
             await runtime.emit("tool.completed", {"tool_call_id": event_id, "tool_name": tool_name,
+                               "_expected_run_id": run_id,
+                               **({"_expected_tool_call_id": call_id} if success else {}),
                                "success": success, "duration_ms": round((time.monotonic() - started) * 1000),
                                **(error or {}),
                                **({"model_input_bytes": model_input_bytes} if success and model_input_bytes is not None else {}),
                                **result_fact_metadata(success, locals().get("result"), sources)})
+        with service.db.lock:
+            try:
+                if success:
+                    recheck()
+                self.active(run_id)
+            except AppError as exc:
+                return self.discard(run_id, event_id, tool_name, exc)
+            return result

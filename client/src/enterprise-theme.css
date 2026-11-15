@@ -21,3 +21,46 @@
 @media(min-width:1100px){.zhixing-theme .messages {max-width:1120px}.zhixing-theme .composer-inner {max-width:1040px}}
 .zhixing-theme .page-header h1 {color:var(--ink)}
 .zhixing-theme .page-header p,.zhixing-theme .page-header .eyebrow {color:var(--muted)}
+/* Horizon source: sap_horizon/css_variables.css L572–592, archived 2026-11-14.
+   Keep the configured brand and existing artwork; use local Chinese fallbacks. */
+.zhixing-theme{--warning-text:#8d5100;--highlight:#0064d9;font-family:"72 Product","PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif;font-size:14px}
+.zhixing-theme .chat-page :is(.markdown,.user-text){font-size:15px;line-height:1.8}
+.zhixing-theme .chat-page .chat-proof-bar{font-size:12px;line-height:1.6;background:var(--white);border-color:var(--line)}
+.zhixing-theme .chat-page .chat-intro{padding:48px 24px 32px}
+.zhixing-theme .chat-page .chat-intro>p{font-size:15px;color:var(--muted)}
+.zhixing-theme .chat-page .chat-intro-note{font-size:14px;margin-top:20px;color:var(--muted)}
+.zhixing-theme .chat-page .messages{padding-top:22px}
+.zhixing-theme .chat-page .composer>textarea{font-size:15px;line-height:1.7}
+.zhixing-theme .chat-page .message.assistant .message-content{border-color:var(--line)}
+.zhixing-theme .chat-page .execution-panel{background:var(--paper)}
+.zhixing-theme .chat-page :is(.event-row,.event-row summary,.approval-card>p){font-size:14px;line-height:1.65}
+.zhixing-theme .chat-page .run-metrics dl{font-size:13px}
+.zhixing-theme .chat-page .run-metrics dd{overflow-wrap:anywhere}
+.zhixing-theme .usage-coverage{display:block;font-size:12px;font-weight:400;color:var(--muted);line-height:1.6;margin-top:5px}
+@media(max-width:600px){.zhixing-theme .chat-page .messages{padding:18px 16px}.zhixing-theme .chat-page .chat-actions{flex-wrap:wrap;gap:4px}.zhixing-theme .chat-page .chat-heading{min-width:0}.zhixing-theme .chat-page .chat-header{gap:8px}.zhixing-theme .chat-page .chat-heading h1{font-size:17px;max-width:48vw}}
+.model-routing-control{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0;color:var(--ink)}
+.model-routing-control label{display:flex;align-items:center;gap:8px;font-size:14px;white-space:nowrap}
+.model-routing-control select{min-height:34px;padding:6px 26px 6px 8px;border:1px solid var(--line);border-radius:5px;color:var(--ink);background:var(--white);font:inherit}
+.model-routing-control p{flex:1;min-width:180px;font-size:12px;line-height:1.6;color:var(--muted);margin:0}
+.model-auto-actions{display:flex;justify-content:flex-end;margin:0 0 6px}
+.model-auto-actions:empty{display:none}
+.model-run-identity{display:inline-flex;align-items:center;gap:6px;color:var(--ink);flex-wrap:wrap}
+.model-run-identity small{font-size:12px;color:var(--muted)}
+.model-run-identity strong{font-size:12px;font-weight:600;overflow-wrap:anywhere}
+/* Compact idle composer: the fixed choice stays visible; controls expand on demand. */
+.zhixing-theme .chat-page .composer-area{padding:8px 32px 12px}
+.zhixing-theme .chat-model-settings{margin:0 0 6px;color:var(--ink)}
+.zhixing-theme .chat-model-settings>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px;list-style:none;cursor:pointer;padding:4px 2px;font-size:14px;line-height:1.5}
+.zhixing-theme .chat-model-settings>summary::-webkit-details-marker{display:none}
+.zhixing-theme .chat-model-settings>summary:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:4px}
+.zhixing-theme .model-settings-current{min-width:0;overflow-wrap:anywhere}
+.zhixing-theme .model-settings-action{display:inline-flex;align-items:center;gap:6px;color:var(--brand);font-size:12px;flex-shrink:0}
+.zhixing-theme .chat-model-settings[open] .model-settings-action>svg{transform:rotate(180deg)}
+.zhixing-theme .model-settings-body{padding:8px 12px 12px;background:var(--white);border:1px solid var(--line);border-radius:6px;margin-bottom:10px}
+.zhixing-theme .model-settings-body .model-routing-control{margin:0 0 10px}
+.zhixing-theme .model-settings-body .model-selectors{gap:12px;align-items:flex-end}
+.zhixing-theme .chat-page .composer>textarea{min-height:52px;padding-top:12px;padding-bottom:6px}
+.zhixing-theme .chat-page .composer-toolbar{padding-top:5px;padding-bottom:8px}
+.zhixing-theme .chat-page .composer-footnote{padding-top:7px}
+@media(max-width:600px){.zhixing-theme .chat-page .composer-area{padding:8px 16px max(12px,env(safe-area-inset-bottom))}.zhixing-theme .chat-model-settings>summary{gap:8px}.zhixing-theme .model-settings-body .model-selectors{flex-direction:row;flex-wrap:wrap}.zhixing-theme .model-settings-body{padding:10px}}
+@media(prefers-reduced-motion:no-preference){.zhixing-theme .model-settings-action>svg{transition:transform 120ms}}
