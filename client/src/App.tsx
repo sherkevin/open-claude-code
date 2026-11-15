@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, ArrowUpRight, BookOpen, ChartNoAxesCombined, ChevronDown, FolderOpen, LogOut, Menu, MessageSquare, Network, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, Users, X } from 'lucide-react';
+import { ArrowUpRight, BookOpen, ChartNoAxesCombined, FolderOpen, LogOut, Menu, MessageSquare, Network, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, Users, X } from 'lucide-react';
 import { api, errorText, post, timeText } from './api';
 import { configAllows, type AppConfig, type Assistant, type Conversation, type ModelOption, type User } from './types';
-import { Button, ErrorNotice, Field, Loader, Modal } from './components';
+import { Button, ErrorNotice, Loader, Modal } from './components';
 import ChatPage from './ChatPage';
 import ConnectionsPage from './ConnectionsPage';
 import MemoryPage from './MemoryPage';
@@ -18,10 +18,12 @@ import WorkspacePage from './WorkspacePage';
 import CapabilitySettingsPage from './CapabilitySettingsPage';
 import { canManageCapabilities } from './capabilitySettings';
 import { isFeishuEmbed, requestFeishuCode } from './feishu';
+import Brand from './Brand';
+import { Login, FeishuLogin } from './AuthPages';
 
 type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'assistants' | 'knowledge' | 'skills' | 'users' | 'usage' | 'memory' | 'benchmark' | 'approvals' | 'capability-settings';
-const fallbackConfig: AppConfig = { brand_name: '知行工作台', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
-function Brand({ name, compact = false }: { name: string; compact?: boolean }) { return <div className={`brand ${compact ? 'compact' : ''}`}><span className="brand-symbol" aria-hidden="true"><svg viewBox="0 0 40 40"><path d="M10 11h20L12 29h18M10 20h20"/></svg></span><span>{name}<small>让知识，付诸行动</small></span></div>; }
+const fallbackConfig: AppConfig = { brand_name: 'Flintworks', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
+
 
 export default function App() {
   const feishuEmbed = isFeishuEmbed();
@@ -46,8 +48,8 @@ export default function App() {
   const openConversation=(conversation:Conversation)=>protectMemory(()=>{setInitialDraft(null);setSelected(conversation);showView('workspace');});
   const openAssistant=(assistant:Assistant)=>protectMemory(()=>{setAssistantDetail(assistant);showView('assistant-detail');});
   const logout=async()=>{try{await post('/auth/logout');setUser(null);setSelected(null);setInitialDraft(null);setAssistants([]);setConversations([]);setView('workspace');}catch(e){setError(errorText(e));}};
-  if(initializing)return <div className="boot muse-theme"><Brand name={config.brand_name}/><Loader text="正在连接工作台…"/></div>;
-  if(initialError)return <div className="boot muse-theme"><Brand name={config.brand_name}/><ErrorNotice message={initialError}/><Button onClick={()=>void initialize()}><RefreshCw size={16}/>重新连接</Button></div>;
+  if(initializing)return <div className="boot zhixing-theme"><Brand name={config.brand_name}/><Loader text="正在连接工作台…"/></div>;
+  if(initialError)return <div className="boot zhixing-theme"><Brand name={config.brand_name}/><ErrorNotice message={initialError}/><Button onClick={()=>void initialize()}><RefreshCw size={16}/>重新连接</Button></div>;
   if(!user){if(feishuEmbed&&!feishuFallback)return <FeishuLogin config={config} busy={feishuAuth==='authorizing'} error={feishuError} onRetry={()=>void initialize()} onPassword={()=>{setFeishuFallback(true);setFeishuError('');}}/>;return <Login config={config} onLogin={setUser}/>;}
   const admin=user.role==='admin';
   const canCreateConversation=configAllows(config,'conversations.write');
@@ -81,11 +83,4 @@ export default function App() {
     {newSession&&<NewSession assistants={assistants} initialAssistant={newSession.assistant} initialQuestion={newSession.question} config={config} models={models} modelsLoading={modelsLoading} modelsError={modelsError} onReloadModels={refreshModels} onClose={()=>setNewSession(null)} onCreated={conversation=>{setInitialDraft(newSession.question?{conversationId:conversation.id,text:newSession.question}:null);setNewSession(null);setSelected(conversation);showView('workspace');void refresh();}}/>}
     {pendingNavigation&&<Modal title={pendingKind==='assistant'?'放弃未保存的助手配置':'放弃未保存的记忆修改'} onClose={()=>setPendingNavigation(null)}><div className="modal-body"><p>{pendingKind==='assistant'?'当前助手配置有未保存的修改。请先保存，或明确选择放弃草稿。':'当前记忆有未保存的修改。离开页面会丢弃这些草稿，请先保存或明确选择放弃。'}</p></div><footer className="modal-footer"><Button variant="secondary" onClick={()=>setPendingNavigation(null)}>继续编辑</Button><Button variant="danger" onClick={()=>{const action=pendingNavigation;if(assistantSaving||memorySavingRef.current)return;setPendingNavigation(null);if(pendingKind==='assistant'){setAssistantDirty(false);setDraftEpoch(value=>value+1);}else{setMemoryDirty(false);setMemoryEpoch(value=>value+1);}action();}}>放弃修改并离开</Button></footer></Modal>}
   </div>;
-}
-function FeishuLogin({ config, busy, error, onRetry, onPassword }: { config: AppConfig; busy: boolean; error: string; onRetry: () => void; onPassword: () => void }) {
-  return <div className="feishu-login muse-theme"><div className="feishu-login-card"><div className="feishu-login-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M10 12h28L13 36h25M10 24h28"/></svg></div><span className="eyebrow">飞书工作台应用</span><h1>正在连接{config.brand_name}</h1><p>{busy?'正在向飞书请求你的工作身份…':'从飞书打开后，你可以直接使用企业知识和助手。'}</p>{error&&<ErrorNotice message={error}/>} {busy&&<Loader text="等待飞书授权…"/>}<div className="feishu-login-actions">{!busy&&<Button onClick={onRetry}><RefreshCw size={16}/>重新获取飞书身份</Button>}<Button variant="ghost" onClick={onPassword}>使用工作台账号登录</Button></div><small>应用地址：{config.feishu_h5?.path||'/feishu'}</small></div></div>;
-}
-function Login({ config, onLogin }: { config: AppConfig; onLogin: (user: User) => void }) {
-  const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  return <div className="login-page muse-theme"><div className="login-story"><Brand name={config.brand_name}/><div className="login-editorial"><span className="eyebrow">知识有来处 · 行动有记录</span><h1>让每一项工作，<br/>都有下一步。</h1><p>把企业的知识、工具与流程，<br/>连接到一个清晰的工作空间。</p><div className="editorial-lines" aria-hidden="true"><span/><span/><span/><div>知<ArrowRight size={35}/>行</div></div></div><span className="login-footnote">企业智能助手 · 工作空间</span></div><div className="login-form-side"><form className="login-form" onSubmit={async e => { e.preventDefault(); setBusy(true); setError(''); try { onLogin(await post<User>('/auth/login', { username, password })); } catch (err) { setError(errorText(err)); } finally { setBusy(false); } }}><span className="eyebrow">欢迎回来</span><h2>登录你的工作台</h2><p>使用管理员分配的账号继续工作。</p><ErrorNotice message={error}/><Field label="账号" required><input name="username" autoComplete="username" placeholder="输入工作账号" value={username} onChange={e => setUsername(e.target.value)} required autoFocus/></Field><Field label="密码" required><input name="password" type="password" autoComplete="current-password" placeholder="输入登录密码" value={password} onChange={e => setPassword(e.target.value)} required/></Field><Button type="submit" busy={busy} className="login-submit">登录<ArrowRight size={18}/></Button><div className="login-help"><ShieldCheck size={15}/><span>无法登录？请联系你的工作台管理员。</span></div></form><div className="login-bottom">{config.brand_name}<ChevronDown size={13}/>中文</div></div></div>;
 }

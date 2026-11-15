@@ -1,5 +1,5 @@
-/* Product palette: SAP Horizon source tokens recorded in the approved 2026-11-14
-   product plan. Brand artwork is deliberately unchanged. */
+/* Product palette: SAP Horizon source tokens recorded in the approved plan.
+   The same palette also governs sign-in and the Flintworks brand application. */
 .zhixing-theme{--brand:#0070f2;--brand-soft:#edf5ff;--ink:#131e29;--muted:#556b80;--paper:#f5f6f7;--white:#fff;--line:#dce3eb;--panel:#edf1f5;--green:#256f3a;--green-dark:#1e5430;--green-soft:#eff8f0;--red:#aa0808;--shadow:0 8px 28px #17324c0a}
 .zhixing-theme .button.primary,.zhixing-theme .new-conversation,.zhixing-theme .send-button{background:var(--brand);border-color:var(--brand);color:#fff}
 .zhixing-theme .button.primary:hover:not(:disabled),.zhixing-theme .new-conversation:hover{background:#0064d9;border-color:#0064d9}
@@ -22,7 +22,7 @@
 .zhixing-theme .page-header h1 {color:var(--ink)}
 .zhixing-theme .page-header p,.zhixing-theme .page-header .eyebrow {color:var(--muted)}
 /* Horizon source: sap_horizon/css_variables.css L572–592, archived 2026-11-14.
-   Keep the configured brand and existing artwork; use local Chinese fallbacks. */
+   Keep the configured product name and use local Chinese fallbacks. */
 .zhixing-theme{--warning-text:#8d5100;--highlight:#0064d9;font-family:"72 Product","PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif;font-size:14px}
 .zhixing-theme .chat-page :is(.markdown,.user-text){font-size:15px;line-height:1.8}
 .zhixing-theme .chat-page .chat-proof-bar{font-size:12px;line-height:1.6;background:var(--white);border-color:var(--line)}
@@ -64,3 +64,48 @@
 .zhixing-theme .chat-page .composer-footnote{padding-top:7px}
 @media(max-width:600px){.zhixing-theme .chat-page .composer-area{padding:8px 16px max(12px,env(safe-area-inset-bottom))}.zhixing-theme .chat-model-settings>summary{gap:8px}.zhixing-theme .model-settings-body .model-selectors{flex-direction:row;flex-wrap:wrap}.zhixing-theme .model-settings-body{padding:10px}}
 @media(prefers-reduced-motion:no-preference){.zhixing-theme .model-settings-action>svg{transition:transform 120ms}}
+
+/* Shared details: clear focus, restrained surfaces, and readable mobile controls. */
+.zhixing-theme .field :is(input,select,textarea):focus {border-color:var(--brand);box-shadow:none}
+.zhixing-theme .field :is(input,textarea)::placeholder {color:var(--muted);opacity:1}
+.zhixing-theme .field>small {color:var(--muted);font-size:12px;line-height:1.6}
+.zhixing-theme .button.secondary:hover:not(:disabled) {background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+.zhixing-theme .nav-item:not(.selected):hover {background:var(--brand-soft);color:var(--ink)}
+.zhixing-theme .nav-item.selected:hover {background:#0064d9;color:#fff}
+.zhixing-theme .sidebar {padding-top:22px}
+.zhixing-theme .new-conversation {margin-top:24px}
+.zhixing-theme .model-run-identity {border:0;background:transparent;padding:0 0 0 8px;gap:8px}
+.zhixing-theme .model-run-identity strong {padding:0;border:0;background:transparent;margin:0;color:var(--ink)}
+.zhixing-theme .notice.error {color:var(--red);background:#fff1f1;border-color:#ffd5d5}
+.zhixing-theme .notice.success {color:var(--green);background:var(--green-soft);border-color:#b8d8bd}
+.zhixing-theme .resource-card {background:var(--white);border-color:var(--line);box-shadow:none}
+.zhixing-theme .resource-card>h2 {color:var(--ink)}
+.zhixing-theme .page-header {border-color:var(--line)}
+.zhixing-theme ::selection {background:#d1e8ff;color:var(--ink)}
+.zhixing-theme ::-webkit-scrollbar-thumb {background:#b8c3cf;border-radius:6px}
+.zhixing-theme ::-webkit-scrollbar-track {background:transparent}
+.zhixing-theme :is(.metric-card strong,.stat-card strong,.metric-value) {font-family:inherit;font-variant-numeric:tabular-nums;color:var(--ink)}
+.zhixing-theme :is(th,.empty-state p,.section-help,.form-note,.scope-badge) {color:var(--muted)}
+.zhixing-theme .scope-badge {background:var(--paper)}
+.zhixing-theme .resource-advanced {border-color:var(--line);color:var(--muted);background:var(--paper)}
+.zhixing-theme .checkbox-row {color:var(--ink);font-size:14px}
+.zhixing-theme .checkbox-row small {color:var(--muted);font-size:12px}
+.zhixing-theme .checkbox-row input {accent-color:var(--brand)}
+.zhixing-theme .checkbox-row.separated {border-color:var(--line)}
+/* Let modal form content scroll while its actions remain visible. */
+.zhixing-theme .modal>form {min-height:0}
+.zhixing-theme th {font-size:12px}
+.zhixing-theme .empty-state h2 {font-family:inherit;font-size:18px;color:var(--ink)}
+.zhixing-theme .empty-state p {font-size:14px;line-height:1.7}
+.zhixing-theme .empty-icon {color:var(--brand);background:var(--brand-soft);border-color:var(--line)}
+.zhixing-theme .chat-page .composer-footnote {justify-content:center}
+.zhixing-theme .execution-runtime {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+@media(max-width:600px){
+  .zhixing-theme .chat-page .composer>textarea,
+  .zhixing-theme .wr-workspace .wr-question-panel textarea,
+  .zhixing-theme .wr-workspace .wr-assistant-select select,
+  .zhixing-theme .field :is(input,select,textarea),
+  .zhixing-theme .model-routing-control select,
+  .auth-field input {font-size:16px}
+  .zhixing-theme .sidebar :is(.nav-item,.icon-button),.zhixing-theme .wr-workspace .button {min-height:44px}
+}
