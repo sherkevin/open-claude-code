@@ -99,3 +99,16 @@
 .connections-onboarding-editor .connection-editor-step p{font-size:14px;color:var(--muted);margin-top:6px;line-height:1.6}
 @media(max-width:900px){.connections-onboarding .connection-route>li{padding:14px 12px;gap:8px}.connections-onboarding .connection-progress{grid-template-columns:1fr;gap:14px}.connections-onboarding .connection-trial-action{align-items:flex-start;flex-direction:column}}
 @media(max-width:600px){.connections-onboarding .connection-route{grid-template-columns:1fr}.connections-onboarding .connection-route>li+li{border-left:0;border-top:1px solid var(--line)}.connections-onboarding .onboarding-card{display:block;padding:16px}.connections-onboarding .connection-card-head{justify-content:flex-start;margin-bottom:10px}.connections-onboarding .connection-trial-action>div:last-child{flex-wrap:wrap;flex-shrink:1}.connections-onboarding .connection-trial-action select{max-width:100%}}
+
+/* Preserve the current connection while users move between setup and trial. */
+.connections-onboarding .onboarding-card[data-highlighted=true]{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand-soft);scroll-margin-block:24px;outline:none}
+.connections-onboarding .connection-card-head .badge{display:inline-flex;align-items:center;gap:5px}
+.connection-setup-context{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 20px;background:var(--brand-soft);border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:8px;margin:0 0 20px}
+.connection-setup-context strong{font-size:15px;color:var(--ink);font-weight:600}
+.connection-setup-context h2{font-size:16px;line-height:1.5;color:var(--ink);font-weight:600;margin:0}
+.connection-setup-context p{font-size:13px;line-height:1.7;color:var(--muted);margin:5px 0 0}
+.connection-setup-context .button{flex-shrink:0}
+.connection-setup-actions{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:720px){.connection-setup-context{align-items:flex-start;flex-direction:column;padding:14px 16px}}
+.zhixing-theme .binding-group.connection-setup-focus{border:1px solid var(--brand);border-radius:7px;padding:14px;background:var(--brand-soft);scroll-margin-block:20px}
+.zhixing-theme .connection-setup-hint{font-size:13px;line-height:1.7;color:var(--muted);padding:10px 12px;border-radius:5px;background:var(--brand-soft);margin:0 0 14px}

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { ArrowUpRight, ChevronDown, CircleHelp, Link2, Network, Pencil, PlugZap, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { AlertCircle, ArrowUpRight, CheckCircle2, ChevronDown, CircleHelp, Clock3, LoaderCircle, Link2, Network, Pencil, PlugZap, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { api, ApiError, errorText, patch, post, remove, timeText } from './api';
 import type { Assistant, Connection } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
@@ -58,9 +58,9 @@ export function ConnectionGroups({ items, renderCard }: { items: Connection[]; r
   </>;
 }
 
-export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = false, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onConfigureAssistant, canConfigureAssistant = true, onStartAssistant }: {
+export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = false, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onConfigureAssistant, canConfigureAssistant = true, onStartAssistant, highlighted = false }: {
   item: Connection; assistants: Assistant[] | null; bindingsLoading?: boolean; testing?: boolean; actionsBusy?: boolean; testError?: string; admin: boolean;
-  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onConfigureAssistant: () => void;
+  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onConfigureAssistant: (connection: Connection) => void; highlighted?: boolean;
   canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant) => void;
 }) {
   const [trialAssistantId, setTrialAssistantId] = useState('');
@@ -73,8 +73,8 @@ export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = f
   const bindingLabel = bindingsLoading ? '正在读取绑定' : bindings === null ? '绑定情况未核' : bindings.length ? `已绑定 ${bindings.length} 个助手` : '尚未绑定助手';
   const usableBindings = bindings?.filter(binding => binding.enabled && binding.allowedCount > 0).length || 0;
   const statusLabel = testing ? '正在测试与发现工具' : testError ? '本次测试未完成' : discovery.label;
-  return <article className={`connection-card onboarding-card ${!item.enabled ? 'disabled-card' : ''}`} aria-labelledby={`connection-${item.id}`}>
-    <header className="connection-card-head"><span className="connection-icon"><Link2 size={22}/></span><span className={`badge ${!testing && !testError && discovery.tone === 'success' ? 'green' : testError || discovery.tone === 'warning' ? 'amber' : ''}`} role="status">{statusLabel}</span></header>
+  return <article className={`connection-card onboarding-card ${!item.enabled ? 'disabled-card' : ''}`} aria-labelledby={`connection-${item.id}`} data-connection-id={item.id} data-highlighted={highlighted || undefined} tabIndex={highlighted ? -1 : undefined}>
+    <header className="connection-card-head"><span className="connection-icon"><Link2 size={22}/></span><span className={`badge ${!testing && !testError && discovery.tone === 'success' ? 'green' : testError || discovery.tone === 'warning' ? 'amber' : ''}`} role="status">{testing ? <LoaderCircle size={13} className="spin"/> : currentTestPassed ? <CheckCircle2 size={13}/> : testError || discovery.tone === 'warning' ? <AlertCircle size={13}/> : <Clock3 size={13}/>} {statusLabel}</span></header>
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
     <p className="connection-url" title={item.url}>{item.url}</p>
     <div className="connection-meta"><span>{item.auth_type === 'bearer' ? 'Bearer Token' : '无认证'}{item.auth_type === 'bearer' && !item.credential_present ? ' · 未保存凭据' : ''}</span><span>Streamable HTTP</span></div>
@@ -91,13 +91,13 @@ export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = f
       <p>在助手设置中选择「{item.name}」和本次任务需要的工具。再从首页进入该助手，使用已授权的业务范围和一个有标准答案的问题核对结果。</p>
       <p>工具声明、绑定或免审批都不等于只读。试跑前核对受限账号、工具权限与业务范围；本页不自动调用业务工具，也不据此判定业务试跑通过。</p>
     </details>
-    <footer className="card-toolbar"><Button variant="secondary" busy={testing} disabled={actionsBusy || !item.enabled || !editable} onClick={onTest}><PlugZap size={15}/>测试连接</Button><Button variant="ghost" onClick={onTools}>查看工具<ArrowUpRight size={15}/></Button>{canConfigureAssistant && <Button variant={currentTestPassed && !candidates.length ? "primary" : "ghost"} disabled={actionsBusy} onClick={onConfigureAssistant}>去配置助手<ArrowUpRight size={15}/></Button>}<div className="toolbar-spacer"/>{editable && <><button type="button" className="icon-button" disabled={actionsBusy} aria-label={`编辑 ${item.name}`} title="编辑连接" onClick={onEdit}><Pencil size={16}/></button><button type="button" className="icon-button danger-text" disabled={actionsBusy} aria-label={`删除 ${item.name}`} title="删除连接" onClick={onDelete}><Trash2 size={16}/></button></>}</footer>
+    <footer className="card-toolbar"><Button variant={!currentTestPassed && editable && item.enabled ? "primary" : "secondary"} busy={testing} disabled={actionsBusy || !item.enabled || !editable} onClick={onTest}><PlugZap size={15}/>测试连接</Button><Button variant="ghost" onClick={onTools}>查看工具<ArrowUpRight size={15}/></Button>{canConfigureAssistant && <Button variant={currentTestPassed && !candidates.length ? "primary" : "ghost"} disabled={actionsBusy} onClick={() => onConfigureAssistant(item)}>去配置助手<ArrowUpRight size={15}/></Button>}<div className="toolbar-spacer"/>{editable && <><button type="button" className="icon-button" disabled={actionsBusy} aria-label={`编辑 ${item.name}`} title="编辑连接" onClick={onEdit}><Pencil size={16}/></button><button type="button" className="icon-button danger-text" disabled={actionsBusy} aria-label={`删除 ${item.name}`} title="删除连接" onClick={onDelete}><Trash2 size={16}/></button></>}</footer>
     {!editable && <p className="connection-access-note">此连接由有管理权限的成员维护，你可以查看工具和自己的助手绑定。</p>}
   </article>;
 }
 
-export default function ConnectionsPage({ onConfigureAssistant, admin, canConfigureAssistant = true, onStartAssistant }: {
-  onConfigureAssistant: () => void; admin: boolean; canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant) => void;
+export default function ConnectionsPage({ onConfigureAssistant, admin, canConfigureAssistant = true, onStartAssistant, focusConnectionId }: {
+  onConfigureAssistant: (connection: Connection) => void; focusConnectionId?: string; admin: boolean; canConfigureAssistant?: boolean; onStartAssistant?: (assistant: Assistant) => void;
 }) {
   const [items, setItems] = useState<Connection[]>([]);
   const [assistants, setAssistants] = useState<Assistant[] | null>(null);
@@ -113,6 +113,16 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
   const [tools, setTools] = useState<Connection | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null);
   const [busyDelete, setBusyDelete] = useState(false);
+  const located = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading || !focusConnectionId || located.current === focusConnectionId) return;
+    const node = document.querySelector<HTMLElement>(`[data-connection-id="${CSS.escape(focusConnectionId)}"]`);
+    if (node) {
+      let parent = node.parentElement;
+      while (parent) { if (parent instanceof HTMLDetailsElement) parent.open = true; parent = parent.parentElement; }
+      node.focus({ preventScroll: true }); node.scrollIntoView({ block: "center", behavior: "auto" }); located.current = focusConnectionId;
+    }
+  }, [focusConnectionId, loading]);
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true); setError(''); setBindingsError(''); setAssistants(null);
     const result = await loadConnectionOnboarding(signal);
@@ -137,11 +147,11 @@ export default function ConnectionsPage({ onConfigureAssistant, admin, canConfig
   return <div className="page connections-onboarding">
     <PageHeader eyebrow="连接业务能力" title="业务连接" description="接入已有 MCP，检查工具，再交给助手试跑真实业务问题。" actions={<><Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入 MCP 配置</Button><Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>新增连接</Button></>}/>
     <ErrorNotice message={error} onDismiss={() => setError('')}/><ErrorNotice message={bindingsError}/><SuccessNotice message={success}/>
-    {imported && <div className="import-next-step"><div><strong>已导入配置，下一步先测试连接</strong><p>导入不代表接通，也不会自动绑定助手或授权工具。</p></div>{canConfigureAssistant && <Button variant="secondary" onClick={onConfigureAssistant}>去配置助手<ArrowUpRight size={16}/></Button>}</div>}
+    {imported && <div className="import-next-step"><div><strong>已导入配置，下一步先测试连接</strong><p>导入不代表接通，也不会自动绑定助手或授权工具。</p></div></div>}
     <ol className="connection-route" aria-label="MCP 接入步骤"><li><span>1</span><div><strong>地址与认证</strong><p>填写 MCP 地址与受限凭据</p></div></li><li><span>2</span><div><strong>检查工具能力</strong><p>测试连通与认证，查看工具</p></div></li><li><span>3</span><div><strong>绑定与业务试跑</strong><p>选择助手和允许的工具，核对答案</p></div></li></ol>
     <details className="connection-server-note"><summary><Network size={16}/>服务端如何连接 MCP<ChevronDown size={15}/></summary><p>由工作台服务端连接，不是你的浏览器。请提供服务端能访问的 Streamable HTTP MCP 地址；当前支持无认证或 Bearer Token。连接测试只读取工具清单。</p></details>
     <div className="connections-list-heading"><div><h2>启用的连接{!loading && ` · ${items.filter(item => item.enabled).length}`}</h2><p>显示已保存的状态；业务试跑结果需另行核对。</p></div><Button variant="ghost" busy={loading} disabled={!!testing} onClick={() => void load()}><RefreshCw size={16}/>刷新状态</Button></div>
-    {loading && !items.length ? <Loader/> : !items.length ? error ? <EmptyState icon={<Network size={32}/>} title="连接清单暂未取得" description="请恢复工作台访问后刷新；这不表示没有已保存的连接。"/> : <EmptyState icon={<Network size={32}/>} title="连接你的第一个业务系统" description="准备 MCP 地址与受限凭据。保存后测试工具，再选择助手和允许的能力。" action={<Button onClick={() => setEditor('new')}><Plus size={16}/>新增连接</Button>}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} assistants={assistants} bindingsLoading={loading} testing={testing === item.id} actionsBusy={!!testing || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setTools(item)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onConfigureAssistant={onConfigureAssistant} canConfigureAssistant={canConfigureAssistant} onStartAssistant={onStartAssistant}/>}/>}
+    {loading && !items.length ? <Loader/> : !items.length ? error ? <EmptyState icon={<Network size={32}/>} title="连接清单暂未取得" description="请恢复工作台访问后刷新；这不表示没有已保存的连接。"/> : <EmptyState icon={<Network size={32}/>} title="连接你的第一个业务系统" description="准备 MCP 地址与受限凭据。保存后测试工具，再选择助手和允许的能力。" action={<Button onClick={() => setEditor('new')}><Plus size={16}/>新增连接</Button>}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} assistants={assistants} bindingsLoading={loading} testing={testing === item.id} actionsBusy={!!testing || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setTools(item)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onConfigureAssistant={onConfigureAssistant} highlighted={item.id === focusConnectionId} canConfigureAssistant={canConfigureAssistant} onStartAssistant={onStartAssistant}/>}/>}
     {editor && <ConnectionEditor admin={admin} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => {
       setEditor(null); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]);
       setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; });

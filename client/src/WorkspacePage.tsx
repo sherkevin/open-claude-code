@@ -4,6 +4,7 @@ import type { Assistant, Connection, Conversation } from './types';
 import { api, timeText } from './api';
 import { Button, EmptyState } from './components';
 import { ScopeBadge } from './resources';
+import AiIdentity from './AiIdentity';
 import './workbench-refinement.css';
 
 type Props = {
@@ -40,7 +41,7 @@ export function workspaceConnectionOverview(connections: Connection[]) {
 export function WorkspaceConnectionSummary({ connections, onManage }: { connections: Connection[]; onManage: () => void }) {
   const { visible, enabledCount, disabledCount } = workspaceConnectionOverview(connections);
   return <>
-    {visible.length ? <ul>{visible.map(connection => <li key={connection.id}><span>{connection.name}</span><small data-tone={connection.status === 'connected' && connection.tools.length ? 'success' : 'neutral'}>{workspaceConnectionStatus(connection)}</small></li>)}</ul>
+    {visible.length ? <ul>{visible.map(connection => <li key={connection.id}><span>{connection.name}</span><small data-tone={connection.status === 'connected' && connection.tools.length ? 'success' : ['failed', 'needs_auth', 'connected'].includes(connection.status) ? 'warning' : 'neutral'}>{workspaceConnectionStatus(connection)}</small></li>)}</ul>
       : <p>{disabledCount ? '暂无启用连接，可在业务连接中启用已有配置。' : '尚未配置业务连接。接入 MCP 后，为助手选择所需工具。'}</p>}
     <button type="button" className="wr-text-action" onClick={onManage}>{enabledCount > visible.length ? `查看全部 ${enabledCount} 个启用连接` : connections.length ? '检查与管理连接' : '配置业务连接'}<ArrowRight size={14}/></button>
     {disabledCount > 0 && <button type="button" className="wr-disabled-connections" onClick={onManage}>另有 {disabledCount} 个停用连接<ArrowUpRight size={13}/></button>}
@@ -92,7 +93,7 @@ export default function WorkspacePage({
       </header>
 
       {canAsk && <section className="wr-question-panel" aria-labelledby="wr-question-heading">
-        <div className="wr-question-heading"><MessageSquare size={18}/><h2 id="wr-question-heading">提问</h2></div>
+        <div className="wr-question-heading"><AiIdentity size="small"/><h2 id="wr-question-heading">提问</h2></div>
         <form onSubmit={event => {
           event.preventDefault();
           if (question.trim() && !selectionUnavailable) onStart?.(question.trim(), selectedAssistant);
@@ -125,7 +126,7 @@ export default function WorkspacePage({
         <section className="wr-assistants" aria-labelledby="wr-assistants-heading">
           <div className="wr-section-heading"><h2 id="wr-assistants-heading">业务助手 <span className="wr-count">{available.length}</span></h2>{canManage && <button type="button" className="wr-text-action" onClick={() => onNavigate('assistants')}>管理助手<ArrowUpRight size={14}/></button>}</div>
           {available.length ? <div className="wr-assistant-list">{available.map(assistant => <article className="wr-assistant" key={assistant.id}>
-            <div className="wr-assistant-heading"><span className="wr-assistant-icon"><Layers3 size={20}/></span><button type="button" className="wr-title-link" onClick={() => onAssistant(assistant)}><h3>{assistant.name}</h3><ArrowUpRight size={14}/></button><ScopeBadge scope={assistant.scope}/></div>
+            <div className="wr-assistant-heading"><AiIdentity size="small"/><button type="button" className="wr-title-link" onClick={() => onAssistant(assistant)}><h3>{assistant.name}</h3><ArrowUpRight size={14}/></button><ScopeBadge scope={assistant.scope}/></div>
             <p>{assistant.description || '查看助手能力，开始新的会话。'}</p>
             <div className="wr-assistant-capabilities"><span><BookOpen size={14}/>{assistant.knowledge_base_ids?.length || 0} 个知识库</span><span><Network size={14}/>已配置 {assistant.connections.length} 个连接</span></div>
             <div className="wr-assistant-footer"><button type="button" className="wr-text-action" onClick={() => onAssistant(assistant)}>查看能力<ArrowRight size={14}/></button>{canCreate && onNew && <Button variant="secondary" onClick={() => onNew(assistant)}>开始会话</Button>}</div>

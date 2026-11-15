@@ -35,7 +35,7 @@ describe('business object previews retain result boundaries',()=>{
   });
   it('does not turn an empty result into a zero-value object',()=>{
     const html=renderToStaticMarkup(<BusinessResultCard result={result({rows:[]})} runId="r" eventId={2}/>);
-    expect(html).toContain('本次查询未返回记录');expect(html).not.toContain('class="br-object"');
+    expect(html).toContain('本次工具未返回记录');expect(html).not.toContain('class="br-object"');
   });
 });
 

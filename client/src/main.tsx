@@ -5,5 +5,6 @@ import './styles.css';
 import './workbench-theme.css';
 import './enterprise-theme.css';
 import './auth.css';
+import './ai-detail.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
