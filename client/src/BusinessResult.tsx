@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { BarChart3, ChevronDown, Database, Download, LayoutList, Table2 } from 'lucide-react';
-import type { RunStatus, StreamEvent } from './types';
+import type { Message, RunStatus, StreamEvent } from './types';
 import { SourceDialog } from './Sources';
 import './business-result.css';
 
@@ -43,8 +43,9 @@ export function parseBusinessResult(value: unknown): BusinessResult | null {
     source_ids:Array.isArray(value.source_ids)?value.source_ids.filter((s):s is string=>typeof s==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(s)).slice(0,30):[]};
 }
 export function resultsFromEvents(events: StreamEvent[], runId: string, status: RunStatus = 'succeeded') {
-  if (['cancelling','cancelled','failed','interrupted'].includes(status)) return [];
-  const terminal = events.find(e=>e.run_id===runId&&e.type==='run.completed');
+  if (['cancelling','cancelled','interrupted'].includes(status)) return [];
+  const terminal = events.filter(e=>e.run_id===runId&&e.type==='run.completed').sort((a,b)=>a.id-b.id)[0];
+  if (terminal && !['succeeded', 'failed'].includes(String(terminal.data.status))) return [];
   return events.filter(e => e.run_id===runId && e.type==='tool.completed' && e.data.success===true && (!terminal||e.id<terminal.id)).flatMap(event => {
     const result=parseBusinessResult(event.data.business_result);
     if (!result) return [];
@@ -60,8 +61,8 @@ export function csvCell(value: unknown): string {
   return '"'+text.replaceAll('"','""')+'"';
 }
 const scopeLabel:Record<string,string>={organization:'组织',region:'区域',customer:'客户',status:'状态',date:'日期',date_from:'开始日期',date_to:'结束日期',time_range:'时间范围',timezone:'时区',factory:'工厂',aggregation:'统计口径'};
-export function resultCSV(result: BusinessResult, runId: string, eventId: number) {
-  const meta:unknown[][]=[['结果',result.title],['任务编号',runId],['结果事件',eventId],['数据性质',result.synthetic===true?'合成测试数据':result.synthetic===false?'工具标记非合成':'工具未说明'],['数据时间',result.data_time||'未提供'],['导出范围','仅当前已返回的结果，不代表未取回的明细'],['已返回行数',result.rows.length],['结果总行数',result.total_rows??'未提供'],['覆盖情况',result.truncated?'已截取':result.complete===true?'工具声明完整':result.complete===false?'部分结果':'完整性未说明'],...Object.entries(result.scope||{}).map(([k,v])=>[scopeLabel[k]||k,v]),...result.warnings.map(w=>['提示',w]),...(result.source_ids||[]).map(id=>['来源 ID',id]),[],result.columns.map(c=>c.label+(c.unit?`（${c.unit}）`:'')),...result.rows.map(row=>result.columns.map(c=>row[c.key]))];
+export function resultCSV(result: BusinessResult, runId: string, eventId: number, answerIncomplete = false) {
+  const meta:unknown[][]=[['结果',result.title],['任务编号',runId],['结果事件',eventId],...(answerIncomplete?[['回答状态','业务数据已返回，回答未完成']]:[]),['数据性质',result.synthetic===true?'合成测试数据':result.synthetic===false?'工具标记非合成':'工具未说明'],['数据时间',result.data_time||'未提供'],['导出范围','仅当前已返回的结果，不代表未取回的明细'],['已返回行数',result.rows.length],['结果总行数',result.total_rows??'未提供'],['覆盖情况',result.truncated?'已截取':result.complete===true?'工具声明完整':result.complete===false?'部分结果':'完整性未说明'],...Object.entries(result.scope||{}).map(([k,v])=>[scopeLabel[k]||k,v]),...result.warnings.map(w=>['提示',w]),...(result.source_ids||[]).map(id=>['来源 ID',id]),[],result.columns.map(c=>c.label+(c.unit?`（${c.unit}）`:'')),...result.rows.map(row=>result.columns.map(c=>row[c.key]))];
   return '\uFEFF'+meta.map(row=>row.map(csvCell).join(',')).join('\r\n');
 }
 const displayCell=(v:Cell)=>v===null?'—':typeof v==='boolean'?(v?'是':'否'):typeof v==='number'?(v!==0&&Math.abs(v)<0.000001?String(v):new Intl.NumberFormat('zh-CN',{maximumSignificantDigits:21}).format(v)):v;
@@ -72,12 +73,27 @@ export function objectPreview(result: BusinessResult, row: Record<string, Cell>,
   return { title: identity ? `${identity.label}：${displayCell(row[identity.key])}` : `结果 ${index + 1}`,
     fields: result.columns.filter(column => column.key !== identity?.key) };
 }
-export function BusinessResultCard({result,runId,eventId}:{result:BusinessResult;runId:string;eventId:number}) {
+/** A presentation preference only: never changes the result, aggregation, or export. */
+export function preferredChartMetric(columns: ResultColumn[], question = '') {
+  const normalize = (text: string) => text.toLocaleLowerCase().replace(/\s+/g, '');
+  const text = normalize(question);
+  const matches = columns.map(column => ({ column, label: normalize(column.label).replace(/[（(][^）)]*[）)]/g, '') }))
+    .filter(({ label }) => label.length > 1 && text.includes(label));
+  const specific = matches.filter(item => !matches.some(other => other !== item && other.label.length > item.label.length && other.label.includes(item.label)));
+  return (specific.length === 1 ? specific[0].column : columns[0])?.key || '';
+}
+export function questionForRun(messages: Message[], runId: string) {
+  for (let index=messages.length-1;index>=0;index--) {
+    if (messages[index].role==='user'&&messages[index].run_id===runId) return messages[index].text;
+  }
+  return '';
+}
+export function BusinessResultCard({result,runId,eventId,question='',answerIncomplete=false}:{result:BusinessResult;runId:string;eventId:number;question?:string;answerIncomplete?:boolean}) {
   const numeric=result.columns.filter(c=>!/^(id|.*_id|code|.*编号)$/i.test(c.key)&&result.rows.some(r=>typeof r[c.key]==='number')&&result.rows.every(r=>r[c.key]===null||(typeof r[c.key]==='number'&&Number(r[c.key])>=0)));
   const labels=result.columns.filter(c=>result.rows.some(r=>typeof r[c.key]==='string'));
   const [view,setView]=useState<'objects'|'table'|'chart'>('objects');
   const [visibleObjects,setVisibleObjects]=useState(6);const [visibleTableRows,setVisibleTableRows]=useState(20);
-  const [metric,setMetric]=useState(numeric[0]?.key||'');const [label,setLabel]=useState(labels[0]?.key||'');
+  const [metric,setMetric]=useState(()=>preferredChartMetric(numeric,question));const [label,setLabel]=useState(labels[0]?.key||'');
   const [source,setSource]=useState<string|null>(null);const [notice,setNotice]=useState('');
   const chartRows=result.rows.filter(r=>typeof r[metric]==='number').slice(0,20);
   const max=Math.max(0,...chartRows.map(r=>Number(r[metric])));
@@ -89,9 +105,10 @@ export function BusinessResultCard({result,runId,eventId}:{result:BusinessResult
   const primaryScope=[...objectScope,...timeScope];
   const scopeText=(value:unknown)=>value===null||value===undefined?'未提供':typeof value==='object'?JSON.stringify(value):String(value);
   const field=(column:ResultColumn,row:Record<string,Cell>)=><div key={column.key}><dt>{column.label}{column.unit&&<small> · {column.unit}</small>}</dt><dd className={typeof row[column.key]==='number'?'br-number':''}>{displayCell(row[column.key])}</dd></div>;
-  const download=()=>{const blob=new Blob([resultCSV(result,runId,eventId)],{type:'text/csv;charset=utf-8;'});const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download=`业务结果-${runId.replace(/[^A-Za-z0-9_-]/g,'').slice(0,50)}-${eventId}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);setNotice('已生成 CSV，包含查询范围与单位。CSV 不保存列类型；编号、日期等列请按文本导入。');};
+  const download=()=>{const blob=new Blob([resultCSV(result,runId,eventId,answerIncomplete)],{type:'text/csv;charset=utf-8;'});const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download=`业务结果-${runId.replace(/[^A-Za-z0-9_-]/g,'').slice(0,50)}-${eventId}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);setNotice('已生成 CSV，包含查询范围与单位。CSV 不保存列类型；编号、日期等列请按文本导入。');};
   return <section className="business-result br-object-result" aria-label={result.title}>
     <header className="business-result-heading"><div><span className="br-eyebrow"><Database size={14}/>业务查询结果</span><h3>{result.title}</h3></div>{result.synthetic===true&&<span className="br-synthetic">合成测试数据</span>}</header>
+    {answerIncomplete&&<div className="br-warnings" role="status"><p><strong>业务数据已返回，回答未完成。</strong> 可核对下方数据与来源，或导出当前结果。</p></div>}
     {!!primaryScope.length&&<div className="br-condition-tags" aria-label="主要查询条件">{primaryScope.map(([key,value])=><span key={key}><small>{scopeLabel[key]||key}</small>{scopeText(value)}</span>)}</div>}
     {result.summary&&<p className="br-summary">{result.summary}</p>}
     <p className="br-coverage">已返回 {result.rows.length} 行{result.total_rows!==null?` · 工具报告结果总行数 ${result.total_rows} 行`:' · 结果总行数未提供'} · {result.truncated?'结果已截取':result.complete===true?'工具声明完整':result.complete===false?'部分结果':'完整性未说明'}</p>
@@ -110,7 +127,9 @@ export function BusinessResultCard({result,runId,eventId}:{result:BusinessResult
   </section>;
 }
 
-export default function BusinessResults({events,runId,status}:{events:StreamEvent[];runId:string;status:RunStatus}) {
+function BusinessResults({events,runId,status,question=''}:{events:StreamEvent[];runId:string;status:RunStatus;question?:string}) {
   const results=useMemo(()=>resultsFromEvents(events,runId,status),[events,runId,status]);
-  return <>{results.map(({event,result})=><BusinessResultCard key={`${runId}-${event.id}`} result={result} runId={runId} eventId={event.id}/>)}</>;
+  const answerIncomplete=status==='failed'||events.some(event=>event.run_id===runId&&event.type==='run.completed'&&event.data.status==='failed');
+  return <>{results.map(({event,result})=><BusinessResultCard key={`${runId}-${event.id}`} result={result} runId={runId} eventId={event.id} question={question} answerIncomplete={answerIncomplete}/>)}</>;
 }
+export default memo(BusinessResults);

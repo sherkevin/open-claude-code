@@ -1,14 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { BusinessResultCard, csvCell, parseBusinessResult, resultCSV, resultsFromEvents } from './BusinessResult';
-import type { StreamEvent } from './types';
+import BusinessResults, { BusinessResultCard, csvCell, parseBusinessResult, preferredChartMetric, questionForRun, resultCSV, resultsFromEvents } from './BusinessResult';
+import type { Message, StreamEvent } from './types';
 const sample=()=>({schema_version:'business-result/v1',title:'发货汇总',columns:[{key:'customer',label:'客户'},{key:'amount',label:'金额',unit:'CNY'}],rows:[{customer:'甲厂',amount:1200},{customer:'乙厂',amount:2400}],scope:{region:'华北',date:'2026-11-14'},complete:true,synthetic:true,truncated:false,total_rows:2,warnings:[],data_time:'2026-11-14T10:00:00+08:00'});
 const event=(success:unknown=true,run='run-1'):StreamEvent=>({id:1,run_id:run,type:'tool.completed',created_at:'2026-11-14',data:{success,business_result:sample(),source_ids:['src_1']}});
 describe('bounded business results',()=>{
  it('accepts typed results and leaves unreported coverage unknown',()=>{const r=parseBusinessResult({...sample(),complete:undefined,total_rows:undefined})!;expect(r.complete).toBeNull();expect(r.total_rows).toBeNull();expect(r.returned_rows).toBe(2);});
  it('does not render failed, unknown, old-run or malformed results',()=>{expect(resultsFromEvents([event(false),event('true'),event(true,'old')],'run-1')).toEqual([]);expect(parseBusinessResult({...sample(),rows:[{customer:{html:'bad'},amount:2}]})).toBeNull();});
  it('uses source ids without allowing a URL as an ID',()=>{const e=event();e.data.source_ids=['src_1','https://evil.invalid'];expect(resultsFromEvents([e],'run-1')[0].result.source_ids).toEqual(['src_1']);});
- it('hides failed/cancelled/interrupted tasks and ignores success after a terminal event',()=>{for(const status of ['failed','cancelled','cancelling','interrupted'] as const)expect(resultsFromEvents([event()],'run-1',status)).toEqual([]);const done={...event(),id:1,type:'run.completed',data:{status:'succeeded'}};const late={...event(),id:2};expect(resultsFromEvents([done,late],'run-1','succeeded')).toEqual([]);});
+ it('hides cancelled/interrupted tasks and ignores success after a terminal event',()=>{for(const status of ['cancelled','cancelling','interrupted'] as const)expect(resultsFromEvents([event()],'run-1',status)).toEqual([]);const done={...event(),id:1,type:'run.completed',data:{status:'succeeded'}};const late={...event(),id:2};expect(resultsFromEvents([done,late],'run-1','succeeded')).toEqual([]);});
+ it('preserves successful tool data before model failure and labels it as an incomplete answer',()=>{
+   const done:StreamEvent={...event(),id:5,type:'run.completed',data:{status:'failed'}};
+   const events=[event(),{...event(false),id:2},{...event('unknown'),id:3},done,{...event(),id:6}];
+   expect(resultsFromEvents(events,'run-1','failed').map(item=>item.event.id)).toEqual([1]);
+   const html=renderToStaticMarkup(<BusinessResults events={events} runId="run-1" status="failed"/>);
+   expect(html).toContain('业务数据已返回，回答未完成');expect(html).toContain('甲厂');expect(html).toContain('查看依据 1');
+   expect(html).not.toContain('任务已成功');
+   expect(resultCSV(resultsFromEvents(events,'run-1','failed')[0].result,'run-1',1,true)).toContain('业务数据已返回，回答未完成');
+ });
+ it('does not resurrect tool data from an unknown, cancelled or interrupted terminal event',()=>{
+   for(const status of ['unknown','cancelled','interrupted']){
+     const done:StreamEvent={...event(),id:5,type:'run.completed',data:{status}};
+     expect(resultsFromEvents([event(),done],'run-1','failed')).toEqual([]);
+   }
+ });
+ it('uses the earliest terminal event even if events arrive out of order',()=>{
+   const done:StreamEvent={...event(),id:3,type:'run.completed',data:{status:'failed'}};
+   const later:StreamEvent={...done,id:7};
+   expect(resultsFromEvents([later,{...event(),id:4},done,event()],'run-1','failed').map(item=>item.event.id)).toEqual([1]);
+ });
  it('never trusts source IDs supplied inside a business payload',()=>{const e=event();(e.data.business_result as Record<string,unknown>).source_ids=['other_private_source'];expect(resultsFromEvents([e],'run-1')[0].result.source_ids).toEqual(['src_1']);e.data.source_ids=undefined;expect(resultsFromEvents([e],'run-1')[0].result.source_ids).toEqual([]);});
  it('rejects ambiguous columns and nonfinite values',()=>{expect(parseBusinessResult({...sample(),columns:[{key:'x',label:'x'},{key:'x',label:'duplicate'}]})).toBeNull();expect(parseBusinessResult({...sample(),rows:[{customer:'甲',amount:NaN}]})).toBeNull();});
  it('does not silently truncate excess data',()=>{expect(parseBusinessResult({...sample(),rows:Array.from({length:201},()=>({customer:'甲',amount:1}))})).toBeNull();});
@@ -19,4 +39,26 @@ describe('bounded business results',()=>{
  it('does not silently round a very small nonzero business value to zero',()=>{const r=parseBusinessResult({...sample(),rows:[{customer:'甲',amount:4e-23}]})!;const html=renderToStaticMarkup(<BusinessResultCard result={r} runId="r" eventId={1}/>);expect(html).toContain('4e-23');expect(resultCSV(r,'r',1)).toContain('4e-23');});
  it('never labels tool declarations as verified customer data',()=>{expect(resultCSV(parseBusinessResult({...sample(),synthetic:false})!,'r',1)).toContain('工具标记非合成');});
  it('keeps the actual range visible for an empty result without claiming a zero business total',()=>{const r=parseBusinessResult({...sample(),rows:[],total_rows:0,scope:{organization:'合成验收组织',region:'华北',customer:'合成客户',status:'完成',date_from:'2026-11-01',date_to:'2026-11-14'}})!;const html=renderToStaticMarkup(<BusinessResultCard result={r} runId="empty" eventId={2}/>);expect(html).toContain('class="br-evidence" open=""');const primary=html.slice(html.indexOf('aria-label="主要查询条件"'),html.indexOf('class="br-summary"'));expect(primary).toContain('开始日期');expect(primary).toContain('结束日期');expect(html).toContain('本次查询未返回记录');expect(html).not.toContain('金额为零');});
+});
+
+describe('chart metric follows the current question without changing data',()=>{
+ const columns=[{key:'records',label:'记录数'},{key:'quantity',label:'数量',unit:'件'},{key:'amount',label:'金额',unit:'CNY'}];
+ it('chooses the explicitly requested quantity or amount instead of the first record-count column',()=>{
+   expect(preferredChartMetric(columns,'查 10 万条记录中各客户的发货数量')).toBe('quantity');
+   expect(preferredChartMetric(columns,'请按客户比较金额')).toBe('amount');
+   expect(preferredChartMetric(columns,'返回记录数')).toBe('records');
+ });
+ it('keeps column order when no single metric is specified',()=>{
+   expect(preferredChartMetric(columns,'列出各客户')).toBe('records');
+   expect(preferredChartMetric(columns,'金额和数量都看一下')).toBe('records');
+   expect(preferredChartMetric([],'查金额')).toBe('');
+ });
+ it('prefers a specific returned field over an overlapping shorter label',()=>{
+   expect(preferredChartMetric([{key:'all',label:'金额'},{key:'open',label:'未结金额（元）'}],'比较未结金额')).toBe('open');
+ });
+ it('never takes a newer or assistant-written question from another run',()=>{
+   const message=(run_id:string,role:'user'|'assistant',text:string):Message=>({id:text,run_id,role,text,conversation_id:'c',file_ids:[],created_at:''});
+   const messages=[message('old','user','数量'),message('old','assistant','金额'),message('new','user','金额')];
+   expect(questionForRun(messages,'old')).toBe('数量');expect(questionForRun(messages,'missing')).toBe('');
+ });
 });

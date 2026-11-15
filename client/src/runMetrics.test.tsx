@@ -5,6 +5,15 @@ import type { Run, StreamEvent } from './types';
 
 const run:Run={id:'run',conversation_id:'conversation',status:'succeeded',assistant_message_id:'answer',error:null,usage:null,approvals:[],created_at:'2026-11-05T10:00:00Z',completed_at:'2026-11-05T10:00:01Z'};
 describe('execution metrics boundaries',()=>{
+  it('shows model recovery only after a reported retry stage and keeps cancellation higher priority',()=>{
+    const retry:StreamEvent={id:10,run_id:'run',type:'run.stage',created_at:run.created_at,data:{stage:'model_retry'}};
+    const live=(events:StreamEvent[],status:'running'|'cancelling'='running')=>renderToStaticMarkup(<LiveActivity run={{...run,status}} events={events} stage="model_retry" connectionState="connected"/>);
+    expect(live([retry])).toContain('模型连接中断，正在重试');
+    expect(live([retry])).toContain('仍可以停止');
+    expect(live([])).not.toContain('模型连接中断，正在重试');
+    expect(live([retry],'cancelling')).toContain('已请求停止');
+    expect(runStagePresentation(retry.data).confirmed).toBe(false);
+  });
   it('labels product metadata answers as a model information query with zero model usage',()=>{
     const html=renderToStaticMarkup(<RunMetrics run={{...run,execution_kind:'product_metadata',identity_source:'run_selection',model_call_count:0,usage:{source:'product_metadata',input_tokens:0,output_tokens:0,cache_read_input_tokens:0,estimated_cost_usd:0}}}/>);
     expect(html).toContain('模型信息查询');expect(html).toContain('未调用模型');expect(html).toContain('<dt>输入 Token</dt><dd>0</dd>');expect(html).toContain('<dt>输出 Token</dt><dd>0</dd>');expect(html).toContain('$0.0000');expect(html).not.toContain('未提供');

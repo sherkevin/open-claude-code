@@ -51,6 +51,9 @@ def test_profile_has_no_inherited_bundles_or_native_tools(arguments):
     assert provider["baseURL"] == "http://127.0.0.1:9/v1"
     assert provider["apiKeyEnv"] == "WORKSPACE_MODEL_API_KEY"
     assert provider["models"][0]["inputModalities"] == ["text", "image"]
+    assert provider["retryPolicy"] == {"mode": "normal", "maxRetries": 1,
+        "retryableCodes": ["TRANSPORT"],
+        "backoff": {"initialDelayMs": 500, "maxDelayMs": 500, "jitterRatio": 0}}
     attachments = next(entry for entry in entries if entry["id"] == "attachments")["config"]
     assert attachments["dshHome"] == str(arguments["profile_root"])
     assert attachments["maxImagesPerMessage"] == 10

@@ -109,6 +109,9 @@ export async function apply(ctx: any, config: any): Promise<void> {
   const lifetime = new AbortController()
   const owned = (agent: any): boolean => agent?.session?.id === config.sessionId
   const streamFinishes = new Map<string, boolean>()
+  const streamRequests = new Map<string, string>()
+  const requestVisibleText = new Map<string, boolean>()
+  const recoveryTurns = new Set<number>()
   let initialized = false
 
   for (const definition of config.tools) {
@@ -189,17 +192,34 @@ export async function apply(ctx: any, config: any): Promise<void> {
     const common = { sessionId: config.sessionId, stepId: frame.attemptId, revision: frame.revision }
     if (frame.type === 'start') {
       streamFinishes.set(frame.attemptId, false)
+      const requestKey = `${frame.turn}:${frame.step}`
+      streamRequests.set(frame.attemptId, requestKey)
+      requestVisibleText.set(requestKey, false)
       transport.notify('workspace.stream', { ...common, event: 'start', turn: frame.turn, step: frame.step })
     } else if (frame.type === 'chunk' && frame.chunk.type === 'text-delta') {
+      const requestKey = streamRequests.get(frame.attemptId)
+      if (requestKey !== undefined && frame.chunk.text.length > 0) requestVisibleText.set(requestKey, true)
       transport.notify('workspace.stream', { ...common, event: 'text_delta', text: frame.chunk.text })
     } else if (frame.type === 'chunk' && frame.chunk.type === 'finish') {
       streamFinishes.set(frame.attemptId, true)
     } else if (frame.type === 'end') {
       const finishObserved = streamFinishes.get(frame.attemptId) === true
       streamFinishes.delete(frame.attemptId)
+      streamRequests.delete(frame.attemptId)
       transport.notify('workspace.stream', { ...common, event: 'end', outcome: frame.outcome, finishObserved })
     }
   })
+
+  // Gate the official request-level recovery before its retry listener. Retrying
+  // this request preserves earlier tool results; resending the whole turn does not.
+  ctx.on('agent/request-error', async ({ agent, turn, step, failure, signal }: any, next: any) => {
+    if (!owned(agent) || signal.aborted || lifetime.signal.aborted
+        || failure?.code !== 'TRANSPORT' || recoveryTurns.has(turn)
+        || requestVisibleText.get(`${turn}:${step}`) !== false) return
+    const result = await next()
+    if (result?.kind === 'retry') recoveryTurns.add(turn)
+    return result
+  }, { prepend: true })
 
   let closing: Promise<void> | undefined
   const close = (): Promise<void> => closing ??= (async () => {

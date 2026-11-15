@@ -392,8 +392,8 @@ class HarnessRuntime(WorkspaceRuntime):
         await offload_write(self.service.db.execute, "UPDATE conversations SET context_usage=NULL WHERE id=?", (self.conversation_id,))
         receipt = await asyncio.to_thread(attachments.dispatch, client, self.session_id, prompt)
         accepted, finish, model_started = False, None, False
+        failure_code, model_attempts = None, 0
         streams, committed, active_step = {}, set(), None
-        tokens = {}
         token_ledger = TokenAccounting()
         # The child is legitimately silent while a person considers approval.
         # Do not expire a 600-second approval with a shorter transport timer.
@@ -415,26 +415,36 @@ class HarnessRuntime(WorkspaceRuntime):
                         continue
                     kind = event.get("type")
                     if kind == "turn/end":
-                        finish = (data.get("reason") or {}).get("kind")
+                        reason = data.get("reason") or {}
+                        finish = reason.get("kind")
+                        # Only a fixed public category crosses the provider boundary.
+                        # Never persist its arbitrary message, route or response body.
+                        failure = reason.get("error") or {}
+                        failure_code = "MODEL_TRANSPORT_ERROR" if finish == "error" and failure.get("code") == "TRANSPORT" else None
+                    elif kind == "llm/retry":
+                        if (data.get("failure") or {}).get("code") == "TRANSPORT":
+                            await self.emit("model.retry", {"retry": 1, "max_retries": 1,
+                                "delay_ms": 500, "code": "MODEL_TRANSPORT_ERROR"})
+                            await self.emit("run.stage", {"stage": "model_retry"})
                     elif kind in {"assistant/message", "assistant/attempt"}:
                         seq = event.get("seq")
                         if seq in committed:
                             continue
                         committed.add(seq)
                         usage = data.get("usage") or {}
-                        for upstream, public in (("inputTokens", "input_tokens"), ("outputTokens", "output_tokens"),
-                                                 ("cacheReadTokens", "cache_read_input_tokens"), ("cacheWriteTokens", "cache_creation_input_tokens")):
-                            value = usage.get(upstream)
-                            if type(value) is int and value >= 0:
-                                tokens[public] = tokens.get(public, 0) + value
                         token_ledger.record("answer", {"input_tokens": usage.get("inputTokens"),
                                                         "output_tokens": usage.get("outputTokens"),
                                                         "cache_read_input_tokens": usage.get("cacheReadTokens"),
                                                         "cache_write_input_tokens": usage.get("cacheWriteTokens")},
                                            source="harness_provider")
-                        await self.emit("usage.updated", {**tokens, "estimated_cost_usd": None,
+                        accounting = token_ledger.summary()
+                        reported_tokens = {public: accounting["provider_totals"][field] for public, field in (
+                            ("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
+                            ("cache_read_input_tokens", "cache_read_input_tokens"),
+                            ("cache_creation_input_tokens", "cache_write_input_tokens"))}
+                        await self.emit("usage.updated", {**reported_tokens, "estimated_cost_usd": None,
                             "currency": "USD", "cost_is_estimate": True, "source": "harness_provider",
-                            "token_accounting": token_ledger.summary()})
+                            "token_accounting": accounting})
                         if kind != "assistant/message":
                             continue
                         message_data = data.get("message") or data
@@ -451,6 +461,8 @@ class HarnessRuntime(WorkspaceRuntime):
                     key = str(payload.get("stepId", ""))
                     if payload.get("event") == "start":
                         active_step = key
+                        model_attempts += 1
+                        await self.emit("model.attempt", {"attempt": model_attempts})
                     if not model_started:
                         model_started = True
                         timings = await offload_write(save_timing, self.service, run["id"], "first_model_event_ms", elapsed_ms(run))
@@ -464,6 +476,8 @@ class HarnessRuntime(WorkspaceRuntime):
                         raise AppError(502, "HARNESS_STREAM_INCOMPLETE", "模型回复提前结束，可重新发送消息继续会话")
                 elif notification.method == "session.status" and accepted and payload.get("status") == "idle":
                     if finish != "completed":
+                        if failure_code == "MODEL_TRANSPORT_ERROR":
+                            raise AppError(502, failure_code, "模型服务请求未完成，请稍后重试。已有业务操作请先核对执行记录。")
                         raise AppError(502, "HARNESS_TURN_FAILED", "本次任务未完成，请重试。若仍失败，请联系管理员并提供执行记录。")
                     await asyncio.to_thread(client.request, "session/wait", {"sessionId": self.session_id}, response_model=_EmptyResult)
                     # This host receipt authenticates the configuration of the

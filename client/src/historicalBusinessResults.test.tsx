@@ -32,6 +32,10 @@ describe('historical results are loaded only on demand', () => {
     expect([...historicalResultMessages(messages, target.conversationId, 'current-run')]).toEqual(['answer-1']);
     expect([...historicalResultMessages([message('file-only', { text: '', file_ids: ['file'] })], target.conversationId)]).toEqual(['file-only']);
   });
+  it('retains a trace entry for an empty historical answer when model transport failed after tools returned', () => {
+    const messages=[message('empty-answer',{text:''}),message('new-answer',{run_id:'current-run'})];
+    expect([...historicalResultMessages(messages,target.conversationId,'current-run')]).toEqual(['empty-answer']);
+  });
   it('reads only the selected authenticated trace with no cache and supports cancellation', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(trace()))); vi.stubGlobal('fetch', fetch);
     const signal = new AbortController().signal;
@@ -56,9 +60,19 @@ describe('historical trace is bound to the exact answer', () => {
     const value = trace(); value.run[key] = 'other';
     expect(() => parseHistoricalResult(value, target)).toThrow('当前回答不一致');
   });
-  it.each(['queued', 'running', 'awaiting_approval', 'cancelling', 'failed', 'cancelled', 'interrupted', 'unknown'])('does not present %s as successful results', status => {
+  it.each(['queued', 'running', 'awaiting_approval', 'cancelling', 'cancelled', 'interrupted', 'unknown'])('does not present %s as successful results', status => {
     const value = trace(); value.run.status = status;
-    expect(() => parseHistoricalResult(value, target)).toThrow('未成功完成');
+    expect(() => parseHistoricalResult(value, target)).toThrow('不能展示为已完成');
+  });
+  it('preserves only valid pre-failure tool data in a historical failed run, with an incomplete-answer notice', () => {
+    const value=trace();value.run.status='failed';value.events[1].data.status='failed';
+    value.events.push({...value.events[0],id:3});
+    const result=parseHistoricalResult(value,target);
+    expect(result.status).toBe('failed');
+    const html=renderToStaticMarkup(<BusinessResults events={result.events} runId={result.runId} status={result.status}/>);
+    expect(html).toContain('业务数据已返回，回答未完成');
+    expect(html.match(/class="business-result br-object-result"/g)).toHaveLength(1);
+    expect(html).toContain('合成客户甲');expect(html).not.toContain('untrusted-source');
   });
   it('rejects mixed-run events and conflicting completion status', () => {
     const mixed = trace(); mixed.events[0].run_id = 'another-run';

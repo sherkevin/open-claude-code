@@ -68,6 +68,7 @@ KERNEL_MODULES = (
     ("agent-loop", "core/agent-loop"),
     ("sessions", "session/session-persistence-jsonl"),
     ("llm-deepseek", "llm/llm-deepseek-api-key"),
+    ("llm-retry", "llm/llm-retry"),
     ("sdk-app-startup", "bundle/sdk-app"),
 )
 
@@ -196,6 +197,12 @@ def write_profile(
                 "models": [{"id": model, "inputModalities": ["text", "image"]}],
                 "reasoningEffort": effort, "thinking": "disabled" if effort == "off" else "enabled",
                 "streamIdleTimeoutMs": 120_000,
+                # Recover only the failed model request, never replay a turn.
+                # The host bridge additionally rejects retries after visible text
+                # and limits the entire turn to one recovery attempt.
+                "retryPolicy": {"mode": "normal", "maxRetries": 1,
+                    "retryableCodes": ["TRANSPORT"],
+                    "backoff": {"initialDelayMs": 500, "maxDelayMs": 500, "jitterRatio": 0}},
                 **({"maxTokens": provider["maxTokens"]} if "maxTokens" in provider else {}),
                 **({"defaultContextWindow": provider["contextWindow"]} if "contextWindow" in provider else {}),
             }

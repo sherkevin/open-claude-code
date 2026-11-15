@@ -5,18 +5,23 @@ import { Button, ErrorNotice, Loader, Modal } from './components';
 import BusinessResults, { resultsFromEvents } from './BusinessResult';
 import type { Message, StreamEvent } from './types';
 
-type ResultTarget = { conversationId: string; runId: string; messageId: string };
-type HistoricalResult = { runId: string; events: StreamEvent[]; status: 'succeeded' };
+type ResultTarget = { conversationId: string; runId: string; messageId: string; question?: string };
+type HistoricalResult = { runId: string; events: StreamEvent[]; status: 'succeeded' | 'failed' };
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
 /** Offer one entry per past answer; the authenticated trace confirms the final message on demand. */
 export function historicalResultMessages(messages: Message[], conversationId: string, currentRunId?: string) {
   const latest = new Map<string, string>();
+  const empty = new Map<string, string>();
   for (const message of messages) {
-    if (message.conversation_id === conversationId && message.role === 'assistant' && message.run_id && message.run_id !== currentRunId && (message.text || message.file_ids.length)) {
-      latest.set(message.run_id, message.id);
+    if (message.conversation_id === conversationId && message.role === 'assistant' && message.run_id && message.run_id !== currentRunId) {
+      if (message.text || message.file_ids.length) latest.set(message.run_id, message.id);
+      else empty.set(message.run_id, message.id);
     }
   }
+  // Failed model transport may leave an empty assistant message after tools succeeded.
+  // The authenticated trace still has to confirm its identity, status and result data.
+  for (const [runId, messageId] of empty) if (!latest.has(runId)) latest.set(runId, messageId);
   return new Set(latest.values());
 }
 
@@ -24,11 +29,11 @@ export function parseHistoricalResult(value: unknown, target: ResultTarget): His
   if (!object(value) || value.schema_version !== 1 || !object(value.run) || !Array.isArray(value.events)) throw new Error('执行记录格式无法识别，请重新读取。');
   const run = value.run;
   if (run.id !== target.runId || run.conversation_id !== target.conversationId || run.assistant_message_id !== target.messageId) throw new Error('这份执行记录与当前回答不一致，未展示业务结果。');
-  if (run.status !== 'succeeded') throw new Error('这次任务未成功完成，不能展示为已完成的业务结果。');
+  if (run.status !== 'succeeded' && run.status !== 'failed') throw new Error('这次任务尚未结束或已取消、中断，不能展示为已完成的业务结果。');
   if (!value.events.every(event => object(event) && event.run_id === target.runId && Number.isSafeInteger(event.id) && typeof event.type === 'string' && typeof event.created_at === 'string' && object(event.data))) throw new Error('执行记录中的事件无法核对，未展示业务结果。');
   const events = value.events as StreamEvent[];
-  if (events.some(event => event.type === 'run.completed' && event.data.status !== 'succeeded')) throw new Error('执行状态不一致，未展示业务结果。');
-  return { runId: target.runId, status: 'succeeded', events };
+  if (events.some(event => event.type === 'run.completed' && event.data.status !== run.status)) throw new Error('执行状态不一致，未展示业务结果。');
+  return { runId: target.runId, status: run.status, events };
 }
 
 export async function loadHistoricalResult(target: ResultTarget, signal?: AbortSignal) {
@@ -64,7 +69,7 @@ function HistoricalResultAction(target: ResultTarget) {
     <Button variant="ghost" onClick={() => void load()}><Database size={15}/>查看本次业务结果</Button>
     {open && <Modal title="本次业务结果" description="历史查询结果。数据时间与查询范围见各结果卡片。" wide onClose={close}>
       <div className="modal-body">
-        {loading ? <Loader text="正在读取本次业务结果…"/> : error ? <><ErrorNotice message={error}/><Button variant="secondary" onClick={() => void load()}><RefreshCw size={15}/>重新读取</Button></> : result ? hasResults ? <BusinessResults events={result.events} runId={result.runId} status={result.status}/> : <p className="section-help">这次回答没有可展示的业务结果卡片。请查看回答正文和引用来源。</p> : null}
+        {loading ? <Loader text="正在读取本次业务结果…"/> : error ? <><ErrorNotice message={error}/><Button variant="secondary" onClick={() => void load()}><RefreshCw size={15}/>重新读取</Button></> : result ? hasResults ? <BusinessResults events={result.events} runId={result.runId} status={result.status} question={target.question}/> : <p className="section-help">{result.status==='failed'?'这次任务未完成，也没有取得可展示的业务数据。':'这次回答没有可展示的业务结果卡片。请查看回答正文和引用来源。'}</p> : null}
       </div>
     </Modal>}
   </>;
