@@ -1,10 +1,46 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnswerMarkdown, openOriginalImageSource, openOriginalSource, readEvidenceSource, SourceActions, SourceDetails, sourceExcerptView, sourceQueryTime } from './Sources';
+import { AnswerMarkdown, compactWebExcerpt, openOriginalImageSource, openOriginalSource, readEvidenceSource, SourceActions, SourceDetails, sourceExcerptView, sourceLocalTime, sourceQueryTime } from './Sources';
 import type { EvidenceSource } from './types';
 
 afterEach(()=>vi.unstubAllGlobals());
 const source=(attribution:EvidenceSource['attribution'],id='web-1'):EvidenceSource=>({id,kind:'web',title:'Industrial reference',attribution,locator:{},excerpt:'',created_at:''});
+
+describe('Chinese prose around bare web links',()=>{
+  const links=(html:string)=>[...html.matchAll(/<a\b[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/g)].map(match=>({href:match[1],label:match[2]}));
+  it('keeps two actual source URLs separate from surrounding Chinese prose',()=>{
+    const first='https://baike.baidu.com/item/RSI%E6%8C%87%E6%A0%87/7459334';
+    const second='https://zhuanlan.zhihu.com/p/530618495';
+    const text=`百度百科《RSI指标》（${first}）和知乎《常用技术指标之一文读懂RSI指标》（${second}）在本次检索中出现，且摘要内容与上述含义一致，但读取正文时均返回 HTTP 403`;
+    const html=renderToStaticMarkup(<AnswerMarkdown text={text}/>);
+    expect(links(html)).toEqual([{href:first,label:first},{href:second,label:second}]);
+    expect(html.replace(/<[^>]+>/g,'')).toBe(text);
+  });
+  it('ends bare links at Chinese sentence punctuation without removing the sentence',()=>{
+    const html=renderToStaticMarkup(<AnswerMarkdown text="参考 https://example.com/a，正文未读取；另见 https://example.com/b。"/>);
+    expect(links(html)).toEqual([{href:'https://example.com/a',label:'https://example.com/a'},{href:'https://example.com/b',label:'https://example.com/b'}]);
+    expect(html).toContain('</a>，正文未读取；另见 ');
+    expect(html).toContain('</a>。');
+  });
+  it('preserves Chinese paths, query values, balanced brackets and embedded redirect URLs',()=>{
+    const urls=['https://example.com/产品（新版）/库存?q=华微#详情','https://example.com/go?next=https://other.example/中文'];
+    const html=renderToStaticMarkup(<AnswerMarkdown text={urls.join('\n\n')}/>);
+    expect(links(html).map(link=>decodeURI(link.href))).toEqual(urls);
+    expect(links(html).map(link=>link.label)).toEqual(urls);
+  });
+  it('does not reinterpret punctuation inside explicit, angle or reference links',()=>{
+    const url='https://example.com/中文（说明）?q=示例，测试';
+    const html=renderToStaticMarkup(<AnswerMarkdown text={`[原文](${url})\n\n<${url}>\n\n[参考][reference]\n\n[reference]: ${url}`}/>);
+    expect(links(html).map(link=>decodeURI(link.href))).toEqual([url,url,url]);
+    expect(links(html).map(link=>link.label)).toEqual(['原文',url,'参考']);
+  });
+  it('leaves inline code and fenced code literal',()=>{
+    const code='https://example.com/中文）不是链接';
+    const html=renderToStaticMarkup(<AnswerMarkdown text={'`'+code+'`\n\n```text\n'+code+'\n```'}/>);
+    expect(links(html)).toEqual([]);
+    expect(html.match(/不是链接/g)).toHaveLength(2);
+  });
+});
 
 describe('verified external source visibility',()=>{
   it('retries source reads through the authenticated registry without reusing a failed response',async()=>{
@@ -161,8 +197,11 @@ describe('business-readable source details',()=>{
     const html=renderToStaticMarkup(<SourceDetails source={value}/>);
     const visible=html.slice(0,html.indexOf('<details'));
     expect(visible).toContain('该页是否完整');
-    expect(visible).toContain('false');
+    expect(visible).toContain('不完整');
+    expect(visible).not.toContain('false');
     expect(visible).toContain('是否截取');
+    expect(visible).toContain('已截取');
+    expect(html.slice(html.indexOf('<details'))).toContain('false');
     expect(visible).toContain('未提供的定位信息');
     expect(visible).not.toContain('internal_vendor_field');
     expect(html).toContain('internal_vendor_field');
@@ -172,6 +211,62 @@ describe('business-readable source details',()=>{
 
 
 describe('source detail presentation refinements',()=>{
+  it('compacts blank lines in web excerpts without changing evidence, offsets or nonempty indentation',()=>{
+    const excerpt='\r\n \t\r\n  第一段  保留内部空格\r\n\r\n \t\r\n\r\n    第二段\r\n \t\r\n';
+    const locator=Object.freeze({character_start:140,character_end:280,truncated:false});
+    const value=Object.freeze({...source('read'),locator,excerpt});
+    const html=renderToStaticMarkup(<SourceDetails source={value}/>);
+    expect(html).toContain('  第一段  保留内部空格\n\n    第二段');
+    expect(html).not.toMatch(/\n\s*\n\s*\n/);
+    expect(html).toContain('140');
+    expect(html).toContain('280');
+    expect(value.excerpt).toBe(excerpt);
+    expect(value.locator).toBe(locator);
+    const internal=renderToStaticMarkup(<SourceDetails source={{...value,kind:'knowledge'}}/>);
+    expect(internal).toContain(excerpt);
+    expect(compactWebExcerpt('一行\n\n下一段')).toBe('一行\n\n下一段');
+  });
+  it('shows boolean markers in Chinese and keeps exact boolean values in technical details',()=>{
+    const html=renderToStaticMarkup(<SourceDetails source={{...source('read'),locator:{truncated:false,complete:true}}}/>);
+    const visible=html.slice(0,html.indexOf('<details'));
+    expect(visible).toContain('未截取');
+    expect(visible).toContain('完整');
+    expect(visible).not.toMatch(/true|false/);
+    const technical=html.slice(html.indexOf('<details'));
+    expect(technical).toContain('是否截取（原始值）');
+    expect(technical).toContain('false');
+    expect(technical).toContain('true');
+  });
+  it('formats fetched_at for the viewer while preserving its exact zoned original',()=>{
+    const raw='2026-11-15T13:26:54.488630+08:00';
+    expect(sourceLocalTime(raw)).toBe(sourceLocalTime('2026-11-15T05:26:54.488630Z'));
+    const html=renderToStaticMarkup(<SourceDetails source={{...source('read'),locator:{fetched_at:raw}}}/>);
+    const visible=html.slice(0,html.indexOf('<details'));
+    expect(visible).toContain('访问时间');
+    expect(visible).toContain('（本地时间）');
+    expect(visible).toContain(`title="${raw}"`);
+    expect(visible).not.toContain(`>${raw}<`);
+    expect(html.slice(html.indexOf('<details'))).toContain('访问时间（原始值）');
+    expect(html.slice(html.indexOf('<details'))).toContain(raw);
+    for(const value of ['2026-11-15','2026-11-15T05:26:54','2026-02-30T05:26:54Z','yesterday'])expect(sourceLocalTime(value)).toBeNull();
+    const unzoned=renderToStaticMarkup(<SourceDetails source={{...source('read'),locator:{fetched_at:'2026-11-15T05:26:54'}}}/>);
+    expect(unzoned).toContain('>2026-11-15T05:26:54<');
+    expect(unzoned).not.toContain('（本地时间）');
+  });
+  it('displays the exact original web address without adding a link that bypasses reauthorization',()=>{
+    const original='https://example.com/report/%E4%BE%8B?item=1&version=2#section';
+    const html=renderToStaticMarkup(<SourceDetails source={{...source('read'),original_url:original}}/>);
+    const visible=html.slice(0,html.indexOf('<details'));
+    expect(visible).toContain('原始网页');
+    expect(visible).toContain('https://example.com/report/%E4%BE%8B?item=1&amp;version=2#section');
+    expect(html).not.toContain('href=');
+    expect(html).not.toContain('src=');
+    for(const unsafe of ['javascript:alert(1)','https://user:secret@example.com']){
+      const invalid=renderToStaticMarkup(<SourceDetails source={{...source('read'),original_url:unsafe}}/>);
+      expect(invalid).not.toContain('原始网页');
+      expect(invalid).not.toContain('secret');
+    }
+  });
   it('shows retrieval timestamps in explicit UTC while preserving business dates, zones and raw precision',()=>{
     const raw='2026-11-15T13:26:54.488630+08:00';
     const html=renderToStaticMarkup(<SourceDetails source={{...source('cited'),locator:{queried_at:raw,query_time:'2026-11-15T05:26:54Z',time_range:'2026-11-14',timezone:'Asia/Shanghai'}}}/>);

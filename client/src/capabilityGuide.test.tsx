@@ -1,7 +1,8 @@
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { AssistantCapabilityGuide, ExampleQuestions, ToolCapability, assistantExamples, toolApprovalSummary, toolExample, toolParameters, usableAssistantTools } from './CapabilityGuide';
+import { AssistantCapabilityGuide, ExampleQuestions, ToolCapability, assistantExamples, displayToolDescription, toolApprovalSummary, toolExample, toolParameters, usableAssistantTools } from './CapabilityGuide';
+import { ConnectionOnboardingCard } from './ConnectionsPage';
 import type { Assistant, AssistantBinding, Connection, KnowledgeBase, MCPTool } from './types';
 
 const tool: MCPTool = { name:'shipment_summary',description:'查询演示业务日期2026-11-14向哪些客户发货及数量，按客户汇总；数量单位为件。',annotations:{readOnlyHint:true},definition_digest:'digest',read_only_confirmation_eligible:true,inputSchema:{type:'object',properties:{dataset_rows:{type:'integer',enum:[10000,100000],default:10000},region:{type:'string',enum:['全部','华北'],default:'全部'},customer_id:{type:'string',description:'实际客户编号'}},required:['customer_id']} };
@@ -9,6 +10,32 @@ const connection: Connection = {id:'c1',name:'订单演示服务',url:'https://e
 const binding: AssistantBinding = {connection_id:'c1',allowed_tools:['shipment_summary'],auto_approved_tools:[]};
 const assistant: Assistant = {id:'a1',name:'业务助手',description:'',instructions:'',enabled:true,access:{all_members:true,user_ids:[]},connections:[binding],knowledge_base_ids:['k1'],revision:1};
 const kb: KnowledgeBase = {id:'k1',name:'设备说明资料',description:'',enabled:true,default_for_new_assistants:false,document_count:3};
+
+describe('known demo descriptions are translated for display only',()=>{
+  it.each([
+    ['Search synthetic Chinese company rules; always returns source IDs and labels data as demo.', '检索中文企业制度演示资料'],
+    ['Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.', '此操作需要用户审批'],
+    ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '可按 request_key 精确筛选'],
+    ['Query line/batch quality counts and calculate the weighted yield for an inclusive date range. Returns database/table/fields/filter/time/aggregation provenance.', '按检验数量加权计算合格率'],
+    ['Acceptance-only bounded read delay, useful for checking cancellation. Does not create or modify records.', '用于检查取消操作'],
+  ])('translates the complete known description: %s',(original,expected)=>{
+    const translated=displayToolDescription(original);expect(translated).toContain(expected);expect(translated).toContain('演示');expect(translated).not.toContain('合成');
+  });
+  it('leaves unknown or changed descriptions exactly as received',()=>{
+    for(const description of ['Read live tickets from the customer system.', 'Search synthetic Chinese company rules; always returns source IDs and labels data as demo. Extra conditions apply.', '', 'toString']) expect(displayToolDescription(description)).toBe(description);
+  });
+  it('uses the same translation in the connection summary and tool purpose without changing the original definition',()=>{
+    const known={...tool,name:'create_ticket',description:'Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.',annotations:{readOnlyHint:false,destructiveHint:false}};
+    const connected={...connection,tools:[known]};const before=JSON.stringify(known);
+    const detail=renderToStaticMarkup(<ToolCapability connection={connected} tool={known} binding={{...binding,allowed_tools:['create_ticket']}}/>);
+    const card=renderToStaticMarkup(<ConnectionOnboardingCard item={connected} assistants={[]} admin={false} onTest={()=>{}} onTools={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onConfigureAssistant={()=>{}}/>);
+    expect(detail).toContain('创建并保存一条演示工单');expect(detail).toContain('此操作需要用户审批');expect(detail).toContain('调用前需要审批');expect(card).toContain('创建并保存一条演示工单');
+    expect(toolExample(connected,known).question).toContain('先不要调用或执行');expect(JSON.stringify(known)).toBe(before);
+    const custom={...known,description:'Read live tickets from the customer system.'};
+    const unknown=renderToStaticMarkup(<ToolCapability connection={connected} tool={custom}/>);
+    expect(unknown).toContain(custom.description);expect(unknown).not.toContain('创建并保存一条演示工单');
+  });
+});
 
 describe('capabilities follow saved permissions and evidence',()=>{
   it('includes only enabled, connected and explicitly granted tools and deduplicates bindings',()=>{

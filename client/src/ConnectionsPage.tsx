@@ -5,7 +5,7 @@ import type { Assistant, Connection } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import McpImportDialog from './McpImportDialog';
-import { ToolCapability } from './CapabilityGuide';
+import { displayToolDescription, ToolCapability } from './CapabilityGuide';
 import './connections-onboarding.css';
 
 export function connectionDiscoveryState(item: Connection) {
@@ -78,7 +78,7 @@ export function ConnectionOnboardingCard({ item, assistants, bindingsLoading = f
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
     <p className="connection-url" title={item.url}>{item.url}</p>
     <div className="connection-meta"><span>{item.auth_type === 'bearer' ? 'Bearer Token' : '无认证'}{item.auth_type === 'bearer' && !item.credential_present ? ' · 未保存凭据' : ''}</span><span>Streamable HTTP</span></div>
-    {!!item.tools.length && <div className="connection-capability-preview"><strong>这个连接提供什么</strong><ul>{item.tools.slice(0,3).map(tool=><li key={tool.name}>{tool.description?.split(/[。\n]/)[0] || `${tool.name}（用途说明未提供）`}</li>)}</ul>{item.tools.length>3&&<p className="section-help">另有 {item.tools.length-3} 项能力，可在“查看工具”中展开。</p>}</div>}
+    {!!item.tools.length && <div className="connection-capability-preview"><strong>这个连接提供什么</strong><ul>{item.tools.slice(0,3).map(tool=><li key={tool.name}>{displayToolDescription(tool.description)?.split(/[。\n]/)[0] || `${tool.name}（用途说明未提供）`}</li>)}</ul>{item.tools.length>3&&<p className="section-help">另有 {item.tools.length-3} 项能力，可在“查看工具”中展开。</p>}</div>}
     <ol className="connection-progress" aria-label={`${item.name}接入进度`}>
       <li data-state="complete"><span className="connection-step-number">1</span><div><strong>地址与认证</strong><p>配置已保存 · 服务端连接</p></div></li>
       <li data-state={currentTestPassed ? 'complete' : 'pending'}><span className="connection-step-number">2</span><div><strong>检查工具能力</strong><span className="connection-step-status">{statusLabel}</span><p>{testing ? '正在请求 MCP 服务并读取工具定义，不执行业务查询。' : testError || discovery.detail}</p></div></li>

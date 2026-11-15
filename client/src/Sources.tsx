@@ -77,6 +77,20 @@ export function sourceQueryTime(value:unknown):string|null {
   return `${instant.toISOString().slice(0,19).replace('T',' ')} UTC`;
 }
 
+export function sourceLocalTime(value:unknown):string|null {
+  if(!sourceQueryTime(value))return null;
+  return `${new Date(value as string).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZoneName:'short'})}（本地时间）`;
+}
+
+// Web extraction can leave long runs of empty lines. Compact the presentation
+// only; the stored excerpt and its character offsets remain untouched.
+export function compactWebExcerpt(value:string) {
+  return value.replace(/\r\n?/g,'\n')
+    .replace(/^(?:[^\S\n]*\n)+/,'')
+    .replace(/(?:\n[^\S\n]*)+$/,'')
+    .replace(/\n(?:[^\S\n]*\n){2,}/g,'\n\n');
+}
+
 // Indent valid JSON without converting its numbers or altering string contents.
 export function sourceExcerptView(excerpt:string) {
   const raw=excerpt.trim();
@@ -99,14 +113,22 @@ export function SourceDetails({source}:{source:EvidenceSource}) {
   const missing=locator.missing_fields;
   const emptyMissing=missing!==null&&typeof missing==='object'&&Object.keys(missing).length===0;
   const primaryKeys=primaryLocatorKeys.filter(key=>Object.prototype.hasOwnProperty.call(locator,key)&&!(key==='missing_fields'&&emptyMissing));
-  const queryTimes=new Map(['queried_at','query_time'].map(key=>[key,sourceQueryTime(locator[key])]));
-  const primary=primaryKeys.map(key=>[key,queryTimes.get(key)||(key==='aggregation'&&locator[key]==='database_group_by'?'按字段分组汇总':locator[key])] as const);
-  const technical=Object.entries(locator).filter(([key])=>!primaryKeys.includes(key)||(key==='aggregation'&&locator[key]==='database_group_by')||queryTimes.get(key)).map(([key,value])=>[queryTimes.get(key)?`${locatorLabels[key]}（原始值）`:key,value] as const);
+  const displayValues=new Map<string,unknown>(['queried_at','query_time'].flatMap(key=>{const value=sourceQueryTime(locator[key]);return value?[[key,value] as const]:[];}));
+  const fetchedAt=sourceLocalTime(locator.fetched_at);
+  if(fetchedAt)displayValues.set('fetched_at',fetchedAt);
+  if(locator.aggregation==='database_group_by')displayValues.set('aggregation','按字段分组汇总');
+  if(typeof locator.truncated==='boolean')displayValues.set('truncated',locator.truncated?'已截取':'未截取');
+  if(typeof locator.complete==='boolean')displayValues.set('complete',locator.complete?'完整':'不完整');
+  const primary=primaryKeys.map(key=>[key,displayValues.has(key)?displayValues.get(key):locator[key]] as const);
+  const technical=Object.entries(locator).filter(([key])=>!primaryKeys.includes(key)||displayValues.has(key)).map(([key,value])=>[displayValues.has(key)?`${locatorLabels[key]}（原始值）`:key,value] as const);
   const excerpt=sourceExcerptView(source.excerpt||'');
-  const fields=(entries:ReadonlyArray<readonly [string,unknown]>)=><dl className="source-locator">{entries.map(([key,item])=><div key={key}><dt>{locatorLabels[key]||key}</dt><dd><pre>{renderValue(item)}</pre></dd></div>)}</dl>;
+  const displayExcerpt=source.kind==='web'?compactWebExcerpt(excerpt.text):excerpt.text;
+  const original=publicWebURL(source.original_url)?source.original_url:undefined;
+  const fields=(entries:ReadonlyArray<readonly [string,unknown]>)=><dl className="source-locator">{entries.map(([key,item])=><div key={key}><dt>{locatorLabels[key]||key}</dt><dd><pre title={key==='fetched_at'&&typeof locator.fetched_at==='string'?locator.fetched_at:undefined}>{renderValue(item)}</pre></dd></div>)}</dl>;
   return <div className="source-details">
+    {original&&fields([['原始网页',original]])}
     {primary.length>0&&fields(primary)}
-    {excerpt.structured?<details className="source-disclosure"><summary>查看原始摘录</summary><pre className="source-excerpt">{excerpt.text}</pre></details>:<><h3 className="source-excerpt-heading">来源内容摘录</h3><pre className="source-excerpt">{source.excerpt||'此来源未提供内容片段。'}</pre></>}
+    {excerpt.structured?<details className="source-disclosure"><summary>查看原始摘录</summary><pre className="source-excerpt">{excerpt.text}</pre></details>:<><h3 className="source-excerpt-heading">来源内容摘录</h3><pre className="source-excerpt">{displayExcerpt||'此来源未提供内容片段。'}</pre></>}
     <details className="source-disclosure"><summary>技术详情</summary>{fields([['来源 ID',source.id],...technical])}</details>
   </div>;
 }
@@ -124,10 +146,64 @@ function SourceCard({source,index,onOpen}:{source:EvidenceSource;index:number;on
     {image?<span className="source-image-actions"><OpenSourceButton id={source.id} label="打开原始网页"/><OpenSourceButton id={source.id} field="image_url" label="打开原始图片"/></span>:source.kind==='web'&&<OpenSourceButton id={source.id}/>}
   </div>;
 }
+
+type MarkdownNode = {
+  type:string; value?:string; url?:string; title?:string|null; children?:MarkdownNode[];
+  position?:{start:{offset?:number};end:{offset?:number}};
+};
+
+// GFM accepts Chinese sentence punctuation as part of a bare URL. Repair only
+// those inferred links, never explicit Markdown/angle links or code. Chinese
+// path/query text and balanced brackets remain valid URL content.
+function remarkChineseAutolinks() {
+  return (tree:MarkdownNode,file:{value:unknown})=>{
+    const source=String(file.value);
+    const closing:Record<string,string>={'(':')','[':']','{':'}','（':'）','【':'】','《':'》','「':'」','『':'』','“':'”','‘':'’'};
+    const closers=new Set(Object.values(closing));
+    const split=(node:MarkdownNode):MarkdownNode[]=>{
+      const start=node.position?.start.offset,end=node.position?.end.offset;
+      const label=node.children?.length===1&&node.children[0].type==='text'?node.children[0].value:undefined;
+      if(node.type!=='link'||start===undefined||end===undefined||!label
+        ||!/^(?:https?:\/\/|www\.)/i.test(source.slice(start,end))
+        ||!/[，。！？；：、）】》」』”’]/u.test(label))return [node];
+      const parts:MarkdownNode[]=[];
+      const urls=/(?:https?:\/\/|www\.)/gi;
+      let cursor=0,match:RegExpExecArray|null;
+      while((match=urls.exec(label))!==null){
+        const from=match.index,stack:string[]=[];
+        let until=from;
+        for(;until<label.length;until++){
+          const char=label[until];
+          if(/[\s<>"，。！？；：、]/u.test(char))break;
+          if(closing[char])stack.push(closing[char]);
+          else if(closers.has(char)){if(stack.pop()!==char)break;}
+        }
+        // Match GFM's trailing ASCII punctuation rule for any second link
+        // recovered from the originally overlong link.
+        while(until>from&&/[.,;!?:]/.test(label[until-1]))until--;
+        if(from>cursor)parts.push({type:'text',value:label.slice(cursor,from)});
+        const text=label.slice(from,until);
+        parts.push({type:'link',url:/^www\./i.test(text)?`http://${text}`:text,children:[{type:'text',value:text}]});
+        cursor=until;urls.lastIndex=Math.max(until,from+match[0].length);
+      }
+      if(cursor<label.length)parts.push({type:'text',value:label.slice(cursor)});
+      return parts;
+    };
+    const visit=(node:MarkdownNode)=>{
+      if(!node.children)return;
+      node.children=node.children.flatMap(child=>{
+        if(child.type==='link')return split(child);
+        visit(child);return [child];
+      });
+    };
+    visit(tree);
+  };
+}
+
 export function AnswerMarkdown({text,citations=[]}:{text:string;citations?:EvidenceSource[]}) {
   const [selected,setSelected]=useState<string|null>(null);
   const clean=answerText(text,citations);
-  return <><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{img:({src,alt,title})=>{
+  return <><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm,remarkChineseAutolinks]} components={{img:({src,alt,title})=>{
     const safe=markdownImageURL(src);
     return safe?<img src={safe} alt={alt||''} title={title} loading="lazy" referrerPolicy="no-referrer"/>:<span className="source-blocked-image" title="外部图片不会自动加载">[外部图片已阻止自动加载：{alt||'未命名图片'}]</span>;
   },a:({children,href,node:_node,...props})=>{

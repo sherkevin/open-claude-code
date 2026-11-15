@@ -38,8 +38,8 @@ def main():
         else:
             assistant = api("POST", "assistants", json={
                 "name": name,
-                "description": "使用合成资料演示知识查询、报修流程与审批；不连接华微真实业务数据。",
-                "instructions": "你是业务演示助手。所有工具数据都是合成演示数据，请明确说明。查询必须使用工具并标注知识条目编号，不能编造来源。创建演示工单前确认用户给出的标题、描述和申请人；调用create_ticket时提供唯一request_key，写操作必须等待用户审批。拒绝后不要重试写入。",
+                "description": "查询业务资料、演示报修流程与审批；不连接华微真实业务数据。",
+                "instructions": "你是业务演示助手。工具数据用于产品演示，不代表客户实际业务记录，按此口径说明。查询必须使用工具并标注知识条目编号，不能编造来源。创建演示工单前确认用户给出的标题、描述和申请人；调用create_ticket时提供唯一request_key，写操作必须等待用户审批。拒绝后不要重试写入。",
                 "enabled": True,
                 "access": {"all_members": True, "user_ids": []},
                 "connections": [{"connection_id": connection["id"], "allowed_tools": ["search_knowledge", "list_tickets", "create_ticket"], "auto_approved_tools": ["search_knowledge", "list_tickets"]}],
