@@ -18,7 +18,7 @@ import subprocess
 
 DATASET = 'business-examples-20261116'
 COUNTS = {'sales_orders': 360, 'inventory': 96, 'quality_batches': 240}
-NAMES = {'sales_orders': '销售订单示例', 'inventory': '库存台账示例', 'quality_batches': '质量批次示例'}
+NAMES = {'sales_orders': '销售订单明细', 'inventory': '库存台账', 'quality_batches': '质量检验批次'}
 BASE = Path('/data/dengkw/workspace/huawi-preview-20261115')
 SERVICE = 'zhixing-preview-20261115.service'
 GENERATOR_SHA = '0c36805175152c78eec8de48e8bf66119473391972ada63213b6334fa76f9e48'

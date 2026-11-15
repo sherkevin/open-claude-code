@@ -26,7 +26,7 @@ def package(tmp_path):
 def test_only_new_sqlite_created_with_provenance_and_expected_counts(package):
     directory, manifest, additions = package
     assert manifest['business_rows'] == 696
-    assert all(t['scope'] == 'demo' and '示例' in t['name'] and t['dataset_metadata']['synthetic'] for t in additions['tables'])
+    assert all(t['scope'] == 'demo' and t['name'] == expansion.NAMES[t['table']] and t['dataset_metadata']['synthetic'] for t in additions['tables'])
     with sqlite3.connect(directory / 'business-v2.sqlite3') as db:
         assert json.loads(db.execute("SELECT value FROM dataset_metadata WHERE key='represents_real_company_records'").fetchone()[0]) is False
     with pytest.raises(expansion.PreparationError, match='NEW_PACKAGE_DIRECTORY_REQUIRED'):
