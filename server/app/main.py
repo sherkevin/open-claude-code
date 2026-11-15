@@ -505,8 +505,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         end = datetime.fromisoformat(row["completed_at"] or now())
         started = datetime.fromisoformat(row["created_at"])
         result = {"schema_version": 1, "generated_at": now(), "run": {**service.run_view(row), "duration_ms": max(0, int((end - started).total_seconds() * 1000))}, "messages": [message_view(item) for item in service.db.all("SELECT * FROM messages WHERE run_id=? ORDER BY created_at,rowid", (item_id,))], "events": service.public_events(item_id, 0), "usage": json.loads(row["usage"]) if row["usage"] else None}
-        from .security import redact
-        return JSONResponse(content=redact(result, truncate=False), headers={"Content-Disposition": f'attachment; filename="run-{item_id}.json"'})
+        from .run_trace import redact_run_trace
+        return JSONResponse(content=redact_run_trace(result), headers={"Content-Disposition": f'attachment; filename="run-{item_id}.json"'})
 
     @app.get(prefix + "/runs/{item_id}/events")
     async def run_events(item_id: str, request: Request, after: int = 0, user=Depends(authenticated), service: Service = Depends(svc)):
