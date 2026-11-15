@@ -17,7 +17,7 @@ export function validateMemoryReview(value: MemoryApprovalContent,conversationId
 }
 
 export function MemoryReviewBody({ value }: { value: MemoryApprovalContent }) {
-  return <><p>将写入或完整替换 <strong>{value.path}</strong> · 版本 {value.expected_revision} · 上下文代次 {value.native_epoch} · {sizeText(new TextEncoder().encode(value.content).length)}</p>
+  return <><p>将写入或完整替换 <strong>{value.path}</strong> · {sizeText(new TextEncoder().encode(value.content).length)}</p>
     <p className="section-help" style={{overflowWrap:'anywhere'}}>仅当前会话：{value.conversation_id}。{value.old_content_sha256?`替换前文件摘要（SHA-256）：${value.old_content_sha256}`:'这是新文件，不会覆盖现有文件。'}</p>
     <pre data-memory-review="full-content" tabIndex={0} aria-label="待写入的完整记忆正文" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:'24rem',overflow:'auto'}}>{value.content || '（空文件）'}</pre>
     <p className="section-help">批准仅将内容暂存。只有本轮任务成功、执行进程结束且授权仍有效时，才会正式保存；失败或取消不会写入。有效保存后，下一轮不会自动带入旧上下文。</p></>;

@@ -115,7 +115,7 @@ function CredentialPanel({value, busy, onChanged}: {value: CapabilityConfigurati
   };
   return <section className="capability-settings-card capability-credentials">
     <header><KeyRound size={20}/><h2>提供方密钥与诊断</h2><span className="badge">只写，不回显</span></header>
-    <p>密钥只提交到服务端加密存储，读取接口不会返回密钥。保存或删除需要 HTTPS 通道，并受版本冲突保护。</p>
+    <p>密钥只提交到服务端加密存储，读取接口不会返回密钥。保存或删除需要 HTTPS 通道，保存时会检查是否已被他人修改。</p>
     {!secureChannel&&<p role="status">当前入口未使用 HTTPS，密钥输入已关闭。请通过安全入口配置密钥。</p>}
     <ErrorNotice message={error}/><SuccessNotice message={notice}/>
     {value.providers.map(provider => {
@@ -127,7 +127,7 @@ function CredentialPanel({value, busy, onChanged}: {value: CapabilityConfigurati
         <Button variant="secondary" disabled={!!working || busy || !(drafts[provider.id] || '').trim()} onClick={() => void act(provider.id, () => saveProviderCredential(provider.id, credential.revision, drafts[provider.id]), `${providerLabels[provider.id]} 密钥已保存；验证状态已重置，请运行诊断。`)}>保存密钥</Button>
         <Button variant="ghost" disabled={!!working || busy || !credential.present} onClick={() => void act(provider.id, () => deleteProviderCredential(provider.id, credential.revision), `${providerLabels[provider.id]} 密钥已删除。`)}>删除</Button></>}
         <Button variant="ghost" disabled={!!working || busy} onClick={() => void act(provider.id, async () => setDiagnostics(await runProviderDiagnostics(provider.id)), '诊断已完成。')}><Stethoscope size={15}/>诊断</Button>
-        <span className="credential-revision">版本 {credential.revision}</span>
+        
       </div>;
     })}
     {diagnostics && <div className="diagnostic-results"><strong>最近一次诊断：{providerLabels[diagnostics.provider_id]}</strong>
@@ -150,7 +150,7 @@ export function CapabilitySettingsView({allowed, state, onReload, onSave, onChan
       actions={<Button variant="secondary" disabled={busy} onClick={onReload}><RefreshCw size={16}/>重新加载</Button>}/>
     <ErrorNotice message={state.error}/><SuccessNotice message={state.saved ? '配置已保存并立即用于后续工具调用；这不代表外部线路已验证。' : ''}/>
     {state.phase === 'loading' ? <Loader text="正在读取能力配置…"/> : !value ? <div className="info-strip">暂未取得配置。请重新加载；不会使用空配置覆盖服务端。</div> : <>
-      <div className="info-strip"><ShieldCheck size={20}/><p>配置版本 {value.revision} · {value.origin === 'environment' ? '沿用部署环境默认值，尚未覆盖' : '管理员配置'}。网页搜索与读取在管理员显式保存前保持历史默认；文档识别与图片搜索默认关闭，文件外发默认拒绝。</p></div>
+      <div className="info-strip"><ShieldCheck size={20}/><p>{value.origin === 'environment' ? '默认配置' : '已保存的配置'}。网页搜索与读取在管理员显式保存前保持历史默认；文档识别与图片搜索默认关闭，文件外发默认拒绝。</p></div>
       <div className="capability-settings-grid">
         {KINDS.map(kind => <section key={kind} className="capability-settings-card">
           <header><Globe size={20}/><h2>{capabilityLabels[kind]}</h2><span className="badge">{!value[kind].enabled ? '已停用' : value.providers.find(p => p.id === value[kind].preferred)?.configured ? '已启用 · 待验证' : '首选服务未配置'}</span></header>
