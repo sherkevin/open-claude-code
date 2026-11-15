@@ -71,7 +71,8 @@ describe('verified external source visibility',()=>{
     const html=renderToStaticMarkup(<AnswerMarkdown text={'Answer\n\n来源\n\n[1] [Old footer label](/api/v1/sources/web-1)'} citations={[source(attribution)]}/>);
     expect(html).toContain(label);
     expect(html).not.toContain('Old footer label');
-    expect(html).toContain('打开原始网页');
+    expect(html).not.toContain('打开原始网页');
+    expect(html.match(/class="source-card"/g)).toHaveLength(1);
     expect(html).not.toContain('href="https://');
     if(attribution!=='cited')expect(html).toContain('检索记录，不代表回答已据此核验');
   });
@@ -80,7 +81,9 @@ describe('verified external source visibility',()=>{
     const html=renderToStaticMarkup(<AnswerMarkdown text="Answer" citations={[knowledge,source('search_candidate')]}/>);
     expect(html).toContain('Internal manual');
     expect(html).toContain('Industrial reference');
-    expect(html.match(/打开原始网页/g)).toHaveLength(1);
+    expect(html).not.toContain('打开原始网页');
+    expect(html.match(/<button/g)).toHaveLength(2);
+    expect(html).not.toContain('来源 ID');
   });
   it('reauthorizes on every click and only opens the URL returned by the registry',async()=>{
     const tab={opener:{},location:{replace:vi.fn()},close:vi.fn()};
@@ -122,8 +125,11 @@ describe('verified external source visibility',()=>{
     const image={...source('image_candidate' as EvidenceSource['attribution'],'img-1'),locator:{capability:'image_search',image_url:'https://cdn.example.com/a.jpg',provider:'managed_image_search'}} as EvidenceSource;
     const ocr={...source('cited','ocr-1'),kind:'knowledge' as const,title:'scan.png',locator:{capability:'ocr',page:2,extraction:'managed-ocr',provider:'managed_ocr'}} as EvidenceSource;
     const html=renderToStaticMarkup(<AnswerMarkdown text="Answer" citations={[image,ocr]}/>);
-    expect(html).toContain('打开原始网页');
-    expect(html).toContain('打开原始图片');
+    expect(html).not.toContain('打开原始网页');
+    expect(html).not.toContain('打开原始图片');
+    const actions=renderToStaticMarkup(<SourceActions source={image}/>);
+    expect(actions).toContain('打开原始网页');
+    expect(actions).toContain('打开原始图片');
     expect(html).toContain('原网页与原始图片分别核验');
     expect(html).toContain('附件识别文字');
     expect(html).toContain('第 2 页');

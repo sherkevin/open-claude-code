@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { BookOpen, Database, ExternalLink, Globe, Image as ImageIcon, RefreshCw } from 'lucide-react';
+import { BookOpen, ChevronRight, Database, ExternalLink, Globe, Image as ImageIcon, RefreshCw } from 'lucide-react';
 import { api, apiURL, API_BASE, errorText, timeText } from './api';
 import { Button, ErrorNotice, Loader, Modal } from './components';
 import { knowledgeOriginalURL } from './KnowledgePage';
@@ -148,9 +148,10 @@ export function answerText(text:string,citations:EvidenceSource[]) {
 function SourceIcon({kind}:{kind:EvidenceSource['kind']}) {return kind==='data'?<Database size={15}/>:kind==='knowledge'?<BookOpen size={15}/>:<Globe size={15}/>;}
 function SourceCard({source,index,onOpen}:{source:EvidenceSource;index:number;onOpen:()=>void}) {
   const image=isImageSource(source),ocr=isOCRSource(source);
+  const incomplete=ocr&&source.locator?.complete===false;
+  const note=incomplete?'该页识别不完整，请核对原件':image?'原网页与原始图片分别核验':ocr?`附件识别文字 · ${locatorText(source,'extraction')||'OCR'}`:source.attribution&&source.attribution!=='cited'?'检索记录，不代表回答已据此核验':'点击查看来源详情';
   return <div className="source-entry" key={source.id}>
-    <button type="button" className="source-card" onClick={onOpen}>{image?<ImageIcon size={15}/>:<SourceIcon kind={source.kind}/>}<span><strong>[{source.number||index+1}] {source.title}</strong><small>{sourceAttributionLabel(source)}{source.locator?.page?` · 第 ${String(source.locator.page)} 页`:''}</small>{image&&<small>原网页与原始图片分别核验{locatorText(source,'provider')?` · ${locatorText(source,'provider')}`:''}</small>}{ocr&&<small>附件识别文字 · {locatorText(source,'extraction')||'OCR'}{locatorText(source,'provider')?` · ${locatorText(source,'provider')}`:''}</small>}{ocr&&source.locator?.complete===false&&<small role="status">该页识别不完整，请核对原件</small>}{source.attribution&&source.attribution!=='cited'&&<small>检索记录，不代表回答已据此核验</small>}<small className="source-id">来源 ID：{source.id}</small></span><ExternalLink size={13}/></button>
-    {image?<span className="source-image-actions"><OpenSourceButton id={source.id} label="打开原始网页"/><OpenSourceButton id={source.id} field="image_url" label="打开原始图片"/></span>:source.kind==='web'&&<OpenSourceButton id={source.id}/>}
+    <button type="button" className="source-card" onClick={onOpen} title="查看来源详情">{image?<ImageIcon size={16}/>:<SourceIcon kind={source.kind}/>}<span><strong title={source.title}>[{source.number||index+1}] {source.title}</strong><small className="source-card-meta">{sourceAttributionLabel(source)}{source.locator?.page?` · 第 ${String(source.locator.page)} 页`:''}</small><small className="source-card-note" role={incomplete?'status':undefined} title={note}>{note}</small></span><ChevronRight size={16}/></button>
   </div>;
 }
 

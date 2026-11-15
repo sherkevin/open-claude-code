@@ -1,14 +1,18 @@
-.source-entry { display:flex; flex-direction:column; gap:7px; min-width:220px; max-width:100%; }
-.source-entry .source-card { flex:1; width:100%; }
+.answer-sources { display:grid; grid-template-columns:minmax(0,1fr); width:100%; max-width:640px; }
+.answer-sources .source-entry { width:100%; min-width:0; }
+.answer-sources .source-entry .source-card { display:grid; grid-template-columns:18px minmax(0,1fr) 16px; gap:12px; width:100%; height:116px; min-width:0; padding:14px 16px; border-radius:10px; }
+.answer-sources .source-card>span { gap:4px; }
+.answer-sources .source-card strong { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:20px; }
+.answer-sources .source-card .source-card-meta { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:18px; }
+.answer-sources .source-card .source-card-note { display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; line-height:18px; }
+.answer-sources .source-card>svg:last-child { color:var(--muted,#667085); }
+.answer-sources .source-card:focus-visible { outline:2px solid var(--brand,#0070f2); outline-offset:3px; }
 .source-open-action { display:flex; flex-direction:column; gap:6px; align-items:flex-start; }
 .source-open-action .button { font-size:12px; }
 .source-open-action [role="alert"] { font-size:12px; color:var(--error,#a33838); overflow-wrap:anywhere; }
-.source-image-actions { display:flex; flex-wrap:wrap; gap:6px; align-items:flex-start; }
-.source-image-actions .source-open-action { flex:1 1 150px; min-width:0; }
-.source-id { opacity:.72; font-family:var(--font-mono,ui-monospace,monospace); overflow-wrap:anywhere; }
 .source-boundary { margin:0 0 12px; padding:8px 10px; border-left:3px solid var(--warning,#a66a00); background:var(--surface-muted,#f6f2e8); color:var(--text-muted,#5b5345); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
 .source-blocked-image { display:inline-block; padding:4px 8px; border:1px dashed var(--border-strong,#b8ad97); border-radius:6px; color:var(--text-muted,#5b5345); font-size:12px; overflow-wrap:anywhere; }
-@media(max-width:760px) { .source-entry { min-width:0; width:100%; } .source-image-actions .source-open-action { flex:1 1 100%; } }
+@media(max-width:760px) { .answer-sources .source-entry .source-card { height:132px; padding:12px; gap:10px; } .answer-sources .source-card .source-card-note { -webkit-line-clamp:2; } }
 
 .source-details { min-width:0; }
 .source-details .source-locator { margin-top:0; }
