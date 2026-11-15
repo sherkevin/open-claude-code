@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUpLeft, Check, LoaderCircle, Sparkles, X } from 'lucide-react';
+import { ArrowUpLeft, Check, ChevronDown, LoaderCircle, Sparkles, X } from 'lucide-react';
 import { api } from './api';
 import { isActive, type Message, type Run } from './types';
+
+export const composerInputMaxHeight = (viewportHeight: number) => Math.min(144, Math.max(72, Math.round(viewportHeight * .18)));
 
 type ShortcutEvent = { key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; repeat?: boolean; isComposing?: boolean; keyCode?: number };
 export function composerShortcut(event: ShortcutEvent, state: { composing: boolean; draft: string; canComplete: boolean; completionBusy: boolean; suggestion: boolean; skillsOpen: boolean }) {
@@ -143,7 +145,9 @@ export function ComposerCompletion({ value, onAccept, onDismiss }: { value: Comp
 
 export function ComposerFollowups({ value, onChoose }: { value: Followups; onChoose: (text: string) => void }) {
   if (!value.busy && !value.suggestions.length && !value.notice) return null;
-  return <div className="composer-followups" aria-label="下一步问题建议">
-    {value.busy ? <span className="composer-followups-pending" role="status"><LoaderCircle size={13} className="spin"/>正在整理后续问题…</span> : value.notice ? <span className="composer-followups-notice" role="status">{value.notice}</span> : <><span className="composer-followups-label">继续了解</span><div>{value.suggestions.map(text => <button key={text} type="button" onClick={() => onChoose(text)}>{text}<ArrowUpLeft size={13}/></button>)}</div></>}
-  </div>;
+  if (value.busy || value.notice) return <div className="composer-followups composer-followups-state" role="status">{value.busy ? <span className="composer-followups-pending"><LoaderCircle size={13} className="spin"/>正在整理后续问题…</span> : <span className="composer-followups-notice">{value.notice}</span>}</div>;
+  return <details className="composer-followups" aria-label="下一步问题建议">
+    <summary><span>继续了解</span><span>{value.suggestions.length} 个问题<ChevronDown size={14}/></span></summary>
+    <div>{value.suggestions.map(text => <button key={text} type="button" onClick={() => onChoose(text)}>{text}<ArrowUpLeft size={13}/></button>)}</div>
+  </details>;
 }

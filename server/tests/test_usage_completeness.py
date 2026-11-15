@@ -13,14 +13,14 @@ def runs(env, values):
         env.service.db.execute("UPDATE runs SET status=?,usage=? WHERE id=?", (
             "cancelled" if value is None else "succeeded", json.dumps(value) if value is not None else None, result["run_id"]))
         env.service.db.execute("UPDATE conversations SET active_run_id=NULL WHERE id=?", (env.conversation["id"],))
-    return env.service.usage(env.user)
+    return env.service.usage(env.user, scope="all")
 
 
 def test_unknown_run_keeps_totals_unknown_and_subtotals_visible(env):
     view = runs(env, [{"input_tokens": 100, "output_tokens": 5, "estimated_cost_usd": .5}, None])
     for result in (view, view["users"][0]):
         assert result["input_tokens"] is None and result["output_tokens"] is None and result["estimated_cost_usd"] is None
-        assert result["known_subtotals"] == {"input_tokens": 100, "output_tokens": 5, "estimated_cost_usd": .5}
+        assert {key: result["known_subtotals"][key] for key in ("input_tokens", "output_tokens", "estimated_cost_usd")} == {"input_tokens": 100, "output_tokens": 5, "estimated_cost_usd": .5}
         assert result["total_runs"] == 2 and result["missing_usage_runs"] == 1
         assert result["field_coverage"]["input_tokens"] == {"known_runs": 1, "unknown_runs": 1}
         assert result["usage_complete"] is False

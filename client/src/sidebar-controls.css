@@ -1,0 +1,36 @@
+/* Desktop uses a small navigation rail when collapsed; mobile keeps its drawer. */
+.zhixing-theme .sidebar-brand {gap:8px;min-width:0}
+.zhixing-theme .sidebar-brand>.brand {min-width:0}
+.zhixing-theme .sidebar-layout-toggle {display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:32px;height:32px;border:0;border-radius:5px;background:transparent;color:var(--muted);padding:0}
+.zhixing-theme .sidebar-layout-toggle:hover {color:var(--ink);background:var(--panel)}
+.zhixing-theme .sidebar-layout-toggle:focus-visible,.zhixing-theme .sidebar-resizer:focus-visible {outline:2px solid var(--brand);outline-offset:2px}
+.zhixing-theme .sidebar-scroll {min-height:0;overflow-y:auto;overflow-x:hidden;flex:1;scrollbar-gutter:stable}
+.zhixing-theme .sidebar-scroll .conversation-history {overflow:visible;flex:none;min-height:0}
+.zhixing-theme .sidebar-scroll nav {max-height:none;overflow:visible}
+.sidebar-resizer {display:none}
+@media(min-width:761px) {
+  .app-shell.zhixing-theme .sidebar {width:var(--sidebar-width,244px);padding:20px 14px 14px}
+  .app-shell.zhixing-theme>.main {margin-left:var(--sidebar-width,244px)}
+  .zhixing-theme .sidebar-brand {padding:0 2px}
+  .zhixing-theme .sidebar-brand .fw-brand {font-size:20px;gap:8px}
+  .zhixing-theme .sidebar-brand .fw-brand-mark {width:28px;height:28px}
+  .zhixing-theme .sidebar-brand .fw-brand small {font-size:11px}
+  .zhixing-theme .sidebar-resizer {display:block;position:absolute;right:-5px;top:0;bottom:0;width:10px;cursor:col-resize;touch-action:none;z-index:2}
+  .zhixing-theme .sidebar-resizer::after {content:'';position:absolute;left:4px;top:0;bottom:0;width:2px;background:var(--brand);opacity:0}
+  .zhixing-theme .sidebar-resizer:hover::after,.zhixing-theme .sidebar-resizer:focus-visible::after,.zhixing-theme.is-sidebar-resizing .sidebar-resizer::after {opacity:.65}
+  .zhixing-theme.is-sidebar-resizing {user-select:none;cursor:col-resize}
+  .app-shell.zhixing-theme.sidebar-collapsed .sidebar {width:64px;padding:16px 8px 12px}
+  .app-shell.zhixing-theme.sidebar-collapsed>.main {margin-left:64px}
+  .zhixing-theme.sidebar-collapsed .sidebar-brand {justify-content:center;padding:0}
+  .zhixing-theme.sidebar-collapsed .sidebar-brand>.brand,.zhixing-theme.sidebar-collapsed .sidebar-resizer,
+  .zhixing-theme.sidebar-collapsed .sidebar-label,.zhixing-theme.sidebar-collapsed .new-conversation>svg:last-child,
+  .zhixing-theme.sidebar-collapsed .history-heading,.zhixing-theme.sidebar-collapsed .conversation-history,
+  .zhixing-theme.sidebar-collapsed .account>div {display:none}
+  .zhixing-theme.sidebar-collapsed .new-conversation {justify-content:center;padding:8px;margin:20px 0 14px;min-height:40px}
+  .zhixing-theme.sidebar-collapsed .nav-item {justify-content:center;padding:10px 0;min-height:40px;gap:0}
+  .zhixing-theme.sidebar-collapsed .sidebar-scroll {scrollbar-gutter:auto}
+  .zhixing-theme.sidebar-collapsed .sidebar-bottom {margin-top:10px;padding-top:10px}
+  .zhixing-theme.sidebar-collapsed .account {flex-direction:column;gap:8px}
+}
+@media(max-width:760px) {.zhixing-theme .sidebar-layout-toggle {display:none}.zhixing-theme .sidebar-brand .mobile-only {min-width:44px;min-height:44px}}
+.zhixing-theme .sidebar-scrim {background:#131e2940}

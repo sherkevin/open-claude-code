@@ -10,6 +10,8 @@ import json
 import re
 import sqlite3
 import time
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
@@ -17,6 +19,125 @@ from fastapi import APIRouter, Depends, Query
 from .security import AppError
 
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+MAX_CONDITIONS = 12
+NUMBER = re.compile(r"^-?\d+(?:\.\d+)?$")
+COMPARISONS = {"eq": "=", "ne": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+EMPTY_OPERATORS = {"is_empty", "is_not_empty"}
+
+
+def _filter_error(message):
+    raise AppError(422, "INVALID_DATA_FILTER", message)
+
+
+def _column_type(column):
+    # Type is operator-owned metadata, never inferred from a field's name.
+    if column.get("format") == "currency_cents":
+        return "number"
+    kind = column.get("type", "text")
+    return kind if kind in {"text", "integer", "number", "date", "datetime", "boolean"} else "text"
+
+
+def _filter_value(value, column, position):
+    label = f"第 {position} 条条件的{column['label']}"
+    if isinstance(value, bool) and _column_type(column) == "boolean":
+        return int(value)
+    if type(value) not in (str, int, float):
+        _filter_error(f"{label}需要填写有效值")
+    text = str(value).strip()
+    if not text or len(text) > 100:
+        _filter_error(f"{label}不能为空，且不能超过 100 字；查空值请选择“为空”")
+    kind = _column_type(column)
+    if kind in ("integer", "number"):
+        if not NUMBER.fullmatch(text):
+            _filter_error(f"{label}需要填写数字，不含千位分隔符")
+        try:
+            number = Decimal(text)
+            if column.get("format") == "currency_cents":
+                if "." in text and len(text.rsplit(".", 1)[1]) > 2:
+                    _filter_error(f"{label}按元填写，最多两位小数")
+                number *= 100
+                if number != number.to_integral_value():
+                    _filter_error(f"{label}按元填写，最多两位小数")
+            if kind == "integer" and number != number.to_integral_value():
+                _filter_error(f"{label}需要填写整数")
+            if not number.is_finite() or abs(number) > 9_007_199_254_740_991:
+                _filter_error(f"{label}超出支持的数字范围")
+            return int(number) if number == number.to_integral_value() else float(number)
+        except InvalidOperation:
+            _filter_error(f"{label}需要填写有效数字")
+    if kind == "date":
+        try:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                raise ValueError()
+            return date.fromisoformat(text).isoformat()
+        except ValueError:
+            _filter_error(f"{label}需要填写有效日期，格式为 YYYY-MM-DD")
+    if kind == "datetime":
+        try:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?", text):
+                raise ValueError()
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            # SQLite julianday also interprets zone-free values as UTC.
+            return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError):
+            _filter_error(f"{label}需要填写有效的 ISO 日期时间")
+    if kind == "boolean":
+        if text not in ("true", "false"):
+            _filter_error(f"{label}请选择是或否")
+        return int(text == "true")
+    return text
+
+
+def _conditions(raw, logic, columns):
+    if logic not in ("and", "or"):
+        _filter_error("条件关系请选择全部满足或任一满足")
+    if isinstance(raw, str):
+        try:
+            if len(raw) > 8192:
+                raise ValueError()
+            raw = json.loads(raw) if raw else []
+        except (ValueError, TypeError):
+            _filter_error("筛选条件格式无效，请重新设置")
+    if not isinstance(raw, list) or len(raw) > MAX_CONDITIONS:
+        _filter_error(f"最多支持 {MAX_CONDITIONS} 条筛选条件")
+    column_map = {c["key"]: c for c in columns}
+    clauses, params = [], []
+    for position, item in enumerate(raw, 1):
+        if not isinstance(item, dict) or set(item) - {"field", "operator", "value", "value_to"}:
+            _filter_error(f"第 {position} 条筛选条件格式无效")
+        column = column_map.get(item.get("field")) if isinstance(item.get("field"), str) else None
+        if column is None:
+            _filter_error(f"第 {position} 条条件请选择允许查看的字段")
+        kind = _column_type(column)
+        operator = item.get("operator")
+        allowed = {"eq", "ne", *EMPTY_OPERATORS}
+        allowed |= {"contains", "not_contains", "starts_with"} if kind == "text" else set()
+        allowed |= {"gt", "gte", "lt", "lte", "between"} if kind in {"integer", "number", "date", "datetime"} else set()
+        if not isinstance(operator, str) or operator not in allowed:
+            _filter_error(f"第 {position} 条条件不适用于所选字段")
+        name = _identifier(column["key"])
+        if operator in EMPTY_OPERATORS:
+            empty = f"({name} IS NULL OR CAST({name} AS TEXT) = '')"
+            clauses.append(empty if operator == "is_empty" else f"NOT {empty}")
+            continue
+        value = _filter_value(item.get("value"), column, position)
+        if operator in ("contains", "not_contains", "starts_with"):
+            escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append(f"CAST({name} AS TEXT) {'NOT LIKE' if operator == 'not_contains' else 'LIKE'} ? ESCAPE '\\'")
+            params.append(("" if operator == "starts_with" else "%") + escaped + "%")
+        else:
+            expression = f"julianday({name})" if kind == "datetime" else name
+            placeholder = "julianday(?)" if kind == "datetime" else "?"
+            if operator == "between":
+                upper = _filter_value(item.get("value_to"), column, position)
+                if value > upper:
+                    _filter_error(f"第 {position} 条条件的范围起点不能大于终点")
+                clauses.append(f"{expression} BETWEEN {placeholder} AND {placeholder}")
+                params.extend([value, upper])
+            else:
+                clauses.append(f"{expression} {COMPARISONS[operator]} {placeholder}")
+                params.append(value)
+    return "(" + f" {logic.upper()} ".join(clauses) + ")" if clauses else "", params, raw
 
 
 def _identifier(value):
@@ -52,7 +173,8 @@ class BusinessData:
                 keys = set()
                 for column in columns:
                     _identifier(column["key"])
-                    if column["key"] in keys or not isinstance(column["label"], str):
+                    if (column["key"] in keys or not isinstance(column["label"], str)
+                            or ("type" in column and not isinstance(column["type"], str))):
                         raise ValueError("Invalid columns")
                     keys.add(column["key"])
                 if table["primary_key"] not in keys:
@@ -91,7 +213,7 @@ class BusinessData:
             result.append(self._public(table))
         return result
 
-    def rows(self, table_id, user, *, offset=0, limit=50, q="", filter_column="", filter_value="", sort="", direction="asc"):
+    def rows(self, table_id, user, *, offset=0, limit=50, q="", filter_column="", filter_value="", sort="", direction="asc", filters="", filter_logic="and"):
         table = next((t for t in self._catalog() if t["id"] == table_id), None)
         if table is None:
             raise AppError(404, "NOT_FOUND", "数据表不存在或无访问权限")
@@ -117,6 +239,10 @@ class BusinessData:
             params.extend([f"%{escaped}%"] * len(search))
         if filter_column and filter_value:
             where.append(f"{_identifier(filter_column)} = ?"); params.append(filter_value)
+        conditions, condition_params, applied_filters = _conditions(filters, filter_logic, columns)
+        if conditions:
+            # A caller's OR group must never widen the administrator-owned scope.
+            where.append(conditions); params.extend(condition_params)
         query_scope = " WHERE " + " AND ".join(where) if where else ""
         name = _identifier(table["table"])
         start = time.monotonic()
@@ -165,7 +291,8 @@ class BusinessData:
         return {"table": self._public(table), "total_rows": total, "matched_rows": matched, "offset": offset,
                 "limit": limit, "rows": result, "read_only": True, "model_called": False,
                 "duration_ms": round((time.monotonic() - start) * 1000),
-                "query": {"q": q, "filter_column": filter_column, "filter_value": filter_value, "sort": sort, "direction": direction}}
+                "query": {"q": q, "filter_column": filter_column, "filter_value": filter_value, "sort": sort, "direction": direction,
+                          "filters": applied_filters, "filter_logic": filter_logic}}
 
 
 def create_business_data_router(svc, authenticated):
@@ -179,8 +306,10 @@ def create_business_data_router(svc, authenticated):
     def rows(table_id: str, offset: int = Query(0, ge=0, le=1000000), limit: int = Query(50, ge=1, le=100),
              q: str = Query("", max_length=100), filter_column: str = Query("", max_length=64),
              filter_value: str = Query("", max_length=100), sort: str = Query("", max_length=64),
-             direction: str = Query("asc", pattern="^(asc|desc)$"), user=Depends(authenticated), service=Depends(svc)):
+             direction: str = Query("asc", pattern="^(asc|desc)$"), filters: str = Query("", max_length=8192),
+             filter_logic: str = Query("and", pattern="^(and|or)$"), user=Depends(authenticated), service=Depends(svc)):
         return BusinessData(service).rows(table_id, user, offset=offset, limit=limit, q=q,
-            filter_column=filter_column, filter_value=filter_value, sort=sort, direction=direction)
+            filter_column=filter_column, filter_value=filter_value, sort=sort, direction=direction,
+            filters=filters, filter_logic=filter_logic)
 
     return router

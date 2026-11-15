@@ -71,6 +71,7 @@ _TRIAL_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/v1/health/live"): "health",
     ("GET", "/api/v1/health/ready"): "health",
     ("POST", "/api/v1/auth/login"): "auth",
+    ("POST", "/api/v1/auth/register"): "auth",
     ("POST", "/api/v1/auth/logout"): "auth",
     ("GET", "/api/v1/auth/me"): "auth",
     ("GET", "/api/v1/config"): "config",
@@ -107,7 +108,7 @@ _TRIAL_ROUTES: dict[tuple[str, str], str] = {
 TRIAL_ROUTES = MappingProxyType(_TRIAL_ROUTES)
 
 
-def _disabled(message: str = "此功能未在受控试用范围开放") -> AppError:
+def _disabled(message: str = "此功能未在当前工作空间开放") -> AppError:
     return AppError(403, FEATURE_DISABLED, message)
 
 
@@ -156,7 +157,7 @@ class DeploymentPolicy:
             return True
         return capability in self._capabilities
 
-    def require(self, capability: str, message: str = "此功能未在受控试用范围开放") -> None:
+    def require(self, capability: str, message: str = "此功能未在当前工作空间开放") -> None:
         if not self.allows(capability):
             raise _disabled(message)
 
@@ -186,7 +187,7 @@ class DeploymentPolicy:
     def require_tool(self, tool_name: object) -> None:
         tool_name = self.require_tool_name(tool_name)
         if not self.tool_allowed(tool_name):
-            raise _disabled("此工具未在受控试用范围开放")
+            raise _disabled("此工具未在当前工作空间开放")
 
     def retrieval_modes(self) -> tuple[str, ...]:
         return TRIAL_RETRIEVAL_MODES if self.is_trial else KNOWN_RETRIEVAL_MODES
@@ -198,7 +199,7 @@ class DeploymentPolicy:
 
     def require_retrieval_mode(self, mode: str) -> None:
         if not self.retrieval_allowed(mode):
-            raise _disabled("此检索方式未在受控试用范围开放")
+            raise _disabled("此检索方式未在当前工作空间开放")
 
     def public_view(self) -> dict:
         """Safe, deterministic capability advertisement (no credentials)."""

@@ -71,7 +71,7 @@ class DeploymentPolicyMiddleware:
         except AppError:
             response = JSONResponse(
                 status_code=403,
-                content={"error": {"code": "FEATURE_DISABLED", "message": "此功能未在受控试用范围开放"}},
+                content={"error": {"code": "FEATURE_DISABLED", "message": "当前工作空间未开放此功能"}},
             )
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["Referrer-Policy"] = "same-origin"
@@ -145,7 +145,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             if exc.status_code in {404, 405}:
                 return JSONResponse(
                     status_code=403,
-                    content={"error": {"code": "FEATURE_DISABLED", "message": "此功能未在受控试用范围开放"}},
+                    content={"error": {"code": "FEATURE_DISABLED", "message": "当前工作空间未开放此功能"}},
                 )
             return JSONResponse(
                 status_code=exc.status_code,
@@ -201,6 +201,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         service.require_admin(user)
         return user
 
+    from .registration import create_registration_router, registration_available, MIN_PASSWORD_LENGTH
+    app.include_router(create_registration_router(svc))
     from .mcp_import import create_import_router
     app.include_router(create_import_router(svc, authenticated))
     from .skills import create_skill_router
@@ -238,6 +240,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         feishu_ready = settings.feishu_h5_ready and not policy.is_trial
         return {
             "brand_name": settings.brand_name,
+            "registration_enabled": registration_available(settings),
+            "registration_min_password_length": MIN_PASSWORD_LENGTH,
             "upload_max_bytes": settings.upload_max_bytes,
             "auth_types": ["none", "bearer"],
             "feishu_h5": {
@@ -251,6 +255,12 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             **app.state.service.catalog.defaults,
         }
 
+    @app.get(prefix + "/users/registration-invite")
+    def registration_invite(response: Response, user=Depends(admin)):
+        response.headers["Cache-Control"] = "no-store"
+        available = registration_available(settings)
+        return {"enabled": available, "invite_code": settings.registration_invite_code if available else None}
+
     @app.get(prefix + "/models")
     def models(user=Depends(authenticated), service: Service = Depends(svc)):
         return service.catalog.public()
@@ -259,7 +269,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     async def recommend_model(data: ModelRecommendationRequest, user=Depends(authenticated), service: Service = Depends(svc)):
         """Return an advisory model recommendation without changing a session."""
         from .model_recommendation import provider_router, public_router_result
-        return public_router_result(await provider_router(service, data.task_summary, data.candidate_model_ids))
+        return public_router_result(await provider_router(service, data.task_summary, data.candidate_model_ids, user_id=user["id"]))
 
     @app.get(prefix + "/models/router-status")
     def model_router_status(user=Depends(authenticated), service: Service = Depends(svc)):
@@ -287,7 +297,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         response carries an evidence gap and a null suggestion.
         """
         from .model_recommendation import provider_completion, public_router_result
-        return public_router_result(await provider_completion(service, data.text))
+        return public_router_result(await provider_completion(service, data.text, user_id=user["id"]))
 
     @app.post(prefix + "/models/followups")
     async def model_followups(data: ModelFollowupsRequest, user=Depends(authenticated), service: Service = Depends(svc)):
@@ -481,7 +491,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             # prepare_run consumes the bounded result and records its evidence.
             from .model_recommendation import provider_router
             candidates = [item["id"] for item in service.catalog.public() if item["available"]]
-            payload["_route_recommendation"] = await provider_router(service, payload.get("text", ""), candidates)
+            payload["_route_recommendation"] = await provider_router(service, payload.get("text", ""), candidates, user_id=user["id"])
         result, created = await service.prepare_and_submit_async(item_id, payload, user)
         return result
 
@@ -683,8 +693,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         return FileResponse(row["path"], media_type=row["mime_type"] if preview else "application/octet-stream", filename=row["name"], content_disposition_type="inline" if preview else "attachment", headers={"Content-Security-Policy": "sandbox; default-src 'none'"})
 
     @app.get(prefix + "/usage")
-    def usage(user=Depends(authenticated), service: Service = Depends(svc)):
-        return service.usage(user)
+    def usage(scope: str = "self", model_id: str | None = None, date_from: str | None = None, date_to: str | None = None, user=Depends(authenticated), service: Service = Depends(svc)):
+        return service.usage(user, scope=scope, model_id=model_id, date_from=date_from, date_to=date_to)
 
     return app
 

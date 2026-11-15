@@ -13,13 +13,13 @@ const kb: KnowledgeBase = {id:'k1',name:'设备说明资料',description:'',enab
 
 describe('known demo descriptions are translated for display only',()=>{
   it.each([
-    ['Search synthetic Chinese company rules; always returns source IDs and labels data as demo.', '检索中文企业制度演示资料'],
+    ['Search synthetic Chinese company rules; always returns source IDs and labels data as demo.', '检索中文企业制度示例资料'],
     ['Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.', '此操作需要用户审批'],
     ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '可按 request_key 精确筛选'],
     ['Query line/batch quality counts and calculate the weighted yield for an inclusive date range. Returns database/table/fields/filter/time/aggregation provenance.', '按检验数量加权计算合格率'],
     ['Acceptance-only bounded read delay, useful for checking cancellation. Does not create or modify records.', '用于检查取消操作'],
   ])('translates the complete known description: %s',(original,expected)=>{
-    const translated=displayToolDescription(original);expect(translated).toContain(expected);expect(translated).toContain('演示');expect(translated).not.toContain('合成');
+    const translated=displayToolDescription(original);expect(translated).toContain(expected);expect(translated).not.toContain('测试版');expect(translated).not.toContain('合成');
   });
   it('leaves unknown or changed descriptions exactly as received',()=>{
     for(const description of ['Read live tickets from the customer system.', 'Search synthetic Chinese company rules; always returns source IDs and labels data as demo. Extra conditions apply.', '', 'toString']) expect(displayToolDescription(description)).toBe(description);
@@ -29,11 +29,11 @@ describe('known demo descriptions are translated for display only',()=>{
     const connected={...connection,tools:[known]};const before=JSON.stringify(known);
     const detail=renderToStaticMarkup(<ToolCapability connection={connected} tool={known} binding={{...binding,allowed_tools:['create_ticket']}}/>);
     const card=renderToStaticMarkup(<ConnectionOnboardingCard item={connected} assistants={[]} admin={false} onTest={()=>{}} onTools={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onConfigureAssistant={()=>{}}/>);
-    expect(detail).toContain('创建并保存一条演示工单');expect(detail).toContain('此操作需要用户审批');expect(detail).toContain('调用前需要审批');expect(card).toContain('创建并保存一条演示工单');
+    expect(detail).toContain('创建并保存一条示例工单');expect(detail).toContain('此操作需要用户审批');expect(detail).toContain('调用前需要审批');expect(card).toContain('创建并保存一条示例工单');
     expect(toolExample(connected,known).question).toContain('先不要调用或执行');expect(JSON.stringify(known)).toBe(before);
     const custom={...known,description:'Read live tickets from the customer system.'};
     const unknown=renderToStaticMarkup(<ToolCapability connection={connected} tool={custom}/>);
-    expect(unknown).toContain(custom.description);expect(unknown).not.toContain('创建并保存一条演示工单');
+    expect(unknown).toContain(custom.description);expect(unknown).not.toContain('创建并保存一条示例工单');
   });
 });
 
@@ -65,7 +65,7 @@ describe('capabilities follow saved permissions and evidence',()=>{
 
 describe('questions come from declared capabilities, never a tool name alone',()=>{
   it('uses the date and purpose in the description plus declared defaults, and asks for missing required fields',()=>{
-    const example=toolExample(connection,tool,binding);expect(example.title).toBe('按客户查看发货数量');expect(example.question).toContain('10,000条演示数据');expect(example.question).toContain('2026-11-14');expect(example.question).toContain('区域“全部”');expect(example.question).toContain('缺少必要条件时请先问我');
+    const example=toolExample(connection,tool,binding);expect(example.title).toBe('按客户查看发货数量');expect(example.question).toContain('10,000条示例数据');expect(example.question).toContain('2026-11-14');expect(example.question).toContain('区域“全部”');expect(example.question).toContain('缺少必要条件时请先问我');
   });
   it('does not select enum values without defaults or invent dates',()=>{
     const changed={...tool,description:'查询客户发货数量',inputSchema:{properties:{region:{enum:['全部','华北']}}}};

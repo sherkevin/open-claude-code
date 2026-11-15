@@ -45,6 +45,7 @@ EXPECTED_TRIAL_ROUTES = {
     ("GET", "/api/v1/health/live"),
     ("GET", "/api/v1/health/ready"),
     ("POST", "/api/v1/auth/login"),
+    ("POST", "/api/v1/auth/register"),
     ("POST", "/api/v1/auth/logout"),
     ("GET", "/api/v1/auth/me"),
     ("GET", "/api/v1/config"),
@@ -451,6 +452,10 @@ def test_trial_exact_allowlist_routes_are_usable(trial_system):
     login_response = login(client, "member")
     called.add(("POST", "/api/v1/auth/login"))
     assert login_response.status_code == 200
+    registration = hit("POST", "/api/v1/auth/register", "/api/v1/auth/register",
+                       json={"username":"invited-member", "display_name":"Invited member", "password":"Strong-test-Password-42", "invite_code":"synthetic-invitation"})
+    assert registration.status_code == 403
+    assert registration.json()["error"]["code"] == "REGISTRATION_DISABLED"
     assert hit("GET", "/api/v1/health/live", "/api/v1/health/live").status_code == 200
     assert hit("GET", "/api/v1/health/ready", "/api/v1/health/ready").status_code == 200
     assert hit("GET", "/api/v1/auth/me", "/api/v1/auth/me").status_code == 200
@@ -1432,3 +1437,14 @@ def test_config_output_is_deterministic_and_contains_no_credentials(tmp_path):
             "capabilities",
             "allowed_retrieval_modes",
         }
+
+
+def test_trial_registration_route_still_requires_operator_enablement(tmp_path):
+    settings = Settings(data_dir=tmp_path / "registration", provider_settings="", deployment_mode="trial", origins=("http://testserver",))
+    with TestClient(create_app(settings)) as client:
+        config = client.get("/api/v1/config").json()
+        assert config["registration_enabled"] is False
+        response = client.post("/api/v1/auth/register", json={"username":"invited-member", "display_name":"Invited member", "password":"Strong-test-Password-42", "invite_code":"synthetic-invitation"})
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "REGISTRATION_DISABLED"
+        assert client.app.state.service.db.all("SELECT * FROM users") == []

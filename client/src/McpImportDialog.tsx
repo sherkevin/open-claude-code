@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, CheckCircle2, KeyRound, Link2, Upload } from 'lucide-react';
 import { post } from './api';
 import { Button, ErrorNotice, Field, Modal } from './components';
@@ -14,26 +14,30 @@ export default function McpImportDialog({ onClose, onImported,admin=false }: { a
   const [preview, setPreview] = useState<MCPImportPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const close = () => { if (!busy) { setSource(''); setPreview(null); onClose(); } };
+  const pending = useRef(false);
+  const previewSource = useRef('');
+  const close = () => { if (!pending.current) { setSource(''); previewSource.current=''; setPreview(null); onClose(); } };
   const inspect = async () => {
-    setError(''); setBusy(true);
-    try { setPreview(await post<MCPImportPreview>('/connections/import/preview', { config: parseMcpConfig(source),scope })); }
+    if(pending.current)return; pending.current=true; setError(''); setBusy(true);
+    const captured = source;
+    try { const result=await post<MCPImportPreview>('/connections/import/preview', { config: parseMcpConfig(captured),scope }); previewSource.current=captured; setPreview(result); }
     catch (e) { setError(importErrorText(e)); }
-    finally { setBusy(false); }
+    finally { pending.current=false; setBusy(false); }
   };
   const commit = async () => {
-    setError(''); setBusy(true);
+    if(pending.current || !previewSource.current)return; pending.current=true; setError(''); setBusy(true);
     try {
-      const result = await post<MCPImportResult>('/connections/import', { config: parseMcpConfig(source),scope });
+      const result = await post<MCPImportResult>('/connections/import', { config: parseMcpConfig(previewSource.current),scope });
       setSource(''); setPreview(null); onImported(result);
     } catch (e) { setError(importErrorText(e)); }
-    finally { setBusy(false); }
+    finally { pending.current=false; setBusy(false); }
   };
-  return <Modal title="导入 MCP 配置" description="复制现有配置，确认连接后一次导入。每批最多 16 个连接。" wide onClose={close}>
+  return <Modal title="导入 MCP 配置" description="粘贴配置或选择 JSON 文件，最多一次导入 16 个连接。" wide onClose={close}>
     <div className="modal-body">
       <ol className="import-steps" aria-label="导入步骤"><li className={!preview ? 'active' : ''}><span>1</span>粘贴配置</li><li className={preview ? 'active' : ''}><span>2</span>确认连接</li></ol>
       <ErrorNotice message={error}/>
       {!preview ? <>
+        <label className="import-file-picker">选择配置文件<input type="file" accept=".json,application/json" disabled={busy} onChange={async event => { const file=event.target.files?.[0]; event.target.value=''; if(!file || pending.current)return; if(file.size>256*1024){setError('配置文件不能超过 256 KB');return;} pending.current=true;setBusy(true);try{const text=await file.text();parseMcpConfig(text);setSource(text);setError('');}catch{setError('无法读取 MCP 配置，请检查 JSON 格式。');}finally{pending.current=false;setBusy(false);} }}/></label>
         <ScopeField value={scope} onChange={setScope} admin={admin} disabled={busy}/>
         <Field label="MCP 配置 JSON" hint="支持远程 Streamable HTTP MCP：mcpServers 配置，或 OpenAI Responses MCP 对象／数组。" required>
           <textarea className="config-input" value={source} onChange={event => setSource(event.target.value)} placeholder={sample} rows={11} spellCheck={false} autoComplete="off" autoCorrect="off" autoCapitalize="off" disabled={busy}/>

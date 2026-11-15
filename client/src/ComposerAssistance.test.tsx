@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ComposerCompletion, ComposerFollowups, completedAnswerRun, composerShortcut, followupTexts } from './ComposerAssistance';
+import { ComposerCompletion, ComposerFollowups, completedAnswerRun, composerInputMaxHeight, composerShortcut, followupTexts } from './ComposerAssistance';
 import type { Message, Run } from './types';
 
 const state = { composing:false, draft:'查询本周订单', canComplete:true, completionBusy:false, suggestion:false, skillsOpen:false };
@@ -51,4 +51,17 @@ describe('followups only use a finished current answer',()=>{
     const pending=renderToStaticMarkup(<ComposerCompletion value={{busy:true,suggestion:'',notice:''}} onAccept={()=>{}} onDismiss={()=>{}}/>);
     expect(pending).toContain('role="status"');expect(pending).toContain('正在补全');expect(pending).toContain('取消补全');
   });
+});
+
+
+it('keeps long followup suggestions collapsed by default and accessible for explicit expansion',()=>{
+ const html=renderToStaticMarkup(<ComposerFollowups value={{busy:false,suggestions:['按客户核对本月发货数量和关联订单金额，并说明范围。','核对尚未发货的订单'],notice:'',runId:'r1'}} onChoose={()=>{}}/>);
+ expect(html).toContain('<details');expect(html).toContain('<summary>');expect(html).not.toContain(' open=');
+ expect(html).toContain('2 个问题');expect(html).toContain('按客户核对本月发货数量和关联订单金额，并说明范围。');
+});
+it('bounds long drafts for short viewports without changing draft content',()=>{
+ expect(composerInputMaxHeight(900)).toBe(144);
+ expect(composerInputMaxHeight(720)).toBe(130);
+ expect(composerInputMaxHeight(400)).toBe(72);
+ expect(composerInputMaxHeight(300)).toBe(72);
 });

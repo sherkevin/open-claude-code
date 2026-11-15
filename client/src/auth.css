@@ -75,3 +75,13 @@
   .auth-surface {animation:auth-enter 180ms cubic-bezier(.2,0,.38,.9) both}
   @keyframes auth-enter {from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 }
+
+.auth-register-link { margin: 18px 0 0; color: var(--text-secondary, #53677d); font-size: 13px; line-height: 1.7; }
+.auth-register-link button, .auth-back-login { border: 0; background: transparent; color: var(--brand, #0070f2); padding: 0 3px; font: inherit; cursor: pointer; }
+.auth-register-link button:hover, .auth-back-login:hover { text-decoration: underline; }
+.auth-register-link button:focus-visible, .auth-back-login:focus-visible { outline: 2px solid var(--brand, #0070f2); outline-offset: 4px; border-radius: 3px; }
+.auth-registration .auth-field { margin-top: 16px; }
+.auth-registration .auth-field small { display: block; color: var(--text-secondary, #53677d); font-size: 12px; line-height: 1.6; margin-top: 6px; }
+.auth-back-login { display: block; margin: 18px auto 0; font-size: 13px; }
+.auth-registration { padding-top: 28px; padding-bottom: 28px; }
+@media(max-width:600px) { .auth-registration .auth-field { margin-top: 14px; } }

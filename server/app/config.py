@@ -53,6 +53,11 @@ class Settings:
     # manufactures a completed summary.
     harness_compaction_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_HARNESS_COMPACTION_TIMEOUT_SECONDS", "600")))
     brand_name: str = field(default_factory=lambda: os.getenv("AGENT_BRAND_NAME", "知行工作台"))
+    # New accounts join this private workspace only with an administrator invitation.
+    registration_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_REGISTRATION_ENABLED", "false").lower() == "true")
+    registration_invite_code: str = field(default_factory=lambda: os.getenv("AGENT_REGISTRATION_INVITE_CODE", ""))
+    registration_ip_limit: int = field(default_factory=lambda: int(os.getenv("AGENT_REGISTRATION_IP_LIMIT", "5")))
+    registration_global_limit: int = field(default_factory=lambda: int(os.getenv("AGENT_REGISTRATION_GLOBAL_LIMIT", "50")))
     business_data_catalog: str = field(default_factory=lambda: os.getenv("AGENT_BUSINESS_DATA_CATALOG", "").strip())
     model: str = field(default_factory=lambda: os.getenv("AGENT_MODEL", ""))
     effort: str | None = field(default_factory=lambda: os.getenv("AGENT_EFFORT"))

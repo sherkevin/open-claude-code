@@ -1,4 +1,5 @@
 export interface AppConfig {
+  registration_enabled?: boolean; registration_min_password_length?: number;
   brand_name: string; upload_max_bytes: number; auth_types: string[]; model_label: string;
   default_model_id?: string; default_reasoning_level?: string;
   deployment_mode?: 'normal' | 'trial'; capabilities?: string[]; allowed_retrieval_modes?: KnowledgeRetrievalMode[];
@@ -157,16 +158,23 @@ export interface NativeContext {
 export type CompactionStatus = 'started' | 'completed' | 'not_needed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown';
 export interface CompactionInfo { status: CompactionStatus; trigger: string | null; pre_tokens: number | null; before: NativeContext | null; after: NativeContext | null; error?: string | null; followup_status?: string | null }
 export interface Run { model_id?: string; model?: string; reasoning_level?: string | null; id: string; conversation_id: string; status: RunStatus; execution_kind?: 'product_metadata' | 'model'; identity_source?: 'run_selection' | null; model_call_count?: number | null; kind?: 'chat' | 'compact'; compaction?: CompactionInfo | null; assistant_message_id: string | null; error: string | null; error_code?: string | null; usage: Record<string, unknown> | null; approvals: Approval[]; created_at: string; completed_at: string | null; timings?:RunTimings }
-export type UsageField = 'input_tokens' | 'output_tokens' | 'estimated_cost_usd';
+export type UsageField = 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'estimated_cost_usd';
 export interface UsageTotals {
   total_runs: number; successful_runs: number;
+  usage_records?: number; auxiliary_calls?: number; model_call_count?: number | null; known_model_calls?: number; unknown_call_records?: number;
+  cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null;
   input_tokens: number | null; output_tokens: number | null; estimated_cost_usd: number | null;
-  known_subtotals?: Record<UsageField, number>;
-  field_coverage?: Record<UsageField, { known_runs: number; unknown_runs: number }>;
+  known_subtotals?: Partial<Record<UsageField, number>>;
+  field_coverage?: Partial<Record<UsageField, { known_runs: number; unknown_runs: number }>>;
   reported_usage_runs?: number; missing_usage_runs?: number; usage_complete?: boolean;
 }
 export interface UsageSummary extends UsageTotals {
-  currency: string;
+  currency: string; scope?: 'self' | 'all'; timezone?: string; date_from?: string | null; date_to?: string | null;
+  model_id?: string | null; available_models?: Array<{id:string;label:string}>;
+  by_model?: Array<UsageTotals & {model_id:string;model_label:string}>;
+  by_day?: Array<UsageTotals & {day:string}>;
+  by_kind?: Array<UsageTotals & {kind:string}>;
+  auxiliary_history_note?: string; cost_note?: string;
   users: Array<UsageTotals & { user_id?: string; id?: string; display_name?: string; username?: string }>;
 }
 export interface StreamEvent { id: number; run_id: string; type: string; created_at: string; data: Record<string, unknown> }

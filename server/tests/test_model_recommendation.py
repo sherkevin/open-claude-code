@@ -135,7 +135,8 @@ def test_message_submit_uses_provider_router_result_and_records_route_mode(tmp_p
     ]}), encoding="utf-8")
     app = create_app(Settings(data_dir=tmp_path / "data", model_catalog=str(catalog), origins=("http://testserver",), provider_settings=""))
 
-    async def fake_router(service, task_summary, candidate_model_ids=None):
+    async def fake_router(service, task_summary, candidate_model_ids=None, *, user_id=None):
+        assert user_id is not None
         return {"model_id": "vision", "model_label": "Vision", "reasoning_level": "default", "reason": "provider test", "applied": False,
                 "router": {"model_id": "deepseek-v4.1-flash", "mode": "provider", "input_chars": len(task_summary), "candidate_count": 2, "max_output_chars": 240, "estimated_cost_usd": None}}
 
@@ -205,6 +206,7 @@ def test_provider_router_and_tab_completion_use_only_authorized_target_with_loca
     calls = []
 
     class FakeResponse:
+        status_code = 200
         def __init__(self, body):
             self.body = body
 
@@ -285,6 +287,7 @@ def test_tab_completion_uses_independent_default_1017_target(tmp_path, monkeypat
     calls = []
 
     class FakeResponse:
+        status_code = 200
         def __init__(self, body):
             self.body = body
 
@@ -344,6 +347,7 @@ def test_tab_completion_accepts_explicit_branded_catalog_alias_for_1017(tmp_path
     calls = []
 
     class FakeResponse:
+        status_code = 200
         def raise_for_status(self):
             return None
 
@@ -436,6 +440,7 @@ def test_provider_router_rejects_non_object_gateway_envelope_without_500(tmp_pat
     service = _router_service(tmp_path)
 
     class FakeResponse:
+        status_code = 200
         def raise_for_status(self):
             return None
 
@@ -468,6 +473,7 @@ def test_provider_completion_rejects_non_object_gateway_envelope_without_500(tmp
     service = _router_service(tmp_path)
 
     class FakeResponse:
+        status_code = 200
         def raise_for_status(self):
             return None
 

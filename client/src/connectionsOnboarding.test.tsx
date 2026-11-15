@@ -15,7 +15,7 @@ describe('connection-specific onboarding evidence', () => {
     const html = card();
     expect(html).toContain('已发现 1 个工具');
     expect(html).toContain('尚未绑定助手');
-    expect(html).toContain('业务结果待验证');
+    expect(html).toContain('不代表业务结果已经核对');
     expect(html.match(/data-state="complete"/g)).toHaveLength(2);
     expect(html).not.toContain('业务验证通过</');
   });
@@ -34,7 +34,7 @@ describe('connection-specific onboarding evidence', () => {
     expect(html).toContain('当前可见助手中，1 个已启用并允许调用已发现工具');
     expect(html).toContain('已停用');
     expect(html).toContain('允许 0 个已发现工具');
-    expect(html).toContain('业务结果待验证');
+    expect(html).toContain('不代表业务结果已经核对');
   });
   it('keeps unknown binding separate from an empty authorized assistant list', () => {
     expect(connectionBindings(connection, null)).toBeNull();

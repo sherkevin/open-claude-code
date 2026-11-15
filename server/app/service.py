@@ -941,41 +941,6 @@ class Service:
             except (OSError, AppError):
                 continue
 
-    def usage(self, user):
-        rows = self.db.all("SELECT runs.*,users.display_name FROM runs JOIN users ON users.id=runs.user_id" + ("" if user["role"] == "admin" else " WHERE runs.user_id=?"), () if user["role"] == "admin" else (user["id"],))
-        def aggregate(items):
-            fields = ("input_tokens", "output_tokens", "estimated_cost_usd")
-            known = {field: 0 for field in fields}
-            coverage = {field: 0 for field in fields}
-            reported_runs = 0
-            for row in items:
-                try:
-                    value = json.loads(row["usage"]) if row["usage"] else None
-                except (TypeError, ValueError):
-                    value = None
-                if not isinstance(value, dict):
-                    continue
-                reported_runs += 1
-                ledger = value.get("token_accounting")
-                totals = ledger.get("provider_totals") if isinstance(ledger, dict) else None
-                subtotals = ledger.get("known_subtotals") if isinstance(ledger, dict) else None
-                for field in fields:
-                    amount = totals.get(field) if isinstance(totals, dict) and field != "estimated_cost_usd" else value.get(field)
-                    valid = (type(amount) is int and amount >= 0) if field != "estimated_cost_usd" else (
-                        type(amount) in (int, float) and 0 <= amount <= 1e15 and math.isfinite(amount))
-                    if valid:
-                        coverage[field] += 1
-                        known[field] += amount
-                    elif field != "estimated_cost_usd" and isinstance(subtotals, dict):
-                        partial = subtotals.get(field)
-                        if type(partial) is int and partial >= 0:
-                            known[field] += partial
-            return {"total_runs": len(items), "successful_runs": sum(row["status"] == "succeeded" for row in items),
-                    **{field: known[field] if coverage[field] == len(items) and (items or field != "estimated_cost_usd") else None for field in fields},
-                    "known_subtotals": known, "field_coverage": {
-                        field: {"known_runs": coverage[field], "unknown_runs": len(items) - coverage[field]} for field in fields},
-                    "reported_usage_runs": reported_runs, "missing_usage_runs": len(items) - reported_runs,
-                    "usage_complete": bool(items) and all(count == len(items) for count in coverage.values()), "currency": "USD"}
-        result = aggregate(rows)
-        result["users"] = [{"user_id": user_id, "display_name": next(row["display_name"] for row in rows if row["user_id"] == user_id), **aggregate([row for row in rows if row["user_id"] == user_id])} for user_id in sorted({row["user_id"] for row in rows})] if user["role"] == "admin" else []
-        return result
+    def usage(self, user, *, scope="self", model_id=None, date_from=None, date_to=None):
+        from .usage_accounting import usage_summary
+        return usage_summary(self, user, scope=scope, model_id=model_id, date_from=date_from, date_to=date_to)

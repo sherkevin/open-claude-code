@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from .usage_accounting import metered_post
 from .security import AppError
 from .provider_policy import TOKENHUB_BASE_URL, public_route_metadata, provider_route
 
@@ -401,7 +402,7 @@ def bounded_router(catalog, task_summary: str, candidate_model_ids: list[str] | 
     }
 
 
-async def provider_router(service, task_summary: str, candidate_model_ids: list[str] | None = None) -> dict[str, Any]:
+async def provider_router(service, task_summary: str, candidate_model_ids: list[str] | None = None, *, user_id=None) -> dict[str, Any]:
     """Use one bounded DeepSeek V4.1 Flash call when explicitly enabled.
 
     Provider failures, invalid JSON and out-of-catalog IDs fall back to the
@@ -450,7 +451,7 @@ async def provider_router(service, task_summary: str, candidate_model_ids: list[
     try:
         timeout = httpx.Timeout(max(1, min(15, settings.model_router_timeout_seconds)), connect=3)
         async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=False, trust_env=False) as http:
-            response = await http.post(endpoint, json=payload)
+            response = await metered_post(http, endpoint, service=service, kind="routing", selection=target_selection, payload=payload, user_id=user_id)
             response.raise_for_status()
             body = response.json()
         text = next((item.get("text", "") for item in body.get("content", [])
@@ -484,7 +485,7 @@ async def provider_router(service, task_summary: str, candidate_model_ids: list[
         return fallback
 
 
-async def provider_completion(service, draft: str) -> dict[str, Any]:
+async def provider_completion(service, draft: str, *, user_id=None) -> dict[str, Any]:
     """Generate a real Tab completion through the explicitly authorized route.
 
     A missing Tab route, disabled Tab switch, or invalid provider result returns a
@@ -573,7 +574,7 @@ async def provider_completion(service, draft: str) -> dict[str, Any]:
     try:
         timeout = httpx.Timeout(max(1, min(15, settings.model_router_timeout_seconds)), connect=3)
         async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=False, trust_env=False) as http:
-            response = await http.post(endpoint, json=payload)
+            response = await metered_post(http, endpoint, service=service, kind="completion", selection=target_selection, payload=payload, user_id=user_id)
             response.raise_for_status()
             body = response.json()
         raw = next((item.get("text", "") for item in body.get("content", []) if isinstance(item, dict) and isinstance(item.get("text"), str) and item.get("text")), "")

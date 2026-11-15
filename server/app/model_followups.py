@@ -12,6 +12,7 @@ import httpx
 from .db import offload
 from .model_recommendation import _safe_summary, _tab_target, short_text_options
 from .provider_policy import TOKENHUB_BASE_URL, provider_route
+from .usage_accounting import metered_post, usage_owner
 from .security import AppError
 
 MAX_CONTEXT_CHARS = 1400
@@ -90,7 +91,7 @@ async def provider_followups(service, context):
         }
         started = time.monotonic()
         async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(max(1, min(8, settings.model_router_timeout_seconds)), connect=3), follow_redirects=False, trust_env=False) as http:
-            response = await http.post(endpoint, json=payload)
+            response = await metered_post(http, endpoint, service=service, kind="followups", selection=selection, payload=payload)
             response.raise_for_status()
             body = response.json()
         raw = next((item["text"] for item in body.get("content", []) if isinstance(item, dict) and isinstance(item.get("text"), str)), "")
@@ -132,7 +133,11 @@ async def conversation_followups(service, conversation_id, run_id, user):
             if not await offload(_current_run, service, conversation_id, run_id, user):
                 return _empty("not_current")
             context = await offload(_context, service, run)
-            result = await provider_followups(service, context) if context else _empty("empty")
+            owner_token = usage_owner.set(user["id"])
+            try:
+                result = await provider_followups(service, context) if context else _empty("empty")
+            finally:
+                usage_owner.reset(owner_token)
             if not await offload(_current_run, service, conversation_id, run_id, user):
                 return _empty("not_current")
             service._followup_cache[key] = (time.monotonic(), result)

@@ -112,3 +112,22 @@
 @media(max-width:720px){.connection-setup-context{align-items:flex-start;flex-direction:column;padding:14px 16px}}
 .zhixing-theme .binding-group.connection-setup-focus{border:1px solid var(--brand);border-radius:7px;padding:14px;background:var(--brand-soft);scroll-margin-block:20px}
 .zhixing-theme .connection-setup-hint{font-size:13px;line-height:1.7;color:var(--muted);padding:10px 12px;border-radius:5px;background:var(--brand-soft);margin:0 0 14px}
+
+/* Keep capabilities and the next action visible; technical setup stays in details. */
+.connections-onboarding .onboarding-card {padding:20px;border-radius:12px;box-shadow:0 1px 2px #22354809}
+.connections-onboarding .connection-card-head {margin-bottom:12px}
+.connections-onboarding .connection-meta {margin:8px 0 12px}
+.connections-onboarding .connection-capability-preview {background:transparent;border:0;padding:0;margin:16px 0}
+.connections-onboarding .connection-capability-preview li {line-height:1.6;margin:6px 0;color:var(--connection-ink)}
+.connections-onboarding .connection-trial-action {background:#f5f8fc;border:1px solid #dce5ee;padding:12px;border-radius:8px;margin:14px 0 0}
+.connections-onboarding .connection-trial-action p {font-size:12px;line-height:1.5}
+.connections-onboarding .connection-technical-details {font-size:12px;line-height:1.6;margin:14px 0}
+.connections-onboarding .connection-technical-details>div {display:grid;grid-template-columns:72px 1fr;gap:12px;margin:6px 0}
+.connections-onboarding .connection-technical-details dt {color:var(--muted)}
+.connections-onboarding .connection-technical-details dd {margin:0;overflow-wrap:anywhere}
+.connections-onboarding .connection-server-note {background:transparent;border:0;padding:12px 0}
+.connections-onboarding .connection-route>li {padding:12px 16px}
+.connections-onboarding .connections-list-heading {margin-top:18px}
+.connections-onboarding .connection-progress {margin-top:12px;padding:16px 0;gap:12px}
+.import-file-picker {display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
+.import-file-picker input {max-width:100%;font-size:13px}

@@ -4,8 +4,8 @@ html:root,body {background:#f5f6f7}
 .zhixing-theme{--brand:#0070f2;--brand-soft:#ebf8ff;--ink:#131e29;--muted:#556b82;--paper:#f5f6f7;--white:#fff;--line:#d9d9d9;--line-soft:#e5e5e5;--control-border:#758ca4;--panel:#eff1f2;--green:#256f3a;--green-dark:#1e5430;--green-soft:#f5fae5;--brand-purple:#660874;--ai-accent:#5d36ff;--ai-accent-soft:color-mix(in srgb,var(--ai-accent) 8%,var(--white));--red:#aa0808;--shadow:0 8px 28px #17324c0a}
 .zhixing-theme .button.primary,.zhixing-theme .new-conversation,.zhixing-theme .send-button{background:var(--brand);border-color:var(--brand);color:#fff}
 .zhixing-theme .button.primary:hover:not(:disabled),.zhixing-theme .new-conversation:hover{background:#0064d9;border-color:#0064d9}
-.zhixing-theme .nav-item.selected{background:var(--brand);color:#fff;border-radius:6px}
-.zhixing-theme .nav-item.selected:before{display:none}
+.zhixing-theme .nav-item.selected{background:#ebf8ff;color:#0064d9;border-radius:6px}
+.zhixing-theme .nav-item.selected:before{display:block;top:9px;bottom:9px;background:#0070f2;width:3px}
 .zhixing-theme .history-item.selected{background:var(--brand-soft);color:#0064d9}
 .zhixing-theme .brand-symbol{background:#131e29}
 .zhixing-theme .badge.green{color:var(--green);background:var(--white);border-color:var(--green)}

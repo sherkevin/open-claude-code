@@ -92,6 +92,12 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS capability_settings(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, config TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS capability_settings_audit(revision INTEGER PRIMARY KEY, config TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS registration_attempts(id TEXT PRIMARY KEY, source_hash TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS registration_attempts_time ON registration_attempts(created_at);
+CREATE INDEX IF NOT EXISTS registration_attempts_source ON registration_attempts(source_hash,created_at);
+CREATE TABLE IF NOT EXISTS model_usage_calls(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), kind TEXT NOT NULL, model_id TEXT NOT NULL, model_label TEXT NOT NULL, status TEXT NOT NULL, usage TEXT, created_at TEXT NOT NULL, completed_at TEXT);
+CREATE INDEX IF NOT EXISTS model_usage_owner ON model_usage_calls(user_id,created_at);
+CREATE INDEX IF NOT EXISTS model_usage_time_model ON model_usage_calls(created_at,model_id);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS connections(id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, auth_type TEXT NOT NULL, secret TEXT, enabled INTEGER NOT NULL, status TEXT NOT NULL, tools TEXT NOT NULL DEFAULT '[]', last_error TEXT, last_tested_at TEXT, revision INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS assistants(id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, instructions TEXT NOT NULL, enabled INTEGER NOT NULL, access TEXT NOT NULL, connections TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0);

@@ -61,10 +61,10 @@ describe('MCP business trial is an authorized navigation action',()=>{
   it('hides trial navigation during unknown or stale discovery and restricted management',()=>{
     const props={item:connection,assistants:[assistant],admin:false,onTest:noop,onTools:noop,onEdit:noop,onDelete:noop,onConfigureAssistant:noop,onStartAssistant:noop};
     const ready=renderToStaticMarkup(<ConnectionOnboardingCard {...props}/>);
-    expect(ready).toContain('验证业务结果');expect(ready).toContain('业务结果待验证');
+    expect(ready).toContain('开始查询');expect(ready).toContain('不代表业务结果已经核对');
     for(const extra of [{testing:true},{bindingsLoading:true},{testError:'失败'},{actionsBusy:true},{onStartAssistant:undefined}]){
       const html=renderToStaticMarkup(<ConnectionOnboardingCard {...props} {...extra} canConfigureAssistant={false}/>);
-      expect(html).not.toContain('验证业务结果');expect(html).not.toContain('>配置助手<svg');
+      expect(html).not.toContain('开始查询');expect(html).not.toContain('>配置助手<svg');
     }
   });
 });
