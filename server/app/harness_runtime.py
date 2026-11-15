@@ -464,7 +464,7 @@ class HarnessRuntime(WorkspaceRuntime):
                         raise AppError(502, "HARNESS_STREAM_INCOMPLETE", "模型回复提前结束，可重新发送消息继续会话")
                 elif notification.method == "session.status" and accepted and payload.get("status") == "idle":
                     if finish != "completed":
-                        raise AppError(502, "HARNESS_TURN_FAILED", "Harness 任务未正常完成，可重新发送消息继续会话")
+                        raise AppError(502, "HARNESS_TURN_FAILED", "本次任务未完成，请重试。若仍失败，请联系管理员并提供执行记录。")
                     await asyncio.to_thread(client.request, "session/wait", {"sessionId": self.session_id}, response_model=_EmptyResult)
                     # This host receipt authenticates the configuration of the
                     # successful request; never backfill it for older sessions.

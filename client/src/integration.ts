@@ -20,7 +20,9 @@ export function importErrorText(error: unknown): string {
     if (error.status === 401) return '登录已过期，请重新登录。';
     if (error.status === 403) return '当前账号没有导入连接的权限。';
     if (error.status === 413) return '配置不能超过 256 KiB，请拆分后导入。';
-    if (error.status === 400 || error.status === 422) return '配置无法导入。请确认格式、HTTP MCP 地址和主机允许名单；每批最多 16 条，认证仅支持 Bearer Token。';
+    if (error.code === 'MCP_HOST_NOT_ALLOWED') return '此 MCP 服务域名尚未开通访问。请联系工作台管理员核准该域名（或 IP 地址），再重新预览；配置尚未导入。';
+    if (error.code === 'INVALID_MCP_URL') return 'MCP 地址格式不支持。请使用完整 HTTP(S) 地址，不在地址内放账号、密码、查询参数或片段；认证信息填写到 Bearer Token。';
+    if (error.status === 400 || error.status === 422) return '配置无法导入。请确认格式、Streamable HTTP MCP 地址；每批最多 16 条，认证仅支持 Bearer Token。';
     if (error.status === 0) return '暂时无法连接服务，请检查网络后重试。';
   }
   return '导入请求未完成，请检查配置后重试。';

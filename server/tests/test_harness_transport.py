@@ -96,4 +96,5 @@ def test_idle_or_partial_text_cannot_replace_a_successful_terminal(finish, obser
     with pytest.raises(AppError) as error:
         asyncio.run(execute(runtime))
     assert error.value.code == code
+    assert "Harness" not in error.value.message
     assert all(method[0] != "session/wait" for method in methods)

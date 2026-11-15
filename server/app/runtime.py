@@ -1085,7 +1085,7 @@ class SessionActor:
                     # it up) must not execute it a second time.
                     self.current_run_id = None
                     continue
-                status, error = "succeeded", None
+                status, error, error_code = "succeeded", None, None
                 completed_runtime = None
                 try:
                     message = await offload(self.service.require, "messages", run["message_id"])
@@ -1156,6 +1156,7 @@ class SessionActor:
                 except Exception as exc:
                     status = "cancelled" if self.cancelled else "failed"
                     error = exc.message if isinstance(exc, AppError) else "执行服务暂时不可用，请检查服务配置或稍后重试"
+                    error_code = exc.code if isinstance(exc, AppError) else None
                     log.warning("Run failed: %s (%s)", run_id, type(exc).__name__)
                     if self.runtime:
                         try:
@@ -1168,7 +1169,7 @@ class SessionActor:
                     # on one worker thread: every write completes before the actor
                     # is considered finished, and an in-flight delta can never be
                     # ordered after ``run.completed``.
-                    await offload_write(self._settle_run, run_id, status, error)
+                    await offload_write(self._settle_run, run_id, status, error, error_code)
                     self.current_run_id = None
         finally:
             self.closing = True
@@ -1184,7 +1185,7 @@ class SessionActor:
             if self.manager.actors.get(self.conversation_id) is self:
                 self.manager.actors.pop(self.conversation_id, None)
 
-    def _settle_run(self, run_id, status, error):
+    def _settle_run(self, run_id, status, error, error_code=None):
         """Memory bookkeeping and the terminal transaction, off the loop."""
         try:
             conversation = self.service.require("conversations", self.conversation_id)
@@ -1201,7 +1202,7 @@ class SessionActor:
                 self.service.memory.refresh(conversation["user_id"], self.conversation_id)
         except Exception:
             log.warning("Native memory inspection failed for conversation %s", self.conversation_id)
-        self.manager.finish(run_id, status, error)
+        self.manager.finish(run_id, status, error, error_code=error_code)
 
     async def cancel(self):
         self.cancelled = True

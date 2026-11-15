@@ -27,5 +27,20 @@ describe('MCP import input and safe errors', () => {
   it('tells the user conflicts do not update existing connections', () => {
     expect(importErrorText(new ApiError('private conflict data', 409, 'CONFLICT'))).toContain('整批尚未导入');
   });
+  it('separates an unapproved service host from a malformed configuration without echoing the response', () => {
+    const secret = 'synthetic-authorization-do-not-display';
+    const denied = importErrorText(new ApiError(secret, 422, 'MCP_HOST_NOT_ALLOWED'));
+    expect(denied).toContain('工作台管理员核准');
+    expect(denied).toContain('配置尚未导入');
+    expect(denied).not.toContain(secret);
+    const invalid = importErrorText(new ApiError(secret, 422, 'INVALID_MCP_URL'));
+    expect(invalid).toContain('地址格式不支持');
+    expect(invalid).not.toContain('核准');
+    expect(invalid).not.toContain(secret);
+  });
+  it('keeps permission and login errors ahead of lower-level configuration errors', () => {
+    expect(importErrorText(new ApiError('hidden', 403, 'MCP_HOST_NOT_ALLOWED'))).toContain('没有导入连接的权限');
+    expect(importErrorText(new ApiError('hidden', 401, 'INVALID_MCP_URL'))).toContain('登录已过期');
+  });
 });
 

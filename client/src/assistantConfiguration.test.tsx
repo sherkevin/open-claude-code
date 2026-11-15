@@ -14,6 +14,16 @@ const assistant:Assistant={id:'assistant',name:'工业助手',description:'',ins
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('assistant configuration safety',()=>{
+  it('starts a connection-specific assistant without unrelated default knowledge while preserving ordinary defaults and existing bindings',()=>{
+    expect(assistantDraft(null,resources).knowledge_base_ids).toEqual(['knowledge']);
+    const scoped=assistantDraft(null,resources,true);
+    expect(scoped.knowledge_base_ids).toEqual([]);expect(scoped.connections).toEqual([]);expect(scoped.skill_ids).toEqual([]);
+    expect(assistantDraft(assistant,resources,true).knowledge_base_ids).toEqual(['knowledge','hidden-knowledge']);
+    const html=renderToStaticMarkup(<AssistantConfiguration value={null} resources={resources} admin={false} focusConnectionId="connection" onSaved={()=>{}} onDirtyChange={()=>{}} onSavingChange={()=>{}} onReload={()=>{}}/>);
+    expect(html).toContain('此接入助手不会自动附加公司默认知识库');
+    expect(html).not.toContain('checked=""/><span>公司资料');
+  });
+
   it('normalizes explicit approval allowlists without creating wildcard entries',()=>{
     expect(parsePolicyList(' Read, Glob\nRead,  ')).toEqual(['Read','Glob']);
     expect(parsePolicyList('*, all, Read')).toEqual(['Read']);

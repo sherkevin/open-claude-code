@@ -67,6 +67,13 @@
   .zhixing-theme .chat-heading>.fw-ai-identity {width:30px;height:30px;border-radius:7px}
   .zhixing-theme .chat-heading>.fw-ai-identity>svg {width:17px;height:17px}
   .zhixing-theme .chat-heading {gap:9px}
+  /* Keep the business title readable instead of sharing its row with four actions. */
+  .zhixing-theme .chat-page .chat-header {height:auto;min-height:0;flex-direction:column;align-items:stretch;gap:4px;padding:8px 16px}
+  .zhixing-theme .chat-page .chat-heading {flex:none;min-width:0;align-items:flex-start}
+  .zhixing-theme .chat-page .chat-heading>div {min-width:0;flex:1}
+  .zhixing-theme .chat-page .chat-heading h1 {max-width:100%;white-space:normal;overflow-wrap:anywhere;line-height:24px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+  .zhixing-theme .chat-page .chat-actions {align-self:flex-end;flex-wrap:nowrap;gap:4px}
+  .zhixing-theme .chat-page .chat-actions :is(.icon-button,.feed-toggle) {min-height:44px;min-width:44px}
 }
 @media(prefers-reduced-motion:no-preference) {
   .zhixing-theme .fw-ai-identity.is-working {animation:fw-ai-working 3.2s ease-in-out infinite alternate}

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnswerMarkdown, openOriginalImageSource, openOriginalSource, readEvidenceSource, SourceActions, SourceDetails, sourceExcerptView } from './Sources';
+import { AnswerMarkdown, openOriginalImageSource, openOriginalSource, readEvidenceSource, SourceActions, SourceDetails, sourceExcerptView, sourceQueryTime } from './Sources';
 import type { EvidenceSource } from './types';
 
 afterEach(()=>vi.unstubAllGlobals());
@@ -116,7 +116,9 @@ describe('business-readable source details',()=>{
     expect(visible).toContain('数据时间范围');
     expect(visible).toContain('2026-11-14');
     expect(visible).toContain('取数时间');
-    expect(visible).toContain('2026-11-15T05:17:29Z');
+    expect(visible).toContain('2026-11-15 05:17:29 UTC');
+    expect(visible).not.toContain('2026-11-15T05:17:29Z');
+    expect(html.slice(html.indexOf('<details'))).toContain('2026-11-15T05:17:29Z');
     expect(visible).toContain('全部');
     expect(visible).not.toContain('orders_db');
     expect(visible).not.toContain('trace-1');
@@ -170,6 +172,23 @@ describe('business-readable source details',()=>{
 
 
 describe('source detail presentation refinements',()=>{
+  it('shows retrieval timestamps in explicit UTC while preserving business dates, zones and raw precision',()=>{
+    const raw='2026-11-15T13:26:54.488630+08:00';
+    const html=renderToStaticMarkup(<SourceDetails source={{...source('cited'),locator:{queried_at:raw,query_time:'2026-11-15T05:26:54Z',time_range:'2026-11-14',timezone:'Asia/Shanghai'}}}/>);
+    const visible=html.slice(0,html.indexOf('<details'));
+    expect(visible).toContain('2026-11-15 05:26:54 UTC');
+    expect(visible).toContain('2026-11-14');
+    expect(visible).toContain('Asia/Shanghai');
+    expect(visible).not.toContain(raw);
+    expect(html.slice(html.indexOf('<details'))).toContain('取数时间（原始值）');
+    expect(html.slice(html.indexOf('<details'))).toContain(raw);
+  });
+  it('does not invent a timezone for partial, invalid or unzoned retrieval values',()=>{
+    for(const value of ['2026-11-15','2026-11-15T05:26:54','2026-11-15T05:26:54-00:00','2026-02-30T05:26:54Z','2026-11-15T25:26:54Z','yesterday',null,123])expect(sourceQueryTime(value)).toBeNull();
+    const html=renderToStaticMarkup(<SourceDetails source={{...source('cited'),locator:{queried_at:'2026-11-15T05:26:54'}}}/>);
+    expect(html.slice(0,html.indexOf('<details'))).toContain('2026-11-15T05:26:54');
+    expect(html).not.toContain(' UTC');
+  });
   it('labels the known aggregation in Chinese and preserves its raw value in technical details',()=>{
     const html=renderToStaticMarkup(<SourceDetails source={{...source('cited'),locator:{aggregation:'database_group_by'}}}/>);
     const visible=html.slice(0,html.indexOf('<details'));

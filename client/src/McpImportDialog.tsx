@@ -34,10 +34,11 @@ export default function McpImportDialog({ onClose, onImported,admin=false }: { a
       <ol className="import-steps" aria-label="导入步骤"><li className={!preview ? 'active' : ''}><span>1</span>粘贴配置</li><li className={preview ? 'active' : ''}><span>2</span>确认连接</li></ol>
       <ErrorNotice message={error}/>
       {!preview ? <>
-        <ScopeField value={scope} onChange={setScope} admin={admin}/>
-        <Field label="MCP 配置 JSON" hint="支持 OpenAI Responses 的 MCP tool 对象／数组，以及包含 mcpServers 的标准配置。" required>
+        <ScopeField value={scope} onChange={setScope} admin={admin} disabled={busy}/>
+        <Field label="MCP 配置 JSON" hint="支持远程 Streamable HTTP MCP：mcpServers 配置，或 OpenAI Responses MCP 对象／数组。" required>
           <textarea className="config-input" value={source} onChange={event => setSource(event.target.value)} placeholder={sample} rows={11} spellCheck={false} autoComplete="off" autoCorrect="off" autoCapitalize="off" disabled={busy}/>
         </Field>
+        <p className="form-note">首次接入的服务域名须由工作台管理员核准，且工作台服务端能访问。仅有本地 command、stdio 或 SSE 配置暂不能直接导入。</p>
         <p className="form-note"><KeyRound size={15}/>认证字段可随配置提交，确认页只显示是否提供，不显示原文。关闭窗口会清空输入。</p>
         <details className="import-help"><summary>支持的字段与认证方式</summary><p>Responses：type、server_label、server_url、authorization、allowed_tools、require_approval。</p><p>标准配置：mcpServers 下的名称、type: http、url，以及 headers.Authorization 中的 Bearer Token。</p><p>服务地址不应包含凭据或查询参数；自定义认证头和本地命令不在本次导入范围。</p></details>
       </> : <>

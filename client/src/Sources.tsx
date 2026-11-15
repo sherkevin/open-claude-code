@@ -66,6 +66,17 @@ const locatorLabels:Record<string,string>={scope:'查询范围',file:'文件',ro
 const renderValue=(value:unknown)=>value===null||value===''?'未提供':typeof value==='object'?JSON.stringify(value,null,2):String(value);
 const primaryLocatorKeys=['source_name','data_source','knowledge_base','kb_name','document_name','filename','file','time_range','timezone','queried_at','query_time','filters','scope','aggregation','row_count','page','pages','section','published_at','updated_at','fetched_at','complete','truncated','missing_fields'];
 
+// Query timestamps describe retrieval, not the business date or its timezone.
+// Only normalize a complete, explicitly zoned ISO timestamp; retain the original below.
+export function sourceQueryTime(value:unknown):string|null {
+  if(typeof value!=='string'||value.endsWith('-00:00'))return null;
+  const match=value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+  if(!match)return null;
+  const wall=new Date(`${match[1]}T${match[2]}Z`),instant=new Date(value);
+  if(!Number.isFinite(wall.getTime())||!Number.isFinite(instant.getTime())||wall.toISOString().slice(0,19)!==`${match[1]}T${match[2]}`)return null;
+  return `${instant.toISOString().slice(0,19).replace('T',' ')} UTC`;
+}
+
 // Indent valid JSON without converting its numbers or altering string contents.
 export function sourceExcerptView(excerpt:string) {
   const raw=excerpt.trim();
@@ -88,8 +99,9 @@ export function SourceDetails({source}:{source:EvidenceSource}) {
   const missing=locator.missing_fields;
   const emptyMissing=missing!==null&&typeof missing==='object'&&Object.keys(missing).length===0;
   const primaryKeys=primaryLocatorKeys.filter(key=>Object.prototype.hasOwnProperty.call(locator,key)&&!(key==='missing_fields'&&emptyMissing));
-  const primary=primaryKeys.map(key=>[key,key==='aggregation'&&locator[key]==='database_group_by'?'按字段分组汇总':locator[key]] as const);
-  const technical=Object.entries(locator).filter(([key])=>!primaryKeys.includes(key)||(key==='aggregation'&&locator[key]==='database_group_by'));
+  const queryTimes=new Map(['queried_at','query_time'].map(key=>[key,sourceQueryTime(locator[key])]));
+  const primary=primaryKeys.map(key=>[key,queryTimes.get(key)||(key==='aggregation'&&locator[key]==='database_group_by'?'按字段分组汇总':locator[key])] as const);
+  const technical=Object.entries(locator).filter(([key])=>!primaryKeys.includes(key)||(key==='aggregation'&&locator[key]==='database_group_by')||queryTimes.get(key)).map(([key,value])=>[queryTimes.get(key)?`${locatorLabels[key]}（原始值）`:key,value] as const);
   const excerpt=sourceExcerptView(source.excerpt||'');
   const fields=(entries:ReadonlyArray<readonly [string,unknown]>)=><dl className="source-locator">{entries.map(([key,item])=><div key={key}><dt>{locatorLabels[key]||key}</dt><dd><pre>{renderValue(item)}</pre></dd></div>)}</dl>;
   return <div className="source-details">
