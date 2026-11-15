@@ -55,7 +55,9 @@ export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = 
   const discovery = connectionDiscoveryState(item), editable = canEdit(item, admin);
   const currentTestPassed = !testing && !testError && discovery.complete;
   const statusLabel = testing ? '正在测试' : testError ? '本次测试未完成' : discovery.label;
-  const functions = [...new Set(item.tools.map(mcpToolPurpose))].slice(0, 4);
+  const purposes = [...new Set(item.tools.map(mcpToolPurpose))];
+  const businessPurposes = purposes.filter(purpose => !purpose.startsWith('连接诊断：') && !purpose.startsWith('连接诊断专用：'));
+  const functions = (businessPurposes.length ? businessPurposes : purposes).slice(0, 4);
   return <article className={`connection-card onboarding-card ${!item.enabled ? 'disabled-card' : ''}`} aria-labelledby={`connection-${item.id}`} data-connection-id={item.id} data-highlighted={highlighted || undefined} tabIndex={highlighted ? -1 : undefined}>
     <header className="connection-card-head"><span className="connection-icon"><Link2 size={21}/></span><span className={`badge ${currentTestPassed ? 'green' : testError || discovery.tone === 'warning' ? 'amber' : ''}`} role="status">{testing ? <LoaderCircle size={13} className="spin"/> : currentTestPassed ? <CheckCircle2 size={13}/> : testError || discovery.tone === 'warning' ? <AlertCircle size={13}/> : <Clock3 size={13}/>} {statusLabel}</span></header>
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>

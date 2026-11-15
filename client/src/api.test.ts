@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { apiURL, clientRequestId, normalizeApiBase } from './api';
+import { apiURL, clientRequestId, mountedApiBase, normalizeApiBase } from './api';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -18,6 +18,13 @@ describe('client request identifiers', () => {
 });
 
 describe('reverse-proxy API prefixes', () => {
+  it('derives the API mount from the asset base when the build has no override', () => {
+    expect(mountedApiBase('/project/kaiwu/')).toBe('/project/kaiwu/api/v1');
+    expect(mountedApiBase('/zhixing-next/')).toBe('/zhixing-next/api/v1');
+    expect(mountedApiBase('/')).toBe('/api/v1');
+    expect(mountedApiBase(undefined)).toBe('/api/v1');
+    expect(mountedApiBase('https://cdn.test/assets/')).toBe('/api/v1');
+  });
   it('keeps the default API route and normalizes a mounted prefix', () => {
     expect(normalizeApiBase(undefined)).toBe('/api/v1');
     expect(normalizeApiBase('/zhixing/api/v1/')).toBe('/zhixing/api/v1');

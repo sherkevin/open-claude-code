@@ -49,6 +49,18 @@ describe('MCP resource catalog', () => {
     const custom = { ...tool, description: 'Only available in the staging tenant.' };
     expect(mcpToolPurpose(custom)).toBe(custom.description);
   });
+  it('keeps diagnostic tools out of business summaries without removing their definitions', () => {
+    const diagnostic = { name: 'oversized_result', description: '超限验收专用：故意返回201行演示数据；宿主应拒绝，不得把样本当全量。', inputSchema: {} };
+    const item = { ...connection, tools: [...connection.tools, diagnostic] };
+    const html = card(item);
+    expect(html).toContain('汇总订单');
+    expect(html).toContain('工具列表 · 2');
+    expect(html).not.toContain('超限');
+    const detail = renderToStaticMarkup(<McpToolDetails item={item} tool={diagnostic}/>);
+    expect(detail).toContain('连接诊断：检查超出明细上限时的拦截，不修改记录。');
+    expect(detail).toContain(diagnostic.name);
+    expect(detail).toContain(diagnostic.description);
+  });
 });
 
 describe('MCP resource network boundaries', () => {

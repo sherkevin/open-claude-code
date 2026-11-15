@@ -1,5 +1,12 @@
-const DEFAULT_API_BASE = '/api/v1';
 type RuntimeImportMeta = ImportMeta & { env?: Record<string, string | undefined> };
+const clientEnv = (import.meta as RuntimeImportMeta).env;
+// Vite's asset base and the API share the reverse-proxy mount. A build without
+// an explicit API override must still work under /project/kaiwu/.
+export const mountedApiBase = (base: unknown): string => {
+  const path = typeof base === 'string' ? base.trim().replace(/^\/+|\/+$/g, '') : '';
+  return path && !/[:?#]/.test(path) ? `/${path}/api/v1` : '/api/v1';
+};
+const DEFAULT_API_BASE = mountedApiBase(clientEnv?.BASE_URL);
 
 /** Keep API paths usable when the client is mounted behind a reverse-proxy prefix. */
 export const normalizeApiBase = (value: unknown): string => {
@@ -10,7 +17,7 @@ export const normalizeApiBase = (value: unknown): string => {
   return path.replace(/\/+$/, '') || DEFAULT_API_BASE;
 };
 
-export const API_BASE = normalizeApiBase((import.meta as RuntimeImportMeta).env?.VITE_API_BASE);
+export const API_BASE = normalizeApiBase(clientEnv?.VITE_API_BASE);
 
 /** Resolve a route returned by the API against the configured API prefix. */
 export const apiURL = (path: string): string => {

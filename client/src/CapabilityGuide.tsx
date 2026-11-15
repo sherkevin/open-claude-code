@@ -19,6 +19,8 @@ const demoDescriptions = new Map<string, string>([
   ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '按条件读取已保存的工单，不修改业务记录。'],
   ['Query line/batch quality counts and calculate the weighted yield for an inclusive date range. Returns database/table/fields/filter/time/aggregation provenance.', '按产线、批次和日期查询质量数据，计算加权合格率并返回来源。'],
   ['Acceptance-only bounded read delay, useful for checking cancellation. Does not create or modify records.', '连接诊断专用：执行有时长上限的只读延迟查询，用于检查取消操作，不创建或修改记录。'],
+  ['取消验收专用，等待20秒再查询演示订单；只在用户明确要求取消测试时使用。', '连接诊断：延迟读取订单，检查任务中止是否生效，不修改记录。'],
+  ['超限验收专用：故意返回201行演示数据；宿主应拒绝，不得把样本当全量。', '连接诊断：检查超出明细上限时的拦截，不修改记录。'],
 ]);
 export function displayToolDescription(description: string) {
   return demoDescriptions.get(description) ?? description;
