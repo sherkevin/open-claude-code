@@ -18,8 +18,16 @@ export function ModelSettingsDisclosure({ automatic, selection, models, loading 
   const positionPanel = () => {
     const node = disclosure.current, panel = node?.querySelector<HTMLElement>('.fw-model-panel');
     if (!node?.open || !panel) return;
-    const left = node.getBoundingClientRect().left, width = panel.getBoundingClientRect().width;
-    const target = Math.max(16, Math.min(left, window.innerWidth - width - 16));
+    // Mobile innerWidth can grow to include this very panel's overflow. Use
+    // the layout/visual viewport so measuring an open panel cannot move its
+    // own right boundary farther out on the next layout pass.
+    const layoutWidth = document.documentElement.clientWidth || window.innerWidth;
+    const viewport = window.visualViewport;
+    const viewportWidth = Math.min(layoutWidth, viewport?.width || layoutWidth);
+    const viewportLeft = viewport?.offsetLeft || 0;
+    panel.style.maxWidth = `${Math.max(0, viewportWidth - 32)}px`;
+    const left = node.getBoundingClientRect().left, width = panel.offsetWidth;
+    const target = Math.max(viewportLeft + 16, Math.min(left, viewportLeft + viewportWidth - width - 16));
     panel.style.setProperty('--fw-panel-left', `${target - left}px`);
   };
   useEffect(() => {
@@ -30,8 +38,9 @@ export function ModelSettingsDisclosure({ automatic, selection, models, loading 
       if (event.key !== 'Escape' || event.defaultPrevented || !node?.open || !node.contains(document.activeElement)) return;
       event.preventDefault(); node.open = false; node.querySelector<HTMLElement>('summary')?.focus();
     };
-    document.addEventListener('pointerdown', outside); document.addEventListener('focusin', focusOutside); document.addEventListener('keydown', escape); window.addEventListener('resize', positionPanel);
-    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('focusin', focusOutside); document.removeEventListener('keydown', escape); window.removeEventListener('resize', positionPanel); };
+    const viewport = window.visualViewport;
+    document.addEventListener('pointerdown', outside); document.addEventListener('focusin', focusOutside); document.addEventListener('keydown', escape); window.addEventListener('resize', positionPanel); viewport?.addEventListener('resize', positionPanel); viewport?.addEventListener('scroll', positionPanel);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('focusin', focusOutside); document.removeEventListener('keydown', escape); window.removeEventListener('resize', positionPanel); viewport?.removeEventListener('resize', positionPanel); viewport?.removeEventListener('scroll', positionPanel); };
   }, []);
   const model = models.find(item => item.id === selection.model_id);
   const level = reasoningLevelLabel(model?.reasoning_levels.find(item => item.id === selection.reasoning_level));

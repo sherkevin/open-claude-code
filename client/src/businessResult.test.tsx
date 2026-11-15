@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import BusinessResults, { BusinessResultCard, csvCell, displayBusinessCell, parseBusinessResult, preferredChartMetric, questionForRun, resultCSV, resultsFromEvents } from './BusinessResult';
+import BusinessResults, { BusinessResultCard, csvCell, displayBusinessCell, displayBusinessTime, parseBusinessResult, preferredChartMetric, questionForRun, resultCSV, resultsFromEvents } from './BusinessResult';
 import type { Message, StreamEvent } from './types';
 const sample=()=>({schema_version:'business-result/v1',title:'发货汇总',columns:[{key:'customer',label:'客户'},{key:'amount',label:'金额',unit:'CNY'}],rows:[{customer:'甲厂',amount:1200},{customer:'乙厂',amount:2400}],scope:{region:'华北',date:'2026-11-14'},complete:true,synthetic:true,truncated:false,total_rows:2,warnings:[],data_time:'2026-11-14T10:00:00+08:00'});
 const event=(success:unknown=true,run='run-1'):StreamEvent=>({id:1,run_id:run,type:'tool.completed',created_at:'2026-11-14',data:{success,business_result:sample(),source_ids:['src_1']}});
@@ -80,6 +80,19 @@ describe('chart metric follows the current question without changing data',()=>{
    const messages=[message('old','user','数量'),message('old','assistant','金额'),message('new','user','金额')];
    expect(questionForRun(messages,'old')).toBe('数量');expect(questionForRun(messages,'missing')).toBe('');
  });
+ it('uses an explicit how-many unit only when the returned numeric column is unambiguous',()=>{
+   const returned=[{key:'records',label:'发货记录数',unit:'笔'},{key:'quantity',label:'发货数量',unit:'件'},{key:'amount',label:'订单金额',unit:'元'}];
+   expect(preferredChartMetric(returned,'2026-11-14 各客户发货多少件')).toBe('quantity');
+   expect(preferredChartMetric(returned,'各客户发货几件？')).toBe('quantity');
+   expect(preferredChartMetric(returned,'订单一共多少元？')).toBe('amount');
+   expect(preferredChartMetric(returned,'不要查多少件，只看订单金额')).toBe('amount');
+   expect(preferredChartMetric(returned,'不要查多少件')).toBe('records');
+   expect(preferredChartMetric(returned,'按多少件降序')).toBe('records');
+   expect(preferredChartMetric(returned,'订单金额和发货多少件都看一下')).toBe('records');
+   expect(preferredChartMetric([...returned,{key:'stock',label:'库存数量',unit:'件'}],'发货多少件')).toBe('records');
+   expect(preferredChartMetric(returned,'有多少箱？')).toBe('records');
+   expect(preferredChartMetric(returned,'有多少万元？')).toBe('records');
+ });
 });
 
 it('attributes result completeness and totals to the data source in the card and CSV',()=>{
@@ -104,4 +117,21 @@ it('formats explicit monetary units with two minimum decimals without changing s
  const data=parseBusinessResult({...sample(),rows:[{customer:'甲厂',amount:7112374.3}]})!;
  expect(renderToStaticMarkup(<BusinessResultCard result={data} runId="money" eventId={1}/>)).toContain('7,112,374.30');
  expect(resultCSV(data,'money',1)).toContain('"7112374.3"');
+});
+
+
+it('presents source data time without browser timezone conversion or loss of precision',()=>{
+ expect(displayBusinessTime('2026-11-14T12:00:00+08:00')).toBe('2026-11-14 12:00:00（UTC+08:00）');
+ expect(displayBusinessTime('2026-11-14T23:59:59.123456-05:30')).toBe('2026-11-14 23:59:59.123456（UTC-05:30）');
+ expect(displayBusinessTime('2026-11-14T12:00:00Z')).toBe('2026-11-14 12:00:00（UTC）');
+ expect(displayBusinessTime('2026-11-14T12:00:00')).toBe('2026-11-14 12:00:00');
+ expect(displayBusinessTime('2026-11-14T12:00:00-00:00')).toContain('时区未明确');
+ expect(displayBusinessTime('2026-11-14')).toBe('2026-11-14');
+ expect(displayBusinessTime('以发货日期为准')).toBe('以发货日期为准');
+ expect(displayBusinessTime(null)).toBe('未提供');
+ const result=parseBusinessResult(sample())!;
+ const html=renderToStaticMarkup(<BusinessResultCard result={result} runId="time" eventId={1}/>);
+ expect(html).toContain('数据时间：2026-11-14 10:00:00（UTC+08:00）');
+ expect(html).toContain('title="2026-11-14T10:00:00+08:00"');
+ expect(resultCSV(result,'time',1)).toContain('"数据时间","2026-11-14T10:00:00+08:00"');
 });

@@ -61,6 +61,15 @@ export function csvCell(value: unknown): string {
   return '"'+text.replaceAll('"','""')+'"';
 }
 const scopeLabel:Record<string,string>={organization:'组织',region:'区域',customer:'客户',status:'状态',date:'日期',date_from:'开始日期',date_to:'结束日期',time_range:'时间范围',timezone:'时区',factory:'工厂',aggregation:'统计口径'};
+/** Present source time without converting its zone, precision or date. */
+export function displayBusinessTime(value: string | null | undefined) {
+  if (!value) return '未提供';
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:\d{2})?$/.exec(value);
+  if (!match) return value;
+  const [, date, time, zone] = match;
+  const zoneLabel = zone === 'Z' ? 'UTC' : zone === '-00:00' ? '时区未明确，-00:00' : zone ? `UTC${zone}` : '';
+  return `${date} ${time}${zoneLabel ? `（${zoneLabel}）` : ''}`;
+}
 export function resultCSV(result: BusinessResult, runId: string, eventId: number, answerIncomplete = false) {
   const meta:unknown[][]=[['结果',result.title],['任务编号',runId],['结果事件',eventId],...(answerIncomplete?[['回答状态','业务数据已返回，回答未完成']]:[]),['数据性质',result.synthetic===true?'演示测试数据':result.synthetic===false?'工具标记非演示':'工具未说明'],['数据时间',result.data_time||'未提供'],['导出范围','仅当前已返回的结果，不代表未取回的明细'],['已返回行数',result.rows.length],['数据源报告总行数',result.total_rows??'未提供'],['覆盖情况',result.truncated?'已截取':result.complete===true?'数据源标记为完整':result.complete===false?'部分结果':'完整性未说明'],...Object.entries(result.scope||{}).map(([k,v])=>[scopeLabel[k]||k,v]),...result.warnings.map(w=>['提示',w]),...(result.source_ids||[]).map(id=>['来源 ID',id]),[],result.columns.map(c=>c.label+(c.unit?`（${c.unit}）`:'')),...result.rows.map(row=>result.columns.map(c=>row[c.key]))];
   return '\uFEFF'+meta.map(row=>row.map(csvCell).join(',')).join('\r\n');
@@ -99,15 +108,24 @@ export function preferredChartMetric(columns: ResultColumn[], question = '') {
     }
     return false;
   });
+  // Infer only an explicit quantity question using a returned unit. Keep
+  // negation/sorting checks, and never pick between columns sharing that unit.
+  const unitPhrases=[...new Set(columns.flatMap(column=>column.unit?.trim()?['多少','几'].map(prefix=>prefix+normalize(column.unit!)):[]))].filter(mentions);
+  const exactUnitPhrases=unitPhrases.filter(phrase=>!unitPhrases.some(other=>other!==phrase&&other.startsWith(phrase)));
+  const unitCandidates=columns.filter(column=>column.unit?.trim()&&['多少','几'].some(prefix=>exactUnitPhrases.includes(prefix+normalize(column.unit!))));
   const labeled = columns.map(column => ({ column, label: normalize(column.label).replace(/[（(][^）)]*[）)]/g, '') }));
   const matches = labeled.filter(({ label }) => mentions(label));
   const specific = matches.filter(item => !matches.some(other => other !== item && other.label.length > item.label.length && other.label.includes(item.label)));
-  if (specific.length) return (specific.length===1?specific[0].column:columns[0])?.key || '';
+  if (specific.length) {
+    const selected=specific.length===1?specific[0].column:undefined;
+    const asksOtherUnit=selected&&unitCandidates.some(column=>normalize(column.unit||'')!==normalize(selected.unit||''));
+    return (selected&&!asksOtherUnit?selected:columns[0])?.key || '';
+  }
   // A shorter, explicit metric term may identify a longer returned label, but
   // never choose between two monetary/quantity fields on the user's behalf.
   const terms=['金额','数量','记录数'].filter(mentions);
-  const candidates=labeled.filter(({label})=>terms.some(term=>label.includes(term)));
-  return (candidates.length===1?candidates[0].column:columns[0])?.key || '';
+  const candidates=[...new Set([...labeled.filter(({label})=>terms.some(term=>label.includes(term))).map(({column})=>column),...unitCandidates])];
+  return (candidates.length===1?candidates[0]:columns[0])?.key || '';
 }
 export function questionForRun(messages: Message[], runId: string) {
   for (let index=messages.length-1;index>=0;index--) {
@@ -148,8 +166,8 @@ export function BusinessResultCard({result,runId,eventId,question='',answerIncom
       })}</div>
       {result.rows.length>visibleObjects&&<div className="br-more"><span>已显示 {visibleObjects} / {result.rows.length} 行已返回结果</span><button type="button" onClick={()=>setVisibleObjects(count=>count+6)}>再显示 {Math.min(6,result.rows.length-visibleObjects)} 行<ChevronDown size={14}/></button></div>}
     </>:view==='table'?<><div className="br-table-scroll" tabIndex={0} aria-label="业务结果表格，可横向滚动"><table><thead><tr>{result.columns.map(c=><th key={c.key} scope="col">{c.label}{c.unit&&<small>（{c.unit}）</small>}</th>)}</tr></thead><tbody>{result.rows.slice(0,visibleTableRows).map((row,i)=><tr key={i}>{result.columns.map(c=><td key={c.key} className={typeof row[c.key]==='number'?'br-number':''}>{displayBusinessCell(row[c.key],c)}</td>)}</tr>)}</tbody></table></div>{result.rows.length>visibleTableRows&&<div className="br-more"><span>已显示 {visibleTableRows} / {result.rows.length} 行已返回结果</span><button type="button" onClick={()=>setVisibleTableRows(count=>count+20)}>再显示 {Math.min(20,result.rows.length-visibleTableRows)} 行<ChevronDown size={14}/></button></div>}</>:<div className="br-chart"><div className="br-chart-options"><label>分组<select aria-label="图表分组" value={label} onChange={e=>setLabel(e.target.value)}>{labels.map(c=><option value={c.key} key={c.key}>{c.label}</option>)}</select></label><label>指标<select aria-label="图表指标" value={metric} onChange={e=>setMetric(e.target.value)}>{numeric.map(c=><option value={c.key} key={c.key}>{c.label}{c.unit?`（${c.unit}）`:''}</option>)}</select></label></div><p className="br-chart-caption">{metricColumn?.label}{metricColumn?.unit?` · ${metricColumn.unit}`:''} · 零起点 · 当前结果前 {chartRows.length} 行，不重新聚合</p>{chartRows.map((row,i)=><div className="br-bar-row" key={i}><span title={String(row[label]??'未提供')}>{String(row[label]??'未提供')}</span><div className="br-bar-track"><div style={{width:`${max>0?Number(row[metric])/max*100:0}%`}}/></div><strong>{displayBusinessCell(row[metric],metricColumn)}</strong></div>)}</div>}
-    <details className="br-evidence" open={!result.rows.length || undefined}><summary><span><Database size={15}/>查询范围与依据{result.source_ids?.length?` · ${result.source_ids.length}`:''}</span><ChevronDown size={15}/></summary><div className="br-evidence-body"><dl className="br-evidence-scope">{scope.map(([key,value])=><div key={key}><dt>{scopeLabel[key]||key}</dt><dd>{scopeText(value)}</dd></div>)}<div><dt>数据时间</dt><dd>{result.data_time||'未提供'}</dd></div></dl><div className="br-source-actions">{result.source_ids?.length?result.source_ids.map((id,i)=><button type="button" key={id} onClick={()=>setSource(id)}><Database size={14}/>查看依据 {i+1}</button>):<span>本次结果未提供来源详情。</span>}</div><p>仅展示本次返回的数据。摘要、表格、图表和导出使用同一份结果。</p></div></details>
-    <footer className="br-footer"><span>结果编号 {eventId} · 当前结果版本</span><span>数据时间：{result.data_time||'未提供'}</span></footer>
+    <details className="br-evidence" open={!result.rows.length || undefined}><summary><span><Database size={15}/>查询范围与依据{result.source_ids?.length?` · ${result.source_ids.length}`:''}</span><ChevronDown size={15}/></summary><div className="br-evidence-body"><dl className="br-evidence-scope">{scope.map(([key,value])=><div key={key}><dt>{scopeLabel[key]||key}</dt><dd>{scopeText(value)}</dd></div>)}<div><dt>数据时间</dt><dd title={result.data_time||undefined}>{displayBusinessTime(result.data_time)}</dd></div></dl><div className="br-source-actions">{result.source_ids?.length?result.source_ids.map((id,i)=><button type="button" key={id} onClick={()=>setSource(id)}><Database size={14}/>查看依据 {i+1}</button>):<span>本次结果未提供来源详情。</span>}</div><p>仅展示本次返回的数据。摘要、表格、图表和导出使用同一份结果。</p></div></details>
+    <footer className="br-footer"><span>结果编号 {eventId} · 当前结果版本</span><span title={result.data_time||undefined}>数据时间：{displayBusinessTime(result.data_time)}</span></footer>
     {notice&&<p className="br-coverage" role="status">{notice}</p>}{source&&<SourceDialog id={source} onClose={()=>setSource(null)}/>}
   </section>;
 }
