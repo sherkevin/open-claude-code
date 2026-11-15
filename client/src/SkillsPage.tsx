@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BookOpen, Pencil, Plus, Sparkles, Trash2, Upload } from 'lucide-react';
+import { BookOpen, ChevronDown, FileText, Pencil, Plus, Sparkles, Trash2, Upload, Wrench } from 'lucide-react';
 import { api, errorText, patch, post, remove } from './api';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import MarkdownDocument from './MarkdownDocument';
 import type { Skill } from './types';
+import './skill-detail.css';
 
 export default function SkillsPage({ admin }: { admin: boolean }) {
   const [items, setItems] = useState<Skill[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState(''), [success, setSuccess] = useState('');
@@ -22,12 +23,17 @@ export default function SkillsPage({ admin }: { admin: boolean }) {
 }
 
 export function SkillDocument({ value }: { value: Skill }) {
-  return <div className="skill-document"><div className="skill-document-meta"><ScopeBadge scope={value.scope}/><span>v{value.revision}</span><span>{value.enabled ? '已启用' : '已停用'}</span></div>
-    {value.description && <p className="skill-document-description">{value.description}</p>}
-    <MarkdownDocument text={value.instructions} label="流程指引"/>
-    {value.required_tools.length > 0 && <details className="resource-advanced"><summary>需要的工具 · {value.required_tools.length}</summary><ul>{value.required_tools.map(tool => <li key={tool}><code>{tool}</code></li>)}</ul></details>}
-    {Object.keys(value.resources || {}).length > 0 && <details className="resource-advanced"><summary>参考资料 · {Object.keys(value.resources || {}).length}</summary>{Object.entries(value.resources || {}).map(([name, text]) => <section className="skill-reference" key={name}><h3>{name}</h3><MarkdownDocument text={text} label={name}/></section>)}</details>}
-  </div>;
+  const references = Object.entries(value.resources || {});
+  return <article className="skill-document skill-detail" aria-label={`${value.name}详情`}>
+    <header className="skill-detail-overview"><div className="skill-document-meta"><span className="skill-document-kind"><BookOpen size={14}/>Skill 指引</span><span className="skill-document-version">v{value.revision}</span><ScopeBadge scope={value.scope}/><span className={`skill-document-status${value.enabled ? ' enabled' : ''}`}><i aria-hidden="true"/>{value.enabled ? '已启用' : '已停用'}</span></div>
+      {value.description && <p className="skill-document-description">{value.description}</p>}
+    </header>
+    <div className="skill-reading-surface"><MarkdownDocument text={value.instructions} label="流程指引"/></div>
+    {(value.required_tools.length > 0 || references.length > 0) && <aside className="skill-supporting" aria-label="工具与参考资料">
+      {value.required_tools.length > 0 && <details className="skill-support-section"><summary><span><Wrench size={16}/>所需工具<small>{value.required_tools.length}</small></span><ChevronDown size={16}/></summary><ul className="skill-tool-list">{value.required_tools.map(tool => <li key={tool}><code>{tool}</code></li>)}</ul></details>}
+      {references.length > 0 && <section className="skill-references" aria-label="参考资料"><div className="skill-reference-heading"><FileText size={16}/><h3>参考资料</h3><span>{references.length}</span></div>{references.map(([name, text]) => <details className="skill-reference" key={name}><summary><span><FileText size={15}/><strong>{name}</strong></span><ChevronDown size={15}/></summary><div className="skill-reference-content"><MarkdownDocument text={text} label={name}/></div></details>)}</section>}
+    </aside>}
+  </article>;
 }
 export function SkillEditor({ value, admin, onClose, onSaved }: { value: Skill | null; admin: boolean; onClose: () => void; onSaved: () => void }) {
   const editable = !value || canEdit(value, admin), [editing, setEditing] = useState(!value);
@@ -35,13 +41,13 @@ export function SkillEditor({ value, admin, onClose, onSaved }: { value: Skill |
   const [scope, setScope] = useState<ResourceScope>(value?.scope || 'private'), [enabled, setEnabled] = useState(value?.enabled ?? true), [tools, setTools] = useState(value?.required_tools.join('\n') || ''), [resources, setResources] = useState(JSON.stringify(value?.resources || {}, null, 2));
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   return <Modal title={value ? value.name : '新建 Skill'} wide onClose={() => { if (!busy) onClose(); }}>
-    {!editing && value ? <><div className="modal-body"><SkillDocument value={value}/></div><footer className="modal-footer"><Button variant="secondary" onClick={onClose}>关闭</Button>{editable && <Button onClick={() => setEditing(true)}><Pencil size={15}/>编辑</Button>}</footer></> : <form onSubmit={async event => {
+    {!editing && value ? <><div className="modal-body skill-detail-body"><SkillDocument value={value}/></div><footer className="modal-footer"><Button variant="secondary" onClick={onClose}>关闭</Button>{editable && <Button onClick={() => setEditing(true)}><Pencil size={15}/>编辑</Button>}</footer></> : <form onSubmit={async event => {
       event.preventDefault(); if (!editable || busy) return; setBusy(true); setError('');
       try { if (!name.trim() || !instructions.trim()) throw new Error('请填写名称和流程指引。'); const parsed = JSON.parse(resources); if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object' || Object.values(parsed).some(item => typeof item !== 'string')) throw new Error('参考资料须为名称与文本组成的 JSON 对象。');
         const body = { name: name.trim(), description, instructions, scope, enabled, required_tools: [...new Set(tools.split('\n').map(tool => tool.trim()).filter(Boolean))], resources: parsed };
         if (value) await patch(`/skills/${value.id}`, body); else await post('/skills', body); onSaved();
       } catch (cause) { setError(errorText(cause)); } finally { setBusy(false); }
-    }}><div className="modal-body"><ErrorNotice message={error}/><fieldset disabled={!editable || busy} className="plain-fieldset">
+    }}><div className="modal-body skill-editor-body"><ErrorNotice message={error}/><fieldset disabled={!editable || busy} className="plain-fieldset">
       <div className="two-col"><Field label="名称" required><input value={name} onChange={event => setName(event.target.value)} maxLength={100} required/></Field><ScopeField value={scope} onChange={setScope} admin={admin} disabled={!!value}/></div>
       <Field label="说明"><input value={description} onChange={event => setDescription(event.target.value)} maxLength={500}/></Field>
       <MarkdownDocument text={instructions} onChange={setInstructions} label="流程指引" disabled={busy} initialView="source"/>
@@ -61,5 +67,5 @@ function SkillHistory({ skill, onClose }: { skill: Skill; onClose: () => void })
   const [versions, setVersions] = useState<Skill[]>([]), [selected, setSelected] = useState(skill.revision), [loading, setLoading] = useState(true), [error, setError] = useState('');
   useEffect(() => { let current = true; api<Skill[]>(`/skills/${skill.id}/versions`).then(result => { if (current) setVersions(result); }).catch(cause => { if (current) setError(errorText(cause)); }).finally(() => { if (current) setLoading(false); }); return () => { current = false; }; }, [skill.id]);
   const value = versions.find(version => version.revision === selected);
-  return <Modal title={`${skill.name} · 历史版本`} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{loading ? <Loader/> : <><Field label="版本"><select value={selected} onChange={event => setSelected(Number(event.target.value))}>{versions.map(version => <option key={version.revision} value={version.revision}>v{version.revision} · {version.name}</option>)}</select></Field>{value && <SkillDocument key={selected} value={value}/>}</>}</div><footer className="modal-footer"><Button variant="secondary" onClick={onClose}>关闭</Button></footer></Modal>;
+  return <Modal title={`${skill.name} · 历史版本`} wide onClose={onClose}><div className="modal-body skill-detail-body skill-history-body"><ErrorNotice message={error}/>{loading ? <Loader/> : <><Field label="版本"><select value={selected} onChange={event => setSelected(Number(event.target.value))}>{versions.map(version => <option key={version.revision} value={version.revision}>v{version.revision} · {version.name}</option>)}</select></Field>{value && <SkillDocument key={selected} value={value}/>}</>}</div><footer className="modal-footer"><Button variant="secondary" onClick={onClose}>关闭</Button></footer></Modal>;
 }

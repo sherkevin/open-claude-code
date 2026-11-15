@@ -32,9 +32,25 @@ describe('readable Markdown documents', () => {
 
 describe('Skill details respect document and resource permissions', () => {
   it('reads instructions and references with the same renderer while retaining version and tool names', () => {
+    const before = JSON.stringify(skill);
     const html = renderToStaticMarkup(<SkillDocument value={skill}/>);
     expect(html).toContain('<h1>质量核对</h1>'); expect(html).toContain('<h2>口径</h2>');
     expect(html).toContain('v2'); expect(html).toContain('read_quality'); expect(html).not.toContain('配置助手');
+    expect(html).toContain('<table>'); expect(html).toContain('language-json');
+    expect(html).toContain('aria-label="工具与参考资料"'); expect(html).toContain('aria-label="参考资料"');
+    expect(JSON.stringify(skill)).toBe(before);
+  });
+  it('keeps each reference independently readable and applies the same safety rules to reference text and filenames', () => {
+    const value = { ...skill, resources: {
+      '口径.md': '## 统计口径\n\n> 按业务日期汇总。\n\n- [x] 核对日期\n- [ ] 核对数量',
+      '<img src=x onerror=alert(1)>.md': '<script>alert(1)</script>\n\n[执行](javascript:alert%281%29)\n\n![外部图](https://external.invalid/track.png)',
+    } };
+    const html = renderToStaticMarkup(<SkillDocument value={value}/>);
+    expect(html.match(/<details class="skill-reference">/g)).toHaveLength(2);
+    expect(html).toContain('<blockquote>'); expect(html).toContain('type="checkbox"');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;.md');
+    expect(html).not.toContain('<script>'); expect(html).not.toContain('<img'); expect(html).not.toContain('href="javascript:');
+    expect(html).toContain('外部图片已阻止自动加载');
   });
   it('opens existing authorized details in reading mode and keeps unauthorized resources read only', () => {
     const denied = renderToStaticMarkup(<SkillEditor value={skill} admin={true} onClose={() => {}} onSaved={() => {}}/>);
