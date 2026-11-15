@@ -186,8 +186,28 @@ class PublicNetworkBackend(httpcore.AsyncNetworkBackend):
                 addresses = await public_dns_answers(hostname, timeout=min(timeout or 6, 6))
             if not addresses or any(not global_unicast(address) for address in addresses):
                 raise AppError(422, "WEB_URL_DENIED", "网页地址指向非公开网络")
-            # No second hostname resolution: the transport connects to this IP.
-            return await self._connect_approved_ip(addresses[0], port, timeout, local_address, socket_options)
+            # Try only this validated snapshot, without another hostname lookup.
+            # A dead first IPv6/CDN address must not hide a reachable alternative.
+            # All attempts share one connection budget; reserve a slice for each
+            # remaining address so a stalled first peer cannot consume it all.
+            # This happens before TLS/HTTP: responses (including 403/429) and
+            # requests already sent are never replayed by this fallback.
+            deadline = time.monotonic() + (15 if timeout is None else max(0, timeout))
+            last_error = None
+            for index, address in enumerate(addresses):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise httpcore.ConnectTimeout("Public connection timed out")
+                attempt_timeout = remaining / (len(addresses) - index)
+                try:
+                    with anyio.fail_after(attempt_timeout):
+                        return await self._connect_approved_ip(
+                            address, port, attempt_timeout, local_address, socket_options)
+                except (httpcore.NetworkError, httpcore.TimeoutException, OSError, TimeoutError) as exc:
+                    last_error = exc
+            if isinstance(last_error, (httpcore.TimeoutException, TimeoutError)):
+                raise httpcore.ConnectTimeout("Public connection timed out") from last_error
+            raise httpcore.ConnectError("Public addresses are unreachable") from last_error
         except AppError:
             raise
         except (OSError, ValueError, asyncio.TimeoutError) as exc:
