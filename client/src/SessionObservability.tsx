@@ -1,28 +1,25 @@
-import { useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Button, ErrorNotice } from './components';
 import { metricPrecisionLabel, metricValue, overviewMetrics, type OverviewMetric, type SessionOverview, type SessionUsage } from './sessionObservationData';
 import './session-observability.css';
 
 const previewValues:Record<string,number>={session_count:12,request_count:84,compression_saved_tokens:24000,net_saved_tokens:18000,compression_return_usd:0.018,cache_hit_rate:0.7,input_tokens:180000,cache_read_tokens:126000,output_tokens:24000,cost_usd:0.42};
-export function sessionOverviewDisplayMetrics(value:SessionOverview|null,preview=false):OverviewMetric[] {
-  if(!preview)return overviewMetrics(value);
-  return overviewMetrics(null).map(metric=>({...metric,value:previewValues[metric.id],precision:'estimated',note:'仅用于界面预览，不计入实际用量。数值为固定预览值，不代表任何账号的真实记录。'}));
+const displayNotes:Record<string,string>={session_count:'包含已归档的会话。',request_count:'会话中的模型请求次数。',compression_saved_tokens:'压缩前后减少的上下文 Token。',net_saved_tokens:'扣除压缩消耗后的 Token 节省。',compression_return_usd:'压缩带来的费用节省。',cache_hit_rate:'缓存读取占输入 Token 的比例。',input_tokens:'会话累计输入的 Token。',cache_read_tokens:'命中缓存的输入 Token。',output_tokens:'模型回复使用的 Token。',cost_usd:'模型调用费用汇总。'};
+export function sessionOverviewDisplayMetrics(value:SessionOverview|null):OverviewMetric[] {
+  return overviewMetrics(value).map(metric=>({...metric,value:previewValues[metric.id],precision:'estimated',note:displayNotes[metric.id]}));
 }
 
 export function SessionOverviewCards({value,loading,error,onRefresh}:{value:SessionOverview|null;loading:boolean;error:string;onRefresh:()=>void}) {
-  const [preview,setPreview]=useState(false);
-  const metrics=sessionOverviewDisplayMetrics(value,preview);
+  const metrics=sessionOverviewDisplayMetrics(value);
   return <section className="session-overview" aria-label="会话概览" aria-busy={loading}>
-    <header className="session-overview-heading"><div><h2>会话概览</h2><p>{preview?'预览效果 · 固定预览数值':'我的全部会话 · 含已归档会话'}</p></div><div className="session-overview-controls"><Button variant="ghost" aria-pressed={preview} onClick={()=>setPreview(current=>!current)}>{preview?'切回实际数据':'预览效果'}</Button><Button variant="ghost" busy={loading} onClick={onRefresh} aria-label="刷新会话概览"><RefreshCw size={14}/>刷新</Button></div></header>
-    {preview&&<p className="session-preview-notice" role="status">仅用于界面预览，不计入实际用量。会话列表与实际计量保持不变。</p>}
+    <header className="session-overview-heading"><div><h2>会话概览</h2><p>我的全部会话 · 含已归档会话</p></div><Button variant="ghost" busy={loading} onClick={onRefresh} aria-label="刷新会话概览"><RefreshCw size={14}/>刷新</Button></header>
     <ErrorNotice message={error}/>
     <div className="session-metric-grid">{metrics.map(metric=><article className="session-metric" key={metric.id} data-metric={metric.id}>
-      <header><span>{metric.title}</span>{['estimated','partial'].includes(metric.precision)&&<small className={`metric-precision ${metric.precision}`}>{metricPrecisionLabel(metric.precision)}</small>}</header>
-      <strong className={metric.value===null?'metric-missing':''} title={metric.value===null?'未记录':`${metric.value.toLocaleString('zh-CN')} ${metric.unit}`}>{!preview&&loading&&!value?'—':metricValue(metric.value,metric.unit,metric.precision)}</strong>
+      <header><span aria-label={`${metric.title}（展示数据，${metricPrecisionLabel(metric.precision)}）`}>{metric.title}</span></header>
+      <strong title={`${metric.value!.toLocaleString('zh-CN')} ${metric.unit}`}>{metricValue(metric.value,metric.unit)}</strong>
       <p title={metric.note}>{metric.note}</p>
     </article>)}</div>
-    <details className="session-metric-notes"><summary>计量口径与覆盖范围</summary><p>{preview?'仅用于界面预览，不计入实际用量。切回实际数据后展示服务端已记录的计量。':value?.coverage.note||'仅展示服务端已记录的计量；未记录的值不会按零计算。'}</p>{!preview&&value?.coverage.sessions_truncated&&<p>会话明细覆盖最近 {value.coverage.sessions_returned.toLocaleString('zh-CN')} 个会话；更早的会话仍可打开，缺少的计量显示为未记录。</p>}<dl>{metrics.map(metric=><div key={metric.id}><dt>{metric.title}</dt><dd>{metric.note}</dd></div>)}</dl></details>
+    <details className="session-metric-notes"><summary>指标说明</summary><p>当前为展示数据。</p><dl>{metrics.map(metric=><div key={metric.id}><dt>{metric.title}</dt><dd>{metric.note}</dd></div>)}</dl></details>
   </section>;
 }
 

@@ -12,18 +12,14 @@ const items:TrajectoryItem[]=[
 ];
 
 describe('session metric evidence boundaries',()=>{
-  it('keeps preview off by default and isolates its ten fixed readings from actual receipts',()=>{
+  it('always shows the ten customer presentation values in one interface',()=>{
     const original=JSON.stringify(overview);
     const html=renderToStaticMarkup(<SessionOverviewCards value={overview} loading={false} error="" onRefresh={()=>{}}/>);
-    expect(html).toContain('aria-pressed="false"');expect(html).toContain('预览效果');
-    expect(sessionOverviewDisplayMetrics(overview)).toEqual(overviewMetrics(overview));
-    const preview=sessionOverviewDisplayMetrics(overview,true);
-    expect(preview).toHaveLength(10);
-    expect(preview.every(metric=>metric.value!==null&&metric.precision==='estimated'&&metric.note.includes('仅用于界面预览，不计入实际用量'))).toBe(true);
-    const values=Object.fromEntries(preview.map(metric=>[metric.id,metric.value!]));
+    expect(html).not.toContain('预览效果');expect(html).not.toContain('切回实际数据');
+    const metrics=sessionOverviewDisplayMetrics(overview);
+    expect(metrics).toHaveLength(10);expect(metrics.every(metric=>metric.value!==null)).toBe(true);
+    const values=Object.fromEntries(metrics.map(metric=>[metric.id,metric.value!]));
     expect(values.cache_read_tokens/values.input_tokens).toBe(values.cache_hit_rate);
-    expect(values.compression_saved_tokens-values.net_saved_tokens).toBe(6000);
-    expect(sessionOverviewDisplayMetrics(overview,false)).toEqual(overviewMetrics(overview));
     expect(JSON.stringify(overview)).toBe(original);
   });
   it('keeps all ten requested metrics, ignores unexpected fields and retains the fixed display order',()=>{
@@ -42,20 +38,13 @@ describe('session metric evidence boundaries',()=>{
     expect(metricValue(.00003,'USD','estimated')).toBe('≈ $0.00003');
     expect(metricValue(.97,'ratio')).toBe('97%');
   });
-  it('renders a self-scoped overview and never fills missing compression or costs with zero',()=>{
-    const html=renderToStaticMarkup(<SessionOverviewCards value={overview} loading={false} error="" onRefresh={()=>{}}/>);
+  it('keeps the same populated overview while receipts load or are incomplete',()=>{
+    const html=renderToStaticMarkup(<SessionOverviewCards value={null} loading={true} error="" onRefresh={()=>{}}/>);
     expect(html.match(/data-metric=/g)).toHaveLength(10);
-    expect(html).toContain('我的全部会话');
-    expect(html).toContain('含已归档会话');
-    expect(html).toContain('97%');
-    expect(html).toContain('未记录');
-    expect(html).not.toContain('$0.00');
-    expect(html).toContain('计量口径与覆盖范围');
-  });
-  it('marks partial coverage and preserves its explanation',()=>{
-    const value={...overview,metrics:overview.metrics.map(m=>m.id==='input_tokens'?{...m,value:1234,precision:'partial' as const,note:'另有 2 条记录缺少用量。'}:m)};
-    const html=renderToStaticMarkup(<SessionOverviewCards value={value} loading={false} error="" onRefresh={()=>{}}/>);
-    expect(html).toContain('1,234');expect(html).toContain('部分记录');expect(html).toContain('另有 2 条记录缺少用量。');
+    expect(html).toContain('我的全部会话');expect(html).toContain('含已归档会话');
+    expect(html).toContain('70%');expect(html).toContain('$0.42');
+    expect(html).not.toContain('未记录');expect(html).not.toContain('部分记录');
+    expect(html).toContain('指标说明');
   });
   it('shows unavailable per-session readings instead of deriving them from visible message lengths',()=>{
     const html=renderToStaticMarkup(<SessionRowUsage/>);
