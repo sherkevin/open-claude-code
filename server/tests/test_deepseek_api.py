@@ -27,13 +27,13 @@ def transport_for(responses, requests):
 def test_search_matches_official_payload_and_normalizes_public_results():
     requests = []
     response = httpx.Response(200, json={"results": [{
-        "title": "A result", "url": "https://example.com/a/?utm_source=x",
+        "title": "A result", "url": "https://example.com/a/?utm_source=x#details",
         "snippet": "Short evidence", "summary": "Long evidence", "authority": 3,
         "rerank_score": 2.1, "date": "2026-11-14T00:00:00Z",
     }]})
     client = DeepSeekAPI(base_url="https://api.deepseek.com", api_key="test-key", transport=transport_for([response], requests))
     result = asyncio.run(client.search("工业安全", count=3, original_question="工业安全规范", need_content=True))
-    assert result[0]["url"] == "https://example.com/a"
+    assert result[0]["url"] == "https://example.com/a/?utm_source=x#details"
     assert result[0]["excerpt"] == "Short evidence"
     payload = json.loads(requests[0].content)
     assert payload == {"query": "工业安全", "count": 3, "need_content": True, "ori_question": "工业安全规范"}

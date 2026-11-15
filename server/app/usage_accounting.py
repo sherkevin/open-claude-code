@@ -32,18 +32,58 @@ def _object(value):
     return value if isinstance(value, dict) else {}
 
 
-async def metered_post(http, endpoint, *, service, kind, selection, payload, user_id=None):
+def _openai_receipt(reported):
+    """Normalize total prompt counts to the ledger's disjoint input buckets.
+
+    Standard Chat Completions reports cache reads inside prompt_tokens. Do not
+    mix that aggregate with Anthropic/Harness uncached input. A provider which
+    additionally declares cache_creation_input_tokens puts those writes inside
+    its prompt total too. Missing read counters leave uncached input unknown;
+    absent nonstandard write counters remain unknown, never a fabricated zero.
+    """
+    valid = lambda value: value if _number(value, "input_tokens") else None
+    total = valid(reported.get("prompt_tokens"))
+    read = valid(_object(reported.get("prompt_tokens_details")).get("cached_tokens"))
+    write = valid(reported.get("cache_creation_input_tokens"))
+    has_write = "cache_creation_input_tokens" in reported
+    uncached = None
+    if total is not None and read is not None and (not has_write or write is not None):
+        cached = read + (write if has_write else 0)
+        if cached <= total:
+            uncached = total - cached
+        else:
+            # Internally inconsistent counters cannot be treated as measured
+            # disjoint buckets; retain the aggregate separately for audit.
+            read = write = None
+    return {"input_tokens": uncached, "output_tokens": valid(reported.get("completion_tokens")),
+            "cache_read_input_tokens": read, "cache_creation_input_tokens": write,
+            "reported_prompt_tokens": total}
+
+
+async def metered_post(http, endpoint, *, service, kind, selection, payload, user_id=None, usage_protocol="anthropic"):
     """Record only actual HTTP attempts; cached/joined followups never enter here.
 
     Begin before sending so cancellation/crash still leaves an unknown receipt.
     Store only public model identity and numeric usage, never drafts or routes.
     """
+    if usage_protocol not in {"anthropic", "openai"}:
+        raise ValueError("Unsupported usage protocol")
     owner = user_id or usage_owner.get()
     call_id = uid() if owner else None
     if call_id:
-        await offload_write(service.db.execute,
-            "INSERT INTO model_usage_calls VALUES(?,?,?,?,?,?,?,?,?)",
-            (call_id, owner, kind, selection.get("model_id", "legacy-model"), selection.get("model_label", "历史模型"), "started", None, now(), None))
+        try:
+            await offload_write(service.db.execute,
+                "INSERT INTO model_usage_calls VALUES(?,?,?,?,?,?,?,?,?)",
+                (call_id, owner, kind, selection.get("model_id", "legacy-model"), selection.get("model_label", "历史模型"), "started", None, now(), None))
+        except asyncio.CancelledError:
+            # offload_write settles a durable insert before propagating normal
+            # cancellation. No HTTP method has been entered at this point.
+            # A process crash/second cancellation may still leave 'started';
+            # that incomplete record is explicitly unknown, not one billed call.
+            await offload_write(service.db.execute,
+                "UPDATE model_usage_calls SET status='not_sent',usage=?,completed_at=? WHERE id=?",
+                (dump({field: 0 for field in FIELDS}), now(), call_id))
+            raise
     receipt, status = None, "failed"
     try:
         response = await http.post(endpoint, json=payload)
@@ -51,7 +91,11 @@ async def metered_post(http, endpoint, *, service, kind, selection, payload, use
         try:
             reported = _object(response.json()).get("usage")
             if isinstance(reported, dict):
+                if usage_protocol == "openai":
+                    reported = _openai_receipt(reported)
                 receipt = {field: reported[field] if _number(reported.get(field), field) else None for field in TOKEN_FIELDS}
+                if usage_protocol == "openai":
+                    receipt["reported_prompt_tokens"] = reported["reported_prompt_tokens"]
                 # Provider token counters are not a price table or an invoice.
                 receipt["estimated_cost_usd"] = None
         except (TypeError, ValueError, AttributeError):
@@ -89,7 +133,8 @@ def _entry(row, *, auxiliary=False):
         part = subtotals.get(ledger_field) if field in TOKEN_FIELDS else None
         known[field] = amounts[field] if amounts[field] is not None else part if _number(part, field) else 0
     if auxiliary:
-        calls = 1
+        calls = (0 if row.get("status") == "not_sent" else 1
+                 if row.get("status") in {"succeeded", "failed", "cancelled"} else None)
     elif product:
         calls = 0
     elif isinstance(stages, list) and stages:
@@ -114,7 +159,7 @@ def _aggregate(items):
     call_unknown = sum(item["call_count"] is None for item in items)
     return {"total_runs": sum(not item["auxiliary"] for item in items),
             "successful_runs": sum(not item["auxiliary"] and item["status"] == "succeeded" for item in items),
-            "usage_records": count, "auxiliary_calls": sum(item["auxiliary"] for item in items),
+            "usage_records": count, "auxiliary_calls": sum(item["call_count"] or 0 for item in items if item["auxiliary"]),
             "model_call_count": call_known if not call_unknown else None,
             "known_model_calls": call_known, "unknown_call_records": call_unknown,
             **{field: known[field] if coverage[field] == count and (count or field != "estimated_cost_usd") else None for field in FIELDS},
@@ -170,6 +215,6 @@ def usage_summary(service, user, *, scope="self", model_id=None, date_from=None,
     result.update(scope=scope, timezone="Asia/Shanghai", date_from=date_from, date_to=date_to, model_id=model_id,
                   available_models=[{"id": key, "label": value} for key, value in sorted(available.items())],
                   users=[{"user_id": key, "display_name": items[0]["display_name"], **_aggregate(items)} for key, items in sorted(users.items())],
-                  auxiliary_history_note="Tab补全、选模与后续问题从启用用量记录后开始统计；此前的独立调用没有历史账本，不能追补。",
+                  auxiliary_history_note="Tab补全、选模、后续问题与知识图片解析从各自启用用量记录后开始统计；此前的独立调用没有历史账本，不能追补。",
                   cost_note="仅展示服务已报告的估算值；未报告价格或费用时不换算金额，不代表实际账单。")
     return result

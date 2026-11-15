@@ -27,6 +27,19 @@ type Completion = { busy: boolean; suggestion: string; notice: string };
 type Followups = { busy: boolean; suggestions: string[]; notice: string; runId: string | null };
 const emptyCompletion: Completion = { busy: false, suggestion: '', notice: '' };
 const emptyFollowups: Followups = { busy: false, suggestions: [], notice: '', runId: null };
+export const COMPLETION_TIMEOUT_MS = 20_000;
+export function completionSuggestion(draft: string, value: unknown): string {
+  return typeof value === 'string' && value.startsWith(draft) && value.slice(draft.length).trim() && [...value].length <= 700 ? value : '';
+}
+export function completionNotice(mode?: string): string {
+  if (mode === 'disabled') return '补全已关闭，可以直接发送。';
+  if (mode === 'unavailable') return '尚未配置可用的补全模型，请联系管理员。';
+  if (mode === 'provider_unconfigured' || mode === 'provider_invalid') return '补全服务尚未就绪，请联系管理员。';
+  if (mode === 'budget_disabled') return '补全调用尚未启用，请联系管理员。';
+  if (mode === 'input_too_long') return 'Tab 补全支持 500 字符以内的草稿，当前内容可以直接发送。';
+  if (mode === 'provider_response_rejected') return '未获得有效补全，可以继续输入或直接发送。';
+  return '暂时没有更合适的补全。';
+}
 type Options = {
   conversationId: string; draft: string; hasExtraDraft: boolean; disabled: boolean; settled: boolean;
   completionEnabled: boolean; followupsEnabled: boolean; run: Run | null; messages: Message[];
@@ -74,23 +87,34 @@ export function useComposerAssistance(options: Options) {
   const complete = async () => {
     const start = latest.current;
     if (!mounted.current || start.disabled || !start.completionEnabled || !start.draft.trim() || completionRequest.current) return;
+    acceptedOrigin.current = null;
+    if ([...start.draft].length > 500) {
+      setCompletion({ busy: false, suggestion: '', notice: completionNotice('input_too_long') });
+      return;
+    }
     const controller = new AbortController(); completionRequest.current = controller;
     const token = revision.current;
     const current = () => mounted.current && !controller.signal.aborted && completionRequest.current === controller && revision.current === token && latest.current.conversationId === start.conversationId && latest.current.draft === start.draft && latest.current.completionEnabled && !latest.current.disabled;
     setCompletion({ busy: true, suggestion: '', notice: '' });
-    try {
-      const result = await api<{ suggestion: string | null; router: { mode: string } }>('/models/complete', { method: 'POST', body: JSON.stringify({ text: start.draft.trim() }), signal: controller.signal });
+    const timeout = window.setTimeout(() => {
       if (!current()) return;
-      const suggestion = typeof result.suggestion === 'string' ? result.suggestion.trim() : '';
-      if (suggestion && suggestion.length <= 8000 && suggestion !== start.draft.trim()) {
+      controller.abort(); completionRequest.current = null;
+      setCompletion({ busy: false, suggestion: '', notice: '补全等待超时，可以重试或直接发送。' });
+    }, COMPLETION_TIMEOUT_MS);
+    try {
+      const result = await api<{ suggestion: string | null; router: { mode: string } }>('/models/complete', { method: 'POST', body: JSON.stringify({ text: start.draft }), signal: controller.signal });
+      if (!current()) return;
+      const suggestion = completionSuggestion(start.draft, result?.suggestion);
+      if (suggestion) {
         acceptedOrigin.current = { scope: start.conversationId, draft: start.draft, revision: token };
         setCompletion({ busy: false, suggestion, notice: '' });
       } else {
-        setCompletion({ busy: false, suggestion: '', notice: result.router?.mode === 'disabled' || result.router?.mode === 'unavailable' ? '补全暂不可用，可以直接发送。' : '暂时没有更合适的补全。' });
+        setCompletion({ busy: false, suggestion: '', notice: completionNotice(result?.router?.mode) });
       }
     } catch {
       if (current()) setCompletion({ busy: false, suggestion: '', notice: '补全暂不可用，可以继续输入。' });
     } finally {
+      window.clearTimeout(timeout);
       if (completionRequest.current === controller) completionRequest.current = null;
     }
   };

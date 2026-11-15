@@ -104,7 +104,7 @@ def test_search_deduplicates_canonical_urls_and_marks_provider(tmp_path, monkeyp
     async def scenario():
         result = await WebTools(service).search_for_run(user, assistant, run_id, "public query", limit=5)
         assert result["provider"] == "searxng" and result["fallback"] is False
-        assert [item["url"] for item in result["results"]] == ["https://example.com/report", "https://example.org/other"]
+        assert [item["url"] for item in result["results"]] == ["https://example.com/report/?utm_source=x", "https://example.org/other"]
         assert all(item["provider"] == "searxng" for item in result["results"])
         assert len(service.evidence.items) == 2
     asyncio.run(scenario())
@@ -145,7 +145,7 @@ def test_brave_provider_uses_header_without_putting_key_in_url(tmp_path, monkeyp
         assert result["provider"] == "brave"
         assert result["results"][0]["excerpt"] == "ok"
         assert service.evidence.items[0][0][4] == "ok"
-        assert service.evidence.items[0][1]["original_url"] == "https://example.com/"
+        assert service.evidence.items[0][1]["original_url"] == "https://example.com"
         called_url = fetch.await_args.args[0]
         assert "secret-key" not in called_url
         assert fetch.await_args.kwargs["headers"]["X-Subscription-Token"] == "secret-key"
@@ -157,6 +157,38 @@ def json_bytes(value):
     """Keep provider fixture payloads compact while preserving Unicode support."""
     import json
     return json.dumps(value).encode("utf-8")
+
+
+def test_search_keeps_navigable_provider_url_while_deduplicating(tmp_path, monkeypatch):
+    service, user, assistant, run_id = governed_service(tmp_path)
+    original = "https://example.com/manual/?section=one%20two#installation"
+    body = ('<rss><channel><item><title>Manual</title><link>' + original +
+            '</link><description>Search excerpt only</description></item></channel></rss>').encode()
+    monkeypatch.setattr("app.web_tools.fetch_public", AsyncMock(return_value=("https://www.bing.com/search", "application/rss+xml", body)))
+    result = asyncio.run(WebTools(service).search_for_run(user, assistant, run_id, "public manual"))
+    assert result["results"][0]["url"] == original
+    assert service.evidence.items[0][1]["original_url"] == original
+    assert service.evidence.items[0][0][3]["content_type"] == "search_excerpt"
+
+
+@pytest.mark.parametrize("body", [b'<html><body>Verify you are human</body></html>', b'<rss/>'])
+def test_bing_challenge_or_invalid_feed_is_not_empty_search_success(monkeypatch, body):
+    monkeypatch.setattr("app.web_tools.fetch_public", AsyncMock(return_value=("https://www.bing.com/search", "text/html", body)))
+    with pytest.raises(AppError) as caught:
+        asyncio.run(WebTools(None)._bing("public manual"))
+    assert caught.value.code == "WEB_SEARCH_UNAVAILABLE"
+    assert "RSS" in caught.value.message
+
+
+def test_page_connection_failure_has_explicit_safe_reason_and_no_source(tmp_path, monkeypatch):
+    service, user, assistant, run_id = governed_service(tmp_path)
+    monkeypatch.setattr("app.web_tools._fetch_public", AsyncMock(side_effect=httpx.ConnectError("PRIVATE_TRANSPORT_DETAIL")))
+    with pytest.raises(AppError) as caught:
+        asyncio.run(WebTools(service).read_for_run(user, assistant, run_id, "https://example.com/manual/"))
+    assert caught.value.code == "WEB_NETWORK_UNAVAILABLE"
+    assert "网络" in caught.value.message
+    assert "PRIVATE_TRANSPORT_DETAIL" not in caught.value.message
+    assert service.evidence.items == []
 
 
 def test_fake_ip_dns_uses_independent_public_dns_and_pins_answer(monkeypatch):

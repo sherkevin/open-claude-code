@@ -239,8 +239,10 @@ async def fetch_public(url: str, *, max_bytes: int = 2_000_000, deadline: float 
         budget = 40 if deadline is None else max(0.1, deadline - time.monotonic())
         with anyio.fail_after(min(40, budget)):
             return await _fetch_public(url, max_bytes=max_bytes, recheck=recheck)
-    except TimeoutError:
+    except (TimeoutError, httpx.TimeoutException, httpcore.TimeoutException):
         raise AppError(504, "WEB_TIMEOUT", "网页读取超时，请尝试其他来源") from None
+    except (httpx.HTTPError, httpcore.NetworkError, OSError):
+        raise AppError(502, "WEB_NETWORK_UNAVAILABLE", "网页网络连接失败，请检查联网配置或尝试其他来源") from None
 
 
 async def fetch_public_headers(url: str, *, headers: dict[str, str], max_bytes: int = MAX_SEARCH_RESPONSE_BYTES,
@@ -278,8 +280,10 @@ async def fetch_public_headers(url: str, *, headers: dict[str, str], max_bytes: 
                                 raise AppError(422, "WEB_SEARCH_RESPONSE_TOO_LARGE", "搜索服务返回内容过大")
                         return url, response.headers.get("content-type", ""), bytes(body)
             raise AppError(422, "WEB_REDIRECT_LIMIT", "搜索服务重定向次数过多")
-    except TimeoutError:
+    except (TimeoutError, httpx.TimeoutException, httpcore.TimeoutException):
         raise AppError(504, "WEB_SEARCH_TIMEOUT", "搜索服务响应超时，请稍后重试") from None
+    except (httpx.HTTPError, httpcore.NetworkError, OSError):
+        raise AppError(502, "WEB_NETWORK_UNAVAILABLE", "搜索服务网络连接失败，请检查联网配置或稍后重试") from None
 
 
 async def _fetch_public(url: str, *, max_bytes: int, recheck=None) -> tuple[str, str, bytes]:
@@ -311,7 +315,7 @@ async def _fetch_public(url: str, *, max_bytes: int, recheck=None) -> tuple[str,
 
 
 def canonical_result_url(value: str) -> str | None:
-    """Normalize a result URL for safe deterministic de-duplication."""
+    """Return a de-duplication key, never a replacement navigation URL."""
     try:
         value = public_url(value)
         parts = urlsplit(value)
@@ -329,8 +333,12 @@ def _result_item(raw: dict, *, fallback_title: str = "") -> dict | None:
     """Convert provider-specific result fields into a small trusted shape."""
     if not isinstance(raw, dict):
         return None
-    url = canonical_result_url(raw.get("url") or raw.get("link") or "")
-    if not url:
+    url = raw.get("url") or raw.get("link") or ""
+    if not isinstance(url, str):
+        return None
+    try:
+        public_url(url)
+    except AppError:
         return None
     title = str(raw.get("title") or raw.get("name") or fallback_title or url)[:500]
     excerpt = str(raw.get("excerpt") or raw.get("snippet") or raw.get("description") or raw.get("content") or "")[:3000]
@@ -407,6 +415,8 @@ class WebTools:
             root = ET.fromstring(body)
         except ET.ParseError:
             raise AppError(502, "WEB_SEARCH_UNAVAILABLE", "搜索服务暂时未返回可用结果，请稍后重试") from None
+        if root.tag != "rss" or root.find("channel") is None:
+            raise AppError(502, "WEB_SEARCH_UNAVAILABLE", "搜索服务未返回有效 RSS 结果，可能受到访问限制，请稍后重试")
         results = []
         for item in root.findall("./channel/item")[:MAX_SEARCH_RESULTS]:
             parser = PageText()
@@ -504,25 +514,26 @@ class WebTools:
         used_provider, requested_provider = route.provider, route.requested_provider
         results, seen = [], set()
         for item in route.value:
-            canonical = item.get("url")
+            navigation_url = item.get("url")
+            canonical = canonical_result_url(navigation_url)
             if not canonical or canonical in seen:
                 continue
             # Domain policy governs which result content is accepted; it is not
             # a claim that the upstream search service only queried those hosts.
-            if not domain_allows(domains, canonical):
+            if not domain_allows(domains, navigation_url):
                 continue
             seen.add(canonical)
             public_provider = PUBLIC_PROVIDER_NAME if used_provider == "deepseek_api" else used_provider
-            locator = {"url": canonical, "fetched_at": now(), "search_query": query,
+            locator = {"url": navigation_url, "fetched_at": now(), "search_query": query,
                        "content_type": "search_excerpt", "capability": "search", "provider": public_provider}
             if item.get("published_at"):
                 locator["published_at"] = item["published_at"]
             source = self.service.evidence.register(
-                run_id, "web", item["title"] or canonical, locator, item["excerpt"],
-                resource_type="web", resource_id=assistant["id"], original_url=canonical,
+                run_id, "web", item["title"] or navigation_url, locator, item["excerpt"],
+                resource_type="web", resource_id=assistant["id"], original_url=navigation_url,
                 tool_name="mcp__workspace__web_search",
             )
-            results.append({"title": item["title"], "url": canonical, "excerpt": item["excerpt"],
+            results.append({"title": item["title"], "url": navigation_url, "excerpt": item["excerpt"],
                            "source_id": source["id"], "citation": f"[[source:{source['id']}]]",
                            "provider": public_provider})
             if len(results) >= limit:

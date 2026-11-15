@@ -311,8 +311,7 @@ class DeepSeekAPI:
             if not isinstance(raw, dict):
                 continue
             try:
-                from .web_tools import canonical_result_url
-                url = canonical_result_url(raw.get("url") or "")
+                url = _public_url(raw.get("url") or "")
             except AppError:
                 url = None
             if not url:

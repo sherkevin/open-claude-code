@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BookOpen, Archive, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Circle, Clock3, Download, FileText, Gauge, LoaderCircle, Minimize2, Paperclip, Pencil, Radio, RefreshCw, ShieldCheck, Sparkles, Square, X, XCircle } from 'lucide-react';
-import { api, API_BASE, ApiError, clientRequestId, errorText, fileURL, patch, post, sizeText, timeText } from './api';
+import { api, API_BASE, ApiError, clientRequestId, errorText, fileURL, patch, post, timeText } from './api';
 import { configAllows, type AppConfig, type Approval, type Assistant, type Conversation, type Message, type ModelOption, type ModelRecommendation, type ModelSelection, type Run, type RunStatus, type Skill, type StoredFile, type StreamEvent } from './types';
 import { isActive, statusLabels } from './types';
 import { appendEvent, eventTypes, pendingApprovalIds, streamText } from './stream';
@@ -20,6 +20,7 @@ import HistoricalBusinessResults, { historicalResultMessages } from './Historica
 import SkillPicker, { mentionQuery, selectedSkillIds, SkillChips } from './SkillPicker';
 import { ComposerCompletion, ComposerFollowups, composerInputMaxHeight, composerShortcut, useComposerAssistance } from './ComposerAssistance';
 import MessageQueue, { useMessageQueue } from './MessageQueue';
+import { CHAT_ATTACHMENT_ACCEPT, chatAttachmentProblem } from './attachmentPolicy';
 import { MemoryWorkspace } from './MemoryPage';
 import './composer.css';
 
@@ -262,7 +263,21 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     } catch (e) { if (mounted.current) { setError(errorText(e)); if (e instanceof ApiError && e.code === 'MODEL_SELECTION_REQUIRED') setModelReconnectRequired(true); } }
     finally { submissionPending.current = false; if (mounted.current) { setRetrying(false); setSending(false); } }
   };
-  const upload = async (selectedFiles: FileList | null) => { if (!canUseAttachments || !selectedFiles) return; assistance.invalidate(); setUploading(true); setError(''); try { for (const file of Array.from(selectedFiles)) { if (file.size > config.upload_max_bytes) throw new Error(`「${file.name}」超过 ${sizeText(config.upload_max_bytes)} 的附件上限。`); const body = new FormData(); body.append('file', file); const saved = await api<StoredFile>('/files', { method: 'POST', body }); if (mounted.current) setFiles(prev => [...prev, saved]); } } catch (e) { if (mounted.current) setError(errorText(e)); } finally { if (mounted.current) setUploading(false); if (fileInput.current) fileInput.current.value = ''; } };
+  const upload = async (selectedFiles: FileList | null) => {
+    if (!canUseAttachments || !selectedFiles || uploading) return;
+    const selected = Array.from(selectedFiles);
+    const problem = chatAttachmentProblem([...files, ...selected], conversation.runtime_type || 'claude', config.upload_max_bytes);
+    if (problem) { setError(problem); if (fileInput.current) fileInput.current.value = ''; return; }
+    assistance.invalidate(); setUploading(true); setError('');
+    try {
+      for (const file of selected) {
+        const body = new FormData(); body.append('file', file);
+        const saved = await api<StoredFile>('/files', { method: 'POST', body });
+        if (mounted.current) setFiles(prev => [...prev, saved]);
+      }
+    } catch (e) { if (mounted.current) setError(errorText(e)); }
+    finally { if (mounted.current) setUploading(false); if (fileInput.current) fileInput.current.value = ''; }
+  };
   const decide = async (approval: Approval, decision: 'allow' | 'deny', memoryDigest?: string):Promise<boolean> => {
     setDecisionBusy(approval.id); setError('');
     try {
@@ -376,7 +391,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
         <ComposerCompletion value={assistance.completion} onAccept={assistance.accept} onDismiss={assistance.invalidate}/>
         <div className="composer-toolbar composer-actions">
           <div className="composer-utilities">
-            {canUseAttachments && <><input ref={fileInput} type="file" multiple hidden accept=".pdf,.docx,.xlsx,.txt,.md,.csv,.json,image/*" onChange={e => void upload(e.target.files)}/><button className="attach-button composer-icon" type="button" aria-label={uploading ? '正在上传附件' : '添加附件'} title="添加附件" disabled={uploading || sending || loading || archived} onClick={() => fileInput.current?.click()}>{uploading ? <LoaderCircle className="spin" size={18}/> : <Paperclip size={18}/>}</button></>}
+            {canUseAttachments && <><input ref={fileInput} type="file" multiple hidden accept={CHAT_ATTACHMENT_ACCEPT} onChange={e => void upload(e.target.files)}/><button className="attach-button composer-icon" type="button" aria-label={uploading ? '正在上传附件' : '添加附件'} title="添加附件" disabled={uploading || sending || loading || archived} onClick={() => fileInput.current?.click()}>{uploading ? <LoaderCircle className="spin" size={18}/> : <Paperclip size={18}/>}</button></>}
             {canUseSkills && <button type="button" className="attach-button composer-icon" aria-label="选择 Skill" title="选择 Skill" aria-expanded={skillQuery !== null} disabled={sending || loading || archived} onClick={() => { closeModelSettings(); mention.current = null; setSkillQuery(previous => previous === null ? '' : null); }}><Sparkles size={17}/></button>}
           </div>
           <ModelSettingsDisclosure automatic={autoModelRouting} selection={selection} models={models} loading={loading||modelsLoading} pending={savingModel}>{!trial&&<ModelRoutingControl automatic={autoModelRouting} disabled={archived||active||loading||sending||uploading||showContext||refreshingRun||savingModel||recommendBusy} onChange={value=>void changeRouting(value)}/>}{!autoModelRouting?<ModelSelector models={models} value={selection} hasHistory={hasHistory} loading={modelsLoading} disabled={archived || active || loading || sending || uploading || showContext || refreshingRun} pending={savingModel} onRecommend={canRecommend ? openRecommendation : undefined} recommendBusy={recommendBusy} onChange={next => void changeModel(next)}/>:<div className="model-auto-actions">{canRecommend&&<Button variant="ghost" disabled={archived||active||loading||sending||uploading||showContext||refreshingRun||savingModel} busy={recommendBusy} onClick={openRecommendation}><Sparkles size={14}/>为当前任务推荐模型</Button>}</div>}</ModelSettingsDisclosure>

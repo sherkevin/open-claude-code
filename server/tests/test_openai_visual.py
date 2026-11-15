@@ -183,3 +183,22 @@ def test_visual_adapter_requires_structured_choice_content(monkeypatch):
         asyncio.run(call_visual_json(
             base_url="http://127.0.0.1:3425/v1", model="vision", image=b"x", mime_type="image/png", prompt="x"))
     assert error.value.code == "VISUAL_MODEL_RESPONSE_INVALID"
+
+
+def test_hy4_bounded_extraction_disables_default_reasoning(monkeypatch):
+    monkeypatch.setattr("app.openai_visual.httpx.AsyncClient", _Client)
+    asyncio.run(call_visual_json(base_url="https://tokenhub.tencentmaas.com/v1", model="hy4",
+        image=b"synthetic", mime_type="image/png", prompt="Only extract visible labels"))
+    assert _Client.last.payload["thinking"] == {"type": "disabled"}
+
+
+def test_visual_adapter_rejects_truncated_model_answer(monkeypatch):
+    class Truncated(_Client):
+        async def post(self, endpoint, json):
+            import httpx
+            return httpx.Response(200,json={"choices":[{"finish_reason":"length","message":{"content":"{}"}}]})
+    monkeypatch.setattr("app.openai_visual.httpx.AsyncClient", Truncated)
+    with pytest.raises(AppError) as error:
+        asyncio.run(call_visual_json(base_url="https://tokenhub.tencentmaas.com/v1", model="hy4",
+            image=b"synthetic", mime_type="image/png", prompt="Only extract visible labels"))
+    assert error.value.code == "VISUAL_MODEL_OUTPUT_LIMIT"

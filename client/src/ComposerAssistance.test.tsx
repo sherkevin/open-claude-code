@@ -1,11 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ComposerCompletion, ComposerFollowups, completedAnswerRun, composerInputMaxHeight, composerShortcut, followupTexts } from './ComposerAssistance';
+import { ComposerCompletion, ComposerFollowups, completedAnswerRun, completionNotice, completionSuggestion, composerInputMaxHeight, composerShortcut, followupTexts } from './ComposerAssistance';
 import type { Message, Run } from './types';
 
 const state = { composing:false, draft:'查询本周订单', canComplete:true, completionBusy:false, suggestion:false, skillsOpen:false };
 const run: Run = { id:'r1',conversation_id:'c1',status:'succeeded',kind:'chat',assistant_message_id:'a1',error:null,usage:null,approvals:[],created_at:'2026-11-15T00:00:00Z',completed_at:'2026-11-15T00:00:01Z' };
 const answer = { id:'a1',conversation_id:'c1',role:'assistant',run_id:'r1',text:'已按范围汇总。',file_ids:[],created_at:'2026-11-15T00:00:01Z' } as Message;
+
+describe('completion preserves the draft and explains unavailable responses', () => {
+  it('accepts only a bounded extension of the exact original draft', () => {
+    const draft = '  查询订单\n  按客户  ';
+    expect(completionSuggestion(draft, draft + '并列出来源')).toBe(draft + '并列出来源');
+    expect(completionSuggestion(draft, draft.trim() + '并列出来源')).toBe('');
+    expect(completionSuggestion(draft, '删除订单')).toBe('');
+    expect(completionSuggestion(draft, draft)).toBe('');
+    expect(completionSuggestion(draft, draft + '  ')).toBe('');
+    expect(completionSuggestion(draft, null)).toBe('');
+    expect(completionSuggestion(draft, draft + '质'.repeat(701))).toBe('');
+    expect(completionSuggestion('😀'.repeat(499), '😀'.repeat(500))).toBe('😀'.repeat(500));
+  });
+  it.each(['unavailable', 'provider_unconfigured', 'provider_invalid', 'budget_disabled'])('reports %s as an unavailable configuration', mode => {
+    expect(completionNotice(mode)).toContain('管理员');
+    expect(completionNotice(mode)).not.toContain('没有更合适');
+  });
+  it('distinguishes disabled, invalid output and a long draft', () => {
+    expect(completionNotice('disabled')).toContain('关闭');
+    expect(completionNotice('provider_response_rejected')).toContain('有效补全');
+    expect(completionNotice('input_too_long')).toContain('500');
+  });
+});
 
 describe('composer shortcuts respect focus and IME',()=>{
   it('uses a plain Tab to request, then explicitly accept a preview',()=>{

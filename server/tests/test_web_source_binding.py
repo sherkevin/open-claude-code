@@ -188,6 +188,17 @@ def test_partly_cited_web_sources_and_candidates_keep_distinct_attribution(syste
     assert [item['attribution'] for item in citations] == ['cited', 'search_candidate']
 
 
+def test_explicit_search_citation_preserves_summary_status_after_persistence(system):
+    service, _, _, run = system
+    snippet = source(system, 'explicit-snippet', 'search_excerpt')
+    citations = finish(system, f'Summary-only claim [[source:{snippet["id"]}]]')
+    assert citations[0]['attribution'] == 'cited'
+    assert citations[0]['locator'] == {'content_type': 'search_excerpt'}
+    message = service.require('messages', run['assistant_message_id'])
+    assert '回答引用的搜索摘要，未核验正文' in message['text']
+    assert 'original_url' not in citations[0] and 'excerpt' not in citations[0]
+
+
 def test_extractor_rejects_errors_unstructured_text_and_bounded_decode(system):
     evidence = system[0].evidence
     item = source(system)

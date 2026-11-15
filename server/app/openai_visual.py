@@ -73,6 +73,7 @@ async def call_visual_json(
     prompt: str,
     timeout_seconds: float = 30,
     auth_token: str = "",
+    request_post=None,
 ) -> dict[str, Any]:
     """Call a configured OpenAI-compatible visual model with one image.
 
@@ -101,6 +102,11 @@ async def call_visual_json(
             {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{encoded}"}},
         ]}],
     }
+    if model.casefold() == "hy4":
+        # This bounded extraction role needs a final JSON answer, not Hy4's
+        # default high reasoning consuming the entire output allowance.
+        # https://cloud.tencent.com/document/product/1823/131208
+        payload["thinking"] = {"type": "disabled"}
     headers = {"content-type": "application/json"}
     if auth_token:
         headers["authorization"] = "Bearer " + auth_token
@@ -108,7 +114,8 @@ async def call_visual_json(
     try:
         timeout = httpx.Timeout(max(1, min(120, float(timeout_seconds))), connect=5)
         async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=False, trust_env=False) as client:
-            response = await client.post(endpoint, json=payload)
+            response = (await request_post(client, endpoint, payload) if request_post is not None
+                        else await client.post(endpoint, json=payload))
             raw = response.content
             if not isinstance(raw, (bytes, bytearray)):
                 raise AppError(502, "VISUAL_MODEL_RESPONSE_INVALID", "视觉模型返回格式无效")
@@ -139,6 +146,8 @@ async def call_visual_json(
         raise AppError(503, "VISUAL_MODEL_UNAVAILABLE", "视觉模型服务暂时不可用") from exc
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
     choices = body.get("choices") if isinstance(body, dict) else None
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict) and choices[0].get("finish_reason") == "length":
+        raise AppError(502, "VISUAL_MODEL_OUTPUT_LIMIT", "图片解析输出达到上限，未生成完整结果")
     message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
     content = _content_text(message.get("content") if isinstance(message, dict) else None)
     if not content:

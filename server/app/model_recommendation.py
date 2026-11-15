@@ -79,14 +79,19 @@ def _tab_target(service):
         return target_id, service.catalog.select(target_id), None
     except (AppError, ValueError, TypeError) as error:
         # Keep the exact public target fail-closed first.  Only an explicit
-        # catalog entry whose pinned upstream route contains this target may
+        # catalog entry whose pinned upstream route exactly names this target may
         # act as an approved public alias.
         models = getattr(service.catalog, "models", {})
+        if target_id in models:
+            # An explicit catalog entry (including a disabled one) is authoritative.
+            return target_id, None, getattr(error, "message", "授权模型线路不可用")
         for public_id, item in models.items():
             if not isinstance(public_id, str) or not isinstance(item, dict):
                 continue
             upstream = item.get("upstream_model")
-            if not isinstance(upstream, str) or target_id.casefold() not in upstream.casefold():
+            if not isinstance(upstream, str) or not re.search(
+                rf"(?:^|/){re.escape(target_id)}(?:\[[^\[\]\r\n]+\])?$", upstream, re.I
+            ):
                 continue
             try:
                 return target_id, service.catalog.select(public_id), None
@@ -493,6 +498,8 @@ async def provider_completion(service, draft: str, *, user_id=None) -> dict[str,
     phrase, which keeps completion evidence honest and cost bounded. This route
     is independent from the Fitness recommendation target.
     """
+    if len(draft) > MAX_COMPLETION_INPUT_CHARS:
+        return {"suggestion": None, "router": {"mode": "input_too_long", "provider_attempted": False}}
     text = _safe_completion(draft)
     if not text:
         raise AppError(422, "EMPTY_COMPLETION_TEXT", "请输入需要补全的内容")
@@ -594,6 +601,14 @@ async def provider_completion(service, draft: str, *, user_id=None) -> dict[str,
             if isinstance(evidence, dict):
                 evidence.update(decision_mode="provider_response_rejected", fallback_reason="completion_prefix_violation")
             return result
+        # The bounded provider prompt normalizes whitespace and redacts secrets.
+        # Only append its new suffix; never replace the user's original prefix.
+        suffix = completion[len(text):]
+        if not suffix.strip() or _safe_summary(suffix) != " ".join(suffix.split()) or len(draft + suffix) > MAX_COMPLETION_OUTPUT_CHARS:
+            result["router"].update(mode="provider_response_rejected", rejection_reason="completion_suffix_invalid")
+            if isinstance(evidence, dict):
+                evidence.update(decision_mode="provider_response_rejected", fallback_reason="completion_suffix_invalid")
+            return result
         provider_metadata = {**metadata, "mode": "provider"}
         provider_metadata["evidence"] = _route_evidence(
             text,
@@ -604,7 +619,7 @@ async def provider_completion(service, draft: str, *, user_id=None) -> dict[str,
             selected_model_id=target_id,
         )
         provider_metadata["evidence"]["provider_attempted"] = True
-        return {"suggestion": completion, "router": provider_metadata}
+        return {"suggestion": draft + suffix, "router": provider_metadata}
     # Keep malformed gateway envelopes fail-closed.  ``body`` is not trusted
     # merely because the HTTP status was successful; a non-object response
     # must yield a null suggestion and auditable rejection metadata.

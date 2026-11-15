@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .db import dump, now, uid
 from .deepseek_api import DeepSeekAPI
 from .openai_visual import MAX_IMAGE_BYTES, call_visual_json
+from .usage_accounting import metered_post
 from .provider_policy import classify_provider_url
 from .security import AppError, safe_name
 from .vision import IMAGE_SUFFIXES, VisionRuntime
@@ -634,7 +635,7 @@ class KnowledgeService:
                 self._prepare_image_asset(document_id, version, path, mime, len(data))
             elif mime == "application/pdf":
                 self._prepare_pdf_previews(document_id, version, path)
-            self._index(document_id, version, path, name)
+            self._index(document_id, version, path, name, usage_user_id=user["id"])
             self.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), kb_id))
             return self.document_view(self.version(document_id, version, user))
 
@@ -880,7 +881,7 @@ class KnowledgeService:
             cursor = item_end + 1  # rows are joined with a single newline
         return selected
 
-    def _index_visual_asset(self, document_id, version, path):
+    def _index_visual_asset(self, document_id, version, path, *, usage_user_id=None):
         """Index local image embeddings, OCR boxes and bounded entity links.
 
         Every artifact is pinned to the immutable source version.  A missing
@@ -985,7 +986,7 @@ class KnowledgeService:
         # provider call; when enabled, only the already-authorized image file
         # and a bounded schema prompt are sent. Model candidates remain
         # source-bound and never replace deterministic OCR evidence.
-        self._index_provider_visual_candidates(document_id, version, path, regions)
+        self._index_provider_visual_candidates(document_id, version, path, regions, usage_user_id=usage_user_id)
         return bool(self.db.one("SELECT 1 AS ok FROM knowledge_visual_embeddings WHERE document_id=? AND version=? LIMIT 1", (document_id, version)))
 
     @staticmethod
@@ -1020,7 +1021,7 @@ class KnowledgeService:
             # A loopback adapter is permitted only as a locally controlled
             # bridge whose upstream remains TokenHub.
             return None
-        return {"public_id": public_id, "upstream_model": selection["upstream_model"], "base_url": base_url,
+        return {"public_id": public_id, "model_label": selection.get("model_label", public_id), "upstream_model": selection["upstream_model"], "base_url": base_url,
                 "token": token, "timeout": float(getattr(settings, "knowledge_vision_timeout_seconds", 30) or 30),
                 "provider_route": route.kind}
 
@@ -1034,7 +1035,7 @@ class KnowledgeService:
         except Exception:
             return
 
-    def _index_provider_visual_candidates(self, document_id, version, path, regions):
+    def _index_provider_visual_candidates(self, document_id, version, path, regions, *, usage_user_id=None):
         selection = self._provider_visual_selection()
         if not selection:
             return
@@ -1051,10 +1052,15 @@ class KnowledgeService:
             )
             suffix = path.suffix.lower().lstrip(".")
             mime_type = "image/jpeg" if suffix in {"jpg", "jpeg"} else "image/" + (suffix or "jpeg")
+            async def record_request(http, endpoint, payload):
+                return await metered_post(http, endpoint, service=self.service, kind="knowledge_vision",
+                    selection={"model_id": selection["public_id"], "model_label": selection["model_label"]},
+                    payload=payload, user_id=usage_user_id, usage_protocol="openai")
             result = asyncio.run(call_visual_json(
                 base_url=selection["base_url"], model=selection["upstream_model"], image=raw,
                 mime_type=mime_type, prompt=prompt,
                 timeout_seconds=selection["timeout"], auth_token=selection["token"],
+                request_post=record_request,
             ))
             payload = result.get("json") if isinstance(result, dict) else None
             if not isinstance(payload, dict):
@@ -1117,6 +1123,9 @@ class KnowledgeService:
                                             "usage": {key: value for key, value in (result.get("usage") or {}).items() if key in {"prompt_tokens", "completion_tokens", "total_tokens"} and type(value) is int and value >= 0},
                                             "evidence_kind": "model_candidate"}
             self.db.execute("UPDATE knowledge_image_assets SET metadata_json=? WHERE document_id=? AND version=?", (dump(metadata), document_id, version))
+        except AppError as exc:
+            self._provider_visual_failure(document_id, version, selection, exc.code)
+            return
         except Exception:
             # Provider inference is additive and fail-closed. Local OCR/CLIP
             # evidence remains valid when a route times out or returns invalid
@@ -1124,7 +1133,7 @@ class KnowledgeService:
             self._provider_visual_failure(document_id, version, selection)
             return
 
-    def _index(self, document_id, version, path, name):
+    def _index(self, document_id, version, path, name, *, usage_user_id=None):
         try:
             try:
                 pages = self.parser.parse(path, name)
@@ -1157,7 +1166,7 @@ class KnowledgeService:
                     self.db.execute("UPDATE knowledge_image_assets SET ocr_status='ready' WHERE document_id=? AND version=?", (document_id, version))
             if Path(name).suffix.lower() in IMAGE_SUFFIXES:
                 try:
-                    self._index_visual_asset(document_id, version, path)
+                    self._index_visual_asset(document_id, version, path, usage_user_id=usage_user_id)
                 except Exception:
                     # Visual enrichment is additive.  A model/runtime failure
                     # must not invalidate a successfully OCR-indexed document.
@@ -1371,7 +1380,7 @@ class KnowledgeService:
         row = self.version(document_id, None, user)
         with self.index_lock:
             self.db.execute("UPDATE knowledge_versions SET status='processing',error=NULL WHERE document_id=? AND version=?", (document_id, row["version"]))
-            self._index(document_id, row["version"], self.content_path(row), row["name"])
+            self._index(document_id, row["version"], self.content_path(row), row["name"], usage_user_id=user["id"])
             self.db.execute("UPDATE knowledge_bases SET revision=revision+1,updated_at=? WHERE id=?", (now(), row["kb_id"]))
         return self.document_view(self.version(document_id, None, user))
 

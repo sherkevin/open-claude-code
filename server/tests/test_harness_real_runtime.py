@@ -132,6 +132,19 @@ def wait_run(client, run_id, statuses=None):
     pytest.fail("real Harness run did not settle")
 
 
+def image_fixture_settings(tmp_path, node, source, base):
+    """The exact settings used by the real-Node image transport acceptance."""
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({"default_model_id": "fixture", "models": [{"id": "fixture", "label": "Local attachment protocol fixture", "upstream_model": "fixture",
+        "capabilities": ["multimodal"],
+        "reasoning_levels": {"default": None}, "provider_env": {"ANTHROPIC_API_KEY": "synthetic-only", "ANTHROPIC_BASE_URL": base}}]}))
+    return Settings(data_dir=tmp_path / "data", runtime_type="harness", harness_node_path=node,
+        harness_source_dir=source, model_catalog=str(catalog), default_model_id="", provider_settings="",
+        provider_test_mode=True,
+        origins=("http://testserver",), approval_seconds=30, model_router_enabled=False,
+        knowledge_vision_enabled=False, image_generation_enabled=False)
+
+
 @pytest.mark.parametrize("revocation", ["delete", "bytes"])
 def test_real_harness_text_image_payload_resume_and_revocation(tmp_path, monkeypatch, model_server, record_property, revocation):
     node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
@@ -141,13 +154,7 @@ def test_real_harness_text_image_payload_resume_and_revocation(tmp_path, monkeyp
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL", "local-lexical-v1")
     base, requests = model_server
-    catalog = tmp_path / "catalog.json"
-    catalog.write_text(json.dumps({"default_model_id": "fixture", "models": [{"id": "fixture", "label": "Local attachment protocol fixture", "upstream_model": "fixture",
-        "reasoning_levels": {"default": None}, "provider_env": {"ANTHROPIC_API_KEY": "synthetic-only", "ANTHROPIC_BASE_URL": base}}]}))
-    settings = Settings(data_dir=tmp_path / "data", runtime_type="harness", harness_node_path=node,
-        harness_source_dir=source, model_catalog=str(catalog), default_model_id="", provider_settings="",
-        origins=("http://testserver",), approval_seconds=30, model_router_enabled=False,
-        knowledge_vision_enabled=False, image_generation_enabled=False)
+    settings = image_fixture_settings(tmp_path, node, source, base)
     app = create_app(settings)
     from app.harness_runtime import HarnessRuntime
     original_connect, processes = HarnessRuntime.connect, []
@@ -230,6 +237,7 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         "reasoning_levels": {"default": None}, "provider_env": {"ANTHROPIC_API_KEY": "synthetic-only", "ANTHROPIC_BASE_URL": base}}]}))
     settings = Settings(data_dir=tmp_path / "data", runtime_type="harness", harness_node_path=node,
         harness_source_dir=source, model_catalog=str(catalog), default_model_id="", provider_settings="",
+        provider_test_mode=True,
         origins=("http://testserver",), approval_seconds=30, model_router_enabled=False,
         knowledge_vision_enabled=False, image_generation_enabled=False)
     app = create_app(settings)
@@ -335,7 +343,7 @@ def test_real_harness_manual_compaction_usage_and_resume(tmp_path, monkeypatch, 
     settings = Settings(
         data_dir=tmp_path / "data", runtime_type="harness", harness_node_path=node,
         harness_source_dir=source, model_catalog=str(catalog), default_model_id="",
-        provider_settings="", origins=("http://testserver",), model_router_enabled=False,
+        provider_settings="", provider_test_mode=True, origins=("http://testserver",), model_router_enabled=False,
         knowledge_vision_enabled=False, image_generation_enabled=False,
     )
     app = create_app(settings)

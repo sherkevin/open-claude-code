@@ -459,6 +459,10 @@ class EvidenceService:
                     kind_label = {"cited": "回答引用的网页", "read": "网页正文已读取，未明确引用",
                                   "search_candidate": "外部检索候选，未核验正文",
                                   "image_candidate": "图片检索候选，未读取网页正文"}[source["attribution"]]
+                    if source["attribution"] == "cited":
+                        kind_label = {"search_excerpt": "回答引用的搜索摘要，未核验正文",
+                                      "image_search_result": "回答引用的图片检索结果，未读取网页正文",
+                                      "page_text": "回答引用的网页正文"}.get(location.get("content_type"), kind_label)
                 lines.append(f"[{source['number']}] [{kind_label} · {title}{suffix}]({source['url']})")
             result = result.rstrip() + "\n\n来源\n\n" + "\n\n".join(lines)
         summaries = []
@@ -468,10 +472,13 @@ class EvidenceService:
             # Cards need type/page/completeness after message persistence, but
             # external URLs and excerpts must still be fetched with fresh ACLs.
             display = {}
+            if source["kind"] == "web" and source["locator"].get("content_type") in {
+                    "search_excerpt", "page_text", "image_search_result"}:
+                display["content_type"] = source["locator"]["content_type"]
             if source["locator"].get("capability") in {"ocr", "image_search"}:
-                display = {key: source["locator"][key] for key in (
+                display.update({key: source["locator"][key] for key in (
                     "capability", "page", "provider", "extraction", "complete", "truncated")
-                    if key in source["locator"]}
+                    if key in source["locator"]})
             if display:
                 summary["locator"] = display
             summaries.append(summary)

@@ -37,6 +37,12 @@ export function sourceAttributionLabel(source:EvidenceSource) {
   if(attribution==='search_candidate')return '外部检索候选 · 未核验正文';
   if(attribution==='read')return '网页正文已读取 · 未明确引用';
   if(attribution==='image_candidate')return '图片检索候选 · 未读取网页正文';
+  if(source.kind==='web'){
+    const type=source.locator?.content_type;
+    if(type==='search_excerpt')return attribution==='cited'?'回答引用搜索摘要 · 未核验正文':'搜索摘要 · 未核验正文';
+    if(type==='image_search_result')return attribution==='cited'?'回答引用图片检索结果 · 未读取网页正文':'图片检索结果 · 未读取网页正文';
+    if(type==='page_text')return attribution==='cited'?'回答引用 · 网页正文已读取':'网页正文摘录';
+  }
   return attribution==='cited'?'回答引用':sourceKindLabel[source.kind];
 }
 export function isImageSource(source:EvidenceSource){return source.kind==='web'&&source.locator?.capability==='image_search';}
@@ -123,12 +129,13 @@ export function SourceDetails({source}:{source:EvidenceSource}) {
   const technical=Object.entries(locator).filter(([key])=>!primaryKeys.includes(key)||displayValues.has(key)).map(([key,value])=>[displayValues.has(key)?`${locatorLabels[key]}（原始值）`:key,value] as const);
   const excerpt=sourceExcerptView(source.excerpt||'');
   const displayExcerpt=source.kind==='web'?compactWebExcerpt(excerpt.text):excerpt.text;
+  const excerptHeading=source.kind==='web'&&locator.content_type==='search_excerpt'?'搜索摘要（未读取网页正文）':source.kind==='web'&&locator.content_type==='page_text'?'网页正文摘录':'来源内容摘录';
   const original=publicWebURL(source.original_url)?source.original_url:undefined;
   const fields=(entries:ReadonlyArray<readonly [string,unknown]>)=><dl className="source-locator">{entries.map(([key,item])=><div key={key}><dt>{locatorLabels[key]||key}</dt><dd><pre title={key==='fetched_at'&&typeof locator.fetched_at==='string'?locator.fetched_at:undefined}>{renderValue(item)}</pre></dd></div>)}</dl>;
   return <div className="source-details">
     {original&&fields([['原始网页',original]])}
     {primary.length>0&&fields(primary)}
-    {excerpt.structured?<details className="source-disclosure"><summary>查看原始摘录</summary><pre className="source-excerpt">{excerpt.text}</pre></details>:<><h3 className="source-excerpt-heading">来源内容摘录</h3><pre className="source-excerpt">{displayExcerpt||'此来源未提供内容片段。'}</pre></>}
+    {excerpt.structured?<details className="source-disclosure"><summary>查看原始摘录</summary><pre className="source-excerpt">{excerpt.text}</pre></details>:<><h3 className="source-excerpt-heading">{excerptHeading}</h3><pre className="source-excerpt">{displayExcerpt||'此来源未提供内容片段。'}</pre></>}
     <details className="source-disclosure"><summary>技术详情</summary>{fields([['来源 ID',source.id],...technical])}</details>
   </div>;
 }

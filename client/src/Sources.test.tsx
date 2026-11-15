@@ -6,6 +6,16 @@ import type { EvidenceSource } from './types';
 afterEach(()=>vi.unstubAllGlobals());
 const source=(attribution:EvidenceSource['attribution'],id='web-1'):EvidenceSource=>({id,kind:'web',title:'Industrial reference',attribution,locator:{},excerpt:'',created_at:''});
 
+it('keeps explicitly cited search summaries distinct from fetched page text',()=>{
+  const snippet={...source('cited'),locator:{content_type:'search_excerpt'}};
+  const page={...source('cited'),locator:{content_type:'page_text'}};
+  const text=renderToStaticMarkup(<AnswerMarkdown text="Answer" citations={[snippet]}/>);
+  expect(text).toContain('回答引用搜索摘要 · 未核验正文');
+  expect(renderToStaticMarkup(<AnswerMarkdown text="Answer" citations={[page]}/>)).toContain('回答引用 · 网页正文已读取');
+  expect(renderToStaticMarkup(<SourceDetails source={snippet}/>)).toContain('搜索摘要（未读取网页正文）');
+  expect(renderToStaticMarkup(<SourceDetails source={page}/>)).toContain('网页正文摘录');
+});
+
 describe('Chinese prose around bare web links',()=>{
   const links=(html:string)=>[...html.matchAll(/<a\b[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/g)].map(match=>({href:match[1],label:match[2]}));
   it('keeps two actual source URLs separate from surrounding Chinese prose',()=>{

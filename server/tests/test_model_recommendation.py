@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.model_catalog import ModelCatalog
-from app.model_recommendation import provider_completion, provider_router, router_preflight
+from app.model_recommendation import _tab_target, provider_completion, provider_router, router_preflight
 from app.main import create_app
 from test_api import PASSWORD, login
 
@@ -333,11 +333,12 @@ def test_tab_completion_uses_independent_default_1017_target(tmp_path, monkeypat
     assert [call["model"] for call in calls] == ["deepseek-v4.1-flash-1007", "deepseek-v4.1-flash-1017"]
 
 
-def test_tab_completion_accepts_explicit_branded_catalog_alias_for_1017(tmp_path, monkeypatch):
+@pytest.mark.parametrize("upstream", ["deepseek-v4.1-flash-1017", "tencent-cloud/deepseek-v4.1-flash-1017", "tencent-cloud/deepseek-v4.1-flash-1017[1m]"])
+def test_tab_completion_accepts_explicit_branded_catalog_alias_for_1017(tmp_path, monkeypatch, upstream):
     """A Dano public entry may pin the approved 1017 upstream route."""
     catalog_path = tmp_path / "models.json"
     catalog_path.write_text(json.dumps({"default_model_id": "dano-v2.1", "models": [
-        {"id": "dano-v2.1", "label": "Dano-v2.1", "upstream_model": "tencent-cloud/deepseek-v4.1-flash-1017[1m]", "reasoning_levels": {"default": None}},
+        {"id": "dano-v2.1", "label": "Dano-v2.1", "upstream_model": upstream, "reasoning_levels": {"default": None}},
     ]}), encoding="utf-8")
     provider_path = tmp_path / "provider.json"
     provider_path.write_text(json.dumps({"env": {"ANTHROPIC_API_KEY": "test-only-token", "ANTHROPIC_BASE_URL": "http://tokenhub.test/v1"}}), encoding="utf-8")
@@ -373,8 +374,57 @@ def test_tab_completion_accepts_explicit_branded_catalog_alias_for_1017(tmp_path
     assert result["suggestion"] == "分析质量并列出风险"
     assert result["router"]["target_model_id"] == "deepseek-v4.1-flash-1017"
     assert result["router"]["target_status"] == "available"
-    assert calls[0]["model"] == "tencent-cloud/deepseek-v4.1-flash-1017[1m]"
+    assert calls[0]["model"] == upstream
     assert calls[0]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize("upstream", [
+    "deepseek-v4.1-flash-10170", "deepseek-v4.1-flash-1017-other",
+    "other-deepseek-v4.1-flash-1017", "deepseek-v4.1-flash-1017/other",
+])
+def test_tab_alias_rejects_similar_unapproved_routes(tmp_path, upstream):
+    service = _router_service(tmp_path)
+    service.settings.tab_completion_model_id = "deepseek-v4.1-flash-1017"
+    service.catalog.models["vision"]["upstream_model"] = upstream
+    assert _tab_target(service)[1] is None
+
+
+def test_tab_disabled_exact_target_cannot_be_bypassed_by_alias(tmp_path):
+    service = _router_service(tmp_path)
+    service.catalog.models["deepseek-v4.1-flash-1007"]["enabled"] = False
+    service.catalog.models["vision"]["upstream_model"] = "deepseek-v4.1-flash-1007"
+    assert _tab_target(service)[1] is None
+
+
+@pytest.mark.parametrize("draft,completion,expected", [
+    ("  分析质量\n  按车间\t汇总  ", "分析质量 按车间 汇总并列出来源", "  分析质量\n  按车间\t汇总  并列出来源"),
+    ("分析质量", "分析质量", None),
+    ("分析质量", "分析质量 token=generated-secret", None),
+])
+def test_tab_preserves_original_draft_and_rejects_empty_or_credential_suffix(tmp_path, monkeypatch, draft, completion, expected):
+    service = _router_service(tmp_path)
+
+    async def fake_post(*args, **kwargs):
+        import httpx
+        return httpx.Response(200, request=httpx.Request("POST", "http://provider.test/v1/messages"),
+                              json={"content": [{"text": json.dumps({"completion": completion})}]})
+
+    monkeypatch.setattr("app.model_recommendation.metered_post", fake_post)
+    value = asyncio.run(provider_completion(service, draft))
+    assert value["suggestion"] == expected
+
+
+def test_tab_overlong_draft_is_not_truncated_or_sent_to_provider(tmp_path, monkeypatch):
+    service = _router_service(tmp_path)
+
+    async def unexpected_post(*args, **kwargs):
+        pytest.fail("overlong draft must not spend a provider request")
+
+    monkeypatch.setattr("app.model_recommendation.metered_post", unexpected_post)
+    value = asyncio.run(provider_completion(service, "质" * 501))
+    assert value["suggestion"] is None
+    assert value["router"]["mode"] == "input_too_long"
+    assert value["router"]["provider_attempted"] is False
 
 
 def test_router_status_is_fail_closed_when_exact_target_is_missing(tmp_path):
