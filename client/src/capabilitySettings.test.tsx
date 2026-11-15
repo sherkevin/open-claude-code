@@ -59,7 +59,7 @@ describe('capability settings permissions and presentation', () => {
 
   it('shows all four capabilities, safe defaults and no secret input without the credential panel', () => {
     const html = render(capabilityPageReducer(capabilityInitialState, {type:'loaded', value:fixture}));
-    expect(html).toContain('沿用部署环境默认值');
+    expect(html).toContain('默认配置'); expect(html).not.toContain('配置版本');
     expect(html).toContain('网页搜索');
     expect(html).toContain('网页读取');
     expect(html).toContain('文档识别');
