@@ -639,6 +639,10 @@ class Service:
             if conversation_runtime_type(conversation) == "harness":
                 from .harness_attachments import preflight
                 preflight(self, conversation_id, user, data["file_ids"], model_id=selection["model_id"])
+            elif conversation_runtime_type(conversation) == "claude":
+                from .sdk_image_attachments import preflight_images
+                preflight_images(self, conversation_id, user, data["file_ids"],
+                                 model_id=selection["model_id"], assistant=assistant)
             from .skills import selected_skills
             skills = selected_skills(self, assistant, user, data.get("skill_ids", []))
             snapshot = assistant_view(assistant, user)

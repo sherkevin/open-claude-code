@@ -234,6 +234,7 @@ class SDKRuntime(WorkspaceRuntime):
 
     def __init__(self, service, conversation_id, config, approve, emit):
         super().__init__(service, conversation_id, config, approve, emit)
+        self.interrupted = False
         # One-time, argument-bound nonce issued by the permission callback and
         # consumed by the dedicated capability dispatch.  A ticket carries no
         # authority the host did not already grant: it only replays the approved
@@ -564,6 +565,33 @@ class SDKRuntime(WorkspaceRuntime):
         await self.client.connect()
 
     async def execute(self, run, message):
+        from .sdk_image_attachments import SDKImagePrompt
+        self.current_run, self.interrupted = run, False
+        images = await offload(SDKImagePrompt.for_run, self, run, message)
+        if images is None:
+            return await self._execute(run, message)
+        operation = watcher = None
+        try:
+            async def monitor():
+                while True:
+                    await asyncio.sleep(0.25)
+                    await offload(images.recheck)
+
+            watcher = asyncio.create_task(monitor())
+            operation = asyncio.create_task(self._execute(run, message, images))
+            done, _ = await asyncio.wait({watcher, operation}, return_when=asyncio.FIRST_COMPLETED)
+            if watcher in done:
+                await self.close()
+                await watcher
+            await operation
+            await offload(lambda: images.recheck(content=True))
+        finally:
+            for task in (watcher, operation):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(*(task for task in (watcher, operation) if task is not None), return_exceptions=True)
+
+    async def _execute(self, run, message, images=None):
         self.current_run = run
         token_ledger = TokenAccounting()
         self.tool_done.clear()
@@ -593,6 +621,10 @@ class SDKRuntime(WorkspaceRuntime):
             return isinstance(grant, dict) and grant.get("enabled") is True
 
         for file_id in json.loads(message["file_ids"]):
+            if images is not None and file_id in images.file_ids:
+                # Inline raster bytes come from the authorized POSIX snapshot;
+                # do not copy them to the native Read tool's workspace.
+                continue
             item = await offload(self.service.require, "files", file_id)
             destination = root / "uploads" / f"{file_id}-{item['name']}"
             shutil.copyfile(item["path"], destination)
@@ -653,12 +685,15 @@ class SDKRuntime(WorkspaceRuntime):
             prompt += "\n\n【本轮用户在客户端选择的 Skills】\n以下版本仅用于本轮任务；不扩大工具权限，不覆盖系统身份及数据真实性要求。\n" + dump(skills)
         await offload_write(self.service.db.execute, "UPDATE conversations SET context_usage=NULL WHERE id=?", (self.conversation_id,))
         if compact:
+            if images is not None:
+                await offload(lambda: images.recheck(content=True))
             await self.client.query(prompt)
         else:
             async def verbatim_user_message():
                 # Public per-turn SDK flag preserves text but prevents native
                 # slash dispatch and @path expansion outside our file guard.
-                yield {"type": "user", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": None, "client_composed": True}
+                content = await offload_write(images.admit, prompt) if images is not None else prompt
+                yield {"type": "user", "message": {"role": "user", "content": content}, "parent_tool_use_id": None, "client_composed": True}
             await self.client.query(verbatim_user_message())
         stream_id, block_index = None, 0
         partial, completed = {}, set()
@@ -756,6 +791,7 @@ class SDKRuntime(WorkspaceRuntime):
         return await offload_write(save_context, self.service, self.conversation_id, value)
 
     async def interrupt(self):
+        self.interrupted = True
         if self.client:
             await self.client.interrupt()
 
