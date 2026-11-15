@@ -33,10 +33,11 @@ describe('public model selection', () => {
     expect(publicModelLabel(models, 'private-provider-model-1234')).toBe('模型信息暂不可用');
   });
   it('locks both model controls while a change or task is pending', () => {
-    const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'max' }} disabled onChange={() => {}}/>);
+    const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'max' }} disabled disabledReason="当前任务完成或停止后可以切换模型。" onChange={() => {}}/>);
     expect(html.match(/<button[^>]*aria-label="选择模型"[^>]*>/)?.[0]).toContain('disabled=""');
     expect(html.match(/<input[^>]*type="range"[^>]*>/)?.[0]).toContain('disabled=""');
     expect(html).toContain('aria-valuetext="最高"');
+    expect(html).toContain('当前任务完成或停止后可以切换模型。');
   });
   it('blocks both directions of incompatible native history, but allows same-model levels and compatible switches', () => {
     expect(modelSwitchRequiresNewConversation(models, 'dano-v2.1', 'glm-5.3', true)).toBe(true);
@@ -69,6 +70,19 @@ describe('public model selection', () => {
     const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'high' }} onChange={() => {}}/>);
     expect(html).toMatch(/role="option" aria-selected="false" tabindex="-1" class="fw-model-option"><span><strong>GLM-5.3/);
     expect(html).not.toContain('需新对话');
+  });
+  it('offers an actionable new-conversation choice without disabling an available protected model', () => {
+    const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'high' }} hasHistory onChange={() => {}} onNewConversation={() => {}}/>);
+    const option = html.match(/<button[^>]*role="option"[^>]*><span><strong>GLM-5.3[\s\S]*?<\/button>/)?.[0];
+    expect(option).toBeDefined();
+    expect(option).not.toContain('disabled=""');
+    expect(option).toContain('新建会话使用');
+    expect(html).toContain('当前对话和记忆保留');
+  });
+  it('explains how to choose a fixed model while automatic routing is active', () => {
+    const html = renderToStaticMarkup(<ModelSelector models={models} value={{ model_id: 'dano-v2.1', reasoning_level: 'high' }} automatic onChange={() => {}}/>);
+    expect(html).toContain('选择模型后改为手动固定');
+    expect(html).toContain('Dano-v2.1');
   });
   it('explicitly reconnects an unchanged public selection with PATCH and never submits a message', async () => {
     const selection = { model_id: 'glm-5.3', reasoning_level: 'default' };

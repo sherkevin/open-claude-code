@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { compactionLabel, contextCanCompact, contextStatus, ContextSummary } from './ContextDialog';
+import { compactionLabel, contextCanCompact, contextStatus, ContextSummary, readContextSnapshot } from './ContextDialog';
 import type { NativeContext, Run } from './types';
 import { compactionStatus, compactionStatusLabel } from './display';
 
@@ -42,8 +42,53 @@ const measured: NativeContext = {
   breakdown: { system_tokens: 200, tools_tokens: 100, message_tokens: 700 },
 };
 const summary = (context: NativeContext) => renderToStaticMarkup(createElement(ContextSummary, { context, models: [] }));
+afterEach(() => vi.unstubAllGlobals());
+
+describe('local context refresh admission', () => {
+  const response = (value: unknown) => new Response(JSON.stringify(value));
+  it.each([
+    { ...measured, status: 'not_measured' as const, total_tokens: null },
+    { ...measured, stale: true, stale_reason: 'snapshot_expired' as const, total_tokens: null },
+  ])('refreshes an empty or expired Harness projection without counting through a model', async cached => {
+    const fetch = vi.fn().mockResolvedValueOnce(response(cached)).mockResolvedValueOnce(response(measured));
+    vi.stubGlobal('fetch', fetch);
+    const signal = new AbortController().signal;
+    expect(await readContextSnapshot('chat/id', false, signal)).toEqual(measured);
+    expect(fetch.mock.calls.map(([url, init]) => [url, init.method || 'GET'])).toEqual([
+      ['/api/v1/conversations/chat%2Fid/context', 'GET'],
+      ['/api/v1/conversations/chat%2Fid/context/refresh', 'POST'],
+    ]);
+    expect(fetch.mock.calls.every(([, init]) => init.signal === signal)).toBe(true);
+  });
+  it.each([
+    [{ ...measured, source: 'native_runtime', status: 'not_measured' }, false],
+    [{ ...measured, status: 'not_measured' }, true],
+    [measured, false],
+    [{ ...measured, status: 'unavailable', error: '配置无法核验' }, false],
+    [{ ...measured, stale: true, stale_reason: 'route_changed' }, false],
+  ] as const)('never automatically refreshes a paid/native, busy, valid or invalidly bound context', async (cached, busy) => {
+    const fetch = vi.fn().mockResolvedValue(response(cached)); vi.stubGlobal('fetch', fetch);
+    expect(await readContextSnapshot('chat', busy)).toEqual(cached);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('retains the known context kind and shows a failed local refresh reason', async () => {
+    const cached = { ...measured, status: 'not_measured', total_tokens: null };
+    const fetch = vi.fn().mockResolvedValueOnce(response(cached)).mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'CONTEXT_BUSY', message: 'busy' } }), { status: 409 }));
+    vi.stubGlobal('fetch', fetch);
+    const result = await readContextSnapshot('chat');
+    expect(result.source).toBe('harness_token_meter');
+    expect(result.error).toContain('当前对话正在执行');
+    expect(result.total_tokens).toBeNull();
+  });
+});
 
 describe('Harness context evidence display', () => {
+  it('shows the actual returned statistics error instead of only unknown values', () => {
+    const html = summary({ ...measured, status: 'unavailable', precision: 'unknown', total_tokens: null, error: '当前授权或模型配置无法核验，上下文统计保持未知' });
+    expect(html).toContain('当前授权或模型配置无法核验，上下文统计保持未知');
+    expect(html).not.toContain('2,345');
+    expect(contextStatus(null)).toBe('上下文状态尚未读取');
+  });
   it('separates estimates from unverified provider counts, capacity and composition', () => {
     const html = summary(measured);
     expect(html).toContain('Harness 上下文估算');

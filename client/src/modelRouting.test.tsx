@@ -1,16 +1,32 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ModelRoutingControl, ModelSettingsDisclosure, RunModelIdentity } from './ModelRouting';
-import { createNewSession, newSessionPayload } from './NewSession';
+import NewSession, { assistantModelSelection, createNewSession, newSessionPayload } from './NewSession';
 import { saveModelRouting, saveModelSelection } from './models';
 import { chatMessagePayload } from './ChatPage';
-import type { ModelOption, Run } from './types';
+import type { AppConfig, Assistant, ModelOption, Run } from './types';
 const selection={model_id:'dano',reasoning_level:'high'};
 const models:ModelOption[]=[{id:'dano',label:'Dano',available:true,default_reasoning_level:'high',reasoning_levels:[{id:'high',label:'high'}]}, {id:'deepseek',label:'Deepseek',available:true,default_reasoning_level:'default',reasoning_levels:[{id:'default',label:'默认'}]}];
 const run:Run={id:'run',conversation_id:'chat',status:'running',assistant_message_id:null,error:null,usage:null,approvals:[],created_at:'2026-11-15',completed_at:null,model_id:'deepseek',model:'Deepseek',reasoning_level:'default'};
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('explicit model routing mode',()=>{
+  it('keeps manual model options discoverable in automatic new-session mode', () => {
+    const config = { brand_name: '开物', upload_max_bytes: 100, auth_types: [], model_label: '', default_model_id: 'dano' } as AppConfig;
+    const props = { assistants: [], config, models, modelsLoading: false, modelsError: '', onReloadModels: () => {}, onClose: () => {}, onCreated: () => {} };
+    const html = renderToStaticMarkup(<NewSession {...props}/>);
+    expect(html).toContain('aria-label="选择模型"');
+    expect(html).toContain('选择模型后改为手动固定');
+    const manual = renderToStaticMarkup(<NewSession {...props} initialSelection={{ model_id: 'deepseek', reasoning_level: 'default' }}/>);
+    expect(manual).toContain('value="manual" selected=""');
+    expect(manual).toContain('<span>Deepseek</span>');
+  });
+  it('preserves the explicit new-conversation model across assistant defaults and catalog removal', () => {
+    const assistant = { default_model_id: 'dano', default_reasoning_level: 'high' } as Assistant;
+    const requested = { model_id: 'deepseek', reasoning_level: 'default' };
+    expect(assistantModelSelection(models, {} as AppConfig, assistant, requested)).toEqual(requested);
+    expect(assistantModelSelection([models[0]], {} as AppConfig, assistant, requested)).toEqual(requested);
+  });
   it('keeps the manual model and level visible in a native closed disclosure',()=>{
     const html=renderToStaticMarkup(<ModelSettingsDisclosure automatic={false} selection={selection} models={models}><ModelRoutingControl automatic={false} onChange={()=>{}}/></ModelSettingsDisclosure>);
     expect(html).toContain('class="chat-model-settings fw-model-settings"');

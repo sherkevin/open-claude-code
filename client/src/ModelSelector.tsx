@@ -10,8 +10,8 @@ export function reasoningLevelLabel(level?:{id:string;label:string}) {
   return level.label.toLowerCase()===level.id.toLowerCase() ? labels[level.id.toLowerCase()] || level.label : level.label;
 }
 
-export default function ModelSelector({ models, value, disabled = false, pending = false, loading = false, hasHistory = false, onChange, onRecommend, recommendBusy = false }: {
-  models: ModelOption[]; value: ModelSelection; disabled?: boolean; pending?: boolean; loading?: boolean; hasHistory?: boolean; onChange: (value: ModelSelection) => void; onRecommend?: () => void; recommendBusy?: boolean;
+export default function ModelSelector({ models, value, disabled = false, disabledReason, pending = false, loading = false, hasHistory = false, automatic = false, onChange, onNewConversation, onRecommend, recommendBusy = false }: {
+  models: ModelOption[]; value: ModelSelection; disabled?: boolean; disabledReason?: string; pending?: boolean; loading?: boolean; hasHistory?: boolean; automatic?: boolean; onChange: (value: ModelSelection) => void; onNewConversation?: (value: ModelSelection) => void; onRecommend?: () => void; recommendBusy?: boolean;
 }) {
   const model = models.find(option => option.id === value.model_id);
   const locked = disabled || pending || loading;
@@ -48,16 +48,18 @@ export default function ModelSelector({ models, value, disabled = false, pending
   function cancelPreview() { draft.current = selectedIndex; setDraftIndex(selectedIndex); }
   function commit(index = draft.current) {
     const next = levels[index];
-    if (locked || !model?.available || !next || next.id === value.reasoning_level) return;
+    if (locked || !model?.available || !next || (!automatic && next.id === value.reasoning_level)) return;
     const key = `${model.id}\0${next.id}`;
     if (submitted.current === key) return;
     submitted.current = key;
     onChange({ model_id: model.id, reasoning_level: next.id });
   }
   function choose(next: ModelOption) {
-    if (locked || !next.available || requiresNew(next.id)) return;
+    if (locked || !next.available || (requiresNew(next.id) && !onNewConversation)) return;
     setOpen(false); trigger.current?.focus();
-    if (next.id !== value.model_id) onChange({ model_id: next.id, reasoning_level: next.default_reasoning_level });
+    const selection = { model_id: next.id, reasoning_level: next.id === value.model_id ? value.reasoning_level : next.default_reasoning_level };
+    if (requiresNew(next.id)) onNewConversation?.(selection);
+    else if (automatic || next.id !== value.model_id) onChange(selection);
   }
   return <div className="model-controls fw-model-picker" aria-label="模型设置" aria-busy={pending || loading}>
     <div className="fw-model-choice">
@@ -75,8 +77,8 @@ export default function ModelSelector({ models, value, disabled = false, pending
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (current + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
         options[next]?.focus();
       }}>{models.map(option => {
-        const reason = !option.available ? option.unavailable_reason || '暂不可用' : requiresNew(option.id) ? '需新对话 · 当前对话和记忆保留' : '';
-        return <button key={option.id} type="button" role="option" aria-selected={option.id === value.model_id} tabIndex={option.id === value.model_id?0:-1} disabled={locked || !!reason} className="fw-model-option" onClick={() => choose(option)}><span><strong>{option.label}</strong>{reason && <small>{reason}</small>}</span>{option.id === value.model_id && <Check size={17} aria-hidden="true"/>}</button>;
+        const reason = !option.available ? option.unavailable_reason || '暂不可用' : requiresNew(option.id) ? `${onNewConversation ? '新建会话使用' : '需新对话'} · 当前对话和记忆保留` : '';
+        return <button key={option.id} type="button" role="option" aria-selected={option.id === value.model_id} tabIndex={option.id === value.model_id?0:-1} disabled={locked || !option.available || (requiresNew(option.id) && !onNewConversation)} className="fw-model-option" onClick={() => choose(option)}><span><strong>{option.label}</strong>{reason && <small>{reason}</small>}</span>{option.id === value.model_id && <Check size={17} aria-hidden="true"/>}</button>;
       })}</div>
     </div>
     {model && <div className="fw-reasoning-control">
@@ -88,7 +90,9 @@ export default function ModelSelector({ models, value, disabled = false, pending
     </div>}
     {onRecommend && <button type="button" className="button ghost model-recommend fw-model-recommend" aria-label="为当前任务推荐模型" disabled={locked || recommendBusy || !models.some(option => option.available)} onClick={onRecommend}><Sparkles size={14}/>{recommendBusy ? '正在分析…' : '为当前任务推荐模型'}</button>}
     {pending && <span className="model-saving" role="status"><LoaderCircle size={14} className="spin"/>正在保存…</span>}
+    {disabled && disabledReason && <p className="model-switch-note" role="status">{disabledReason}</p>}
     {model && !model.available && <p className="model-unavailable" role="status">{model.unavailable_reason || '此模型暂不可用，请选择其他模型。'}</p>}
-    {restrictedSwitch && <p id={switchNoteId} className="model-switch-note">请新建对话使用标记“需新对话”的模型，当前对话和记忆保留。</p>}
+    {automatic && <p className="model-switch-note">当前自动选择，选择模型后改为手动固定。</p>}
+    {restrictedSwitch && <p id={switchNoteId} className="model-switch-note">{onNewConversation ? '点击“新建会话使用”的模型即可继续选择，当前对话和记忆保留。' : '请新建对话使用标记“需新对话”的模型，当前对话和记忆保留。'}</p>}
   </div>;
 }
