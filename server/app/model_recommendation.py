@@ -552,7 +552,10 @@ async def provider_completion(service, draft: str) -> dict[str, Any]:
     prompt = (
         "补全用户正在输入的工业任务。只返回 JSON，不要 markdown："
         '{"completion":"完整句子"}。completion 必须原样保留 draft 前缀，'
-        "只追加必要的任务目标、约束或输出格式，最多 500 个字符，不得添加凭据。\n"
+        "保持用户的业务意图、数据范围和已提出的指标。只能续完未完成句子，或追加展示格式、"
+        "来源核对等表达要求；不得新增业务指标（例如未提及的退款额）、日期、筛选条件、"
+        "统计粒度或操作步骤，不得假设工具能力。若任务已完整则只补一句简短的输出要求。"
+        "最多 500 个字符，不得添加凭据。\n"
         f"draft={text}"
     )
     base = provider.get("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL).rstrip("/")
