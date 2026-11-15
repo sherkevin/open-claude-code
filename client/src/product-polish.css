@@ -7,7 +7,7 @@ body,.zhixing-theme {font-family:Inter,'Segoe UI','Microsoft YaHei UI','Microsof
 .zhixing-theme .flint-wordmark {display:block;width:112px;height:auto;object-fit:contain;flex-shrink:0;}
 .zhixing-theme .fw-brand-text {font-size:24px;font-weight:600;line-height:1.2;white-space:nowrap;color:#192734;border-left:1px solid #e1e6eb;padding-left:10px;}
 .zhixing-theme .fw-brand small {display:none;}
-.zhixing-theme .sidebar .flint-wordmark {width:96px;}
+.zhixing-theme .sidebar .flint-wordmark {width:clamp(80px,calc(var(--sidebar-width,244px) - 148px),96px);}
 .zhixing-theme .sidebar .fw-brand-text {display:block;}
 .zhixing-theme .new-conversation {margin:18px 0 14px;min-height:38px;background:#f2f7fc;color:#1763a4;border:1px solid #d6e5f3;box-shadow:none;}
 .zhixing-theme .new-conversation:hover {background:#e5f0fb;}
