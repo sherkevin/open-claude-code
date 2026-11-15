@@ -127,6 +127,15 @@ mcp = FastMCP(
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+def query_sales_orders(region: str = "", status: str = "", date_from: str = "", date_to: str = "", min_amount: float = 0, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """按区域、状态、日期与金额查询销售订单，返回匹配数量、分页记录与来源。金额条件按元填写。"""
+    from business_scenario import query_orders
+    result = query_orders(DATA_DIR, region, status, date_from, date_to, min_amount, limit, offset)
+    result["sources"] = [{"kind": "data", "title": "销售订单", "locator": {"database": "business-v2.sqlite3", "table": "sales_orders", "fields": list(result["rows"][0]) if result["rows"] else [], "row_count": len(result["rows"]), "matched_rows": result["matched_rows"], "filters": {"region": region, "status": status, "date_from": date_from, "date_to": date_to, "min_amount": min_amount}, "offset": offset, "limit": limit, "dataset_purpose": result["dataset_purpose"]}, "excerpt": json.dumps(result["rows"], ensure_ascii=False)}]
+    return result
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def search_knowledge(query: str, limit: int = 3) -> dict[str, Any]:
     """Search synthetic Chinese company rules; always returns source IDs and labels data as demo."""
     query = query.strip().lower()

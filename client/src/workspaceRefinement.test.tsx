@@ -79,7 +79,7 @@ describe('workspace real state and access boundaries', () => {
 
   it('labels configured bindings as configuration, without claiming connection success', () => {
     const html = render();
-    expect(html).toContain('已配置 1 个连接');
+    expect(html).toContain('已配置 1 个 MCP');
     expect(html).not.toContain('已连接');
     expect(html).not.toContain('只读优先');
   });

@@ -28,8 +28,8 @@ describe('known demo descriptions are translated for display only',()=>{
     const known={...tool,name:'create_ticket',description:'Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.',annotations:{readOnlyHint:false,destructiveHint:false}};
     const connected={...connection,tools:[known]};const before=JSON.stringify(known);
     const detail=renderToStaticMarkup(<ToolCapability connection={connected} tool={known} binding={{...binding,allowed_tools:['create_ticket']}}/>);
-    const card=renderToStaticMarkup(<ConnectionOnboardingCard item={connected} assistants={[]} admin={false} onTest={()=>{}} onTools={()=>{}} onEdit={()=>{}} onDelete={()=>{}} onConfigureAssistant={()=>{}}/>);
-    expect(detail).toContain('创建并保存一条示例工单');expect(detail).toContain('此操作需要用户审批');expect(detail).toContain('调用前需要审批');expect(card).toContain('创建并保存一条示例工单');
+    const card=renderToStaticMarkup(<ConnectionOnboardingCard item={connected} admin={false} onTest={()=>{}} onTools={()=>{}} onEdit={()=>{}} onDelete={()=>{}}/>);
+    expect(detail).toContain('创建并保存一条示例工单');expect(detail).toContain('此操作需要用户审批');expect(detail).toContain('调用前需要审批');expect(card).toContain('创建并保存工单');expect(card).not.toContain('示例');
     expect(toolExample(connected,known).question).toContain('先不要调用或执行');expect(JSON.stringify(known)).toBe(before);
     const custom={...known,description:'Read live tickets from the customer system.'};
     const unknown=renderToStaticMarkup(<ToolCapability connection={connected} tool={custom}/>);

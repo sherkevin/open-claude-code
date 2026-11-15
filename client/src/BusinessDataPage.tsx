@@ -9,7 +9,7 @@ export interface DataTable { id:string; name:string; description:string; scope:'
 export interface DataPage { table:DataTable; total_rows:number; matched_rows:number; offset:number; limit:number; rows:Record<string,unknown>[]; duration_ms:number }
 const MAX_OFFSET=1_000_000;
 export const dataCell=(value:unknown,column:DataColumn)=> value===null||value===undefined?'—':column.format==='currency_cents'&&typeof value==='number'?(value/100).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2}):String(value);
-const provenance={demo:'示例数据',public:'公开数据',business:'业务数据'};
+const provenance={demo:'非生产数据',public:'公开数据',business:'业务数据'};
 export const dataPageCsv=(value:DataPage)=> {
   const safe=(s:string)=>'"'+(/^[\s\u0000-\u001f]*[=+@-]/.test(s)?"'"+s:s).replaceAll('"','""')+'"';
   return '\ufeff'+[value.table.columns.map(c=>safe(c.label)).join(','),...value.rows.map(row=>value.table.columns.map(c=>safe(dataCell(row[c.key],c))).join(','))].join('\r\n');
@@ -126,7 +126,7 @@ export default function BusinessDataPage({onConnections}:{onConnections:()=>void
         </div>
         {data&&data.table.id===selected&&<footer className="data-pagination"><span>{data.matched_rows?`${data.offset+1}–${data.offset+data.rows.length} / ${data.matched_rows.toLocaleString()}`:'0 条记录'}<small>每页 {data.limit} 条 · 直接读取数据表，不消耗模型 Token</small></span><div><Button variant="secondary" disabled={loading||data.offset===0} onClick={()=>setQuery(old=>({...old,offset:0}))}>首页</Button><Button variant="secondary" disabled={loading||data.offset===0} onClick={()=>setQuery(old=>({...old,offset:Math.max(0,data.offset-data.limit)}))}><ChevronLeft size={16}/>上一页</Button><Button variant="secondary" disabled={loading||data.offset+data.limit>=data.matched_rows||data.offset>=MAX_OFFSET} onClick={()=>setQuery(old=>({...old,offset:Math.min(MAX_OFFSET,data.offset+data.limit)}))}>下一页<ChevronRight size={16}/></Button><Button variant="secondary" disabled={loading||data.offset+data.limit>=data.matched_rows||data.offset>=MAX_OFFSET} onClick={()=>setQuery(old=>({...old,offset:Math.min(MAX_OFFSET,Math.max(0,Math.ceil(data.matched_rows/data.limit)-1)*data.limit)}))}>末页</Button></div></footer>}
         {data&&data.matched_rows>MAX_OFFSET+data.limit&&<p className="capability-note">当前最多浏览前 {(MAX_OFFSET+data.limit).toLocaleString()} 条匹配记录。请缩小筛选范围后查看其余记录。</p>}
-        <details className="data-origin"><summary>数据来源与使用范围</summary><p>{table.scope==='demo'?'示例数据用于演示查询、分析和核对流程，不代表客户生产数据或生产实绩。':table.scope==='public'?'来自公开资料，适用范围以原始发布说明为准。':'由管理员登记的数据表，访问范围随对应连接权限控制。'} 当前仅展示管理员开放的表与字段；MCP 接通不代表该系统所有数据都会自动出现。</p></details>
+        <details className="data-origin"><summary>数据来源与使用范围</summary><p>{table.scope==='demo'?'此数据集用于查询与分析验收，不代表客户生产数据或生产实绩。':table.scope==='public'?'来自公开资料，适用范围以原始发布说明为准。':'由管理员登记的数据表，访问范围随对应连接权限控制。'} 当前仅展示管理员开放的表与字段；MCP 接通不代表该系统所有数据都会自动出现。</p></details>
       </div>
     </>}
   </section>;

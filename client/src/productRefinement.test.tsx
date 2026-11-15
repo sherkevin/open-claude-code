@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { BusinessResultCard, objectPreview, parseBusinessResult, resultCSV } from './BusinessResult';
-import { ConnectionGroups, ConnectionOnboardingCard, trialAssistants } from './ConnectionsPage';
+import { ConnectionGroups, ConnectionOnboardingCard } from './ConnectionsPage';
 import WorkspacePage, { WorkspaceConnectionSummary, workspaceConnectionOverview, workspaceConnectionStatus } from './WorkspacePage';
 import { usageCoverage, usageValue } from './AdminPages';
 import type { Assistant, Connection, UsageTotals } from './types';
@@ -39,36 +39,20 @@ describe('business object previews retain result boundaries',()=>{
   });
 });
 
-describe('MCP business trial is an authorized navigation action',()=>{
-  it('shows enabled connections before a closed disabled group while preserving management controls',()=>{
+describe('MCP resource grouping',()=>{
+  it('keeps disabled resources manageable without adding assistant flows',()=>{
     const disabled={...connection,id:'off',name:'停用连接',enabled:false};
-    const items=[disabled,{...connection,name:'当前业务连接'}];const original=items.slice();
-    const renderCard=(item:Connection)=><ConnectionOnboardingCard key={item.id} item={item} assistants={[assistant]} admin={false} onTest={noop} onTools={noop} onEdit={noop} onDelete={noop} onConfigureAssistant={noop}/>;
+    const items=[disabled,{...connection,name:'当前 MCP'}];const original=items.slice();
+    const renderCard=(item:Connection)=><ConnectionOnboardingCard key={item.id} item={item} admin={false} onTest={noop} onTools={noop} onEdit={noop} onDelete={noop}/>;
     const html=renderToStaticMarkup(<ConnectionGroups items={items} renderCard={renderCard}/>);
-    expect(html.indexOf('当前业务连接')).toBeLessThan(html.indexOf('已停用（1）'));
+    expect(html.indexOf('当前 MCP')).toBeLessThan(html.indexOf('已停用（1）'));
     expect(html).toContain('<details class="connections-disabled">');
     expect(html).toContain('aria-label="编辑 停用连接"');expect(html).toContain('aria-label="删除 停用连接"');
-    expect(html).toContain('查看工具');expect(html).toContain('启用此连接');expect(items).toEqual(original);
+    expect(html).toContain('工具列表');expect(html).not.toContain('配置助手');expect(html).not.toContain('开始查询');expect(items).toEqual(original);
     const onlyDisabled=renderToStaticMarkup(<ConnectionGroups items={[disabled]} renderCard={renderCard}/>);
-    expect(onlyDisabled).toContain('暂无启用连接');expect(onlyDisabled).toContain('已停用（1）');
-  });
-  it('requires enabled visible binding and discovered allowed tool intersection',()=>{
-    expect(trialAssistants(connection,[assistant])).toEqual([assistant]);
-    for(const c of [{...connection,status:'untested' as const},{...connection,enabled:false},{...connection,tools:[]}])expect(trialAssistants(c,[assistant])).toEqual([]);
-    for(const a of [{...assistant,enabled:false},{...assistant,connections:[]},{...assistant,connections:[{connection_id:'orders',allowed_tools:['old'],auto_approved_tools:['sum']}]}])expect(trialAssistants(connection,[a])).toEqual([]);
-    expect(trialAssistants(connection,null)).toEqual([]);
-  });
-  it('hides trial navigation during unknown or stale discovery and restricted management',()=>{
-    const props={item:connection,assistants:[assistant],admin:false,onTest:noop,onTools:noop,onEdit:noop,onDelete:noop,onConfigureAssistant:noop,onStartAssistant:noop};
-    const ready=renderToStaticMarkup(<ConnectionOnboardingCard {...props}/>);
-    expect(ready).toContain('开始查询');expect(ready).toContain('不代表业务结果已经核对');
-    for(const extra of [{testing:true},{bindingsLoading:true},{testError:'失败'},{actionsBusy:true},{onStartAssistant:undefined}]){
-      const html=renderToStaticMarkup(<ConnectionOnboardingCard {...props} {...extra} canConfigureAssistant={false}/>);
-      expect(html).not.toContain('开始查询');expect(html).not.toContain('>配置助手<svg');
-    }
+    expect(onlyDisabled).toContain('暂无启用的 MCP');expect(onlyDisabled).toContain('已停用（1）');
   });
 });
-
 describe('workspace continues real work before showing capabilities',()=>{
   it('puts active failures first, bounds the active list, and folds disabled records without mutating them',()=>{
     const items=[...Array.from({length:5},(_,i)=>({...connection,id:`disabled-${i}`,name:`停用测试${i}`,enabled:false})),
@@ -99,7 +83,7 @@ describe('workspace continues real work before showing capabilities',()=>{
   it('orders work before assistants and distinguishes connection observation states',()=>{
     const html=renderToStaticMarkup(<WorkspacePage assistants={[assistant]} conversations={[]} onAssistant={noop} onConversation={noop} onNavigate={noop} onNew={noop} onStart={noop}/>);
     expect(html.indexOf('id="wr-recent-heading"')).toBeLessThan(html.indexOf('id="wr-assistants-heading"'));
-    expect(html).toContain('rows="1"');expect(html).toContain('正在读取连接状态');
+    expect(html).toContain('rows="1"');expect(html).not.toContain('连接与资料');
     expect(workspaceConnectionStatus(connection)).toBe('已发现 1 个工具');
     expect(workspaceConnectionStatus({...connection,enabled:false})).toBe('已停用');
     expect(workspaceConnectionStatus({...connection,tools:[]})).toBe('未发现工具');

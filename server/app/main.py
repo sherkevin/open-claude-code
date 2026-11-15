@@ -219,6 +219,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     app.include_router(create_business_data_router(svc, authenticated))
     from .memory import create_memory_router
     app.include_router(create_memory_router(svc, authenticated))
+    from .message_queue import create_message_queue_router
+    app.include_router(create_message_queue_router(svc, authenticated))
     from .context import create_context_router
     app.include_router(create_context_router(svc, authenticated))
     from .feishu import create_feishu_router

@@ -1,0 +1,19 @@
+.markdown-document {min-width:0}
+.document-view-switch {display:flex;gap:4px;border-bottom:1px solid var(--line);margin:0 0 20px;padding-bottom:8px}
+.document-view-switch button {border:0;border-radius:5px;background:transparent;color:var(--muted);padding:7px 12px;font:inherit;font-size:14px;cursor:pointer}
+.document-view-switch button[aria-pressed=true] {background:var(--paper);color:var(--ink);font-weight:600}
+.document-view-switch button:focus-visible {outline:2px solid var(--brand);outline-offset:2px}
+.document-reading {line-height:1.75;overflow-wrap:anywhere;min-height:80px}
+.document-reading .markdown>:first-child {margin-top:0}
+.document-reading .markdown pre,.document-reading .markdown table {max-width:100%;overflow:auto}
+.document-source {display:block;width:100%;box-sizing:border-box;min-height:180px;max-height:60vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid var(--line);border-radius:6px;padding:14px;background:var(--paper);color:var(--ink)}
+.skill-document-meta {display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin-bottom:16px}
+.skill-document-description {line-height:1.65;color:var(--muted);margin:0 0 20px}
+.skill-document .resource-advanced {margin-top:20px}
+.skill-reference {margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+.mcp-tool-detail summary>div {display:flex;flex-direction:column;gap:5px;min-width:0}
+.mcp-tool-detail summary strong {font-size:14px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
+.mcp-tool-detail summary span {font-size:14px;font-weight:400;line-height:1.6;overflow-wrap:anywhere}
+.mcp-tool-detail td small {display:block;color:var(--muted);margin-top:4px}
+.mcp-tool-list-button {padding-left:0!important}
+@media(max-width:600px) {.document-reading {font-size:14px}.document-source {font-size:12px;padding:10px}.mcp-tool-list .table-container {overflow-x:auto}}

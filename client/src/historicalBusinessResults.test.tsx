@@ -87,7 +87,7 @@ describe('historical trace is bound to the exact answer', () => {
     const result = parseHistoricalResult(trace(), target);
     const html = renderToStaticMarkup(<BusinessResults events={result.events} runId={result.runId} status={result.status}/>);
     expect(html).toContain('上次发货结果'); expect(html).toContain('演示客户甲');
-    expect(html).toContain('示例数据'); expect(html).toContain('部分结果');
+    expect(html).toContain('非生产数据'); expect(html).toContain('部分结果');
     expect(html).toContain('查看依据 1'); expect(html).not.toContain('untrusted-source');
   });
   it('allows a completed answer without business cards to show the explicit empty state', () => {

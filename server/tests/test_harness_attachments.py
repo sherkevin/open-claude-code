@@ -23,6 +23,7 @@ from app.service import Service
 def system(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL", "local-lexical-v1")
     service = Service(Settings(data_dir=tmp_path, runtime_type="harness", model="test", provider_settings="", model_catalog="", knowledge_vision_enabled=False))
+    service.catalog.models[service.catalog.default_model_id]["capabilities"] = ["multimodal"]
     user = service.create_user({"username": "attachment", "display_name": "Test", "password": "safe-test-password-123", "role": "admin"})
     assistant = service.save_assistant({"name": "Attachment test", "connections": []}, user=user)
     conversation = service.create_conversation({"assistant_id": assistant["id"], "title": "test"}, user)

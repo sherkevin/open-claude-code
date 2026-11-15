@@ -158,7 +158,7 @@ class BusinessData:
             path = Path(configured)
             if path.is_symlink() or not path.is_file() or path.stat().st_size > 262144:
                 raise ValueError("Invalid catalog")
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             if data.get("version") != 1 or not isinstance(data.get("tables"), list) or len(data["tables"]) > 40:
                 raise ValueError("Invalid catalog")
             seen = set()

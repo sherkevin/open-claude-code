@@ -3,6 +3,7 @@ import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { AlertCircle, Check, Download, FileText, LoaderCircle, X } from 'lucide-react';
 import { api, errorText, fileURL, sizeText } from './api';
 import type { StoredFile } from './types';
+import MarkdownDocument, { isMarkdownFile } from './MarkdownDocument';
 
 export function Button({ children, className = '', busy, variant = 'primary', type = 'button', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean; variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
   return <button {...props} type={type} disabled={props.disabled || busy} className={`button ${variant} ${className}`}>{busy && <LoaderCircle size={16} className="spin" />}{children}</button>;
@@ -86,23 +87,24 @@ export function FileChip({ file, onRemove, onPreview }: { file: StoredFile; onRe
   return <div className="file-chip"><button type="button" onClick={onPreview} className="file-chip-main" title={file.name}><FileText size={17}/><span>{file.name}<small>{sizeText(file.size)}</small></span></button>{onRemove ? <button type="button" onClick={onRemove} className="icon-button" aria-label={`移除 ${file.name}`}><X size={14}/></button> : <a className="icon-button" aria-label={`下载 ${file.name}`} href={fileURL(file.id)} download={file.name}><Download size={14}/></a>}</div>;
 }
 export function FilePreview({ file, onClose }: { file: StoredFile; onClose: () => void }) {
-  const [text, setText] = useState(''); const [error, setError] = useState(''); const [url, setURL] = useState('');
+  const [text, setText] = useState(''); const [error, setError] = useState(''); const [url, setURL] = useState(''); const [loading, setLoading] = useState(true);
   const image = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'].includes(file.mime_type);
-  const plain = file.mime_type.startsWith('text/plain') || ['text/csv', 'application/json', 'text/markdown'].includes(file.mime_type);
+  const markdown = isMarkdownFile(file);
+  const plain = markdown || file.mime_type.startsWith('text/plain') || ['text/csv', 'application/json'].includes(file.mime_type);
   const pdf = file.mime_type === 'application/pdf';
   useEffect(() => {
-    const controller = new AbortController(); let objectURL = '';
+    const controller = new AbortController(); let objectURL = ''; setText(''); setError(''); setURL(''); setLoading(true);
     if (!(image || plain || pdf)) return;
     if (plain && file.size > 1048576) { setError('文本较大，请下载后查看。'); return; }
     fetch(fileURL(file.id), { credentials: 'include', signal: controller.signal }).then(async response => {
       if (!response.ok) throw new Error('附件暂时无法预览，请重试或下载。');
       const blob = await response.blob();
       if (controller.signal.aborted) return;
-      if (plain) setText(await blob.text()); else { objectURL = URL.createObjectURL(blob); setURL(objectURL); }
-    }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); });
+      if (plain) { const value = await blob.text(); if (!controller.signal.aborted) setText(value); } else { objectURL = URL.createObjectURL(blob); setURL(objectURL); }
+    }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); if (objectURL) URL.revokeObjectURL(objectURL); };
   }, [file.id, file.size, image, plain, pdf]);
-  return <Modal title={file.name} description={`${file.mime_type} · ${sizeText(file.size)}`} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{image && url ? <img src={url} alt={file.name} className="image-preview"/> : pdf && url ? <iframe title={file.name} src={url} className="pdf-preview" sandbox="allow-same-origin"/> : plain && !error ? <pre className="text-preview">{text || '正在读取…'}</pre> : !(image || plain || pdf) ? <EmptyState icon={<FileText/>} title="下载后查看此附件" description="这个文件类型暂不提供在线预览。"/> : !error ? <Loader/> : null}</div><footer className="modal-footer"><a className="button primary" href={fileURL(file.id)} download={file.name}><Download size={16}/>下载原文件</a></footer></Modal>;
+  return <Modal title={file.name} description={`${file.mime_type} · ${sizeText(file.size)}`} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{image && url ? <img src={url} alt={file.name} className="image-preview"/> : pdf && url ? <iframe title={file.name} src={url} className="pdf-preview" sandbox="allow-same-origin"/> : plain && !error ? loading ? <Loader text="正在读取…"/> : markdown ? <MarkdownDocument key={file.id} text={text} label={file.name}/> : <pre className="text-preview">{text || '文件内容为空'}</pre> : !(image || plain || pdf) ? <EmptyState icon={<FileText/>} title="下载后查看此附件" description="这个文件类型暂不提供在线预览。"/> : !error ? <Loader/> : null}</div><footer className="modal-footer"><a className="button primary" href={fileURL(file.id)} download={file.name}><Download size={16}/>下载原文件</a></footer></Modal>;
 }
 export function Attachment({ id, onPreview }: { id: string; onPreview: (file: StoredFile) => void }) {
   const [file, setFile] = useState<StoredFile | null>(null); const [error, setError] = useState(false);

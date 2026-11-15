@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ArrowRight, ArrowUpRight, BookOpen, Clock3, Layers3, MessageSquare, Network, RefreshCw } from 'lucide-react';
 import type { Assistant, Connection, Conversation } from './types';
-import { api, timeText } from './api';
+import { timeText } from './api';
 import { Button, EmptyState } from './components';
-import { ScopeBadge } from './resources';
 import AiIdentity from './AiIdentity';
 import './workbench-refinement.css';
 
@@ -57,8 +56,8 @@ export function WorkspaceConnectionSummary({ connections, boundIds = [], onManag
   const { visible, enabledCount, disabledCount } = workspaceConnectionOverview(connections, boundIds);
   return <>
     {visible.length ? <ul>{visible.map(connection => <li key={connection.id}><span>{connection.name}</span><small data-tone={connection.status === 'connected' && connection.tools.length ? 'success' : ['failed', 'needs_auth', 'connected'].includes(connection.status) ? 'warning' : 'neutral'}>{workspaceConnectionStatus(connection)}</small></li>)}</ul>
-      : <p>{disabledCount ? '暂无启用连接，可在业务连接中启用已有配置。' : '尚未配置业务连接。接入 MCP 后，为助手选择所需工具。'}</p>}
-    <button type="button" className="wr-text-action" onClick={onManage}>{enabledCount > visible.length ? `查看全部 ${enabledCount} 个启用连接` : connections.length ? '检查与管理连接' : '配置业务连接'}<ArrowRight size={14}/></button>
+      : <p>{disabledCount ? '暂无启用连接，可在MCP中启用已有配置。' : '尚未配置MCP。接入 MCP 后，为助手选择所需工具。'}</p>}
+    <button type="button" className="wr-text-action" onClick={onManage}>{enabledCount > visible.length ? `查看全部 ${enabledCount} 个启用连接` : connections.length ? '检查与管理连接' : '配置MCP'}<ArrowRight size={14}/></button>
     {disabledCount > 0 && <button type="button" className="wr-disabled-connections" onClick={onManage}>另有 {disabledCount} 个停用连接<ArrowUpRight size={13}/></button>}
   </>;
 }
@@ -70,22 +69,9 @@ function updatedTime(value: string) {
 
 export default function WorkspacePage({
   assistants, conversations, assistantsRead = readyRead, conversationsRead = readyRead, onReload, onAssistant, onConversation, onNew, onStart, onNavigate,
-  canCreate = true, canManage = true, canReadKnowledge = true, canManageConnections = true, canReadSessions = true,
+  canCreate = true, canManage = true, canReadSessions = true,
 }: Props) {
   const [question, setQuestion] = useState('');
-  const [connections, setConnections] = useState<Connection[] | null>(null);
-  const [connectionError, setConnectionError] = useState(false);
-  const [connectionsLoading, setConnectionsLoading] = useState(true);
-  const [connectionRevision, setConnectionRevision] = useState(0);
-  useEffect(() => {
-    if (!canManageConnections) return;
-    const controller = new AbortController();
-    setConnectionsLoading(true); setConnectionError(false);
-    void api<Connection[]>('/connections', { signal: controller.signal }).then(value => {
-      if (!controller.signal.aborted) setConnections(value);
-    }).catch(() => { if (!controller.signal.aborted) setConnectionError(true); }).finally(() => { if (!controller.signal.aborted) setConnectionsLoading(false); });
-    return () => controller.abort();
-  }, [canManageConnections, connectionRevision]);
   const [assistantId, setAssistantId] = useState('');
   const available = assistants.filter(assistant => assistant.enabled);
   const selectedAssistant = available.find(assistant => assistant.id === assistantId);
@@ -94,7 +80,6 @@ export default function WorkspacePage({
     .sort((a, b) => updatedTime(b.updated_at) - updatedTime(a.updated_at)).slice(0, 5) : [];
   const runningCount = canReadSessions ? conversations.filter(conversation => !conversation.archived && conversation.active_run_id).length : 0;
   const assistantNames = new Map(assistants.map(assistant => [assistant.id, assistant.name]));
-  const hasResources = canReadKnowledge || canManageConnections;
   const canAsk = canCreate && Boolean(onStart) && available.length > 0;
   const today = new Date();
 
@@ -128,7 +113,7 @@ export default function WorkspacePage({
         </form>
       </section>}
 
-      <div className={`wr-overview${hasResources ? '' : ' wr-overview-full'}`}>
+      <div className="wr-overview wr-overview-full">
         <div className="wr-main-work">
       {canReadSessions && <section className="wr-recent" aria-labelledby="wr-recent-heading" aria-busy={conversationsRead.loading}>
         <div className="wr-section-heading"><div className="wr-recent-heading"><Clock3 size={17}/><h2 id="wr-recent-heading">继续工作</h2>{runningCount > 0 && <span className="wr-running-summary">{runningCount} 项执行中</span>}</div><button type="button" className="wr-text-action" onClick={() => onNavigate('sessions')}>全部会话<ArrowRight size={14}/></button></div>
@@ -144,29 +129,15 @@ export default function WorkspacePage({
           <div className="wr-section-heading"><h2 id="wr-assistants-heading">业务助手 <span className="wr-count">{assistantsRead.loaded ? available.length : '—'}</span></h2>{canManage && <button type="button" className="wr-text-action" onClick={() => onNavigate('assistants')}>管理助手<ArrowUpRight size={14}/></button>}</div>
           <WorkspaceReadNotice state={assistantsRead} label="业务助手" onRetry={onReload}/>
           {available.length ? <div className="wr-assistant-list">{available.map(assistant => <article className="wr-assistant" key={assistant.id}>
-            <div className="wr-assistant-heading"><AiIdentity size="small"/><button type="button" className="wr-title-link" onClick={() => onAssistant(assistant)}><h3>{assistant.name}</h3><ArrowUpRight size={14}/></button><ScopeBadge scope={assistant.scope}/></div>
+            <div className="wr-assistant-heading"><span className="wr-assistant-icon"><Layers3 size={19}/></span><button type="button" className="wr-title-link" title="查看能力" onClick={() => onAssistant(assistant)}><h3>{assistant.name}</h3><ArrowUpRight size={14}/></button></div>
             <p>{assistant.description || '查看助手能力，开始新的会话。'}</p>
-            <div className="wr-assistant-capabilities"><span><BookOpen size={14}/>{assistant.knowledge_base_ids?.length || 0} 个知识库</span><span><Network size={14}/>已配置 {assistant.connections.length} 个连接</span></div>
-            <div className="wr-assistant-footer"><button type="button" className="wr-text-action" onClick={() => onAssistant(assistant)}>查看能力<ArrowRight size={14}/></button>{canCreate && onNew && <Button variant="secondary" onClick={() => onNew(assistant)}>开始会话</Button>}</div>
+            <div className="wr-assistant-capabilities"><span><BookOpen size={14}/>{assistant.knowledge_base_ids?.length || 0} 个知识库</span><span><Network size={14}/>已配置 {assistant.connections.length} 个 MCP</span></div>
+            <div className="wr-assistant-footer">{canCreate && onNew && <Button variant="secondary" onClick={() => onNew(assistant)}>开始会话</Button>}</div>
           </article>)}</div> : assistantsRead.loaded && !assistantsRead.loading && !assistantsRead.error ? <div className="wr-empty-panel"><EmptyState icon={<Layers3 size={26}/>} title="还没有可用助手" description={canManage ? '先配置一个助手，再开始业务会话。' : '管理员开放助手后，可以在这里开始工作。'} action={canManage ? <Button onClick={() => onNavigate('assistants')}>配置助手</Button> : undefined}/></div> : null}
         </section>
 
         </div>
-        {hasResources && <section className="wr-resources" aria-labelledby="wr-resources-heading">
-          <div className="wr-section-heading"><h2 id="wr-resources-heading">连接与资料</h2></div>
-          {canManageConnections && <div className="wr-connection-panel">
-            <div className="wr-connection-title"><strong>连接检查</strong><button type="button" className="icon-button" disabled={connectionsLoading} aria-label="重新读取连接状态" onClick={() => setConnectionRevision(value => value + 1)}><RefreshCw size={15}/></button></div>
-            {connectionError && <p role="status">{connections ? '更新未完成，仍显示上次检查记录。' : '连接状态暂未取得，请重新读取。'}</p>}
-            {connectionsLoading && <p role="status">{connections ? '正在更新检查记录…' : '正在读取连接状态…'}</p>}
-            {connections !== null && <WorkspaceConnectionSummary connections={connections} boundIds={available.flatMap(assistant=>assistant.connections.map(binding=>binding.connection_id))} onManage={() => onNavigate('connections')}/>}
-            <small className="wr-snapshot-note">上次检查结果，不代表当前在线状态。</small>
-          </div>}
-          <div className="wr-resource-list">
-            {canReadKnowledge && <button type="button" onClick={() => onNavigate('knowledge')}><span className="wr-resource-icon"><BookOpen size={20}/></span><span><strong>知识库</strong><small>查阅文件与检索结果</small></span><ArrowUpRight size={15}/></button>}
 
-          </div>
-
-        </section>}
       </div>
 
 

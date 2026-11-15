@@ -52,7 +52,7 @@ class Settings:
     # auxiliary model request. Timeout closes and reaps that process; it never
     # manufactures a completed summary.
     harness_compaction_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_HARNESS_COMPACTION_TIMEOUT_SECONDS", "600")))
-    brand_name: str = field(default_factory=lambda: os.getenv("AGENT_BRAND_NAME", "知行工作台"))
+    brand_name: str = field(default_factory=lambda: os.getenv("AGENT_BRAND_NAME", "开物"))
     # New accounts join this private workspace only with an administrator invitation.
     registration_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_REGISTRATION_ENABLED", "false").lower() == "true")
     registration_invite_code: str = field(default_factory=lambda: os.getenv("AGENT_REGISTRATION_INVITE_CODE", ""))

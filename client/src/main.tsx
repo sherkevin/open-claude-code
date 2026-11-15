@@ -13,5 +13,6 @@ import './connections-onboarding.css';
 import './capability-settings.css';
 import './capability-guide.css';
 import './business-data.css';
+import './product-polish.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
