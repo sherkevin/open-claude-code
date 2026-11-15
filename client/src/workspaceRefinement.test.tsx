@@ -2,6 +2,7 @@ import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import WorkspacePage from './WorkspacePage';
+import { ConversationHistory } from './App';
 import type { Assistant, Conversation } from './types';
 
 const assistant: Assistant = {
@@ -81,5 +82,76 @@ describe('workspace real state and access boundaries', () => {
     expect(html).toContain('已配置 1 个连接');
     expect(html).not.toContain('已连接');
     expect(html).not.toContain('只读优先');
+  });
+});
+
+
+describe('workspace initial reads and stale snapshots', () => {
+  const pending = { loading: true, loaded: false, error: '' };
+  const failed = { loading: false, loaded: false, error: 'network unavailable' };
+  const ready = { loading: false, loaded: true, error: '' };
+  const renderHistory = (state: typeof pending, conversations: Conversation[] = []) => renderToStaticMarkup(
+    <ConversationHistory state={state} conversations={conversations} onOpen={() => {}} onRetry={() => {}}/>,
+  );
+
+  it('shows pending reads instead of zero counts or empty data on the first authenticated frame', () => {
+    const html = render({ assistants: [], conversations: [], assistantsRead: pending, conversationsRead: pending });
+    expect(html).toContain('正在读取业务助手');
+    expect(html).toContain('正在读取最近会话');
+    expect(html).toContain('class="wr-count">—</span>');
+    expect(html).not.toContain('还没有可用助手');
+    expect(html).not.toContain('还没有会话');
+    expect(html).not.toContain('>配置助手<');
+    expect(html).toContain('管理助手');
+    expect(html).toContain('全部会话');
+    const history = renderHistory(pending);
+    expect(history).toContain('正在读取最近会话');
+    expect(history).not.toContain('从一项具体工作开始');
+  });
+
+  it('keeps independent successful sections usable while another resource is still pending', () => {
+    const html = render({ assistantsRead: ready, conversationsRead: pending, onStart: () => {} });
+    expect(html).toContain('采购助手');
+    expect(html).toContain('wr-question-panel');
+    expect(html).toContain('class="wr-count">1</span>');
+    expect(html).toContain('正在读取最近会话');
+    expect(html).not.toContain('还没有会话');
+  });
+
+  it('offers retry after first-read failures without implying the account has no data', () => {
+    const html = render({ assistants: [], assistantsRead: failed, conversationsRead: failed, onReload: () => {} });
+    expect(html).toContain('业务助手暂未读取成功');
+    expect(html).toContain('最近会话暂未读取成功');
+    expect(html.match(/>重新读取</g)).toHaveLength(2);
+    expect(html).not.toContain('还没有可用助手');
+    expect(html).not.toContain('还没有会话');
+    expect(html).toContain('class="wr-count">—</span>');
+    const history = renderHistory(failed);
+    expect(history).toContain('最近会话暂未读取成功');
+    expect(history).toContain('重新读取');
+    expect(history).not.toContain('从一项具体工作开始');
+  });
+
+  it('preserves existing content during refresh and failed refresh, and exposes empty states only after success', () => {
+    const conversations = [conversation('已保存的采购核对')];
+    for (const state of [{ ...ready, loading: true }, { ...ready, error: 'network unavailable' }]) {
+      const html = render({ assistantsRead: state, conversationsRead: state, conversations });
+      expect(html).toContain('采购助手');
+      expect(html).toContain('已保存的采购核对');
+      expect(html).toContain('class="wr-count">1</span>');
+      expect(html).not.toContain('还没有可用助手');
+      expect(html).not.toContain('还没有会话');
+      const history = renderHistory(state, conversations);
+      expect(history).toContain('已保存的采购核对');
+      if (state.error) {
+        expect(html).toContain('当前仍显示上次读取的内容');
+        expect(history).toContain('仍显示上次读取的内容');
+      }
+    }
+    const empty = render({ assistants: [], assistantsRead: ready, conversationsRead: ready });
+    expect(empty).toContain('还没有可用助手');
+    expect(empty).toContain('还没有会话');
+    expect(empty).toContain('class="wr-count">0</span>');
+    expect(renderHistory(ready)).toContain('从一项具体工作开始');
   });
 });

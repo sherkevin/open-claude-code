@@ -4,7 +4,7 @@ import { api, errorText, post, timeText } from './api';
 import { configAllows, type AppConfig, type Assistant, type Conversation, type ModelOption, type User } from './types';
 import { Button, ErrorNotice, Loader, Modal } from './components';
 import NewSession from './NewSession';
-import WorkspacePage from './WorkspacePage';
+import WorkspacePage, { type WorkspaceReadState } from './WorkspacePage';
 import { deferredPage } from './DeferredPage';
 import { canManageCapabilities } from './capabilitySettings';
 import { isFeishuEmbed, requestFeishuCode } from './feishu';
@@ -30,11 +30,31 @@ type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'ass
 const fallbackConfig: AppConfig = { brand_name: 'Flintworks', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
 
 
+const pendingWorkspaceRead: WorkspaceReadState = { loading: true, loaded: false, error: '' };
+
+export function ConversationHistory({ conversations, state, selectedId, onOpen, onRetry }: {
+  conversations: Conversation[]; state: WorkspaceReadState; selectedId?: string;
+  onOpen: (conversation: Conversation) => void; onRetry: () => void;
+}) {
+  const visible = conversations.filter(conversation => !conversation.archived).slice(0, 30);
+  return <div className="conversation-history" aria-busy={state.loading}>
+    {state.loading && <p className="sidebar-hint" role="status">{state.loaded ? '正在更新最近会话…' : '正在读取最近会话…'}</p>}
+    {state.error && <div className="sidebar-hint" role="status"><p>{state.loaded ? '会话更新未完成，仍显示上次读取的内容。' : '最近会话暂未读取成功。'}</p><button type="button" className="wr-text-action" onClick={onRetry}>重新读取</button></div>}
+    {visible.length ? visible.map(conversation => <button title={conversation.title} key={conversation.id} className={`history-item ${selectedId === conversation.id ? 'selected' : ''}`} onClick={() => onOpen(conversation)}><span>{conversation.title || '新会话'}</span><small>{timeText(conversation.updated_at)}</small></button>)
+      : state.loaded && !state.loading && !state.error ? <p className="sidebar-hint">从一项具体工作开始，<br/>会话会保存在这里。</p> : null}
+  </div>;
+}
+
+
 export default function App() {
   const feishuEmbed = isFeishuEmbed();
   const [config,setConfig]=useState(fallbackConfig);const [user,setUser]=useState<User|null>(null);const [initializing,setInitializing]=useState(true);const [initialError,setInitialError]=useState('');const [error,setError]=useState('');const [view,setView]=useState<View>('workspace');
   const [feishuAuth,setFeishuAuth]=useState<'idle'|'authorizing'>('idle');const [feishuError,setFeishuError]=useState('');const [feishuFallback,setFeishuFallback]=useState(false);
   const [assistants,setAssistants]=useState<Assistant[]>([]);const [conversations,setConversations]=useState<Conversation[]>([]);const [models,setModels]=useState<ModelOption[]>([]);const [modelsLoading,setModelsLoading]=useState(true);const [modelsError,setModelsError]=useState('');
+  const [assistantsRead,setAssistantsRead]=useState<WorkspaceReadState>(pendingWorkspaceRead);
+  const [conversationsRead,setConversationsRead]=useState<WorkspaceReadState>(pendingWorkspaceRead);
+  const workspaceRequest=useRef<AbortController|null>(null);
+  const resetWorkspace=useCallback(()=>{workspaceRequest.current?.abort();workspaceRequest.current=null;setAssistants([]);setConversations([]);setAssistantsRead(pendingWorkspaceRead);setConversationsRead(pendingWorkspaceRead);},[]);
   const [selected,setSelected]=useState<Conversation|null>(null);const [assistantDetail,setAssistantDetail]=useState<Assistant|null>(null);const [sidebarOpen,setSidebarOpen]=useState(false);const [newSession,setNewSession]=useState<{assistant?:Assistant;question?:string;connectionSetup?:Readonly<ConnectionSetupContext>}|null>(null);
   const [initialDraft,setInitialDraft]=useState<{conversationId:string;text:string}|null>(null);
   const [connectionSetup,setConnectionSetup]=useState<ConnectionSetupContext|null>(null);
@@ -43,9 +63,27 @@ export default function App() {
   const changeAssistantSaving=useCallback((saving:boolean)=>{savingRef.current=saving;setAssistantSaving(saving);},[]);
   useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(memoryDirty||assistantDirty||savingRef.current||memorySavingRef.current){event.preventDefault();event.returnValue='';}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard);},[memoryDirty,assistantDirty]);
   const initialize=useCallback(async()=>{setInitializing(true);setInitialError('');setFeishuError('');try{const conf=await api<AppConfig>('/config');setConfig(conf);document.title=conf.brand_name;try{setUser(await api<User>('/auth/me'));}catch(e){if(!(e&&typeof e==='object'&&'status'in e&&e.status===401))throw e;setUser(null);if(feishuEmbed&&!feishuFallback){if(!conf.feishu_h5?.enabled){setFeishuError('服务端还没有开启飞书网页应用，请先完成应用凭据和白名单配置。');}else{setFeishuAuth('authorizing');try{const code=await requestFeishuCode(conf.feishu_h5.app_id);setUser(await post<User>('/feishu/h5/login',{code}));setFeishuAuth('idle');}catch(authError){setFeishuAuth('idle');setFeishuError(errorText(authError));}}}}}catch(e){setInitialError(errorText(e));}finally{setInitializing(false);}},[feishuEmbed,feishuFallback]);
-  useEffect(()=>{void initialize();const expired=()=>{setUser(null);setSelected(null);setInitialDraft(null);setConnectionSetup(null);setConversations([]);setAssistants([]);setNewSession(null);setAssistantDetail(null);setPendingNavigation(null);setMemoryDirty(false);setAssistantDirty(false);setAssistantSaving(false);savingRef.current=false;memorySavingRef.current=false;setView('workspace');};window.addEventListener('session-expired',expired);return()=>window.removeEventListener('session-expired',expired);},[initialize]);
-  const refresh=useCallback(async()=>{if(!user)return;const results=await Promise.allSettled([api<Assistant[]>('/assistants'),api<Conversation[]>('/conversations')]);if(results[0].status==='fulfilled'){setAssistants(results[0].value);const values=results[0].value;setAssistantDetail(previous=>previous?values.find(a=>a.id===previous.id)||previous:null);}else setError(errorText(results[0].reason));if(results[1].status==='fulfilled')setConversations(results[1].value);else setError(errorText(results[1].reason));},[user]);
-  useEffect(()=>{void refresh();},[refresh]);
+  useEffect(()=>{void initialize();const expired=()=>{setUser(null);setSelected(null);setInitialDraft(null);setConnectionSetup(null);resetWorkspace();setNewSession(null);setAssistantDetail(null);setPendingNavigation(null);setMemoryDirty(false);setAssistantDirty(false);setAssistantSaving(false);savingRef.current=false;memorySavingRef.current=false;setView('workspace');};window.addEventListener('session-expired',expired);return()=>window.removeEventListener('session-expired',expired);},[initialize,resetWorkspace]);
+  const refresh=useCallback(async()=>{
+    if(!user)return;
+    workspaceRequest.current?.abort();
+    const controller=new AbortController();workspaceRequest.current=controller;
+    setAssistantsRead(previous=>({...previous,loading:true,error:''}));
+    setConversationsRead(previous=>({...previous,loading:true,error:''}));
+    await Promise.allSettled([
+      api<Assistant[]>('/assistants',{signal:controller.signal}).then(values=>{
+        if(controller.signal.aborted)return;
+        setAssistants(values);setAssistantsRead({loading:false,loaded:true,error:''});
+        setAssistantDetail(previous=>previous?values.find(a=>a.id===previous.id)||previous:null);
+      }).catch(reason=>{if(!controller.signal.aborted)setAssistantsRead(previous=>({...previous,loading:false,error:errorText(reason)}));}),
+      api<Conversation[]>('/conversations',{signal:controller.signal}).then(values=>{
+        if(controller.signal.aborted)return;
+        setConversations(values);setConversationsRead({loading:false,loaded:true,error:''});
+      }).catch(reason=>{if(!controller.signal.aborted)setConversationsRead(previous=>({...previous,loading:false,error:errorText(reason)}));}),
+    ]);
+    if(workspaceRequest.current===controller)workspaceRequest.current=null;
+  },[user]);
+  useEffect(()=>{void refresh();return()=>{workspaceRequest.current?.abort();};},[refresh]);
   const refreshModels=useCallback(async()=>{if(!user)return;setModelsLoading(true);setModelsError('');try{setModels(await api<ModelOption[]>('/models'));}catch(e){setModelsError(errorText(e));}finally{setModelsLoading(false);}},[user]);useEffect(()=>{void refreshModels();},[refreshModels]);
   const protectMemory=(action:()=>void)=>{if(memorySavingRef.current){setError('会话记忆正在保存，请稍候再离开。');return;}if(savingRef.current){setError('助手配置正在保存，请稍候再离开。');return;}if(assistantDirty||(view==='memory'&&memoryDirty)){setPendingKind(assistantDirty?'assistant':'memory');setPendingNavigation(()=>action);}else action();};
   const snapshotAssistant=(assistant:Assistant)=>{setAssistantDetail(assistant);setAssistants(previous=>previous.map(item=>item.id===assistant.id?assistant:item));};
@@ -55,7 +93,7 @@ export default function App() {
   const startConfiguredAssistant=(assistant:Assistant)=>{if(!connectionSetup){setError('本次连接信息已失效，请返回连接页重新开始。');return;}startConnectionAssistant(assistant,connectionSetup);};
   const openConversation=(conversation:Conversation)=>protectMemory(()=>{setInitialDraft(null);setSelected(conversation);showView('workspace');});
   const openAssistant=(assistant:Assistant)=>protectMemory(()=>{setAssistantDetail(assistant);showView('assistant-detail');});
-  const logout=async()=>{try{await post('/auth/logout');setUser(null);setSelected(null);setInitialDraft(null);setConnectionSetup(null);setAssistants([]);setConversations([]);setView('workspace');}catch(e){setError(errorText(e));}};
+  const logout=async()=>{try{await post('/auth/logout');setUser(null);setSelected(null);setInitialDraft(null);setConnectionSetup(null);resetWorkspace();setView('workspace');}catch(e){setError(errorText(e));}};
   if(initializing)return <div className="boot zhixing-theme"><Brand name={config.brand_name}/><Loader text="正在连接工作台…"/></div>;
   if(initialError)return <div className="boot zhixing-theme"><Brand name={config.brand_name}/><ErrorNotice message={initialError}/><Button onClick={()=>void initialize()}><RefreshCw size={16}/>重新连接</Button></div>;
   if(!user){if(feishuEmbed&&!feishuFallback)return <FeishuLogin config={config} busy={feishuAuth==='authorizing'} error={feishuError} onRetry={()=>void initialize()} onPassword={()=>{setFeishuFallback(true);setFeishuError('');}}/>;return <Login config={config} onLogin={setUser}/>;}
@@ -77,9 +115,9 @@ export default function App() {
     ...(admin&&configAllows(config,'approvals.read')?[{id:'approvals' as View,label:'待审批操作',icon:<ShieldCheck size={18}/>}]:[]),
   ];
   return <div className="app-shell zhixing-theme">{sidebarOpen&&<button className="sidebar-scrim" aria-label="关闭导航" onClick={()=>setSidebarOpen(false)}/>}
-    <aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="sidebar-brand"><Brand name={config.brand_name} compact/><button className="icon-button mobile-only" aria-label="关闭导航" onClick={()=>setSidebarOpen(false)}><X size={20}/></button></div>{canCreateConversation&&<button className="new-conversation" onClick={()=>newChat()}><Plus size={18}/>新建会话<ArrowUpRight size={16}/></button>}<nav aria-label="主导航">{navigation.map(item=><button key={item.id} className={`nav-item ${(view==='workspace'&&selected?'sessions':view)===item.id?'selected':''}`} aria-current={(view==='workspace'&&selected?'sessions':view)===item.id?'page':undefined} onClick={()=>navigate(item.id)}>{item.icon}{item.label}</button>)}{admin&&canManageUsers&&<button className={`nav-item ${view==='users'?'selected':''}`} onClick={()=>navigate('users')}><Users size={18}/>成员管理</button>}</nav><div className="history-heading"><span>最近会话</span><button className="icon-button" aria-label="刷新对话" onClick={()=>void refresh()}><RefreshCw size={13}/></button></div><div className="conversation-history">{!conversations.filter(c=>!c.archived).length?<p className="sidebar-hint">从一项具体工作开始，<br/>会话会保存在这里。</p>:conversations.filter(c=>!c.archived).slice(0,30).map(c=><button title={c.title} key={c.id} className={`history-item ${selected?.id===c.id&&view==='workspace'?'selected':''}`} onClick={()=>openConversation(c)}><span>{c.title||'新会话'}</span><small>{timeText(c.updated_at)}</small></button>)}</div><div className="sidebar-bottom"><div className="account"><span className="avatar">{(user.display_name||user.username).slice(0,1)}</span><div><strong>{user.display_name||user.username}</strong><small>{admin?'工作台管理员':'工作台成员'}</small></div><button className="icon-button" aria-label="退出登录" onClick={()=>protectMemory(()=>{void logout();})}><LogOut size={17}/></button></div></div></aside>
+    <aside className={`sidebar ${sidebarOpen?'open':''}`}><div className="sidebar-brand"><Brand name={config.brand_name} compact/><button className="icon-button mobile-only" aria-label="关闭导航" onClick={()=>setSidebarOpen(false)}><X size={20}/></button></div>{canCreateConversation&&<button className="new-conversation" disabled={!assistantsRead.loaded&&!assistants.length} onClick={()=>newChat()}><Plus size={18}/>新建会话<ArrowUpRight size={16}/></button>}<nav aria-label="主导航">{navigation.map(item=><button key={item.id} className={`nav-item ${(view==='workspace'&&selected?'sessions':view)===item.id?'selected':''}`} aria-current={(view==='workspace'&&selected?'sessions':view)===item.id?'page':undefined} onClick={()=>navigate(item.id)}>{item.icon}{item.label}</button>)}{admin&&canManageUsers&&<button className={`nav-item ${view==='users'?'selected':''}`} onClick={()=>navigate('users')}><Users size={18}/>成员管理</button>}</nav><div className="history-heading"><span>最近会话</span><button className="icon-button" aria-label="刷新对话" disabled={conversationsRead.loading} onClick={()=>void refresh()}><RefreshCw size={13}/></button></div><ConversationHistory conversations={conversations} state={conversationsRead} selectedId={view==='workspace'?selected?.id:undefined} onOpen={openConversation} onRetry={()=>void refresh()}/><div className="sidebar-bottom"><div className="account"><span className="avatar">{(user.display_name||user.username).slice(0,1)}</span><div><strong>{user.display_name||user.username}</strong><small>{admin?'工作台管理员':'工作台成员'}</small></div><button className="icon-button" aria-label="退出登录" onClick={()=>protectMemory(()=>{void logout();})}><LogOut size={17}/></button></div></div></aside>
     <main className="main"><div className="mobile-bar"><button className="icon-button" onClick={()=>setSidebarOpen(true)} aria-label="打开导航"><Menu size={21}/></button><span>{config.brand_name}</span><span className="mobile-avatar">{user.display_name.slice(0,1)}</span></div>{error&&<div className="global-notice"><ErrorNotice message={error} onDismiss={()=>setError('')}/></div>}
-    {view==='workspace'&&(selected?<ChatPage key={selected.id} conversation={selected} assistant={assistants.find(a=>a.id===selected.assistant_id)} config={config} models={models} modelsLoading={modelsLoading} initialDraft={initialDraft?.conversationId===selected.id?initialDraft.text:undefined} onChanged={refresh} onArchived={()=>{setSelected(null);showView(configAllows(config,'conversations.read')?'sessions':'workspace');}}/>:<WorkspacePage assistants={assistants} conversations={conversations} onAssistant={openAssistant} onConversation={openConversation} onNew={newChat} onNavigate={navigate} canCreate={canCreateConversation} canManage={canManageAssistants} canReadKnowledge={configAllows(config,'knowledge.read')} canManageConnections={configAllows(config,'connections.write')} canReadSessions={configAllows(config,'conversations.read')} onStart={(question,assistant)=>protectMemory(()=>{setNewSession({assistant,question});setSidebarOpen(false);})}/>) }
+    {view==='workspace'&&(selected?<ChatPage key={selected.id} conversation={selected} assistant={assistants.find(a=>a.id===selected.assistant_id)} config={config} models={models} modelsLoading={modelsLoading} initialDraft={initialDraft?.conversationId===selected.id?initialDraft.text:undefined} onChanged={refresh} onArchived={()=>{setSelected(null);showView(configAllows(config,'conversations.read')?'sessions':'workspace');}}/>:<WorkspacePage assistants={assistants} conversations={conversations} assistantsRead={assistantsRead} conversationsRead={conversationsRead} onReload={()=>void refresh()} onAssistant={openAssistant} onConversation={openConversation} onNew={newChat} onNavigate={navigate} canCreate={canCreateConversation} canManage={canManageAssistants} canReadKnowledge={configAllows(config,'knowledge.read')} canManageConnections={configAllows(config,'connections.write')} canReadSessions={configAllows(config,'conversations.read')} onStart={(question,assistant)=>protectMemory(()=>{setNewSession({assistant,question});setSidebarOpen(false);})}/>) }
     {view==='assistant-detail'&&assistantDetail&&<AssistantDetailPage key={assistantDetail.id} assistantId={assistantDetail.id} assistants={assistants} admin={admin} onOpen={openConversation} onNew={newChat} onChanged={refresh} onSnapshot={snapshotAssistant} onDirtyChange={setAssistantDirty} onSavingChange={changeAssistantSaving} requestNavigation={protectMemory} draftEpoch={draftEpoch}/>}
     {view==='sessions'&&<SessionsPage assistants={assistants} onOpen={openConversation} onNew={newChat} onChanged={refresh}/>}
     {view==='connections'&&<ConnectionsPage admin={admin} canConfigureAssistant={canManageAssistants} focusConnectionId={connectionSetup?.id} onStartAssistant={canCreateConversation?startConnectionAssistant:undefined} onConfigureAssistant={connection=>{if(canManageAssistants)protectMemory(()=>{setConnectionSetup(connectionSetupContext(connection));showView('assistants');});}}/>}

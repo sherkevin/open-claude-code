@@ -7,9 +7,21 @@ import { ScopeBadge } from './resources';
 import AiIdentity from './AiIdentity';
 import './workbench-refinement.css';
 
+export type WorkspaceReadState = { loading: boolean; loaded: boolean; error: string };
+const readyRead: WorkspaceReadState = { loading: false, loaded: true, error: '' };
+
+export function WorkspaceReadNotice({ state, label, onRetry }: { state: WorkspaceReadState; label: string; onRetry?: () => void }) {
+  if (state.error) return <div className="wr-recent-empty" role="status"><RefreshCw size={20}/><div><h3>{label}{state.loaded ? '更新未完成' : '暂未读取成功'}</h3><p>{state.loaded ? '当前仍显示上次读取的内容。' : '请重试，或先使用其他功能。'}</p></div>{onRetry && <button type="button" className="wr-text-action" onClick={onRetry}>重新读取<RefreshCw size={14}/></button>}</div>;
+  if (state.loading || !state.loaded) return <p className="section-help" role="status">正在{state.loaded ? '更新' : '读取'}{label}…</p>;
+  return null;
+}
+
 type Props = {
   assistants: Assistant[];
   conversations: Conversation[];
+  assistantsRead?: WorkspaceReadState;
+  conversationsRead?: WorkspaceReadState;
+  onReload?: () => void;
   onAssistant: (assistant: Assistant) => void;
   onConversation: (conversation: Conversation) => void;
   onNew?: (assistant?: Assistant) => void;
@@ -54,7 +66,7 @@ function updatedTime(value: string) {
 }
 
 export default function WorkspacePage({
-  assistants, conversations, onAssistant, onConversation, onNew, onStart, onNavigate,
+  assistants, conversations, assistantsRead = readyRead, conversationsRead = readyRead, onReload, onAssistant, onConversation, onNew, onStart, onNavigate,
   canCreate = true, canManage = true, canReadKnowledge = true, canManageConnections = true, canReadSessions = true,
 }: Props) {
   const [question, setQuestion] = useState('');
@@ -114,23 +126,25 @@ export default function WorkspacePage({
 
       <div className={`wr-overview${hasResources ? '' : ' wr-overview-full'}`}>
         <div className="wr-main-work">
-      {canReadSessions && <section className="wr-recent" aria-labelledby="wr-recent-heading">
+      {canReadSessions && <section className="wr-recent" aria-labelledby="wr-recent-heading" aria-busy={conversationsRead.loading}>
         <div className="wr-section-heading"><div className="wr-recent-heading"><Clock3 size={17}/><h2 id="wr-recent-heading">继续工作</h2>{runningCount > 0 && <span className="wr-running-summary">{runningCount} 项执行中</span>}</div><button type="button" className="wr-text-action" onClick={() => onNavigate('sessions')}>全部会话<ArrowRight size={14}/></button></div>
+        <WorkspaceReadNotice state={conversationsRead} label="最近会话" onRetry={onReload}/>
         {recent.length ? <div className="wr-recent-list"><div className="wr-recent-columns" aria-hidden="true"><span>会话</span><span>业务助手</span><span>最近更新</span><span/></div>{recent.map(conversation => <button type="button" className="wr-recent-row" key={conversation.id} onClick={() => onConversation(conversation)}>
           <span className="wr-conversation-title"><MessageSquare size={16}/><span>{conversation.title || '新会话'}</span>{conversation.active_run_id && <span className="wr-running"><span aria-hidden="true"/>执行中</span>}</span>
           <span className="wr-conversation-assistant">{assistantNames.get(conversation.assistant_id) || '业务助手'}</span>
           {updatedTime(conversation.updated_at) ? <time dateTime={conversation.updated_at}>{timeText(conversation.updated_at)}</time> : <span className="wr-time-unknown">更新时间未提供</span>}
           <ArrowUpRight size={15}/>
-        </button>)}</div> : <div className="wr-recent-empty"><MessageSquare size={22}/><div><h3>还没有会话</h3><p>{canAsk ? '从上方提问开始，工作记录会保存在这里。' : '开始一次工作后，可以在这里继续。'}</p></div></div>}
+        </button>)}</div> : conversationsRead.loaded && !conversationsRead.loading && !conversationsRead.error ? <div className="wr-recent-empty"><MessageSquare size={22}/><div><h3>还没有会话</h3><p>{canAsk ? '从上方提问开始，工作记录会保存在这里。' : '开始一次工作后，可以在这里继续。'}</p></div></div> : null}
       </section>}
-        <section className="wr-assistants" aria-labelledby="wr-assistants-heading">
-          <div className="wr-section-heading"><h2 id="wr-assistants-heading">业务助手 <span className="wr-count">{available.length}</span></h2>{canManage && <button type="button" className="wr-text-action" onClick={() => onNavigate('assistants')}>管理助手<ArrowUpRight size={14}/></button>}</div>
+        <section className="wr-assistants" aria-labelledby="wr-assistants-heading" aria-busy={assistantsRead.loading}>
+          <div className="wr-section-heading"><h2 id="wr-assistants-heading">业务助手 <span className="wr-count">{assistantsRead.loaded ? available.length : '—'}</span></h2>{canManage && <button type="button" className="wr-text-action" onClick={() => onNavigate('assistants')}>管理助手<ArrowUpRight size={14}/></button>}</div>
+          <WorkspaceReadNotice state={assistantsRead} label="业务助手" onRetry={onReload}/>
           {available.length ? <div className="wr-assistant-list">{available.map(assistant => <article className="wr-assistant" key={assistant.id}>
             <div className="wr-assistant-heading"><AiIdentity size="small"/><button type="button" className="wr-title-link" onClick={() => onAssistant(assistant)}><h3>{assistant.name}</h3><ArrowUpRight size={14}/></button><ScopeBadge scope={assistant.scope}/></div>
             <p>{assistant.description || '查看助手能力，开始新的会话。'}</p>
             <div className="wr-assistant-capabilities"><span><BookOpen size={14}/>{assistant.knowledge_base_ids?.length || 0} 个知识库</span><span><Network size={14}/>已配置 {assistant.connections.length} 个连接</span></div>
             <div className="wr-assistant-footer"><button type="button" className="wr-text-action" onClick={() => onAssistant(assistant)}>查看能力<ArrowRight size={14}/></button>{canCreate && onNew && <Button variant="secondary" onClick={() => onNew(assistant)}>开始会话</Button>}</div>
-          </article>)}</div> : <div className="wr-empty-panel"><EmptyState icon={<Layers3 size={26}/>} title="还没有可用助手" description={canManage ? '先配置一个助手，再开始业务会话。' : '管理员开放助手后，可以在这里开始工作。'} action={canManage ? <Button onClick={() => onNavigate('assistants')}>配置助手</Button> : undefined}/></div>}
+          </article>)}</div> : assistantsRead.loaded && !assistantsRead.loading && !assistantsRead.error ? <div className="wr-empty-panel"><EmptyState icon={<Layers3 size={26}/>} title="还没有可用助手" description={canManage ? '先配置一个助手，再开始业务会话。' : '管理员开放助手后，可以在这里开始工作。'} action={canManage ? <Button onClick={() => onNavigate('assistants')}>配置助手</Button> : undefined}/></div> : null}
         </section>
 
         </div>
