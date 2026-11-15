@@ -412,7 +412,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     </div></section>
     {showMemory && <Modal title="会话记忆" wide onClose={closeMemory}><div className="modal-body conversation-memory-panel"><MemoryWorkspace conversation={conversation} onDirtyChange={memoryDirtyChanged} onSavingChange={memorySavingChanged}/></div></Modal>}
     {confirmCloseMemory && <Modal title="放弃未保存的记忆修改" onClose={()=>setConfirmCloseMemory(false)}><div className="modal-body"><p>未保存的草稿将丢失。已经发送的修改仍会继续处理。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={()=>setConfirmCloseMemory(false)}>继续编辑</Button><Button variant="danger" disabled={memorySaving} onClick={()=>{setConfirmCloseMemory(false);setShowMemory(false);}}>放弃修改并关闭</Button></footer></Modal>}
-    {showFeed && <aside className="execution-panel"><header><div><Radio size={16}/><h2>执行记录</h2></div><button className="icon-button" aria-label="关闭执行记录" onClick={() => setShowFeed(false)}><X size={17}/></button></header><div className="execution-body"><div className="execution-runtime"><span>运行引擎</span><RuntimeBadge runtime={conversation.runtime_type}/></div>{run ? <><div className="execution-state"><span className={`badge ${run.status === 'succeeded' ? 'green' : run.status === 'failed' || run.status === 'awaiting_approval' ? 'amber' : ''}`}>{active && <LoaderCircle size={12} className="spin"/>}{statusLabels[run.status]}</span>{connectionState === 'reconnecting' && active && <small>连接断开，正在自动重连…</small>}</div><RunMetrics run={run}/>{localFeedback?.runId===run.id&&<p className="br-local-feedback">操作反馈：{localFeedback.ms.toFixed(0)} ms（浏览器）<br/>浏览器反馈耗时，不代表业务完成时间。</p>}<ExecutionEvidenceCard events={events} run={run}/>{approvals.map(approval => approval.tool_name===MEMORY_WRITE_TOOL?<MemoryApprovalCard key={approval.id} conversationId={conversation.id} approval={approval} busy={decisionBusy===approval.id} onDecision={(decision,digest)=>decide(approval,decision,digest)}/>:<ApprovalCard key={approval.id} approval={approval} busy={decisionBusy === approval.id} onDecision={decision => void decide(approval, decision)}/>)}<div className="event-list">{events.filter(e => ['run.started', 'run.stage', 'tool.started', 'tool.completed', 'approval.required', 'approval.resolved', 'approval.model_decided', 'approval.dual_vote', 'memory.pending', 'memory.updated', 'memory.aborted', 'subagent.plan.created', 'subagent.started', 'subagent.progress', 'subagent.completed', 'subagent.failed', 'subagent.cancelled', 'subagent.plan.completed', 'subagent.approval.required', 'subagent.approval.denied', 'subagent.approval.resolved', 'artifact.created', 'context.compaction_started', 'context.compacted', 'context.compaction_result', 'run.completed'].includes(e.type)).map(event => <EventRow key={event.id} event={event}/>)}</div>{!events.length && <p className="section-help">正在读取执行记录…</p>}</> : <div className="execution-empty"><Clock3 size={26}/><h3>本次执行记录</h3><p>发送消息后，这里会展示工具调用、待确认操作和执行结果。</p></div>}</div></aside>}
+    {showFeed && <aside className="execution-panel"><header><div><Radio size={16}/><h2>执行记录</h2></div><button className="icon-button" aria-label="关闭执行记录" onClick={() => setShowFeed(false)}><X size={17}/></button></header><div className="execution-body"><div className="execution-runtime"><span>运行引擎</span><RuntimeBadge runtime={conversation.runtime_type}/></div>{run ? <><div className="execution-state"><span className={`badge ${run.status === 'succeeded' ? 'green' : run.status === 'failed' || run.status === 'awaiting_approval' ? 'amber' : ''}`}>{active && <LoaderCircle size={12} className="spin"/>}{statusLabels[run.status]}</span>{connectionState === 'reconnecting' && active && <small>连接断开，正在自动重连…</small>}</div><RunMetrics run={run}/>{localFeedback?.runId===run.id&&<p className="br-local-feedback">操作反馈：{localFeedback.ms.toFixed(0)} ms（浏览器）<br/>浏览器反馈耗时，不代表业务完成时间。</p>}<ExecutionEvidenceCard events={events} run={run}/>{approvals.map(approval => approval.tool_name===MEMORY_WRITE_TOOL?<MemoryApprovalCard key={approval.id} conversationId={conversation.id} approval={approval} busy={decisionBusy===approval.id} onDecision={(decision,digest)=>decide(approval,decision,digest)}/>:<ApprovalCard key={approval.id} approval={approval} busy={decisionBusy === approval.id} onDecision={decision => void decide(approval, decision)}/>)}<div className="event-list">{events.filter(e => ['run.started', 'run.stage', 'tool.started', 'tool.completed', 'approval.required', 'approval.resolved', 'approval.model_decided', 'approval.dual_vote', 'memory.pending', 'memory.updated', 'memory.aborted', 'subagent.plan.created', 'subagent.started', 'subagent.progress', 'subagent.completed', 'subagent.failed', 'subagent.cancelled', 'subagent.plan.completed', 'subagent.approval.required', 'subagent.approval.denied', 'subagent.approval.resolved', 'artifact.created', 'context.compaction_started', 'context.compacted', 'context.compaction_result', 'run.completed'].includes(e.type)).map(event => <EventRow key={event.id} event={event} events={events}/>)}</div>{!events.length && <p className="section-help">正在读取执行记录…</p>}</> : <div className="execution-empty"><Clock3 size={26}/><h3>本次执行记录</h3><p>发送消息后，这里会展示工具调用、待确认操作和执行结果。</p></div>}</div></aside>}
     </div>{!trial && showContext && <ContextDialog conversationId={conversation.id} models={models} busy={active || sending || uploading || savingModel || loading} run={run} onClose={() => setShowContext(false)} onCompact={result => { setShowContext(false); setShowFeed(true); setMessages(previous => previous.some(message => message.id === result.message.id) ? previous : [...previous, result.message]); setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', kind: 'compact', compaction: null, assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null }); void api<Run>(`/runs/${result.run_id}`).then(applyRunReadback).catch(e => { if (mounted.current) setError(errorText(e)); }); onChangedRef.current(); }}/>} {preview && <FilePreview key={preview.id} file={preview} onClose={() => setPreview(null)}/>}{rename && <Modal title="重命名会话" onClose={() => { if (!savingTitle) setRename(false); }}><form onSubmit={e => { e.preventDefault(); void saveTitle(); }}><div className="modal-body"><Field label="会话名称"><input value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={savingTitle} maxLength={200} required autoFocus/></Field></div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={savingTitle} onClick={() => setRename(false)}>取消</Button><Button busy={savingTitle} disabled={!titleDraft.trim()} type="submit">保存名称</Button></footer></form></Modal>}{archive && <Modal title="归档此会话" onClose={() => setArchive(false)}><div className="modal-body"><p>归档后，会话会从最近列表中移除。会话和附件仍保存在服务端。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={() => setArchive(false)}>取消</Button><Button onClick={async () => { try { await patch(`/conversations/${conversation.id}`, { archived: true }); onChangedRef.current(); onArchived(); } catch (e) { setError(errorText(e)); setArchive(false); } }}>归档会话</Button></footer></Modal>}{recommendOpen && <Modal title="为当前任务推荐模型" onClose={() => { if (!recommendBusy) setRecommendOpen(false); }}><div className="modal-body"><p>根据当前问题、最近消息和助手职责推荐模型，只使用任务摘要。推荐生效后将固定使用该模型，可随时改回自动选择。</p><div className="fitness-context" role="status"><span className="eyebrow">当前会话上下文</span><p>{recommendSummary}</p></div>{recommendation && <div className="recommendation-result"><strong>推荐模型：{recommendation.model_label} · {recommendation.reasoning_level}</strong><p>{recommendation.reason}</p><small>路由器：{recommendation.router.model_id} · 输入 {recommendation.router.input_chars} 字符 · {recommendation.router.mode === 'provider' || recommendation.router.mode === 'provider_fallback' ? '已使用授权模型路由' : recommendation.router.target_status === 'unavailable' ? `目标线路不可用（${recommendation.router.target_model_id}）` : '本地备用规则'}</small></div>}</div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={recommendBusy} onClick={() => setRecommendOpen(false)}>{recommendation ? '完成' : '关闭'}</Button></footer></Modal>}</div>;
 }
 
@@ -450,7 +450,7 @@ export function LiveActivity({ run, events, stage, connectionState }: { run: Run
     detail = state === 'failed' ? (typeof latestTool?.data.error_message==='string' ? latestTool.data.error_message : '本次工具调用失败，正在整理已有信息。') : state === 'unknown' ? '未收到明确的调用结果，暂不报告业务结果。' : typeof sourceCount === 'number' && sourceCount > 0 ? `已登记 ${sourceCount} 个来源，内容仍需核对。` : '工具已返回，但未提供来源。';
     icon = state === 'failed' ? <XCircle size={16}/> : state === 'succeeded' ? <CheckCircle2 size={16}/> : <Circle size={16}/>;
   } else if (['scoping', 'routing', 'evidence'].includes(stage)) {
-    const presentation = runStagePresentation(latestStage?.data || { stage });
+    const presentation = latestStage ? evidenceStagePresentation(latestStage, events) : runStagePresentation({ stage });
     title = presentation.label; detail = presentation.detail;
     icon = presentation.confirmed ? <CheckCircle2 size={16}/> : <Circle size={16}/>;
   } else if (stage === 'initializing' || run.status === 'queued') {
@@ -464,7 +464,7 @@ export function LiveActivity({ run, events, stage, connectionState }: { run: Run
   }
   const visible = [...events].filter(event => ['run.stage', 'tool.started', 'tool.completed', 'approval.required', 'approval.resolved', 'approval.model_decided', 'approval.dual_vote', 'memory.pending', 'memory.updated', 'memory.aborted', 'subagent.plan.created', 'subagent.started', 'subagent.progress', 'subagent.completed', 'subagent.failed', 'subagent.cancelled', 'subagent.plan.completed', 'subagent.approval.required', 'subagent.approval.denied', 'subagent.approval.resolved', 'context.compaction_started', 'context.compacted'].includes(event.type)).slice(-4);
   const eventLabel = (event: StreamEvent) => {
-    if (event.type === 'run.stage') return runStagePresentation(event.data).label;
+    if (event.type === 'run.stage') return evidenceStagePresentation(event, events).label;
     if (event.type === 'memory.pending') return '记忆已暂存，等待任务成功后保存';
     if (event.type === 'memory.updated') return '记忆已正式保存';
     if (event.type === 'memory.aborted') return '记忆未保存，暂存已废弃';
@@ -573,6 +573,46 @@ const reportedSourceCount = (event?: StreamEvent): number | undefined => {
   return typeof count === 'number' && Number.isFinite(count) && count >= 0 ? count : undefined;
 };
 
+const isWebRead = (name: unknown) => name === 'mcp__workspace__web_read' || name === 'web_read';
+const isSearchCandidate = (name: unknown) => ['WebSearch', 'web_search', 'mcp__workspace__web_search', 'image_search', 'mcp__workspace__image_search'].includes(String(name));
+
+/** Registered search candidates do not establish that page text was read. */
+export function webReadEvidenceSummary(events: StreamEvent[], runId: string) {
+  const completed = events.filter(event => event.run_id === runId && event.type === 'tool.completed').sort((a, b) => a.id - b.id);
+  const reads = completed.filter(event => isWebRead(event.data.tool_name));
+  const failures = reads.filter(event => event.data.success === false);
+  if (!failures.length) return null;
+  const sources = new Set<string>(); let countedOnly = 0;
+  for (const event of completed) {
+    if (event.data.success !== true || isSearchCandidate(event.data.tool_name)) continue;
+    if (Array.isArray(event.data.source_ids)) {
+      event.data.source_ids.forEach(id => { if (typeof id === 'string' && id.trim()) sources.add(id); });
+    } else { const count = reportedSourceCount(event); if (typeof count === 'number' && Number.isSafeInteger(count)) countedOnly = Math.max(countedOnly, count); }
+  }
+  const count = Math.max(sources.size, countedOnly);
+  if (!count && reads.at(-1)?.data.success !== false) return null;
+  // The host emits a bounded public error; never inspect tool responses, URLs,
+  // input arguments or raw exceptions for a guessed reason.
+  const failure = failures.at(-1)!;
+  const reason = typeof failure.data.error_message === 'string' && failure.data.error_message.trim()
+    ? failure.data.error_message.trim().slice(0, 300) : '本次网页读取失败，具体原因未提供。';
+  return {
+    label: count ? '部分网页读取未完成' : '网页读取未完成',
+    detail: count ? `本轮已登记${countedOnly ? '至少' : ''} ${count} 个来源，内容仍需核对。${reason}` : `${reason} 尚未取得可核对的正文来源；搜索结果不能代替网页正文。`,
+    confirmed: false,
+  };
+}
+
+/** Bind the evidence stage to its adjacent completion, never a later attempt. */
+export function evidenceStagePresentation(event: StreamEvent, events: StreamEvent[]) {
+  const fallback = runStagePresentation(event.data);
+  if (event.data.stage !== 'evidence' || !isWebRead(event.data.tool_name)) return fallback;
+  const following = events.filter(item => item.run_id === event.run_id && item.id > event.id).sort((a, b) => a.id - b.id);
+  const boundary = following.find(item => item.type === 'tool.completed' || (item.type === 'run.stage' && item.data.stage === 'evidence'));
+  if (!boundary || boundary.type !== 'tool.completed' || boundary.data.tool_name !== event.data.tool_name) return fallback;
+  return webReadEvidenceSummary(events.filter(item => item.id <= boundary.id), event.run_id) || fallback;
+}
+
 export const buildExecutionEvidence = (events: StreamEvent[], _run: Run): ExecutionEvidence => {
   const completed = [...events].reverse().find(event => event.type === 'tool.completed');
   return buildExecutionEvidenceForTool(completed);
@@ -606,17 +646,18 @@ export const buildExecutionEvidences = (events: StreamEvent[], _run: Run): Execu
 
 export function ExecutionEvidenceCard({ events, run }: { events: StreamEvent[]; run: Run }) {
   const evidences = buildExecutionEvidences(events, run);
+  const webSummary = webReadEvidenceSummary(events, run.id);
   if (!evidences.length) return <section className="execution-evidence" aria-label="范围与证据状态"><div className="execution-evidence-heading"><div><span className="eyebrow">范围与证据</span><h3>等待工具返回后展示</h3></div><small>未返回的字段显示“未提供”</small></div><p className="section-help">当前还没有可核验的业务工具结果。</p></section>;
-  return <section className="execution-evidence" aria-label="范围与证据状态"><div className="execution-evidence-heading"><div><span className="eyebrow">范围与证据</span><h3>工具返回的范围与来源</h3></div><small>未返回的字段显示“未提供” · {evidences.length} 次调用</small></div>{evidences.map(evidence => { const cells: Array<[string, string]> = [
+  return <section className="execution-evidence" aria-label="范围与证据状态"><div className="execution-evidence-heading"><div><span className="eyebrow">范围与证据</span><h3>工具返回的范围与来源</h3></div><small>未返回的字段显示“未提供” · {evidences.length} 次调用</small></div>{webSummary&&<p className="execution-evidence-note" role="status"><strong>{webSummary.label}</strong> {webSummary.detail}</p>}{evidences.map(evidence => { const cells: Array<[string, string]> = [
     ['业务域', evidence.domain], ['流程', evidence.process], ['对象', evidence.object], ['指标', evidence.metric],
     ['时间范围', evidence.timeRange], ['筛选条件', evidence.filters], ['返回行数', evidence.returnedRows], ['原始行数', evidence.originalRows],
   ]; return <div className="execution-evidence-tool" key={evidence.id}><div className="execution-evidence-tool-title"><strong>{evidence.toolName}</strong><span className={`badge ${evidence.status === 'succeeded' ? 'green' : evidence.status === 'failed' ? 'amber' : ''}`}>{toolResultLabels[evidence.status]}</span></div>{evidence.status === 'succeeded' ? <><dl className="execution-evidence-grid">{cells.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="execution-evidence-meta"><span>来源 {evidence.sourceCount}</span><span>缓存 {evidence.cache}</span></div>{evidence.modelInputBytes!==unknownFact&&<p className="execution-evidence-note">提供给模型的数据 {evidence.modelInputBytes} 字节（UTF-8，非 Token）</p>}</> : <p className="execution-evidence-note">{evidence.status === 'failed' ? evidence.error || '本次调用失败，未展示业务结果。' : '调用结果尚未确认，业务范围与来源保持未提供。'}</p>}</div>; })}</section>;
 }
 
-export function EventRow({ event }: { event: StreamEvent }) {
+export function EventRow({ event, events = [] }: { event: StreamEvent; events?: StreamEvent[] }) {
   let label = ''; let detail = ''; let icon = <Circle size={14}/>;
   if (event.type === 'run.started') { label = '开始执行'; icon = <Radio size={14}/>; }
-  if (event.type === 'run.stage') { const presentation = runStagePresentation(event.data); label = presentation.label; detail = presentation.detail; icon = presentation.confirmed ? <CheckCircle2 size={14}/> : <Clock3 size={14}/>; }
+  if (event.type === 'run.stage') { const presentation = evidenceStagePresentation(event, events); label = presentation.label; detail = presentation.detail; icon = presentation.confirmed ? <CheckCircle2 size={14}/> : <Clock3 size={14}/>; }
   if (event.type === 'tool.started') { label = toolLabel(String(event.data.tool_name || '调用工具')); icon = <ArrowUpRightIcon/>; }
   if (event.type === 'tool.completed') { const state = toolResultState(event); const sourceCount = reportedSourceCount(event); label = `${toolResultLabels[state]} · ${toolLabel(String(event.data.tool_name || '工具调用'))}`; detail = state === 'failed' ? (typeof event.data.error_message==='string' ? event.data.error_message : '未取得成功的工具结果。') : state === 'unknown' ? '未收到明确的调用结果，暂不报告业务结果。' : typeof sourceCount === 'number' && sourceCount > 0 ? `已登记 ${sourceCount} 个来源，内容仍需核对。` : '未提供来源。'; icon = state === 'succeeded' ? <CheckCircle2 size={14}/> : state === 'failed' ? <XCircle size={14}/> : <Circle size={14}/>; }
   if (event.type === 'approval.resolved') { label = event.data.decision === 'allow' ? '已允许操作' : '已拒绝操作'; const source = String(event.data.decision_source || ''); detail = source && source !== 'user' ? `决策来源：${source === 'timeout' ? '超时' : source === 'cancelled' ? '任务取消' : source === 'restart' ? '服务重启' : source === 'interrupted' ? '执行中断' : '运行结束'}` : ''; icon = <ShieldCheck size={14}/>; }
