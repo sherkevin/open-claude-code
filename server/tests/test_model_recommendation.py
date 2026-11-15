@@ -259,6 +259,8 @@ def test_provider_router_and_tab_completion_use_only_authorized_target_with_loca
     assert all(call["payload"]["model"] == "deepseek-v4.1-flash-1007" for call in calls)
     assert all("test-only-token" not in str(call["payload"]) for call in calls)
     assert calls[0]["endpoint"] == "http://tokenhub.test/v1/messages"
+    assert "thinking" not in calls[0]["payload"]
+    assert calls[1]["payload"]["thinking"] == {"type": "disabled"}
 
 
 def test_tab_completion_uses_independent_default_1017_target(tmp_path, monkeypatch):
@@ -368,6 +370,7 @@ def test_tab_completion_accepts_explicit_branded_catalog_alias_for_1017(tmp_path
     assert result["router"]["target_model_id"] == "deepseek-v4.1-flash-1017"
     assert result["router"]["target_status"] == "available"
     assert calls[0]["model"] == "tencent-cloud/deepseek-v4.1-flash-1017[1m]"
+    assert calls[0]["thinking"] == {"type": "disabled"}
 
 
 def test_router_status_is_fail_closed_when_exact_target_is_missing(tmp_path):

@@ -45,6 +45,16 @@ def _safe_completion(value: str) -> str:
     return " ".join(value.split())[:MAX_COMPLETION_INPUT_CHARS]
 
 
+def short_text_options(selection: dict) -> dict:
+    """Keep short drafting tasks out of DeepSeek's default reasoning mode.
+
+    Verified with the authorized route and its Anthropic compatibility API:
+    https://api-docs.deepseek.com/guides/anthropic_api/
+    Main chat reasoning and other model families are not changed here.
+    """
+    return {"thinking": {"type": "disabled"}} if "deepseek" in str(selection.get("upstream_model", "")).casefold() else {}
+
+
 def _router_target(service):
     """Resolve the configured public router target without inventing routes."""
     target_id = getattr(service.settings, "model_router_model_id", "") or ROUTER_MODEL_ID
@@ -552,7 +562,7 @@ async def provider_completion(service, draft: str) -> dict[str, Any]:
         headers["x-api-key"] = provider["ANTHROPIC_API_KEY"]
     else:
         headers["authorization"] = f"Bearer {token}"
-    payload = {"model": target_selection["upstream_model"], "max_tokens": max(32, min(256, settings.model_router_max_output_tokens)), "temperature": 0, "messages": [{"role": "user", "content": prompt}]}
+    payload = {"model": target_selection["upstream_model"], "max_tokens": max(32, min(256, settings.model_router_max_output_tokens)), "temperature": 0, "messages": [{"role": "user", "content": prompt}], **short_text_options(target_selection)}
     result["router"]["provider_attempted"] = True
     evidence = result["router"].get("evidence")
     if isinstance(evidence, dict):

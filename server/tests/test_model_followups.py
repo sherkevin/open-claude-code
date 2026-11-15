@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.model_followups import _context, _questions, conversation_followups, provider_followups
+from app.model_recommendation import short_text_options
 from test_api import PASSWORD, client, configured, conversation, login, poll, send
 
 
@@ -106,7 +107,7 @@ def test_provider_contract_is_bounded_and_fail_closed(monkeypatch, body, expecte
     import app.model_followups as module
     service = SimpleNamespace(settings=SimpleNamespace(tab_completion_enabled=True, model_router_budget_usd=1, model_router_max_output_tokens=999, model_router_timeout_seconds=999))
     service.effective_provider = lambda _: {"ANTHROPIC_API_KEY": "test-only", "ANTHROPIC_BASE_URL": "https://provider.test/v1"}
-    monkeypatch.setattr(module, "_tab_target", lambda _: ("public", {"upstream_model": "authorized"}, None))
+    monkeypatch.setattr(module, "_tab_target", lambda _: ("public", {"upstream_model": "deepseek-v4.1-flash-1017"}, None))
     monkeypatch.setattr(module, "provider_route", lambda _: SimpleNamespace(production_ready=True))
     original_client = httpx.AsyncClient
     requests = []
@@ -119,4 +120,10 @@ def test_provider_contract_is_bounded_and_fail_closed(monkeypatch, body, expecte
     result = asyncio.run(provider_followups(service, {"question": "查询订单", "answer": "已汇总"}))
     assert result["suggestions"] == expected
     assert len(requests) == 1 and requests[0]["max_tokens"] == 256
+    assert requests[0]["thinking"] == {"type": "disabled"}
     assert result["router"]["provider_attempted"] is True
+
+
+def test_short_text_mode_does_not_change_other_model_families():
+    assert short_text_options({"upstream_model": "deepseek-v4.1-flash-1017"}) == {"thinking": {"type": "disabled"}}
+    assert short_text_options({"upstream_model": "other-authorized-model"}) == {}
