@@ -15,34 +15,36 @@
 .skill-detail .document-view-switch button {border:1px solid transparent;border-radius:6px;padding:5px 11px;font-size:12px;line-height:1.5}
 .skill-detail .document-view-switch button[aria-pressed=true] {background:var(--paper,#f5f7fa);border-color:var(--line,#e4e8ef);font-weight:600}
 .skill-detail .document-reading {min-height:0}
+/* Keep document typography and horizontal table scrolling independent of theme chunk order. */
 .skill-detail .document-reading .markdown {color:var(--ink,#172b4d);font-size:15px;line-height:1.85}
-.skill-detail .markdown :is(h1,h2,h3,h4,h5,h6) {color:var(--ink,#172b4d);font-weight:650;line-height:1.45;letter-spacing:-.015em;scroll-margin-top:20px}
-.skill-detail .markdown h1 {font-size:27px;margin:0 0 22px}
-.skill-detail .markdown h2 {font-size:21px;margin:32px 0 14px;padding-bottom:9px;border-bottom:1px solid var(--line,#e4e8ef)}
-.skill-detail .markdown h3 {font-size:17px;margin:25px 0 10px}
-.skill-detail .markdown h4 {font-size:15px;margin:22px 0 8px}
-.skill-detail .markdown :is(h5,h6) {font-size:14px;margin:20px 0 8px}
-.skill-detail .markdown p {margin:0 0 16px}
-.skill-detail .markdown :is(ul,ol) {margin:12px 0 20px;padding-left:1.6em}
-.skill-detail .markdown li {margin:7px 0;padding-left:4px}
-.skill-detail .markdown li::marker {color:var(--muted,#697586);font-weight:600}
-.skill-detail .markdown li>p {margin:0 0 7px}
-.skill-detail .markdown li :is(ul,ol) {margin:6px 0 10px}
-.skill-detail .markdown blockquote {margin:20px 0;padding:13px 18px;border-left:3px solid #b8c8dd;border-radius:0 6px 6px 0;background:var(--paper,#f5f7fa);color:var(--muted,#697586)}
-.skill-detail .markdown blockquote p:last-child {margin-bottom:0}
-.skill-detail .markdown hr {border:0;border-top:1px solid var(--line,#e4e8ef);margin:28px 0}
-.skill-detail .markdown a {color:var(--brand,#2563eb);text-decoration:underline;text-underline-offset:3px;overflow-wrap:anywhere}
-.skill-detail .markdown a:focus-visible {outline:2px solid var(--brand,#2563eb);outline-offset:3px;border-radius:2px}
-.skill-detail .markdown :not(pre)>code {font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.88em;color:var(--ink,#172b4d);background:var(--paper,#f5f7fa);border:1px solid var(--line,#e4e8ef);border-radius:4px;padding:2px 5px;overflow-wrap:anywhere}
-.skill-detail .markdown pre {margin:20px 0;padding:18px 20px;border:1px solid #263346;border-radius:8px;background:#182230;color:#e7edf5;font-size:13px;line-height:1.75;white-space:pre;overflow:auto;tab-size:2}
-.skill-detail .markdown pre code {font:inherit;color:inherit;background:transparent;border:0;padding:0}
-.skill-detail .markdown table {display:block;max-width:100%;width:max-content;overflow-x:auto;margin:20px 0;border:1px solid var(--line,#e4e8ef);border-radius:7px;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.65}
-.skill-detail .markdown :is(th,td) {padding:10px 14px;border:0;border-bottom:1px solid var(--line,#e4e8ef);border-right:1px solid var(--line,#e4e8ef);vertical-align:top;color:inherit;white-space:normal;min-width:84px}
-.skill-detail .markdown th {background:var(--paper,#f5f7fa);font-weight:600;text-align:left}
-.skill-detail .markdown :is(th,td):last-child {border-right:0}
-.skill-detail .markdown tbody tr:last-child td {border-bottom:0}
-.skill-detail .markdown .task-list-item {list-style:none}
-.skill-detail .markdown .task-list-item input {margin-right:7px;accent-color:var(--brand,#2563eb)}
+.skill-detail .document-reading .markdown>:first-child {margin-top:0}
+.skill-detail .document-reading .markdown :is(h1,h2,h3,h4,h5,h6) {color:var(--ink,#172b4d);font-weight:650;line-height:1.45;letter-spacing:-.015em;scroll-margin-top:20px}
+.skill-detail .document-reading .markdown h1 {font-size:27px;margin:0 0 22px}
+.skill-detail .document-reading .markdown h2 {font-size:21px;margin:32px 0 14px;padding-bottom:9px;border-bottom:1px solid var(--line,#e4e8ef)}
+.skill-detail .document-reading .markdown h3 {font-size:17px;margin:25px 0 10px}
+.skill-detail .document-reading .markdown h4 {font-size:15px;margin:22px 0 8px}
+.skill-detail .document-reading .markdown :is(h5,h6) {font-size:14px;margin:20px 0 8px}
+.skill-detail .document-reading .markdown p {margin:0 0 16px}
+.skill-detail .document-reading .markdown :is(ul,ol) {margin:12px 0 20px;padding-left:1.6em}
+.skill-detail .document-reading .markdown li {margin:7px 0;padding-left:4px}
+.skill-detail .document-reading .markdown li::marker {color:var(--muted,#697586);font-weight:600}
+.skill-detail .document-reading .markdown li>p {margin:0 0 7px}
+.skill-detail .document-reading .markdown li :is(ul,ol) {margin:6px 0 10px}
+.skill-detail .document-reading .markdown blockquote {margin:20px 0;padding:13px 18px;border-left:3px solid #b8c8dd;border-radius:0 6px 6px 0;background:var(--paper,#f5f7fa);color:var(--muted,#697586)}
+.skill-detail .document-reading .markdown blockquote p:last-child {margin-bottom:0}
+.skill-detail .document-reading .markdown hr {border:0;border-top:1px solid var(--line,#e4e8ef);margin:28px 0}
+.skill-detail .document-reading .markdown a {color:var(--brand,#2563eb);text-decoration:underline;text-underline-offset:3px;overflow-wrap:anywhere}
+.skill-detail .document-reading .markdown a:focus-visible {outline:2px solid var(--brand,#2563eb);outline-offset:3px;border-radius:2px}
+.skill-detail .document-reading .markdown :not(pre)>code {font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.88em;color:var(--ink,#172b4d);background:var(--paper,#f5f7fa);border:1px solid var(--line,#e4e8ef);border-radius:4px;padding:2px 5px;overflow-wrap:anywhere}
+.skill-detail .document-reading .markdown pre {margin:20px 0;padding:18px 20px;border:1px solid #263346;border-radius:8px;background:#182230;color:#e7edf5;font-size:13px;line-height:1.75;white-space:pre;overflow:auto;tab-size:2}
+.skill-detail .document-reading .markdown pre code {font:inherit;color:inherit;background:transparent;border:0;padding:0}
+.skill-detail .document-reading .markdown table {display:block;max-width:100%;width:max-content;overflow-x:auto;margin:20px 0;border:1px solid var(--line,#e4e8ef);border-radius:7px;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.65}
+.skill-detail .document-reading .markdown :is(th,td) {padding:10px 14px;border:0;border-bottom:1px solid var(--line,#e4e8ef);border-right:1px solid var(--line,#e4e8ef);vertical-align:top;color:inherit;font-size:inherit;white-space:normal;min-width:84px}
+.skill-detail .document-reading .markdown th {background:var(--paper,#f5f7fa);font-weight:600;text-align:left}
+.skill-detail .document-reading .markdown :is(th,td):last-child {border-right:0}
+.skill-detail .document-reading .markdown tbody tr:last-child td {border-bottom:0}
+.skill-detail .document-reading .markdown .task-list-item {list-style:none}
+.skill-detail .document-reading .markdown .task-list-item input {margin-right:7px;accent-color:var(--brand,#2563eb)}
 .skill-detail .document-source {min-height:240px;max-height:none;padding:18px;border-radius:8px;background:var(--paper,#f5f7fa);font-size:13px;line-height:1.8}
 .skill-supporting {padding:0 36px 28px;border-top:1px solid var(--line,#e4e8ef);background:var(--paper,#f8fafc)}
 .skill-support-section {padding:17px 0;border-bottom:1px solid var(--line,#e4e8ef)}
@@ -74,11 +76,11 @@
   .skill-reading-surface {padding:16px 20px 26px}
   .skill-detail .document-view-switch {margin-bottom:18px}
   .skill-detail .document-reading .markdown {font-size:14px;line-height:1.8}
-  .skill-detail .markdown h1 {font-size:23px}
-  .skill-detail .markdown h2 {font-size:19px;margin-top:27px}
-  .skill-detail .markdown h3 {font-size:16px}
-  .skill-detail .markdown pre {padding:14px;font-size:12px}
-  .skill-detail .markdown :is(th,td) {padding:9px 11px}
+  .skill-detail .document-reading .markdown h1 {font-size:23px}
+  .skill-detail .document-reading .markdown h2 {font-size:19px;margin-top:27px}
+  .skill-detail .document-reading .markdown h3 {font-size:16px}
+  .skill-detail .document-reading .markdown pre {padding:14px;font-size:12px}
+  .skill-detail .document-reading .markdown :is(th,td) {padding:9px 11px}
   .skill-supporting {padding:0 20px 20px}
   .skill-reference-content {padding:15px}
   .skill-history-body>.field {padding:20px 20px 0}
