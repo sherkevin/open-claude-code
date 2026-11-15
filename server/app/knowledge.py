@@ -50,7 +50,7 @@ GRAPH_STOPWORDS = {"设备", "系统", "数据", "文件", "内容", "说明", "
 GRAPH_ENTITY_PATTERNS = (
     ("standard", re.compile(r"(?i)\b(?:NIST\s+)?(?:GB(?:/T)?|ISO|IEC|ASTM|NIST|OSHA|CFR|SP|IR)\s*[-/]?\s*[A-Z]?\d{2,5}(?:[./-]\d+)*(?:\s*[-/]?r?\d+)?(?:\s+Rev\.?\s*\d+)?")),
     ("metric", re.compile(r"(?i)(?:合格率|良率|压力|温度|扭矩|厚度|流量|转速|yield_rate)\s*(?:[:=：为是]\s*)[-+]?\d+(?:\.\d+)?\s*(?:%|bar|kPa|MPa|℃|°C|mm|cm|Nm|rpm|件|小时|天)?")),
-    ("equipment", re.compile(r"(?i)(?:\b[A-Z]{1,5}[-_]?\d{1,5}\b|[\u3400-\u9fff]{1,12}(?:泵|阀|炉|机|线|站|罐|管|床|压机|机器人))")),
+    ("equipment", re.compile(r"(?i)(?:\b[A-Z]{1,5}[-_]?\d{1,5}\b|离心泵|真空泵|计量泵|调节阀|安全阀|电磁阀|反应炉|加热炉|剪切机|冲床|铣床|车床|刨床|磨床|动力锯|压延机|压机|机器人|风扇|储罐|反应罐|生产线|装配线|泵站|管道)")),
     ("material", re.compile(r"(?:不锈钢|碳钢|铝合金|聚乙烯|聚氯乙烯|铜合金|钛合金|钢材|铝材)")),
     ("process", re.compile(r"(?:焊接|铸造|锻造|车削|铣削|磨削|热处理|喷涂|装配|校准|机加工|检验)")),
     ("organization", re.compile(r"(?i)\b(?:NIST|OSHA|Better\s+AI|华微世纪|华为)\b")),
@@ -1238,18 +1238,30 @@ class KnowledgeService:
             # its offset is what makes graph evidence auditable in the source.
             entities = []
             seen = set()
+            typed_groups = []
             for kind, pattern in GRAPH_ENTITY_PATTERNS:
+                group = []
                 for match in pattern.finditer(chunk["text"]):
                     value = match.group(0).strip(" _-")
                     normalized = value.casefold().strip(" _-")
                     if len(normalized) < 2 or normalized in GRAPH_STOPWORDS or normalized in seen:
                         continue
                     seen.add(normalized)
-                    entities.append({"label": normalized, "kind": kind, "offset": match.start()})
-                    if len(entities) >= 8:
+                    group.append({"label": normalized, "kind": kind, "offset": match.start()})
+                    if len(group) >= 8:
                         break
+                typed_groups.append(group)
+            # Reserve room across entity kinds so a long equipment list cannot
+            # crowd an explicitly named organization out of the bounded graph.
+            for index in range(8):
+                for group in typed_groups:
+                    if index < len(group):
+                        entities.append(group[index])
+                        if len(entities) >= 8:
+                            break
                 if len(entities) >= 8:
                     break
+            seen = {entity["label"] for entity in entities}
             # A small lexical fallback keeps ordinary Chinese headings and
             # identifiers discoverable when no typed pattern matched.
             if len(entities) < 8:
