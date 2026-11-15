@@ -235,12 +235,25 @@ class SDKRuntime(WorkspaceRuntime):
     def __init__(self, service, conversation_id, config, approve, emit):
         super().__init__(service, conversation_id, config, approve, emit)
         self.interrupted = False
+        self._workspace_errors = {}
         # One-time, argument-bound nonce issued by the permission callback and
         # consumed by the dedicated capability dispatch.  A ticket carries no
         # authority the host did not already grant: it only replays the approved
         # arguments into the handler exactly once.
         self._capability_tickets: dict[str, dict] = {}
         self._capability_ticket_cap = 128
+
+    def record_workspace_error(self, name, call_id, run_id, error):
+        from .tool_error_details import workspace_web_error
+        canonical = f"mcp__workspace__{name}"
+        details = workspace_web_error(canonical, error)
+        if (details and isinstance(call_id, str) and call_id and isinstance(run_id, str)
+                and self.tool_run_ids.get(call_id) == run_id
+                and (self.current_run or {}).get("id") == run_id):
+            if len(self._workspace_errors) >= 128:
+                self._workspace_errors.pop(next(iter(self._workspace_errors)))
+            self._workspace_errors[(run_id, call_id, canonical)] = details
+        return details
 
     def issue_capability_ticket(self, tool, arguments, context, approval_id=None):
         """Return an opaque one-time ticket bound to this exact call, or None."""
@@ -380,6 +393,7 @@ class SDKRuntime(WorkspaceRuntime):
             return PermissionResultDeny(message="用户拒绝、审批超时或业务授权已失效")
 
         async def post(data, tool_use_id, context):
+            from .tool_error_details import WORKSPACE_WEB_TOOLS, workspace_web_error
             sources = []
             replacement = None
             extra = {}
@@ -389,6 +403,12 @@ class SDKRuntime(WorkspaceRuntime):
             business_server = next((server for server in self.config["mcp_servers"]
                                     if server.startswith("c") and tool_name.startswith(f"mcp__{server}__")), None)
             expected_run_id = self.tool_run_ids.get(tool_use_id)
+            if tool_name in WORKSPACE_WEB_TOOLS and expected_run_id:
+                try:
+                    await offload(self.require_active_tool_result, expected_run_id)
+                except AppError:
+                    self._workspace_errors.pop((expected_run_id, tool_use_id, tool_name), None)
+                    return {}  # A late web callback cannot annotate another run.
             if business_server:
                 try:
                     await offload(self.require_active_tool_result, expected_run_id)
@@ -425,6 +445,12 @@ class SDKRuntime(WorkspaceRuntime):
                 self.tool_done.add(tool_use_id)
                 if isinstance(response, dict) and (response.get("isError") or response.get("is_error")):
                     success = False
+                if tool_name in WORKSPACE_WEB_TOOLS:
+                    host_error = self._workspace_errors.pop((expected_run_id, tool_use_id, tool_name), None)
+                    if not success:
+                        # Only the host's AppError callback can supply a reason.
+                        # Never interpret the SDK/external response text as one.
+                        extra = host_error or workspace_web_error(tool_name)
                 duration = data.get("duration_ms")
                 if not isinstance(duration, (int, float)):
                     started = self.tool_started.pop(tool_use_id, None)
@@ -495,7 +521,7 @@ class SDKRuntime(WorkspaceRuntime):
                     "tool_name": tool_name,
                     "success": success,
                     "duration_ms": duration,
-                    **({"_expected_run_id": expected_run_id} if business_server else {}),
+                    **({"_expected_run_id": expected_run_id} if business_server or (tool_name in WORKSPACE_WEB_TOOLS and expected_run_id) else {}),
                     **extra,
                     **result_facts,
                 })

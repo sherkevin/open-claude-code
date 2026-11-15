@@ -94,6 +94,7 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
         )
 
     async def invoke(name, arguments, callback):
+        run_id = (runtime.current_run or {}).get("id")
         try:
             # A false result means the SDK permission callback must obtain an
             # approval; it is not a denial after that callback has allowed the
@@ -104,7 +105,9 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
             result = await callback(active, current_user, run_id)
             return {"content": [{"type": "text", "text": dump(result)}]}
         except AppError as exc:
-            return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
+            record = getattr(runtime, "record_workspace_error", None)
+            details = record(name, TOOL_CALL_ID.get(), run_id, exc) if callable(record) else None
+            return {"is_error": True, "content": [{"type": "text", "text": (details or {}).get("error_message", exc.message)}]}
         except Exception:
             return {"is_error": True, "content": [{"type": "text", "text": "资料读取暂时失败，请调整检索范围或稍后重试"}]}
 
