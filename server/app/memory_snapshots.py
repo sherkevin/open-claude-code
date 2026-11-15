@@ -21,12 +21,29 @@ MAX_MANIFEST = 64 * 1024
 MAX_SNAPSHOTS = 32
 MAX_PROJECT = 256 * 1024 * 1024
 MIN_FREE = 1024 * 1024 * 1024
-DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+# Importing the application must not require POSIX-only APIs. The snapshot
+# implementation itself does: never replace missing no-follow/dir-fd checks
+# with permissive flags or path-based operations on another platform.
+SNAPSHOT_FILES_SUPPORTED = (
+    os.name == "posix"
+    and all(hasattr(os, attr) for attr in (
+        "O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC", "getuid", "fstatvfs",
+    ))
+    and {os.open, os.mkdir, os.stat} <= os.supports_dir_fd
+    and os.listdir in os.supports_fd
+    and os.stat in os.supports_follow_symlinks
+)
+DIR_FLAGS = (os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC) if SNAPSHOT_FILES_SUPPORTED else None
+FILE_FLAGS = (os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC) if SNAPSHOT_FILES_SUPPORTED else None
 
 
 def denied(code="MEMORY_INTEGRITY", message="记忆快照无法安全核验，请联系管理员检查"):
     return AppError(409, code, message)
+
+
+def require_snapshot_support():
+    if not SNAPSHOT_FILES_SUPPORTED:
+        raise AppError(501, "MEMORY_PLATFORM_UNSUPPORTED", "当前平台不支持安全记忆快照，请使用支持 POSIX 安全文件操作的环境")
 
 
 def name(raw):
@@ -85,6 +102,7 @@ def signature(info):
 
 
 def check_node(fd, directory=False, private=True):
+    require_snapshot_support()
     info = os.fstat(fd)
     if directory:
         good = stat.S_ISDIR(info.st_mode)
@@ -98,6 +116,7 @@ def check_node(fd, directory=False, private=True):
 @contextmanager
 def absolute_dir(path):
     """Do not resolve symlinks, including in ancestors of the private root."""
+    require_snapshot_support()
     path = Path(os.path.abspath(path))
     fd = os.open("/", DIR_FLAGS)
     try:
@@ -112,6 +131,7 @@ def absolute_dir(path):
 
 @contextmanager
 def child_dir(parent, part, create=False):
+    require_snapshot_support()
     if create:
         try:
             os.mkdir(part, 0o700, dir_fd=parent)
@@ -220,6 +240,7 @@ class VerifiedTree:
                 raise denied()
 
     def assert_unchanged(self):
+        require_snapshot_support()
         for fd in getattr(self, "parent_handles", ()):
             check_node(fd, True)
         if signature(os.fstat(self.root_fd)) != self.root_signature:
@@ -251,6 +272,7 @@ class SnapshotFiles:
 
     @contextmanager
     def verify(self, binding):
+        require_snapshot_support()
         path = self.path(binding["user_id"], binding["conversation_id"], binding["snapshot_id"])
         try:
             with absolute_dir(self.data_dir) as data:
@@ -265,6 +287,7 @@ class SnapshotFiles:
             raise denied() from None
 
     def build(self, binding, files):
+        require_snapshot_support()
         check_files(files)
         manifest = canonical({"schema": 1, "user_id": binding["user_id"], "conversation_id": binding["conversation_id"],
                               "snapshot_id": binding["snapshot_id"], "digest": digest(files),
@@ -291,6 +314,7 @@ class SnapshotFiles:
             raise denied("MEMORY_STORAGE_FAILED", "记忆快照未发布，原有效记忆保持不变") from None
 
     def _write(self, parent, parts, content):
+        require_snapshot_support()
         if len(parts) > 1:
             with child_dir(parent, parts[0], True) as child:
                 self._write(child, parts[1:], content)
@@ -309,6 +333,8 @@ class SnapshotFiles:
 
 
 def process_start(pid):
+    if not SNAPSHOT_FILES_SUPPORTED:
+        return "unverifiable"
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
     except FileNotFoundError:
@@ -352,6 +378,7 @@ class HarnessMemoryStore:
 
     def state(self, user_id, cid, run_id=None):
         conversation = self.authorized(user_id, cid, run_id=run_id)
+        require_snapshot_support()
         row = self.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (cid,))
         if not row or row["storage_version"] != 1 or not row["active_snapshot_id"]:
             self.initialize(user_id, cid)
@@ -406,6 +433,7 @@ class HarnessMemoryStore:
             raise denied("MEMORY_STORAGE_FULL", "会话记忆保留容量已满，历史不会自动删除")
 
     def _reserve_tree(self, binding, files):
+        require_snapshot_support()
         check_files(files)
         amount = sum(map(len, files.values())) + MAX_MANIFEST
         with self.transaction():
@@ -428,6 +456,7 @@ class HarnessMemoryStore:
         return self._operation(self.db.one("SELECT * FROM memory_operations WHERE run_id=? ORDER BY rowid DESC LIMIT 1", (run_id,)))
 
     def _new_operation(self, binding, key, kind, path=None, content=None, run_id=None):
+        require_snapshot_support()
         if type(key) is not str or not 1 <= len(key) <= 128 or any(ord(c) < 32 for c in key):
             raise AppError(422, "MEMORY_OPERATION_REQUIRED", "请提供稳定的记忆操作标识")
         if path is not None:
@@ -463,6 +492,7 @@ class HarnessMemoryStore:
 
     def initialize(self, user_id, cid):
         conversation = self.authorized(user_id, cid)
+        require_snapshot_support()
         with self.transaction():
             row = self.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (cid,))
             if row and row["storage_version"] == 1:

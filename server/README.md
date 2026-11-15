@@ -23,6 +23,8 @@ export AGENT_COOKIE_SECURE=true
 
 Windows 虚拟环境使用 `.venv/Scripts/python.exe`。密码至少 10 位，CLI 不输出密码。不要把密码文件或真实 `.env` 放入源码包。环境变量需由 shell/service manager 设置，服务不自动读取 `.env.example`。原生服务的 `AGENT_MODEL_CATALOG` 必须是宿主机可读的绝对路径；Compose 使用根 `.env` 的 `AGENT_MODEL_CATALOG_HOST` 将文件挂载到容器内固定路径，二者不能混填。
 
+Windows 本地开发安装依赖时会额外安装 `tzdata`，用于按北京时间查询用量。可显式设置 `$env:AGENT_RUNTIME_TYPE='claude'`，并使用独立的 `AGENT_DATA_DIR` 启动 API 和前端联调；这不代表真实模型已验证。默认 Harness 的安全记忆快照依赖 POSIX 的目录文件描述符、禁止跟随符号链接及权限校验，Windows 不支持这些操作，相关请求会明确返回 `501 MEMORY_PLATFORM_UNSUPPORTED`，不会降级为普通文件读写。Harness 完整运行和安全快照验收须在支持这些能力的 Linux 环境进行；不要将线上数据目录用于本地联调。
+
 首次运行在数据目录生成 `encryption.key`，也可用 `AGENT_SECRET_KEY_FILE` 指定外部 Fernet 密钥文件，或用 `AGENT_SECRET_KEY` 注入。更换/遗失密钥会使已保存 MCP 凭据不可解密；备份数据库时须同步安全备份该密钥。
 
 ## 模型和 MCP 配置

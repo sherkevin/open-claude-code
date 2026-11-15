@@ -14,6 +14,7 @@ dependencies = [
   "cryptography==50.0.2",
   "python-multipart==0.0.32",
   "httpx==0.28.1",
+  "tzdata==2026.6; sys_platform == 'win32'",
   "mcp==1.30.0",
   "jsonschema==4.26.0",
   "referencing==0.37.0",
