@@ -15,7 +15,7 @@ describe('known demo descriptions are translated for display only',()=>{
   it.each([
     ['Search synthetic Chinese company rules; always returns source IDs and labels data as demo.', '检索中文企业制度示例资料'],
     ['Persist one synthetic ticket. This WRITE requires user approval; request_key prevents duplicate creation.', '此操作需要用户审批'],
-    ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '可按 request_key 精确筛选'],
+    ['Read persisted synthetic tickets, optionally by exact request_key. No business record is changed.', '支持精确筛选'],
     ['Query line/batch quality counts and calculate the weighted yield for an inclusive date range. Returns database/table/fields/filter/time/aggregation provenance.', '按检验数量加权计算合格率'],
     ['Acceptance-only bounded read delay, useful for checking cancellation. Does not create or modify records.', '用于检查取消操作'],
   ])('translates the complete known description: %s',(original,expected)=>{

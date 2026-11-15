@@ -61,8 +61,15 @@ def private_json(path: Path) -> dict:
 def business_result(path, kind, dataset_rows, region):
     from decimal import Decimal
     result = fixture.aggregate(path, kind, dataset_rows, region)
-    result["summary"] = f"演示业务数据：匹配 {result['scope']['匹配原始记录数']} 条原始记录，返回 {len(result['rows'])} 行汇总。"
-    result["warnings"] = ["本页为演示测试数据，不代表华微业务数据。"]
+    # Keep provenance explicit without presenting an internal acceptance script
+    # as the product's status. Machine flags and source locators stay intact.
+    result["title"] = "订单区域汇总" if kind == "orders" else "客户发货汇总"
+    result["summary"] = f"匹配 {result['scope']['匹配原始记录数']:,} 条记录，按{'区域' if kind == 'orders' else '客户'}汇总。"
+    result["warnings"] = ["数据来源：示例数据。"]
+    result["scope"]["aggregation"] = f"按{'区域' if kind == 'orders' else '客户'}汇总；金额为含税金额"
+    result["process"] = "订单查询" if kind == "orders" else "发货查询"
+    for source in result["sources"]:
+        source["title"] = result["title"] + " · 示例数据"
     # This fixture owns the SQL contract: these three columns are additive,
     # disjoint group sums in the same scope/unit. General MCP tools must make
     # their own explicit declaration; the host never guesses from a column name.
