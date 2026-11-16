@@ -45,3 +45,29 @@ def test_stage_partial_usage_overrides_legacy_known_counter(env):
 def test_invalid_usage_is_unknown(env, invalid):
     view = runs(env, [{"input_tokens": invalid, "output_tokens": invalid, "estimated_cost_usd": invalid}])
     assert view["input_tokens"] is None and view["output_tokens"] is None and view["estimated_cost_usd"] is None
+
+
+def test_explicit_total_prompt_survives_missing_cache_buckets(env):
+    view = runs(env, [{"input_tokens": None, "output_tokens": 5, "reported_prompt_tokens": 100}])
+    assert view['total_input_tokens'] == 100 and view['input_tokens'] is None
+    assert view['cache_read_input_tokens'] is None
+    assert view['total_input_coverage'] == {'known_runs': 1, 'unknown_runs': 0}
+
+
+def test_new_http_capture_counts_attempts_without_claiming_receipt_on_cancel(env):
+    from app.harness_usage import HarnessUsageLedger
+    from test_harness_usage_capture import frame
+    ledger = HarnessUsageLedger('session', 'run')
+    ledger.observe(frame())
+    view = runs(env, [ledger.receipt()])
+    assert view['model_call_count'] is None and view['known_model_calls'] == 1
+    assert view['input_tokens'] is None and view['total_input_tokens'] is None
+
+
+def test_verified_empty_http_scope_is_distinct_from_legacy_empty_ledger(env):
+    from app.harness_usage import HarnessUsageLedger
+    ledger = HarnessUsageLedger('session', 'run')
+    ledger.settle([])
+    view = runs(env, [ledger.receipt()])
+    assert view['model_call_count'] == view['input_tokens'] == view['total_input_tokens'] == 0
+    assert view['estimated_cost_usd'] is None

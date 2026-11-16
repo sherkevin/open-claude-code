@@ -49,6 +49,7 @@ def test_profile_has_no_inherited_bundles_or_native_tools(arguments):
     assert prompt["includeRuntimeContext"] is False
     provider = next(entry for entry in entries if entry["id"] == "llm-deepseek")["config"]
     assert provider["baseURL"] == "http://127.0.0.1:9/v1"
+    assert next(entry for entry in entries if entry["id"] == "workspace-host")["config"]["usageEndpoint"] == "http://127.0.0.1:9/v1/messages"
     assert provider["apiKeyEnv"] == "WORKSPACE_MODEL_API_KEY"
     assert provider["models"][0]["inputModalities"] == ["text", "image"]
     assert provider["retryPolicy"] == {"mode": "normal", "maxRetries": 1,
@@ -243,6 +244,7 @@ const ctx = {
 const config = {
   sourceDir: process.argv[3], sourceCommit: 'fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159',
   sessionId: 'only-session', cwd: process.cwd(), model: 'fixture', maxSteps: 1, toolTimeoutMs: 1000,
+  usageEndpoint: 'http://127.0.0.1:9/v1/messages',
   tools: [{ name:'knowledge_search', description:'synthetic', input_schema:{type:'object'} }],
 }
 globalThis.hostResult = {content:[{type:'text',text:'authorized result'}]}

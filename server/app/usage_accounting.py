@@ -119,13 +119,15 @@ def _entry(row, *, auxiliary=False):
     totals = _object(ledger.get("provider_totals"))
     subtotals = _object(ledger.get("known_subtotals"))
     stages = ledger.get("stages")
+    http_capture = ledger.get("receipt_schema") == "harness-http-usage/v1"
+    verified_empty = http_capture and ledger.get("capture_complete") is True and stages == [] and ledger.get("known_model_calls") == 0
     product = metadata.get("execution_kind") == "product_metadata" or usage.get("source") == "product_metadata"
     amounts, known = {}, {}
     for field in FIELDS:
         ledger_field = "cache_write_input_tokens" if field == "cache_creation_input_tokens" else field
         amount = totals.get(ledger_field) if field in TOKEN_FIELDS and ledger else usage.get(field)
         # A zero-initialized, empty ledger is not a measured provider receipt.
-        if ledger and stages == [] and not product:
+        if ledger and stages == [] and not product and not verified_empty:
             amount = None
         if product:
             amount = 0
@@ -137,31 +139,51 @@ def _entry(row, *, auxiliary=False):
                  if row.get("status") in {"succeeded", "failed", "cancelled"} else None)
     elif product:
         calls = 0
+    elif http_capture:
+        valid_stages = isinstance(stages, list) and all(isinstance(stage, dict) and stage.get("provider_call") is True and stage.get("source") == "harness_provider" for stage in stages)
+        calls = len(stages) if valid_stages and ledger.get("capture_complete") is True else None
     elif isinstance(stages, list) and stages:
         # Harness commits one stage per actual attempt. Legacy SDK result
         # stages can aggregate several requests, so their call count is unknown.
         calls = len(stages) if all(isinstance(stage, dict) and stage.get("provider_call") is True and stage.get("source") == "harness_provider" for stage in stages) else None
     else:
         calls = None
+    buckets = [amounts[field] for field in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")]
+    reported = usage.get("total_input_tokens") if http_capture else usage.get("reported_prompt_tokens")
+    total_input = reported if _number(reported, "input_tokens") else sum(buckets) if all(value is not None for value in buckets) else None
+    if total_input is not None and (sum(value for value in buckets if value is not None) > total_input
+            or all(value is not None for value in buckets) and sum(buckets) != total_input):
+        total_input = None
+    if product:
+        total_input = 0
+    partial_total = usage.get("known_total_input_tokens")
+    known_total = total_input if total_input is not None else partial_total if http_capture and _number(partial_total, "input_tokens") else 0
+    known_calls = calls if calls is not None else len(stages) if http_capture and isinstance(stages, list) else 0
     return {"id": row["id"], "user_id": row["user_id"], "display_name": row.get("display_name", ""),
             "model_id": row.get("model_id", "legacy-model") if auxiliary else selection.get("model_id", "legacy-model"),
             "model_label": row.get("model_label", "历史模型") if auxiliary else selection.get("model_label", "历史模型"),
             "day": datetime.fromisoformat(row["created_at"].replace("Z", "+00:00")).astimezone(REPORT_TIMEZONE).date().isoformat(), "status": row["status"], "auxiliary": auxiliary,
             "kind": row.get("kind", "chat"), "amounts": amounts, "known": known,
-            "reported": bool(usage) or product, "call_count": calls}
+            "reported": bool(usage) or product, "call_count": calls, "known_call_count": known_calls,
+            "total_input_tokens": total_input, "known_total_input_tokens": known_total}
 
 
 def _aggregate(items):
     count = len(items)
     known = {field: sum(item["known"][field] for item in items) for field in FIELDS}
     coverage = {field: sum(item["amounts"][field] is not None for item in items) for field in FIELDS}
-    call_known = sum(item["call_count"] or 0 for item in items)
+    call_known = sum(item["known_call_count"] for item in items)
     call_unknown = sum(item["call_count"] is None for item in items)
+    total_input_known = sum(item["total_input_tokens"] is not None for item in items)
+    total_input_subtotal = sum(item["known_total_input_tokens"] for item in items)
     return {"total_runs": sum(not item["auxiliary"] for item in items),
             "successful_runs": sum(not item["auxiliary"] and item["status"] == "succeeded" for item in items),
             "usage_records": count, "auxiliary_calls": sum(item["call_count"] or 0 for item in items if item["auxiliary"]),
             "model_call_count": call_known if not call_unknown else None,
             "known_model_calls": call_known, "unknown_call_records": call_unknown,
+            "total_input_tokens": total_input_subtotal if total_input_known == count else None,
+            "known_total_input_tokens": total_input_subtotal,
+            "total_input_coverage": {"known_runs": total_input_known, "unknown_runs": count - total_input_known},
             **{field: known[field] if coverage[field] == count and (count or field != "estimated_cost_usd") else None for field in FIELDS},
             "known_subtotals": known,
             "field_coverage": {field: {"known_runs": coverage[field], "unknown_runs": count - coverage[field]} for field in FIELDS},

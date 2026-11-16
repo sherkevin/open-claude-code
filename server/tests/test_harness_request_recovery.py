@@ -129,6 +129,11 @@ def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_ca
         result = wait_run(client, run_id)
         assert result["status"] == expected_status, result
         assert len(state["requests"]) == expected_requests
+        usage = json.loads(service.require("runs", run_id)["usage"])
+        assert usage['token_accounting']['receipt_schema'] == 'harness-http-usage/v1'
+        assert len(usage['token_accounting']['stages']) == expected_requests
+        assert usage['token_accounting']['known_model_calls'] == expected_requests
+        assert len({stage['attempt_id'] for stage in usage['token_accounting']['stages']}) == expected_requests
         events = service.db.events(run_id, 0)
         retries = [e["data"] for e in events if e["type"] == "model.retry"]
         expected_retries = 1 if case in {"first", "after-tool", "always", "two-steps", "cancel"} else 0

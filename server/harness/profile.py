@@ -220,6 +220,7 @@ def write_profile(
         "id": "workspace-host", "name": str(Path(__file__).with_name("workspace_plugin.ts").resolve()),
         "config": {
             "sourceDir": str(source), "sessionId": session_id, "cwd": str(workspace),
+            "usageEndpoint": endpoint.rstrip("/") + ("" if parsed.path.rstrip("/").endswith("/v1") else "/v1") + "/messages",
             "model": model, "tools": definitions, "maxSteps": max_steps,
             "toolTimeoutMs": tool_timeout_ms, "sourceCommit": PINNED_COMMIT,
         },

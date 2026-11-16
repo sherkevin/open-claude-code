@@ -16,6 +16,7 @@ from .context import context_binding, harness_context_receipt, harness_context_s
 from .db import dump, offload, offload_write, uid
 from .harness_attachments import AttachmentPrompt
 from .harness_tools import HarnessToolBridge
+from .harness_usage import HarnessUsageLedger
 from .identity import build_system_prompt
 from .runtime import WorkspaceRuntime, elapsed_ms, save_timing
 from .provider_policy import TOKENHUB_BASE_URL, provider_route
@@ -27,6 +28,15 @@ PINNED_COMMIT = "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"
 
 class _EmptyResult(BaseModel):
     pass
+
+
+class _UsageSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schema_: Literal["workspace-usage/v1"] = Field(alias="schema")
+    sessionId: str
+    runId: str
+    receipts: list[dict] = Field(max_length=4096)
+    overflowed: bool
 
 
 _ContextNumber = Annotated[int, Field(strict=True, ge=0, le=1_000_000_000_000)]
@@ -379,6 +389,87 @@ class HarnessRuntime(WorkspaceRuntime):
             return
 
     async def execute(self, run, message):
+        await self._run_with_usage(run, lambda: self._execute_owned(run, message))
+
+    async def _publish_usage(self, run, ledger):
+        receipt = ledger.receipt()
+        def persist():
+            self.service.db.execute("UPDATE runs SET usage=? WHERE id=?", (dump(receipt), run["id"]))
+            if run.get("kind") == "compact":
+                row = self.service.require("runs", run["id"])
+                value = json.loads(row.get("compaction") or "{}")
+                if value:
+                    value["cost_usage"] = receipt
+                    self.service.db.execute("UPDATE runs SET compaction=? WHERE id=?", (dump(value), run["id"]))
+        await offload_write(persist)
+        await self.emit("usage.updated", receipt)
+
+    def _drain_usage(self, subscription, ledger):
+        def observe(notification):
+            if notification.method == "workspace.usage":
+                ledger.observe(notification.payload)
+        try:
+            subscription.drain(observe)
+        except Exception:
+            # A closed transport can still have delivered valid started or
+            # usage receipts before its queued terminal error. Keep those.
+            ledger.complete = False
+
+    async def _usage_snapshot(self, client, run, ledger, action="snapshot"):
+        value = await asyncio.to_thread(client.request, "workspace/usage",
+            {"sessionId": self.session_id, "runId": run["id"], "action": action},
+            response_model=_UsageSnapshot, timeout_seconds=5)
+        if value.sessionId != self.session_id or value.runId != run["id"]:
+            raise AppError(502, "HARNESS_USAGE_INVALID", "用量回执与当前任务不一致")
+        if value.overflowed:
+            ledger.invalid = True
+        if action == "snapshot":
+            ledger.settle(value.receipts)
+
+    async def _run_with_usage(self, run, operation):
+        client = self.client
+        if client is None:
+            raise AppError(503, "HARNESS_NOT_CONFIGURED", "执行引擎不可用")
+        ledger = HarnessUsageLedger(self.session_id, run["id"])
+        subscription = client.subscribe_session_notifications(self.session_id)
+        self._usage_capture = ledger
+        watcher = None
+        cancelled = False
+        try:
+            await self._usage_snapshot(client, run, ledger, "begin")
+            await self._publish_usage(run, ledger)
+            async def poll():
+                while True:
+                    revision = ledger.revision
+                    self._drain_usage(subscription, ledger)
+                    if ledger.revision != revision:
+                        await self._publish_usage(run, ledger)
+                    await asyncio.sleep(0.05)
+            watcher = asyncio.create_task(poll())
+            try:
+                return await operation()
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+        finally:
+            if watcher:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+            try:
+                if self.client is client and not cancelled:
+                    await self._usage_snapshot(client, run, ledger)
+            except Exception:
+                ledger.complete = False
+            self._drain_usage(subscription, ledger)
+            if cancelled:
+                ledger.complete = False
+            try:
+                await self._publish_usage(run, ledger)
+            finally:
+                subscription.close()
+                self._usage_capture = None
+
+    async def _execute_owned(self, run, message):
         self.current_run, self.interrupted = run, False
         if run.get("kind", "chat") == "compact":
             try:
@@ -422,7 +513,6 @@ class HarnessRuntime(WorkspaceRuntime):
         accepted, finish, model_started = False, None, False
         failure_code, model_attempts = None, 0
         streams, committed, active_step = {}, set(), None
-        token_ledger = TokenAccounting()
         # The child is legitimately silent while a person considers approval.
         # Do not expire a 600-second approval with a shorter transport timer.
         notification_timeout = max(300, self.service.settings.approval_seconds + 60)
@@ -459,20 +549,9 @@ class HarnessRuntime(WorkspaceRuntime):
                         if seq in committed:
                             continue
                         committed.add(seq)
-                        usage = data.get("usage") or {}
-                        token_ledger.record("answer", {"input_tokens": usage.get("inputTokens"),
-                                                        "output_tokens": usage.get("outputTokens"),
-                                                        "cache_read_input_tokens": usage.get("cacheReadTokens"),
-                                                        "cache_write_input_tokens": usage.get("cacheWriteTokens")},
-                                           source="harness_provider")
-                        accounting = token_ledger.summary()
-                        reported_tokens = {public: accounting["provider_totals"][field] for public, field in (
-                            ("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
-                            ("cache_read_input_tokens", "cache_read_input_tokens"),
-                            ("cache_creation_input_tokens", "cache_write_input_tokens"))}
-                        await self.emit("usage.updated", {**reported_tokens, "estimated_cost_usd": None,
-                            "currency": "USD", "cost_is_estimate": True, "source": "harness_provider",
-                            "token_accounting": accounting})
+                        # Normalized SDK usage erases raw field presence and
+                        # hides transport retries. HTTP receipts are the sole
+                        # ledger source; assistant events only deliver text.
                         if kind != "assistant/message":
                             continue
                         message_data = data.get("message") or data
@@ -664,7 +743,12 @@ class HarnessRuntime(WorkspaceRuntime):
                     "shadowed_items": len(summary["shadowedSeqs"]),
                     "shadowed_tokens": summary["shadowedTokenCount"],
                 }
-                cost_usage = _compaction_cost_usage(summary.get("usage"))
+                capture = getattr(self, "_usage_capture", None)
+                if capture is not None:
+                    await self._usage_snapshot(client, run, capture)
+                    cost_usage = capture.receipt()
+                else:
+                    cost_usage = _compaction_cost_usage(summary.get("usage"))
                 progress.update(boundary, status="completed", boundary_observed=True, cost_usage=cost_usage)
                 await offload_write(self.service.db.execute, "UPDATE runs SET compaction=? WHERE id=?", (dump(progress), run["id"]))
                 await self.emit("context.compacted", boundary)

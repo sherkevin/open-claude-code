@@ -4,11 +4,17 @@
 
 ## 安装与版本
 
-使用 `docs/upstream-sources.json` 中的官方源码与 MIT 许可证，提交固定为 `fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159`。需要 Linux x86_64、系统 C 编译器和已安装 `server/pyproject.toml` 依赖的 Python 环境；安装脚本校验源码、Node 和 pnpm 摘要。项目根目录执行：
+使用 `docs/upstream-sources.json` 中的官方源码与 MIT 许可证，提交固定为 `fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159`。需要 Linux x86_64、可用的 `/proc`、系统 C 编译器和已安装 `server/pyproject.toml` 依赖的 Python 环境。Python 的 `tarfile.extractall` 必须支持 `filter` 参数，可使用 Python 3.12；安全记忆快照还要求 POSIX 目录文件描述符、禁止跟随符号链接、0700/0600 权限及至少 1 GiB 剩余空间。安装脚本校验源码、Node 和 pnpm 摘要，但不会自动克隆上游源码。全新隔离目录中，从项目根目录执行：
 
 ```bash
-python3 -B scripts/setup_harness_runtime.py --install --prepare-source
-python3 -B scripts/verify_harness_runtime.py
+umask 077
+python3 -m venv .venv
+.venv/bin/python -m pip install -c server/constraints-py310.txt -e './server[test]'
+mkdir -p .runtime/third_party
+git clone --filter=blob:none https://github.com/deepseek-ai/deepseek-harness .runtime/third_party/deepseek-harness
+git -C .runtime/third_party/deepseek-harness checkout --detach fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159
+.venv/bin/python -B scripts/setup_harness_runtime.py --install --prepare-source
+.venv/bin/python -B scripts/verify_harness_runtime.py
 ```
 
 Node 24.9.0、pnpm 11.28.5、缓存、安装临时文件都位于 `.runtime/harness-toolchain`，不会替换系统 Node。依赖使用官方冻结锁文件并禁用安装生命周期脚本；只显式构建本机锁文件扩展及源码所需 Typert 产物，不构建桌面与网页应用。握手检查运行真实 Node，使用本地模型请求计数器确认没有模型调用。
@@ -26,13 +32,13 @@ AGENT_HARNESS_MAX_OUTPUT_TOKENS=8192
 AGENT_DATA_DIR=/private/isolated-harness-data
 ```
 
-配置现有模型目录中的 Anthropic Messages 兼容接口，凭据必须通过服务端 `ANTHROPIC_API_KEY` 配置。模型名称、地址和凭据仍来自提交时固定的模型配置。只有 `ANTHROPIC_AUTH_TOKEN` 的 Bearer 接口会明确拒绝，不能把它悄悄当作 API Key。支持默认（上游为空）、low、high、max 推理档位；medium 尚无等价映射，明确拒绝。试点助手可绑定经测试、按工具授权的业务 MCP 连接，限制见下文。
+配置现有模型目录中的 TokenHub Messages 兼容接口；生产模型线路仅允许 `https://tokenhub.tencentmaas.com`。适配器优先取非空的服务端 `ANTHROPIC_API_KEY`，没有时取 `ANTHROPIC_AUTH_TOKEN`，并只通过子进程环境变量 `WORKSPACE_MODEL_API_KEY` 交给固定版本的官方 provider。这个变量回退不代表适配器切换为任意 Bearer-only HTTP 协议，也不证明凭据、额度和模型接口已通过真实调用。模型名称、地址和凭据来自提交时固定的模型配置。`AGENT_PROVIDER_TEST_MODE` 在实际服务必须保持 `false`；测试专用的 loopback/保留域名线路不能成为生产就绪证明。支持默认（上游为空）、low、high、max 推理档位；medium 尚无等价映射，明确拒绝。试点助手可绑定经测试、按工具授权的业务 MCP 连接，限制见下文。
 
 设置只影响之后创建的会话。既有会话保留 `runtime_type=claude` 和原 SDK 会话编号；新 Harness 会话使用独立的 `harness_session_id`。前端不能指定执行器或可执行路径。回滚时把新会话默认改回 `claude` 即可；既有 Harness 会话仍属于 Harness，不能把它的编号交给 Claude 恢复。删除隔离运行环境前应先停止试点并保留其数据目录。
 
 没有显式推理档位时，Harness 新部署采用 `high`，显式 Claude 兼容模式仍采用旧缺省 `medium`。明确配置的档位和已有会话快照不会被静默改写；历史缺失快照优先使用已记录的运行档位，完全未记录时才按旧缺省恢复。没有独立模型目录的兼容条目保留 `medium` 和 `high` 两个历史缺省，避免升级/回滚使已有选择消失；这不证明具体模型支持所有档位，Harness 对显式 `medium` 仍清晰拒绝。使用模型目录时，以目录中的精确映射为准。
 
-路径留空不会扫描宿主安装或偷偷启动旧 SDK。配置 `harness` 但未提供隔离运行环境会返回 `HARNESS_NOT_CONFIGURED`；供应商仅提供 Bearer 认证时会返回 `HARNESS_PROVIDER_NOT_CONFIGURED`。健康接口的 `ready` 只检查数据库与凭据存在性，不证明 Harness 环境、认证方式或真实模型调用通过。聊天页显示的是会话固定的执行框架，不是模型名或整个服务器的迁移完成状态。
+路径留空不会扫描宿主安装或偷偷启动旧 SDK。配置 `harness` 但未提供隔离运行环境会返回 `HARNESS_NOT_CONFIGURED`；不符合线路策略返回 `TOKENHUB_ROUTE_REQUIRED`，没有可用凭据返回 `HARNESS_PROVIDER_NOT_CONFIGURED`。健康接口的 `ready` 检查数据库、凭据和线路配置，不证明 Harness 环境、认证方式或真实模型调用通过。聊天页显示的是会话固定的执行框架，不是模型名或整个服务器的迁移完成状态。
 
 ## 已验证的执行边界
 
@@ -48,6 +54,19 @@ AGENT_DATA_DIR=/private/isolated-harness-data
 真实进程的合成模型测试在 `server/tests/test_harness_real_runtime.py`，显式设置 `HARNESS_TEST_NODE`、`HARNESS_TEST_SOURCE` 后运行。它启动本地 HTTP 模型服务器，验证聊天、实时输出、知识引用、Excel 人工拒绝/批准、停止恢复和异常流；不使用真实模型凭据，不衡量模型质量。
 
 业务连接的真实进程测试在 `server/tests/test_harness_real_mcp.py`，同样设置上述两个环境变量。测试使用本地合成模型和真实 Streamable HTTP MCP 服务，验证工具授权、来源回链、人工允许/拒绝、两位不同管理员批准后执行、取消及撤权；不访问客户系统。
+
+隔离 Linux 安装后可执行以下最小矩阵。真实 Node fixtures 显式启用合成线路；图片 fixture 明确声明 `multimodal`，仍经过产品能力校验，不放宽生产策略。缺少环境变量会跳过真实 Node 用例，必须检查 `-rs` 输出，不能把跳过写成通过。
+
+```bash
+export HARNESS_TEST_NODE="$PWD/.runtime/harness-toolchain/node-v24.9.0-linux-x64/bin/node"
+export HARNESS_TEST_SOURCE="$PWD/.runtime/third_party/deepseek-harness"
+test -x "$HARNESS_TEST_NODE"
+test -f "$HARNESS_TEST_SOURCE/node_modules/tsx/dist/esm/index.mjs"
+.venv/bin/python -m pytest -q -rs server/tests/test_platform_startup.py server/tests/test_harness_launcher.py server/tests/test_harness_profile.py server/tests/test_harness_memory_storage.py
+.venv/bin/python -m pytest -q -rs server/tests/test_harness_verification_config.py server/tests/test_harness_real_runtime.py server/tests/test_harness_real_mcp.py server/tests/test_harness_memory_runtime.py server/tests/test_harness_context.py
+```
+
+`test_harness_verification_config.py` 可在 Windows 单独运行，验证 fixture 准入与真实适配器到 SDK 构造前的凭据/线路边界；它不启动 Node、不请求模型。真实供应商验证须在独立数据目录和端口启动 Harness API、配置已授权的 TokenHub 模型，并可使用本地 `examples/demo_mcp.py` 配合 `scripts/smoke_api.py --real-model` 执行四个合成业务任务。应记录新会话 `runtime_type=harness`、run 终态、工具副作用、用量和未知字段。旧 `scripts/lifecycle_smoke.py` 的观察器依赖 Claude `stream-json` 与 `sdk_session_id`，不能直接用于 Harness 恢复验收。
 
 Harness 已增加受控聊天附件：文本及经既有解析器处理的 PDF/DOCX/XLSX，以字面文本传入；静态 PNG/JPEG/WebP/GIF 以编码图片传入官方协议。每轮最多 10 个、单文件 10 MiB、总计 20 MiB；单图 5 MiB、图总计 10 MiB；解析后单份文本 256 KiB、总计 512 KiB，超限明确拒绝而非静默截断。历史附件撤权、删除或内容变化后阻断旧副本继续使用。限制及验证记录见 [本轮证据](../evidence/HARNESS_MAINLINE_2026-11-11.md)；图片协议成功不代表真实供应商视觉质量通过。
 

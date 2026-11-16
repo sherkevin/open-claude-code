@@ -76,9 +76,12 @@ def model_server():
                 self.wfile.flush()
 
             try:
+                start_usage = ({"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+                               if "CASE_USAGE_ZERO" in text else {}
+                               if "CASE_USAGE_MISSING" in text else {"input_tokens": 37 if compaction_request else 12, "output_tokens": 0})
                 event("message_start", {"message": {"id": f"msg-{len(requests)}", "type": "message", "role": "assistant", "model": "fixture",
                       "content": [], "stop_reason": None, "stop_sequence": None,
-                      "usage": {"input_tokens": 37 if compaction_request else 12, "output_tokens": 0}}})
+                      "usage": start_usage}})
                 if compaction_request:
                     answer = COMPACTION_SUMMARY
                 elif result:
@@ -96,7 +99,7 @@ def model_server():
                 else:
                     event("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}})
                     event("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": answer[:2]}})
-                    if "CASE_HANG" in text:
+                    if "CASE_HANG" in text or compaction_request and "CASE_COMPACTION_HANG" in json.dumps(body):
                         released.wait(30)
                     else:
                         time.sleep(0.15)
@@ -106,7 +109,7 @@ def model_server():
                     reason = "end_turn"
                 event("content_block_stop", {"index": 0})
                 event("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None},
-                                        "usage": {"output_tokens": 6 if compaction_request else 8}})
+                                        "usage": {} if "CASE_USAGE_MISSING" in text else {"output_tokens": 0 if "CASE_USAGE_ZERO" in text else 6 if compaction_request else 8}})
                 event("message_stop", {})
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -279,6 +282,7 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
 
         knowledge = run("CASE_KNOWLEDGE")
         assert wait_run(client, knowledge)["status"] == "succeeded"
+        assert len(json.loads(service.require("runs", knowledge)["usage"])["token_accounting"]["stages"]) == 2
         assert service.db.all("SELECT * FROM evidence_sources WHERE run_id=?", (knowledge,))
         answer = service.require("messages", service.require("runs", knowledge)["assistant_message_id"])
         assert json.loads(answer["citations"])
@@ -326,7 +330,8 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         record_property("paid_model_requests", 0)
 
 
-def test_real_harness_manual_compaction_usage_and_resume(tmp_path, monkeypatch, model_server, record_property):
+@pytest.mark.parametrize("cancel_compaction", [False, True])
+def test_real_harness_manual_compaction_usage_and_resume(tmp_path, monkeypatch, model_server, record_property, cancel_compaction):
     node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
     if not node or not source:
         pytest.skip("requires explicitly installed pinned Harness runtime")
@@ -377,9 +382,24 @@ def test_real_harness_manual_compaction_usage_and_resume(tmp_path, monkeypatch, 
 
         compact = client.post(f"/api/v1/conversations/{cid}/compact", json={
             "client_request_id": "manual-compaction-1",
-            "instructions": "必须保留 P-900 压力值 7 bar",
+            "instructions": "必须保留 P-900 压力值 7 bar" + (" CASE_COMPACTION_HANG" if cancel_compaction else ""),
         })
         assert compact.status_code == 202, compact.text
+        if cancel_compaction:
+            run_id = compact.json()["run_id"]
+            deadline = time.monotonic() + 60
+            while not (client.get(f"/api/v1/runs/{run_id}").json().get('usage') or {}).get('token_accounting', {}).get('stages'):
+                assert time.monotonic() < deadline
+                time.sleep(0.05)
+            assert client.post(f"/api/v1/runs/{run_id}/cancel").status_code == 200
+            cancelled = wait_run(client, run_id)
+            assert cancelled['status'] == 'cancelled'
+            assert len(cancelled['usage']['token_accounting']['stages']) == 1
+            assert cancelled['usage']['token_accounting']['stages'][0]['stage'] == 'compression'
+            assert cancelled['usage']['output_tokens'] is None
+            assert len(requests) == 2
+            record_property('paid_model_requests', 0)
+            return
         compacted = wait_run(client, compact.json()["run_id"])
         assert compacted["status"] == "succeeded", compacted
         assert compacted["kind"] == "compact"
@@ -388,6 +408,11 @@ def test_real_harness_manual_compaction_usage_and_resume(tmp_path, monkeypatch, 
         assert compacted["compaction"]["shadowed_items"] > 0
         assert compacted["usage"]["input_tokens"] == 37
         assert compacted["usage"]["output_tokens"] == 6
+        assert compacted['usage']['token_accounting']['receipt_schema'] == 'harness-http-usage/v1'
+        assert compacted['usage']['token_accounting']['capture_complete'] is True
+        assert len(compacted['usage']['token_accounting']['stages']) == 1
+        assert compacted['usage']['token_accounting']['stages'][0]['stage'] == 'compression'
+        assert compacted['compaction']['cost_usage'] == compacted['usage']
         assert len(requests) == 2
         summary_request = json.dumps(requests[1], ensure_ascii=False)
         assert "必须保留 P-900 压力值 7 bar" in summary_request
@@ -407,3 +432,31 @@ def test_real_harness_manual_compaction_usage_and_resume(tmp_path, monkeypatch, 
     record_property("real_harness_processes", len(processes))
     record_property("local_synthetic_model_requests", len(requests))
     record_property("paid_model_requests", 0)
+
+
+@pytest.mark.parametrize('marker,expected', [('CASE_USAGE_ZERO', 0), ('CASE_USAGE_MISSING', None)])
+def test_real_harness_raw_usage_presence(tmp_path, monkeypatch, model_server, marker, expected):
+    """Real pinned SDK fetch must hit the observer, not normalized default zeros."""
+    node, source = os.getenv('HARNESS_TEST_NODE'), os.getenv('HARNESS_TEST_SOURCE')
+    if not node or not source:
+        pytest.skip('requires explicitly installed pinned Harness runtime')
+    for name in PROVIDER_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('AGENT_KNOWLEDGE_EMBEDDING_MODEL', 'local-lexical-v1')
+    base, requests = model_server
+    app = create_app(image_fixture_settings(tmp_path, node, source, base))
+    with TestClient(app) as client:
+        service = app.state.service
+        user = service.create_user({'username':'admin', 'display_name':'Usage fixture', 'password':PASSWORD, 'role':'admin'})
+        login(client)
+        assistant = service.save_assistant({'name':'Usage fixture'}, user=user)
+        cid = client.post('/api/v1/conversations', json={'assistant_id':assistant['id']}).json()['id']
+        result = wait_run(client, send(client, cid, marker, 'raw-usage-presence')['run_id'])
+        assert result['status'] == 'succeeded', result
+        assert len(requests) == 1
+        usage = result['usage']
+        assert usage['input_tokens'] == expected and usage['output_tokens'] == expected
+        assert usage['cache_read_input_tokens'] == expected
+        assert usage['cache_creation_input_tokens'] == expected
+        assert usage['token_accounting']['capture_complete'] is True
+        assert usage['token_accounting']['known_model_calls'] == 1

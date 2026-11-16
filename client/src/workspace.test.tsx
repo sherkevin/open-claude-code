@@ -33,7 +33,7 @@ describe('explicit skill selection',()=>{
   it('submits only selected currently enabled IDs and never a text path',()=>{
     expect(selectedSkillIds(['s1','s1','/etc/passwd','off'],[skill,{...skill,id:'off',enabled:false}])).toEqual(['s1']);
     const html=renderToStaticMarkup(<SkillChips selected={['s1']} skills={[skill]} disabled={false} onRemove={()=>{}}/>);
-    expect(html).toContain('@quality-review');expect(html).toContain('v3');expect(html).toContain('type="button"');expect(html).not.toContain('type="submit"');
+    expect(html).toContain('@quality-review');expect(html).not.toContain('v3');expect(html).toContain('type="button"');expect(html).not.toContain('type="submit"');
   });
 });
 describe('verifiable source rendering',()=>{

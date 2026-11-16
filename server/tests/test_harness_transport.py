@@ -69,7 +69,9 @@ def adapter(finish="completed", finish_observed=True):
 
 
 def execute(runtime):
-    return runtime.execute({"id": "run", "assistant_message_id": "answer", "created_at": "2026-11-10T00:00:00+00:00"},
+    # This fixture isolates event delivery; actual HTTP capture has separate
+    # protocol and pinned-runtime tests, not a pretend fetch in this client.
+    return runtime._execute_owned({"id": "run", "assistant_message_id": "answer", "created_at": "2026-11-10T00:00:00+00:00"},
                            {"text": "/permission literal", "file_ids": "[]"})
 
 

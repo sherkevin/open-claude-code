@@ -158,8 +158,10 @@ export interface NativeContext {
 export type CompactionStatus = 'started' | 'completed' | 'not_needed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown';
 export interface CompactionInfo { status: CompactionStatus; trigger: string | null; pre_tokens: number | null; before: NativeContext | null; after: NativeContext | null; error?: string | null; followup_status?: string | null }
 export interface Run { model_id?: string; model?: string; reasoning_level?: string | null; id: string; conversation_id: string; status: RunStatus; execution_kind?: 'product_metadata' | 'model'; identity_source?: 'run_selection' | null; model_call_count?: number | null; kind?: 'chat' | 'compact'; compaction?: CompactionInfo | null; assistant_message_id: string | null; error: string | null; error_code?: string | null; usage: Record<string, unknown> | null; approvals: Approval[]; created_at: string; completed_at: string | null; timings?:RunTimings }
-export type UsageField = 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'estimated_cost_usd';
+export type UsageField = 'total_input_tokens' | 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'estimated_cost_usd';
 export interface UsageTotals {
+  total_input_tokens?: number | null; known_total_input_tokens?: number;
+  total_input_coverage?: { known_runs:number; unknown_runs:number };
   total_runs: number; successful_runs: number;
   usage_records?: number; auxiliary_calls?: number; model_call_count?: number | null; known_model_calls?: number; unknown_call_records?: number;
   cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null;

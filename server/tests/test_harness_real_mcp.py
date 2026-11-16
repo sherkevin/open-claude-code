@@ -48,7 +48,7 @@ def mcp_app(tmp_path, monkeypatch, local_model_server, local_mcp_server, record_
             "ANTHROPIC_API_KEY": "synthetic-model-only", "ANTHROPIC_BASE_URL": model.url}}]}))
     settings = Settings(data_dir=tmp_path / "data", runtime_type="harness",
         harness_node_path=os.environ["HARNESS_TEST_NODE"], harness_source_dir=os.environ["HARNESS_TEST_SOURCE"],
-        model_catalog=str(catalog), provider_settings="", default_model_id="",
+        model_catalog=str(catalog), provider_settings="", provider_test_mode=True, default_model_id="",
         origins=("http://testserver",), mcp_hosts=("127.0.0.1",), approval_seconds=60,
         model_router_enabled=False, knowledge_vision_enabled=False, image_generation_enabled=False)
     app = create_app(settings)

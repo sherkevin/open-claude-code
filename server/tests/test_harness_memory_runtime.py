@@ -273,7 +273,7 @@ def test_real_node_memory_read_reset_approval_commit_deny_and_cancel(tmp_path, m
     base, requests, state, resume = memory_model_server
     catalog = tmp_path / "catalog.json"
     catalog.write_text(dump({"default_model_id": "fixture", "models": [{"id": "fixture", "label": "Synthetic memory fixture", "upstream_model": "fixture", "reasoning_levels": {"default": None}, "provider_env": {"ANTHROPIC_API_KEY": "synthetic-only", "ANTHROPIC_BASE_URL": base}}]}))
-    app = create_app(Settings(data_dir=tmp_path / "data", runtime_type="harness", harness_node_path=node, harness_source_dir=source,
+    app = create_app(Settings(data_dir=tmp_path / "data", runtime_type="harness", provider_test_mode=True, harness_node_path=node, harness_source_dir=source,
         model_catalog=str(catalog), default_model_id="", provider_settings="", origins=("http://testserver",), approval_seconds=60,
         model_router_enabled=False, knowledge_vision_enabled=False, image_generation_enabled=False))
     original_connect, processes = HarnessRuntime.connect, []

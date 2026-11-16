@@ -334,7 +334,9 @@ def test_active_stream_revocation_closes_owned_runtime(system):
 
     runtime._execute_chat, runtime.close = operation, close
     with pytest.raises(AppError):
-        asyncio.run(runtime.execute(run, message))
+        # Isolate attachment revocation; HTTP receipt scope is tested by the
+        # actual pinned runtime and its synthetic provider fixtures.
+        asyncio.run(runtime._execute_owned(run, message))
     assert closed == [True] and runtime.current_run is None
 
 

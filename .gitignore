@@ -14,5 +14,6 @@ dist/
 client/dist/
 test-results/
 playwright-report/
+.vite/
 *.log
 

@@ -39,9 +39,22 @@ for `DSH_HOME`, and the exact `initialize` payload. The launcher must use the
 fixed Node executable and source resolver, a dedicated process, private HOME
 and DSH_HOME, and an explicit environment allowlist. The profile rejects ambient
 `.env` and home patch files. It contains a credential environment-variable
-reference, never a credential. The official Messages provider accepts API-key
-authentication; a Bearer-only route is unsupported and must fail explicitly.
-Its endpoint resolver preserves a base URL that already ends in `/v1`.
+reference, never a credential. The host permits only the authorized HTTPS
+TokenHub route in production. It selects a nonempty `ANTHROPIC_API_KEY` first,
+then falls back to `ANTHROPIC_AUTH_TOKEN`, passing the selected value as
+`WORKSPACE_MODEL_API_KEY` to the official Messages provider. This fallback does
+not select an arbitrary Bearer-only HTTP transport or prove provider acceptance;
+the pinned provider owns the wire authentication. Its endpoint resolver
+preserves a base URL that already ends in `/v1`. Loopback and reserved test
+routes require explicit `provider_test_mode=True` and are never production-ready.
+
+`server/tests/test_harness_verification_config.py` checks this admission boundary
+without starting a runtime or contacting a provider. Real-Node fixtures declare
+their synthetic route and image capability explicitly; the image transport
+fixture must declare `multimodal` to pass the same guard as a real deployment.
+Follow `docs/operations/HARNESS_PILOT.md` from the repository root for the pinned
+Linux installation and POSIX/real-Node matrix. A skipped real-Node test is not
+evidence of a working runtime, and a loopback handshake is not model inference.
 
 Protocol:
 

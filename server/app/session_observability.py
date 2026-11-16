@@ -47,12 +47,14 @@ def _runs(service, user_id, conversation_id=None):
 def _usage(rows, total):
     result = _aggregate([_entry(row) for row in rows])
     if len(rows) != total:
-        for key in (*TOKEN_NAMES.values(), 'estimated_cost_usd', 'model_call_count'):
+        for key in (*TOKEN_NAMES.values(), 'estimated_cost_usd', 'model_call_count', 'total_input_tokens'):
             result[key] = None
     return result
 
 
 def _total_input(usage):
+    if 'total_input_tokens' in usage:
+        return usage['total_input_tokens']
     buckets = [usage[field] for field in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')]
     return sum(buckets) if all(value is not None for value in buckets) else None
 
@@ -89,15 +91,29 @@ def _compression_measurement(record):
         stages = _object(receipt.get('token_accounting')).get('stages')
         # Only the operation's own committed summary receipt is a cost. Never
         # substitute the whole run, an answer, or historical guessed usage.
-        if isinstance(stages, list) and len(stages) == 1:
-            stage = _object(stages[0])
-            if (stage.get('stage') == 'compression' and stage.get('provider_call') is True
-                    and stage.get('source') == 'harness_provider'):
+        ledger = _object(receipt.get('token_accounting'))
+        if (isinstance(stages, list) and stages
+                and not (ledger.get('receipt_schema') == 'harness-http-usage/v1' and ledger.get('capture_complete') is not True)):
+            costs = []
+            for value in stages:
+                stage = _object(value)
+                if not (stage.get('stage') == 'compression' and stage.get('provider_call') is True
+                        and stage.get('source') == 'harness_provider'):
+                    break
                 usage = _object(stage.get('provider_usage'))
-                counts = [_number(usage.get(key)) for key in
-                    ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_write_input_tokens')]
-                if all(value is not None for value in counts):
-                    cost = sum(counts)
+                buckets = [_number(usage.get(key)) for key in ('input_tokens', 'cache_read_input_tokens', 'cache_write_input_tokens')]
+                total = _number(stage.get('reported_prompt_tokens'))
+                if total is None and all(number is not None for number in buckets):
+                    total = sum(buckets)
+                if total is not None and (sum(number for number in buckets if number is not None) > total
+                        or all(number is not None for number in buckets) and sum(buckets) != total):
+                    total = None
+                output = _number(usage.get('output_tokens'))
+                if total is None or output is None:
+                    break
+                costs.append(total + output)
+            if len(costs) == len(stages):
+                cost = sum(costs)
     return {'difference': difference, 'precision': precision, 'cost': cost}
 
 
@@ -192,7 +208,7 @@ def overview(service, user):
         add('session_count', '会话总数', count, '个', 'observed', '仅当前账号，包含已归档会话。')
         add('request_count', '模型请求总数', all_usage['model_call_count'], '次',
             _precision(all_usage['model_call_count'], all_usage['known_model_calls']),
-            f"已核验 {all_usage['known_model_calls']} 次；{all_usage['unknown_call_records']} 条执行记录未报告完整调用次数。SDK 汇总回执不等于一次请求。")
+            f"已记录 {all_usage['known_model_calls']} 次请求尝试；{all_usage['unknown_call_records']} 条执行记录未报告完整次数。失败或取消的尝试不证明供应商收到或收费；SDK 汇总回执不等于一次请求。")
         add('compression_saved_tokens', '压缩上下文减少', saved['compression_saved_tokens'], 'Token', saved['compression_precision'],
             '仅累计可核验的压缩前后上下文差额，估算另行标注；不代表累计请求节省或账单节省。无完整前后回执时保持未知。')
         cost_note = f"已记录摘要成本 {saved['compression_cost_tokens']} Token。" if saved['compression_cost_tokens'] is not None else '摘要完整成本未记录，历史缺失回执不补造。'
@@ -209,7 +225,7 @@ def overview(service, user):
             '缓存读取 /（未缓存输入 + 缓存读取 + 缓存写入）；缺任一计数或分母为零时不估算。')
         add('input_tokens', '输入 Token', denominator, 'Token',
             _precision(denominator, sum(all_usage['known_subtotals'][field] for field in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))),
-            '总输入 = 未缓存输入 + 缓存读取 + 缓存写入；任一计数缺失时保持未知。')
+            '总输入使用供应商明确报告的总数，或完整的未缓存输入、缓存读取、缓存写入之和；分桶缺失仍单独保持未知。')
         for identity, title, field in [('cache_read_tokens', '缓存命中 Token', 'cache_read_input_tokens'), ('output_tokens', '输出 Token', 'output_tokens')]:
             add(identity, title, all_usage[field], 'Token', _precision(all_usage[field], all_usage['known_subtotals'][field]),
                 '按服务已记录的模型用量汇总。' +

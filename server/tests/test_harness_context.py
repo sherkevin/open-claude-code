@@ -442,7 +442,7 @@ def test_real_harness_context_restore_route_change_and_zero_extra_model_calls(tm
          "reasoning_levels": {"default": None},
          "provider_env": {"ANTHROPIC_API_KEY": "synthetic-only", "ANTHROPIC_BASE_URL": base}}
         for name in ("fixture", "other-fixture")]}))
-    settings = Settings(data_dir=tmp_path / "data", harness_node_path=node, harness_source_dir=source,
+    settings = Settings(data_dir=tmp_path / "data", runtime_type="harness", provider_test_mode=True, harness_node_path=node, harness_source_dir=source,
         model_catalog=str(catalog), default_model_id="", provider_settings="", origins=("http://testserver",),
         model_router_enabled=False, knowledge_vision_enabled=False, image_generation_enabled=False)
     app = create_app(settings)

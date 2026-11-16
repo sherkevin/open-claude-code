@@ -4,6 +4,7 @@
  */
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { installUsageObserver } from './usage_observer.ts'
 
 export const name = 'zhixing-workspace-host'
 export const inject = ['tools', 'agents', 'workingDirectory', 'loader', 'sdkAppStartup', 'tokenMeter', 'sessionProjections', 'commands']
@@ -113,6 +114,9 @@ export async function apply(ctx: any, config: any): Promise<void> {
   const requestVisibleText = new Map<string, boolean>()
   const recoveryTurns = new Set<number>()
   let initialized = false
+  const usage = installUsageObserver({ endpoint: config.usageEndpoint, sessionId: config.sessionId,
+    onReceipt: receipt => transport.notify('workspace.usage', receipt) })
+  ctx.effect(() => () => usage.restore())
 
   for (const definition of config.tools) {
     if (!isRecord(definition) || Object.keys(definition).sort().join(',') !== 'description,input_schema,name'
@@ -248,6 +252,16 @@ export async function apply(ctx: any, config: any): Promise<void> {
     if (method === 'workspace/inspect') {
       return { schema: 'workspace-profile/v1', sourceCommit: SOURCE_COMMIT, sessionId: config.sessionId,
         tools: [...allowed], maxSteps: config.maxSteps, initialized }
+    }
+    if (method === 'workspace/usage') {
+      if (!initialized || !isRecord(params) || Object.keys(params).sort().join(',') !== 'action,runId,sessionId'
+          || params.sessionId !== config.sessionId || typeof params.runId !== 'string'
+          || !/^[A-Za-z0-9_-]{1,128}$/u.test(params.runId)
+          || !['begin', 'snapshot'].includes(params.action as string)) {
+        throw new Error('Unauthorized usage receipt request')
+      }
+      if (params.action === 'begin') usage.begin(params.runId)
+      return { schema: 'workspace-usage/v1', sessionId: config.sessionId, ...usage.snapshot(params.runId) }
     }
     if (method === 'shutdown') {
       const result = await server.handleRequest(method, params)
