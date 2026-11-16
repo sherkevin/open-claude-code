@@ -431,7 +431,13 @@ class HarnessRuntime(WorkspaceRuntime):
         if client is None:
             raise AppError(503, "HARNESS_NOT_CONFIGURED", "执行引擎不可用")
         ledger = HarnessUsageLedger(self.session_id, run["id"])
-        subscription = client.subscribe_session_notifications(self.session_id)
+        # The pinned SDK sends subscribed notifications to subscribers instead
+        # of its default queue. Only consume usage receipts here: ordinary
+        # chat notifications must remain available to _execute_chat.
+        subscription = client.subscribe_notifications(lambda notification:
+            notification.method == "workspace.usage"
+            and notification.payload.get("sessionId") == self.session_id
+            and notification.payload.get("runId") == run["id"])
         self._usage_capture = ledger
         watcher = None
         cancelled = False
