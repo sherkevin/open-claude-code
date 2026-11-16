@@ -1,0 +1,28 @@
+[Unit]
+Description=Kaiwu Intranet Connector
+Documentation=file:/opt/kaiwu-connector/docs/交付与运维说明.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kaiwu-connector
+Group=kaiwu-connector
+EnvironmentFile=/etc/kaiwu-connector/connector.env
+ExecStart=/opt/kaiwu-connector/bin/kaiwu-connector serve --data-dir /var/lib/kaiwu-connector --listen 127.0.0.1:17872
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kaiwu-connector
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,565 @@
+// Package agent 把配置、凭据、诊断、通道和状态串联成连接器的运行主体。
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
+	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/diag"
+	"github.com/sherkevin/open-claude-code/connector/internal/frpc"
+	"github.com/sherkevin/open-claude-code/connector/internal/state"
+	"github.com/sherkevin/open-claude-code/connector/internal/store"
+	"github.com/sherkevin/open-claude-code/connector/internal/supervisor"
+	"github.com/sherkevin/open-claude-code/connector/internal/version"
+)
+
+// 本机文件名。
+const (
+	fileIdentity = "identity.json"
+	fileConfig   = "config.json"
+	fileSecrets  = "secrets.json"
+	fileFrpc     = "frpc.toml"
+	fileState    = "state.json"
+)
+
+// Options 是连接器启动参数。
+type Options struct {
+	DataDir    string
+	CloudBase  string
+	EdgeBase   string
+	FrpcBinary string
+	ListenAddr string
+	AllowStdio bool
+}
+
+// Agent 是连接器运行主体。
+type Agent struct {
+	opts  Options
+	store *store.Store
+	state *state.Machine
+	cloud *cloud.Client
+
+	mu        sync.RWMutex
+	identity  cloud.Identity
+	config    config.Connector
+	secrets   map[string]map[string]string
+	lastError string
+
+	supervisor *supervisor.Supervisor
+	heartbeat  context.CancelFunc
+}
+
+// Status 是给本机界面和心跳使用的快照。
+type Status struct {
+	State        state.State     `json:"state"`
+	StateLabel   string          `json:"state_label"`
+	Reason       string          `json:"reason,omitempty"`
+	Bound        bool            `json:"bound"`
+	ConnectorID  string          `json:"connector_id,omitempty"`
+	TenantName   string          `json:"tenant_name,omitempty"`
+	TenantID     string          `json:"tenant_id,omitempty"`
+	Sources      []config.Source `json:"sources"`
+	FrpcRunning  bool            `json:"frpc_running"`
+	FrpcRestarts int             `json:"frpc_restarts"`
+	LastError    string          `json:"last_error,omitempty"`
+	Version      string          `json:"version"`
+	EdgeBase     string          `json:"edge_base,omitempty"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+// New 载入本机状态并返回连接器主体。
+func New(opts Options) (*Agent, error) {
+	if opts.CloudBase == "" {
+		opts.CloudBase = "https://api.example.com"
+	}
+	st, err := store.New(opts.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	agent := &Agent{
+		opts:    opts,
+		store:   st,
+		state:   state.NewMachine(state.Unpaired),
+		secrets: map[string]map[string]string{},
+		config:  config.Connector{SchemaVersion: config.CurrentSchemaVersion},
+	}
+	agent.state.SetObserver(func(from, to state.State, reason string) {
+		agent.mu.Lock()
+		if to == state.Ready || to == state.Connecting {
+			agent.lastError = ""
+		}
+		if reason != "" && (to == state.DegradedUpstream || to == state.DegradedRelay) {
+			agent.lastError = reason
+		}
+		agent.mu.Unlock()
+	})
+
+	if err := st.ReadJSON(fileIdentity, &agent.identity); err == nil && agent.identity.DeviceToken != "" {
+		agent.state.Transition(state.Configuring, "已载入设备身份")
+	}
+	if err := st.ReadJSON(fileConfig, &agent.config); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if err := st.ReadJSON(fileSecrets, &agent.secrets); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if agent.identity.DeviceToken != "" {
+		client, err := cloud.New(agent.cloudBase(), agent.identity.DeviceToken)
+		if err != nil {
+			return nil, err
+		}
+		agent.cloud = client
+	}
+	return agent, nil
+}
+
+func (a *Agent) cloudBase() string {
+	if a.config.CloudBaseURL != "" {
+		return a.config.CloudBaseURL
+	}
+	return a.opts.CloudBase
+}
+
+func (a *Agent) edgeBase() string {
+	if a.config.EdgeBaseURL != "" {
+		return a.config.EdgeBaseURL
+	}
+	return a.opts.EdgeBase
+}
+
+// Status 返回当前快照。
+func (a *Agent) Status() Status {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	status := Status{
+		State:       a.state.Current(),
+		StateLabel:  a.state.Current().Label(),
+		Reason:      a.state.Reason(),
+		Bound:       a.identity.DeviceToken != "",
+		ConnectorID: a.identity.ConnectorID,
+		TenantName:  a.identity.TenantName,
+		TenantID:    a.identity.TenantID,
+		Sources:     a.config.Sources,
+		LastError:   a.lastError,
+		Version:     version.String(),
+		EdgeBase:    a.edgeBase(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+	if a.supervisor != nil {
+		status.FrpcRunning = a.supervisor.Running()
+		status.FrpcRestarts = a.supervisor.Restarts()
+	}
+	return status
+}
+
+// Bind 用一次性接入码兑换设备身份。
+func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return a.Status(), errors.New("请输入接入码")
+	}
+	if a.cloud == nil {
+		client, err := cloud.New(a.cloudBase(), "")
+		if err != nil {
+			return a.Status(), err
+		}
+		a.cloud = client
+	}
+	identity, err := a.cloud.Redeem(ctx, code, "")
+	if err != nil {
+		return a.Status(), err
+	}
+	if identity.DeviceToken == "" || identity.ConnectorID == "" {
+		return a.Status(), errors.New("云端未返回有效的设备身份")
+	}
+	a.mu.Lock()
+	a.identity = identity
+	a.mu.Unlock()
+	if err := a.store.WriteJSON(fileIdentity, identity); err != nil {
+		return a.Status(), err
+	}
+	client, err := cloud.New(a.cloudBase(), identity.DeviceToken)
+	if err == nil {
+		a.cloud = client
+	}
+	a.state.Transition(state.Configuring, "设备已绑定")
+	return a.Status(), nil
+}
+
+// ImportConfig 解析宿主 MCP 配置并保存来源与秘密。
+func (a *Agent) ImportConfig(ctx context.Context, raw []byte) (config.ImportReport, error) {
+	report, err := config.ParseHostConfig(raw, config.ImportOptions{AllowStdio: a.opts.AllowStdio})
+	if err != nil {
+		return report, err
+	}
+	if report.HasErrors() {
+		return report, nil
+	}
+	a.mu.Lock()
+	a.config.Sources = report.Sources
+	for sourceID, headerValues := range report.Secrets {
+		a.secrets[sourceID] = headerValues
+	}
+	a.mu.Unlock()
+	if err := a.store.WriteJSON(fileConfig, a.config); err != nil {
+		return report, err
+	}
+	if err := a.store.WriteJSON(fileSecrets, a.secrets); err != nil {
+		return report, err
+	}
+	if a.state.Current() == state.Unpaired || a.state.Current() == state.Configuring {
+		a.state.Transition(state.Configuring, "已导入来源配置")
+	}
+	return report, nil
+}
+
+// Diagnose 对指定来源执行分层诊断；sourceID 为空表示全部来源。
+func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) ([]diag.Report, error) {
+	a.mu.RLock()
+	sources := append([]config.Source(nil), a.config.Sources...)
+	secrets := map[string]map[string]string{}
+	for key, value := range a.secrets {
+		secrets[key] = value
+	}
+	a.mu.RUnlock()
+	if len(sources) == 0 {
+		return nil, errors.New("还没有导入来源")
+	}
+	var reports []diag.Report
+	for _, source := range sources {
+		if sourceID != "" && source.SourceID != sourceID {
+			continue
+		}
+		report := diag.Run(ctx, source, diag.Options{HeaderValues: secrets[source.SourceID], ToolProbe: probe})
+		reports = append(reports, report)
+	}
+	if len(reports) == 0 {
+		return nil, fmt.Errorf("未找到来源 %s", sourceID)
+	}
+	return reports, nil
+}
+
+// Connect 拉取期望状态、生成通道配置并启动 frpc。
+func (a *Agent) Connect(ctx context.Context) (Status, error) {
+	if a.cloud == nil || a.identity.DeviceToken == "" {
+		return a.Status(), errors.New("请先绑定企业")
+	}
+	a.mu.RLock()
+	sourceCount := len(a.config.Sources)
+	a.mu.RUnlock()
+	if sourceCount == 0 {
+		return a.Status(), errors.New("请先导入 MCP 配置")
+	}
+	if current := a.state.Current(); current != state.Connecting {
+		if !state.CanTransition(current, state.Connecting) {
+			a.state.Transition(state.Configuring, "回到待配置")
+		}
+		a.state.Transition(state.Connecting, "开始建立通道")
+	}
+
+	desired, err := a.cloud.DesiredState(ctx, a.identity.ConnectorID)
+	if err != nil {
+		a.state.Transition(state.DegradedRelay, "获取云端状态失败: "+err.Error())
+		return a.Status(), err
+	}
+	if desired.Revoked {
+		a.state.Transition(state.Revoked, "云端已撤销该连接器")
+		return a.Status(), errors.New("连接器已被撤销")
+	}
+	secretsState, err := a.cloud.TransportSecrets(ctx, a.identity.ConnectorID)
+	if err == nil {
+		desired = mergeSecrets(desired, secretsState)
+	}
+
+	generated, err := a.buildFrpcConfig(desired)
+	if err != nil {
+		a.state.Transition(state.DegradedRelay, "通道配置无效: "+err.Error())
+		return a.Status(), err
+	}
+	configPath := a.store.Path(fileFrpc)
+	if err := generated.WriteFile(configPath); err != nil {
+		a.state.Transition(state.DegradedRelay, "写入通道配置失败: "+err.Error())
+		return a.Status(), err
+	}
+
+	binary := a.frpcBinary()
+	if _, err := os.Stat(binary); err != nil {
+		a.state.Transition(state.DegradedRelay, "找不到 frpc 程序")
+		return a.Status(), fmt.Errorf("找不到 frpc 程序: %s", binary)
+	}
+
+	a.mu.Lock()
+	if a.supervisor != nil {
+		_ = a.supervisor.Stop(context.Background())
+	}
+	a.supervisor = supervisor.New(binary, configPath)
+	s := a.supervisor
+	stopHeartbeat := a.heartbeat
+	a.mu.Unlock()
+	if stopHeartbeat != nil {
+		stopHeartbeat()
+	}
+	s.OnChange = func(running bool, detail string) {
+		if !running && a.state.Current() == state.Ready {
+			a.state.Transition(state.DegradedRelay, detail)
+		}
+	}
+	if err := s.Start(ctx); err != nil {
+		a.state.Transition(state.DegradedRelay, err.Error())
+		return a.Status(), err
+	}
+
+	time.Sleep(800 * time.Millisecond)
+	if !s.Running() {
+		a.state.Transition(state.DegradedRelay, "通道未启动: "+s.LastError())
+		return a.Status(), errors.New("通道未启动")
+	}
+
+	reports, diagErr := a.Diagnose(ctx, "", "")
+	if diagErr == nil && !allOK(reports) {
+		a.state.Transition(state.DegradedUpstream, "内网来源检查未通过")
+	} else {
+		a.state.Transition(state.Ready, "通道已建立")
+	}
+	a.startHeartbeat()
+	return a.Status(), nil
+}
+
+// Pause 立即停止访问，不等待在途请求。
+func (a *Agent) Pause(ctx context.Context) Status {
+	a.mu.Lock()
+	s := a.supervisor
+	stopHeartbeat := a.heartbeat
+	a.heartbeat = nil
+	a.mu.Unlock()
+	if stopHeartbeat != nil {
+		stopHeartbeat()
+	}
+	if s != nil {
+		_ = s.Stop(ctx)
+	}
+	a.state.Transition(state.Paused, "本机暂停")
+	return a.Status()
+}
+
+// Disconnect 停止通道并回到待配置状态。
+func (a *Agent) Disconnect(ctx context.Context) Status {
+	a.Pause(ctx)
+	a.state.Transition(state.Configuring, "通道已断开")
+	return a.Status()
+}
+
+// Revoke 撤销本机设备。
+func (a *Agent) Revoke(ctx context.Context) (Status, error) {
+	if a.cloud != nil && a.identity.ConnectorID != "" {
+		if err := a.cloud.Revoke(ctx, a.identity.ConnectorID); err != nil {
+			return a.Status(), err
+		}
+	}
+	a.Pause(ctx)
+	a.mu.Lock()
+	a.identity = cloud.Identity{}
+	a.mu.Unlock()
+	_ = a.store.Remove(fileIdentity)
+	a.state.Transition(state.Revoked, "设备已撤销")
+	return a.Status(), nil
+}
+
+// Export 生成平台可导入的 MCP 配置。
+func (a *Agent) Export() ([]byte, error) {
+	a.mu.RLock()
+	sources := append([]config.Source(nil), a.config.Sources...)
+	a.mu.RUnlock()
+	return config.BuildPlatformConfig(sources, a.edgeBase(), "")
+}
+
+func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error) {
+	a.mu.RLock()
+	sources := append([]config.Source(nil), a.config.Sources...)
+	a.mu.RUnlock()
+
+	relay := desired.Relay
+	if relay.Address == "" {
+		relay = a.identity.Relay
+	}
+	generated := frpc.Config{
+		ServerAddr: relay.Address,
+		ServerPort: relay.Port,
+		User:       relay.User,
+		AuthToken:  relay.Token,
+		Protocol:   relay.Protocol,
+		TLSEnabled: relay.TLS.Enabled,
+		TrustedCA:  relay.TLS.TrustedCA,
+		CertFile:   relay.TLS.CertFile,
+		KeyFile:    relay.TLS.KeyFile,
+	}
+	if generated.AuthToken == "" {
+		generated.AuthToken = a.identity.Relay.Token
+	}
+	if generated.User == "" {
+		generated.User = a.identity.Relay.User
+	}
+
+	byID := map[string]cloud.DesiredSource{}
+	for _, item := range desired.Sources {
+		byID[item.SourceID] = item
+	}
+	for _, source := range sources {
+		item, ok := byID[source.SourceID]
+		host, port := localTarget(source.UpstreamURL)
+		if ok {
+			if item.LocalHost != "" {
+				host = item.LocalHost
+			}
+			if item.LocalPort > 0 {
+				port = item.LocalPort
+			}
+		}
+		secret := ""
+		if ok {
+			secret = item.STCPSecret
+		}
+		generated.Proxies = append(generated.Proxies, frpc.Proxy{
+			Name:       source.SourceID,
+			SecretKey:  secret,
+			LocalIP:    host,
+			LocalPort:  port,
+			AllowUsers: item.AllowUsers,
+		})
+	}
+	if err := generated.Validate(); err != nil {
+		return generated, err
+	}
+	return generated, nil
+}
+
+func (a *Agent) frpcBinary() string {
+	if a.opts.FrpcBinary != "" {
+		return a.opts.FrpcBinary
+	}
+	exe, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), frpcBinaryName())
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate
+		}
+	}
+	return filepath.Join(a.opts.DataDir, "bin", frpcBinaryName())
+}
+
+func (a *Agent) startHeartbeat() {
+	ctx, cancel := context.WithCancel(context.Background())
+	a.mu.Lock()
+	a.heartbeat = cancel
+	a.mu.Unlock()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if a.cloud == nil || a.identity.ConnectorID == "" {
+					continue
+				}
+				status := a.Status()
+				beat := cloud.Heartbeat{
+					State:      string(status.State),
+					Version:    version.String(),
+					ObservedAt: time.Now().UTC(),
+					LastError:  status.LastError,
+				}
+				for _, source := range status.Sources {
+					beat.SourceIDs = append(beat.SourceIDs, source.SourceID)
+				}
+				beatCtx, beatCancel := context.WithTimeout(ctx, 10*time.Second)
+				_ = a.cloud.Heartbeat(beatCtx, a.identity.ConnectorID, beat)
+				beatCancel()
+			}
+		}
+	}()
+}
+
+func mergeSecrets(base, secrets cloud.DesiredState) cloud.DesiredState {
+	if len(secrets.Sources) == 0 {
+		return base
+	}
+	byID := map[string]cloud.DesiredSource{}
+	for _, item := range base.Sources {
+		byID[item.SourceID] = item
+	}
+	for _, item := range secrets.Sources {
+		existing, ok := byID[item.SourceID]
+		if !ok {
+			base.Sources = append(base.Sources, item)
+			continue
+		}
+		if item.STCPSecret != "" {
+			existing.STCPSecret = item.STCPSecret
+		}
+		if len(item.AllowUsers) > 0 {
+			existing.AllowUsers = item.AllowUsers
+		}
+		byID[item.SourceID] = existing
+	}
+	merged := make([]cloud.DesiredSource, 0, len(byID))
+	for _, item := range byID {
+		merged = append(merged, item)
+	}
+	base.Sources = merged
+	return base
+}
+
+func localTarget(rawURL string) (string, int) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return "127.0.0.1", 80
+	}
+	host := parsed.Hostname()
+	port := 80
+	if parsed.Scheme == "https" {
+		port = 443
+	}
+	if value := parsed.Port(); value != "" {
+		if parsedPort, err := net.LookupPort("tcp", value); err == nil {
+			port = parsedPort
+		}
+	}
+	return host, port
+}
+
+func allOK(reports []diag.Report) bool {
+	for _, report := range reports {
+		if !report.OK {
+			return false
+		}
+	}
+	return true
+}
+
+func frpcBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "frpc.exe"
+	}
+	return "frpc"
+}
+
+// Snapshot 返回可直接序列化的状态，便于测试。
+func (a *Agent) Snapshot() json.RawMessage {
+	raw, _ := json.Marshal(a.Status())
+	return raw
+}

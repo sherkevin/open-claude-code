@@ -1,0 +1,123 @@
+package config
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestParseMCPMergedConfig(t *testing.T) {
+	raw := []byte(`{
+	  "mcpServers": {
+	    "库存查询": {
+	      "type": "http",
+	      "url": "http://10.0.0.8:8000/mcp",
+	      "headers": {"Authorization": "Bearer secret-token"}
+	    }
+	  }
+	}`)
+	report, err := ParseHostConfig(raw, ImportOptions{})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if report.HasErrors() {
+		t.Fatalf("不应有错误: %+v", report.Errors())
+	}
+	if len(report.Sources) != 1 {
+		t.Fatalf("期望 1 个来源，得到 %d", len(report.Sources))
+	}
+	source := report.Sources[0]
+	if source.UpstreamURL != "http://10.0.0.8:8000/mcp" {
+		t.Fatalf("地址解析错误: %s", source.UpstreamURL)
+	}
+	if source.Auth.Mode != AuthModeFixedHeader || source.Auth.CredentialRef == "" {
+		t.Fatalf("认证模式未转成凭据引用: %+v", source.Auth)
+	}
+	if got := report.Secrets[source.SourceID]["Authorization"]; got != "Bearer secret-token" {
+		t.Fatalf("秘密未收集: %q", got)
+	}
+}
+
+func TestParseRejectsStdioWithoutConditional(t *testing.T) {
+	raw := []byte(`{"mcpServers":{"本地工具":{"command":"node","args":["server.js"]}}}`)
+	report, err := ParseHostConfig(raw, ImportOptions{})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("标准输入输出型 MCP 首版应被拒绝")
+	}
+	if !strings.Contains(report.Errors()[0].Message, "条件适配") {
+		t.Fatalf("错误信息不够明确: %s", report.Errors()[0].Message)
+	}
+}
+
+func TestParseRejectsUnresolvedVariable(t *testing.T) {
+	raw := []byte(`{"mcpServers":{"订单":{"type":"http","url":"http://10.0.0.9:9000/mcp","headers":{"Authorization":"Bearer ${TOKEN}"}}}}`)
+	report, err := ParseHostConfig(raw, ImportOptions{})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("未解析变量必须阻断导入")
+	}
+	if report.Errors()[0].Code != "CONFIG_UNRESOLVED_VARIABLE" {
+		t.Fatalf("错误码不符: %s", report.Errors()[0].Code)
+	}
+}
+
+func TestParseRejectsHostOutsideAllowlist(t *testing.T) {
+	raw := []byte(`{"mcpServers":{"订单":{"type":"http","url":"http://10.0.0.9:9000/mcp"}}}`)
+	report, err := ParseHostConfig(raw, ImportOptions{AllowedHosts: []string{"corp.example.com"}})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if !report.HasErrors() || report.Errors()[0].Code != "SOURCE_HOST_NOT_ALLOWED" {
+		t.Fatalf("主机允许范围未生效: %+v", report.Issues)
+	}
+}
+
+func TestBuildPlatformConfigMatchesContract(t *testing.T) {
+	sources := []Source{{
+		SchemaVersion: 1, SourceID: "src_inventory", DisplayName: "库存查询",
+		Transport: TransportStreamableHTTP, UpstreamURL: "http://10.0.0.8:8000/mcp",
+	}}
+	raw, err := BuildPlatformConfig(sources, "https://mcp.example.com/", "abc")
+	if err != nil {
+		t.Fatalf("导出失败: %v", err)
+	}
+	var payload struct {
+		MCPServers map[string]struct {
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("导出不是合法 JSON: %v", err)
+	}
+	entry, ok := payload.MCPServers["库存查询"]
+	if !ok {
+		t.Fatal("缺少来源条目")
+	}
+	if entry.Type != "http" {
+		t.Fatalf("类型必须是 http: %s", entry.Type)
+	}
+	if entry.URL != "https://mcp.example.com/sources/src_inventory/mcp" {
+		t.Fatalf("地址不符合 Edge 约定: %s", entry.URL)
+	}
+	if entry.Headers["Authorization"] != "Bearer abc" {
+		t.Fatalf("凭据头不符合平台约定: %s", entry.Headers["Authorization"])
+	}
+}
+
+func TestBuildPlatformConfigUsesPlaceholder(t *testing.T) {
+	sources := []Source{{SourceID: "s1", DisplayName: "库存", UpstreamURL: "http://10.0.0.1/mcp", Transport: TransportStreamableHTTP}}
+	raw, err := BuildPlatformConfig(sources, "https://mcp.example.com", "")
+	if err != nil {
+		t.Fatalf("导出失败: %v", err)
+	}
+	if !strings.Contains(string(raw), "<EDGE_ACCESS_TOKEN>") {
+		t.Fatalf("空凭据应输出占位符: %s", raw)
+	}
+}
