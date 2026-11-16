@@ -78,6 +78,10 @@ func serve(args []string) {
 	fmt.Printf("开物内网连接器 %s\n", version.String())
 	fmt.Printf("本机界面: http://%s/\n", displayAddr(*listen))
 	fmt.Printf("数据目录: %s\n", opts.DataDir)
+	if instance.ShouldAutoConnect() {
+		fmt.Println("检测到上次退出时通道处于工作状态，正在自动恢复")
+		go instance.AutoConnect()
+	}
 	if err := server.ListenAndServe(); err != nil {
 		fatal(err)
 	}

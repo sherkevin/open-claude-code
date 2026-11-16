@@ -13,6 +13,8 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,6 +23,8 @@ import (
 type Supervisor struct {
 	BinaryPath string
 	ConfigPath string
+	// PIDFile 记录当前子进程号，用于进程异常退出后清理遗留进程。
+	PIDFile string
 	// OnChange 在进程启动或退出时回调，running 表示当前是否有进程在跑。
 	OnChange func(running bool, detail string)
 
@@ -53,7 +57,10 @@ func (s *Supervisor) Start(parent context.Context) error {
 		s.mu.Unlock()
 		return nil
 	}
-	ctx, cancel := context.WithCancel(parent)
+	// frpc 的生命周期必须独立于触发启动的那次请求：
+	// 界面上的「连接」请求返回后，HTTP 请求上下文会被取消，
+	// 若直接沿用会把刚建立的隧道一起杀掉。这里只保留上下文值，解除取消与超时。
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	s.cancel = cancel
 	s.stopping = false
 	s.doneCh = make(chan struct{})
@@ -91,12 +98,15 @@ func (s *Supervisor) loop(ctx context.Context, done chan struct{}) {
 		s.mu.Lock()
 		s.cmd = cmd
 		s.running = true
+		s.lastErr = ""
 		s.mu.Unlock()
+		s.writePID(cmd.Process.Pid)
 		s.notify(true, "frpc 已启动")
 
 		go drainStderr(stderr, s)
 
 		waitErr := cmd.Wait()
+		s.clearPID(cmd.Process.Pid)
 
 		s.mu.Lock()
 		s.running = false
@@ -231,6 +241,24 @@ func drainStderr(reader interface{ Read([]byte) (int, error) }, s *Supervisor) {
 			return
 		}
 	}
+}
+
+func (s *Supervisor) writePID(pid int) {
+	if s.PIDFile == "" {
+		return
+	}
+	_ = os.WriteFile(s.PIDFile, []byte(strconv.Itoa(pid)), 0o600)
+}
+
+func (s *Supervisor) clearPID(pid int) {
+	if s.PIDFile == "" {
+		return
+	}
+	raw, err := os.ReadFile(s.PIDFile)
+	if err != nil || strings.TrimSpace(string(raw)) != strconv.Itoa(pid) {
+		return
+	}
+	_ = os.Remove(s.PIDFile)
 }
 
 func trim(value string) string {

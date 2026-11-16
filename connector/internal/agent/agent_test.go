@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -77,6 +79,49 @@ func TestBindImportExport(t *testing.T) {
 	snapshot := reloaded.Status()
 	if !snapshot.Bound || len(snapshot.Sources) != 1 {
 		t.Fatalf("重启后状态丢失: %+v", snapshot)
+	}
+}
+
+func TestAutoConnectIntentPersistence(t *testing.T) {
+	server := fakeCloud(t)
+	defer server.Close()
+	dir := t.TempDir()
+	instance, err := New(Options{DataDir: dir, CloudBase: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := instance.Bind(ctx, "code-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.ImportConfig(ctx, []byte(`{"mcpServers":{"inventory":{"type":"http","url":"http://10.0.0.8:8000/mcp"}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if instance.ShouldAutoConnect() {
+		t.Fatal("首次配置后不应自动连接")
+	}
+
+	savedState := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(savedState, []byte(`{"state":"READY"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := New(Options{DataDir: dir, CloudBase: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.ShouldAutoConnect() {
+		t.Fatal("上次为就绪状态时应自动恢复通道")
+	}
+
+	if err := os.WriteFile(savedState, []byte(`{"state":"PAUSED"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := New(Options{DataDir: dir, CloudBase: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused.ShouldAutoConnect() {
+		t.Fatal("人工暂停后重启不应自动连接")
 	}
 }
 

@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +62,14 @@ type Agent struct {
 
 	supervisor *supervisor.Supervisor
 	heartbeat  context.CancelFunc
+
+	persistMu   sync.Mutex
+	autoConnect bool
+}
+
+// persistedState 记录上一次稳定状态，供服务重启后判断是否需要自动恢复通道。
+type persistedState struct {
+	State state.State `json:"state"`
 }
 
 // Status 是给本机界面和心跳使用的快照。
@@ -105,8 +115,14 @@ func New(opts Options) (*Agent, error) {
 			agent.lastError = reason
 		}
 		agent.mu.Unlock()
+		agent.persistState(to)
 	})
 
+	// 先读上一次稳定状态，再载入身份；载入身份会触发一次状态迁移并写回文件。
+	var saved persistedState
+	if err := st.ReadJSON(fileState, &saved); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
 	if err := st.ReadJSON(fileIdentity, &agent.identity); err == nil && agent.identity.DeviceToken != "" {
 		agent.state.Transition(state.Configuring, "已载入设备身份")
 	}
@@ -116,6 +132,12 @@ func New(opts Options) (*Agent, error) {
 	if err := st.ReadJSON(fileSecrets, &agent.secrets); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+	if agent.identity.DeviceToken != "" && len(agent.config.Sources) > 0 {
+		switch saved.State {
+		case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:
+			agent.autoConnect = true
+		}
+	}
 	if agent.identity.DeviceToken != "" {
 		client, err := cloud.New(agent.cloudBase(), agent.identity.DeviceToken)
 		if err != nil {
@@ -123,7 +145,92 @@ func New(opts Options) (*Agent, error) {
 		}
 		agent.cloud = client
 	}
+	agent.reapStaleFrpc()
 	return agent, nil
+}
+
+// reapStaleFrpc 清理上次进程异常退出后遗留的 frpc，避免新进程注册同名代理被拒绝。
+// 只处理 PID 文件记录且进程名确认为 frpc 的进程，不误杀其他程序。
+func (a *Agent) reapStaleFrpc() {
+	raw, err := os.ReadFile(a.store.Path("frpc.pid"))
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 || pid == os.Getpid() || !processLooksLikeFrpc(pid) {
+		_ = a.store.Remove("frpc.pid")
+		return
+	}
+	if process, err := os.FindProcess(pid); err == nil {
+		_ = process.Kill()
+		time.Sleep(300 * time.Millisecond)
+	}
+	_ = a.store.Remove("frpc.pid")
+}
+
+func processLooksLikeFrpc(pid int) bool {
+	switch runtime.GOOS {
+	case "linux":
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		return err == nil && strings.Contains(strings.ToLower(strings.TrimSpace(string(raw))), "frpc")
+	case "windows":
+		out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
+		return err == nil && strings.Contains(strings.ToLower(string(out)), "frpc.exe")
+	default:
+		out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+		return err == nil && strings.Contains(strings.ToLower(string(out)), "frpc")
+	}
+}
+
+// ShouldAutoConnect 表示上次退出时通道处于工作状态，服务启动后应自动恢复。
+func (a *Agent) ShouldAutoConnect() bool {
+	return a.autoConnect
+}
+
+// AutoConnect 在服务启动后按上次状态恢复通道。
+func (a *Agent) AutoConnect() {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, _ = a.Connect(ctx)
+}
+
+// recoverTunnel 在 frpc 被守护进程重新拉起后，确认内网来源健康再恢复就绪状态。
+// 只跟着 frpc 的启动事件走，避免把仍在失败的代理误报为可用。
+func (a *Agent) recoverTunnel() {
+	time.Sleep(1500 * time.Millisecond)
+	if a.state.Current() != state.DegradedRelay {
+		return
+	}
+	a.mu.RLock()
+	s := a.supervisor
+	a.mu.RUnlock()
+	if s == nil || !s.Running() {
+		return
+	}
+	if detail := strings.ToLower(s.LastError()); strings.Contains(detail, "error") || strings.Contains(detail, "failed") {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	reports, err := a.Diagnose(ctx, "", "")
+	if err != nil || !allOK(reports) {
+		return
+	}
+	if a.state.Transition(state.Ready, "通道已恢复") {
+		a.startHeartbeat()
+	}
+}
+
+// persistState 记录稳定状态，供下次启动判断是否需要自动恢复通道。
+func (a *Agent) persistState(to state.State) {
+	switch to {
+	case state.Ready, state.Paused, state.Configuring, state.DegradedUpstream, state.DegradedRelay, state.Revoked:
+	default:
+		return
+	}
+	a.persistMu.Lock()
+	defer a.persistMu.Unlock()
+	_ = a.store.WriteJSON(fileState, persistedState{State: to})
 }
 
 func (a *Agent) cloudBase() string {
@@ -306,6 +413,7 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 		_ = a.supervisor.Stop(context.Background())
 	}
 	a.supervisor = supervisor.New(binary, configPath)
+	a.supervisor.PIDFile = a.store.Path("frpc.pid")
 	s := a.supervisor
 	stopHeartbeat := a.heartbeat
 	a.mu.Unlock()
@@ -315,6 +423,10 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 	s.OnChange = func(running bool, detail string) {
 		if !running && a.state.Current() == state.Ready {
 			a.state.Transition(state.DegradedRelay, detail)
+			return
+		}
+		if running && a.state.Current() == state.DegradedRelay {
+			go a.recoverTunnel()
 		}
 	}
 	if err := s.Start(ctx); err != nil {
@@ -326,6 +438,10 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 	if !s.Running() {
 		a.state.Transition(state.DegradedRelay, "通道未启动: "+s.LastError())
 		return a.Status(), errors.New("通道未启动")
+	}
+	if a.state.Current() == state.Paused {
+		_ = s.Stop(context.Background())
+		return a.Status(), errors.New("连接已取消")
 	}
 
 	reports, diagErr := a.Diagnose(ctx, "", "")
@@ -463,8 +579,12 @@ func (a *Agent) frpcBinary() string {
 func (a *Agent) startHeartbeat() {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
+	previous := a.heartbeat
 	a.heartbeat = cancel
 	a.mu.Unlock()
+	if previous != nil {
+		previous()
+	}
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
