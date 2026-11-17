@@ -43,7 +43,8 @@ icacls $DataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI
 # 写入云端地址模板。失败时立即停止，避免安装出一个导出不可用的连接器。
 $EnvFile = Join-Path $Source "config\connector.env.example"
 if (Test-Path $EnvFile) {
-  foreach ($line in Get-Content $EnvFile) {
+  $envText = [System.IO.File]::ReadAllText($EnvFile, [System.Text.Encoding]::UTF8)
+  foreach ($line in ($envText -split "`r?`n")) {
     if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.+?)\s*$') {
       $name = $matches[1]
       $value = $matches[2]
