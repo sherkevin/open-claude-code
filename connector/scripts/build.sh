@@ -141,11 +141,13 @@ cp "$DIST/linux/compliance/GoModules.json" "$DIST/windows/compliance/GoModules.j
   "$VULN_TOOL" ./...
 ) > "$DIST/linux/compliance/GOVULNCHECK.txt" 2>&1
 
-"$PYTHON_TOOL" - "$DIST/linux/compliance/SBOM.cdx.json" <<'PY'
+"$PYTHON_TOOL" - "$DIST/linux/compliance/SBOM.cdx.json" "$VERSION" "$COMMIT" <<'PY'
 import json
 import sys
 
 path = sys.argv[1]
+release_version = sys.argv[2]
+release_commit = sys.argv[3]
 with open(path, encoding="utf-8") as handle:
     document = json.load(handle)
 
@@ -162,6 +164,17 @@ metadata_component = (document.get("metadata") or {}).get("component")
 if not metadata_component:
     raise SystemExit("SBOM 缺少应用元数据")
 metadata_component["licenses"] = [{"expression": "NOASSERTION"}]
+metadata_component["version"] = release_version
+metadata_component["properties"] = [
+    {"name": "kaiwu:build:commit", "value": release_commit},
+]
+for field in ("bom-ref", "purl"):
+    value = metadata_component.get(field, "")
+    if value:
+        base, separator, query = value.partition("?")
+        metadata_component[field] = f"{base}@{release_version}"
+        if separator:
+            metadata_component[field] += separator + query
 
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(document, handle, ensure_ascii=False, indent=2)
