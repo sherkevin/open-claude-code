@@ -21,6 +21,7 @@ FRPC_WINDOWS_SHA256="${FRPC_WINDOWS_SHA256:-d9a8cf8bc61bd5c8d57a2a4801316a18291f
 SBOM_TOOL="${CYCLONEDX_GOMOD:-$(command -v cyclonedx-gomod || true)}"
 VULN_TOOL="${GOVULNCHECK:-$(command -v govulncheck || true)}"
 GO_TOOL="${GO:-$(command -v go || true)}"
+PYTHON_TOOL="${PYTHON:-$(command -v python3 || true)}"
 
 for file in "$FRPC_LINUX" "$FRPC_WINDOWS"; do
   if [ ! -f "$file" ]; then
@@ -39,6 +40,10 @@ if [ -z "$VULN_TOOL" ] || [ ! -x "$VULN_TOOL" ]; then
 fi
 if [ -z "$GO_TOOL" ] || [ ! -x "$GO_TOOL" ]; then
   echo "缺少 Go 工具链，无法构建连接器" >&2
+  exit 1
+fi
+if [ -z "$PYTHON_TOOL" ] || [ ! -x "$PYTHON_TOOL" ]; then
+  echo "缺少 python3，无法规范化 SBOM 许可证声明" >&2
   exit 1
 fi
 
@@ -135,8 +140,45 @@ cp "$DIST/linux/compliance/GoModules.json" "$DIST/windows/compliance/GoModules.j
     2> "$DIST/linux/compliance/SBOM-WARNINGS.txt"
   "$VULN_TOOL" ./...
 ) > "$DIST/linux/compliance/GOVULNCHECK.txt" 2>&1
+
+"$PYTHON_TOOL" - "$DIST/linux/compliance/SBOM.cdx.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    document = json.load(handle)
+
+if document.get("bomFormat") != "CycloneDX" or document.get("specVersion") != "1.5":
+    raise SystemExit("SBOM 格式或版本不符合冻结要求")
+
+components = {item.get("name"): item for item in document.get("components", [])}
+std = components.get("std")
+if not std:
+    raise SystemExit("SBOM 缺少 Go 标准库组件")
+std["licenses"] = [{"license": {"id": "BSD-3-Clause"}}]
+
+metadata_component = (document.get("metadata") or {}).get("component")
+if not metadata_component:
+    raise SystemExit("SBOM 缺少应用元数据")
+metadata_component["licenses"] = [{"expression": "NOASSERTION"}]
+
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+PY
+
+cat > "$DIST/linux/compliance/SBOM-NOTES.txt" <<'EOF'
+The SBOM generator does not detect the Go standard library license from the
+toolchain. The build injects BSD-3-Clause for the `std` component and includes
+the pinned Go LICENSE and PATENTS files in this package. The connector
+application's own licensing status is marked NOASSERTION and is not inferred
+from unrelated files.
+EOF
+
 cp "$DIST/linux/compliance/SBOM.cdx.json" "$DIST/windows/compliance/SBOM.cdx.json"
 cp "$DIST/linux/compliance/SBOM-WARNINGS.txt" "$DIST/windows/compliance/SBOM-WARNINGS.txt"
+cp "$DIST/linux/compliance/SBOM-NOTES.txt" "$DIST/windows/compliance/SBOM-NOTES.txt"
 cp "$DIST/linux/compliance/GOVULNCHECK.txt" "$DIST/windows/compliance/GOVULNCHECK.txt"
 
 "$GO_TOOL" version -m "$DIST/linux/bin/kaiwu-connector" > "$DIST/linux/compliance/BinaryBuildInfo.txt"

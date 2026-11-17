@@ -53,7 +53,7 @@
 
 ## 构建
 
-需要固定版本 Go `1.27.4`、`zip`、`cyclonedx-gomod v1.12.0`、`govulncheck v1.9.0`，以及 `packaging/bin/` 下的 frpc 二进制（`frpc-linux-amd64`、`frpc-windows-amd64.exe`）。第三方 frpc 获取和哈希要求见 `packaging/bin/README.md`。
+需要固定版本 Go `1.27.4`、Python 3、`zip`、`cyclonedx-gomod v1.12.0`、`govulncheck v1.9.0`，以及 `packaging/bin/` 下的 frpc 二进制（`frpc-linux-amd64`、`frpc-windows-amd64.exe`）。第三方 frpc 获取和哈希要求见 `packaging/bin/README.md`。
 
 如果工具不在 `PATH` 中，可显式指定：
 
@@ -74,7 +74,7 @@ bash scripts/build.sh            # 版本默认 1.1.0，可用 VERSION=... 覆�
 - `kaiwu-connector-<版本>-linux-amd64.tar.gz`
 - `kaiwu-connector-<版本>-windows-amd64.zip`
 
-构建使用 `CGO_ENABLED=0` 交叉编译、`-trimpath`，并通过 ldflags 注入版本、提交号、构建时间。构建会执行 `govulncheck`，发现已知漏洞时失败。包内生成 `SHA256SUMS`、CycloneDX 1.5 JSON SBOM、SBOM 警告、漏洞扫描结果、Go 模块清单、二进制构建信息、构建日志、frp 许可证和 Go 标准库许可证；外层压缩包哈希写入 `dist/SHA256SUMS`。SBOM 和漏洞扫描是构建证据，不代表包内二进制已完成 Windows 实机、恶意软件或秘密扫描。
+构建使用 `CGO_ENABLED=0` 交叉编译、`-trimpath`，并通过 ldflags 注入版本、提交号、构建时间。构建会执行 `govulncheck`，发现已知漏洞时失败。包内生成 `SHA256SUMS`、CycloneDX 1.5 JSON SBOM、SBOM 工具警告与说明、漏洞扫描结果、Go 模块清单、二进制构建信息、构建日志、frp 许可证和 Go 标准库许可证；外层压缩包哈希写入 `dist/SHA256SUMS`。SBOM 和漏洞扫描是构建证据，不代表包内二进制已完成 Windows 实机、恶意软件或秘密扫描。
 
 ## 本地运行
 
