@@ -19,6 +19,9 @@ import (
 )
 
 func main() {
+	if runServiceIfNeeded() {
+		return
+	}
 	if len(os.Args) < 2 {
 		serve(os.Args[1:])
 		return
@@ -62,16 +65,25 @@ func usage() {
 `)
 }
 
-func serve(args []string) {
-	flags := flag.NewFlagSet("serve", flag.ExitOnError)
+func newServer(args []string) (*web.Server, *agent.Agent, *agent.Options, *string, error) {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	opts, listen := registerCommon(flags)
-	flags.Parse(args)
-
+	if err := flags.Parse(args); err != nil {
+		return nil, nil, nil, nil, err
+	}
 	instance, err := agent.New(*opts)
 	if err != nil {
-		fatal(err)
+		return nil, nil, nil, nil, err
 	}
 	server, err := web.New(instance, *listen)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return server, instance, opts, listen, nil
+}
+
+func serve(args []string) {
+	server, instance, opts, listen, err := newServer(args)
 	if err != nil {
 		fatal(err)
 	}
