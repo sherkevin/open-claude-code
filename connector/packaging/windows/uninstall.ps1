@@ -1,4 +1,4 @@
-# 开物内网连接器 Windows 卸载脚本。
+﻿# 开物内网连接器 Windows 卸载脚本。
 # 用法：以管理员身份运行 PowerShell：.\uninstall.ps1 [-Purge]
 #   默认保留本机身份与配置；-Purge 彻底删除。
 param([switch]$Purge)

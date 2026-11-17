@@ -1,4 +1,4 @@
-# 开物内网连接器 Windows 安装脚本。
+﻿# 开物内网连接器 Windows 安装脚本。
 # 用法：以管理员身份运行 PowerShell：.\install.ps1
 #Requires -RunAsAdministrator
 $ErrorActionPreference = "Stop"
@@ -61,8 +61,7 @@ $BinPath = "`"$Binary`" serve --data-dir `"$DataDir`" --listen $Listen"
 
 # 使用 New-Service 避免 sc.exe 在 Windows PowerShell 5.1 下拆分带空格的 binPath。
 try {
-  New-Service -Name $ServiceName -BinaryPathName $BinPath -StartupType Automatic `
-    -DisplayName "Kaiwu Intranet Connector" -ErrorAction Stop | Out-Null
+  New-Service -Name $ServiceName -BinaryPathName $BinPath -StartupType Automatic -DisplayName "Kaiwu Intranet Connector" -ErrorAction Stop | Out-Null
 } catch {
   throw "注册服务失败: $($_.Exception.Message)"
 }
