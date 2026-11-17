@@ -132,6 +132,10 @@ func New(opts Options) (*Agent, error) {
 	if err := st.ReadJSON(fileSecrets, &agent.secrets); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+	// 未绑定但已经导入来源时，重启后应回到“待配置”，而不是退回“尚未绑定”。
+	if agent.identity.DeviceToken == "" && len(agent.config.Sources) > 0 && saved.State != state.Revoked {
+		agent.state.Transition(state.Configuring, "已载入来源配置")
+	}
 	if agent.identity.DeviceToken != "" && len(agent.config.Sources) > 0 {
 		switch saved.State {
 		case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:

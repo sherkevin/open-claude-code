@@ -24,6 +24,8 @@ type Server struct {
 	Agent *agent.Agent
 	Token string
 	Addr  string
+
+	httpServer *http.Server
 }
 
 // New 创建服务并生成一次性会话令牌。
@@ -41,8 +43,26 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
+	return s.Serve(listener)
+}
+
+// Serve 在已创建的监听器上提供本机界面。
+func (s *Server) Serve(listener net.Listener) error {
 	server := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	return server.Serve(listener)
+	s.httpServer = server
+	err := server.Serve(listener)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+// Shutdown 优雅停止本机界面。
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer == nil {
+		return nil
+	}
+	return s.httpServer.Shutdown(ctx)
 }
 
 // Handler 返回完整的 HTTP 处理器，便于测试。
