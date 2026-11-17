@@ -25,6 +25,19 @@ func newTestServer(t *testing.T) *Server {
 	return server
 }
 
+func newUnconfiguredTestServer(t *testing.T) *Server {
+	t.Helper()
+	instance, err := agent.New(agent.Options{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("创建连接器失败: %v", err)
+	}
+	server, err := New(instance, loopbackHost)
+	if err != nil {
+		t.Fatalf("创建界面失败: %v", err)
+	}
+	return server
+}
+
 func TestIndexSetsSessionCookie(t *testing.T) {
 	server := newTestServer(t)
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -40,6 +53,12 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "内网连接器") {
 		t.Fatal("页面内容不完整")
+	}
+	if !strings.Contains(recorder.Body.String(), "本机诊断试用包") || !strings.Contains(recorder.Body.String(), "不代表开物平台已经能够调用客户内网 MCP") {
+		t.Fatal("页面未明确展示本机诊断试用边界")
+	}
+	if strings.Contains(recorder.Body.String(), "启动加密通道并与云端完成端到端检测") {
+		t.Fatal("页面不得把候选连接器描述成已完成端到端联调")
 	}
 }
 
@@ -116,6 +135,35 @@ func TestStatusReportsUnpaired(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "UNPAIRED") {
 		t.Fatalf("初始状态应为未绑定: %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"cloud_configured":true`) || !strings.Contains(recorder.Body.String(), `"edge_configured":true`) {
+		t.Fatalf("状态应标明测试云端端点已配置: %s", recorder.Body.String())
+	}
+}
+
+func TestStatusReportsUnconfiguredTrial(t *testing.T) {
+	server := newUnconfiguredTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Host = loopbackHost
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("状态码 %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"cloud_configured":false`) || !strings.Contains(recorder.Body.String(), `"edge_configured":false`) {
+		t.Fatalf("状态应标明未配置云端端点: %s", recorder.Body.String())
+	}
+}
+
+func TestConnectFailsClosedWithoutCloudRelay(t *testing.T) {
+	server := newUnconfiguredTestServer(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/connect", strings.NewReader("{}"))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "未配置云端中继") {
+		t.Fatalf("未配置中继时连接必须失败关闭: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

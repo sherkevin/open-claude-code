@@ -20,6 +20,7 @@ FRPC_LINUX_SHA256="${FRPC_LINUX_SHA256:-0bb98b7a69ce8ee23bc60fec1664f22040a2d440
 FRPC_WINDOWS_SHA256="${FRPC_WINDOWS_SHA256:-d9a8cf8bc61bd5c8d57a2a4801316a18291f76d45dc5fd8aaf425bd91b57159d}"
 SBOM_TOOL="${CYCLONEDX_GOMOD:-$(command -v cyclonedx-gomod || true)}"
 VULN_TOOL="${GOVULNCHECK:-$(command -v govulncheck || true)}"
+GO_TOOL="${GO:-$(command -v go || true)}"
 
 for file in "$FRPC_LINUX" "$FRPC_WINDOWS"; do
   if [ ! -f "$file" ]; then
@@ -34,6 +35,18 @@ if [ -z "$SBOM_TOOL" ] || [ ! -x "$SBOM_TOOL" ]; then
 fi
 if [ -z "$VULN_TOOL" ] || [ ! -x "$VULN_TOOL" ]; then
   echo "缺少 govulncheck，无法执行依赖漏洞扫描" >&2
+  exit 1
+fi
+if [ -z "$GO_TOOL" ] || [ ! -x "$GO_TOOL" ]; then
+  echo "缺少 Go 工具链，无法构建连接器" >&2
+  exit 1
+fi
+
+GO_ROOT="$("$GO_TOOL" env GOROOT)"
+GO_LICENSE="$GO_ROOT/LICENSE"
+GO_PATENTS="$GO_ROOT/PATENTS"
+if [ ! -f "$GO_LICENSE" ] || [ ! -f "$GO_PATENTS" ]; then
+  echo "缺少 Go 标准库许可证文件: $GO_ROOT" >&2
   exit 1
 fi
 
@@ -69,7 +82,8 @@ BUILD_LOG="$DIST/build.log"
   echo "version=$VERSION"
   echo "commit=$COMMIT"
   echo "build_time=$BUILD_TIME"
-  echo "go_version=$(go version)"
+  echo "go_version=$("$GO_TOOL" version)"
+  echo "go_root=$GO_ROOT"
   echo "host=$(uname -a)"
   echo "cyclonedx_gomod=$("$SBOM_TOOL" version 2>&1 | tr '\n' ' ')"
   echo "govulncheck=$("$VULN_TOOL" -version 2>&1 | tr '\n' ' ')"
@@ -78,10 +92,10 @@ BUILD_LOG="$DIST/build.log"
 } > "$BUILD_LOG"
 
 echo "构建 Linux 版本..."
-GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o "$DIST/linux/bin/kaiwu-connector" "$ROOT/cmd/connector"
+GOOS=linux GOARCH=amd64 "$GO_TOOL" build -trimpath -ldflags "$LDFLAGS" -o "$DIST/linux/bin/kaiwu-connector" "$ROOT/cmd/connector"
 
 echo "构建 Windows 版本..."
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o "$DIST/windows/bin/kaiwu-connector.exe" "$ROOT/cmd/connector"
+GOOS=windows GOARCH=amd64 "$GO_TOOL" build -trimpath -ldflags "$LDFLAGS" -o "$DIST/windows/bin/kaiwu-connector.exe" "$ROOT/cmd/connector"
 
 cp "$FRPC_LINUX" "$DIST/linux/bin/frpc"
 cp "$FRPC_WINDOWS" "$DIST/windows/bin/frpc.exe"
@@ -103,26 +117,30 @@ for target in linux windows; do
   cp "$ROOT/third_party/frp/NOTICE.txt" "$DIST/$target/compliance/frp-NOTICE.txt"
   cp "$ROOT/third_party/frp/OFFICIAL_ARCHIVE_CHECKSUMS.txt" "$DIST/$target/compliance/frp-OFFICIAL_ARCHIVE_CHECKSUMS.txt"
   cp "$ROOT/third_party/frp/OFFICIAL_BINARY_SHA256.txt" "$DIST/$target/compliance/frp-OFFICIAL_BINARY_SHA256.txt"
+  cp "$GO_LICENSE" "$DIST/$target/compliance/go-LICENSE.txt"
+  cp "$GO_PATENTS" "$DIST/$target/compliance/go-PATENTS.txt"
   cp "$BUILD_LOG" "$DIST/$target/compliance/BUILD_LOG.txt"
 done
 
 (
   cd "$ROOT"
-  go list -m -json all
+  "$GO_TOOL" list -m -json all
 ) > "$DIST/linux/compliance/GoModules.json"
 cp "$DIST/linux/compliance/GoModules.json" "$DIST/windows/compliance/GoModules.json"
 
 (
   cd "$ROOT"
   "$SBOM_TOOL" mod -licenses -assert-licenses -noserial -type application -std \
-    -output-version 1.5 -json -output "$DIST/linux/compliance/SBOM.cdx.json" .
+    -output-version 1.5 -json -output "$DIST/linux/compliance/SBOM.cdx.json" . \
+    2> "$DIST/linux/compliance/SBOM-WARNINGS.txt"
   "$VULN_TOOL" ./...
 ) > "$DIST/linux/compliance/GOVULNCHECK.txt" 2>&1
 cp "$DIST/linux/compliance/SBOM.cdx.json" "$DIST/windows/compliance/SBOM.cdx.json"
+cp "$DIST/linux/compliance/SBOM-WARNINGS.txt" "$DIST/windows/compliance/SBOM-WARNINGS.txt"
 cp "$DIST/linux/compliance/GOVULNCHECK.txt" "$DIST/windows/compliance/GOVULNCHECK.txt"
 
-go version -m "$DIST/linux/bin/kaiwu-connector" > "$DIST/linux/compliance/BinaryBuildInfo.txt"
-go version -m "$DIST/windows/bin/kaiwu-connector.exe" > "$DIST/windows/compliance/BinaryBuildInfo.txt"
+"$GO_TOOL" version -m "$DIST/linux/bin/kaiwu-connector" > "$DIST/linux/compliance/BinaryBuildInfo.txt"
+"$GO_TOOL" version -m "$DIST/windows/bin/kaiwu-connector.exe" > "$DIST/windows/compliance/BinaryBuildInfo.txt"
 file "$DIST/linux/bin/frpc" > "$DIST/linux/compliance/frpc-BinaryInfo.txt"
 file "$DIST/windows/bin/frpc.exe" > "$DIST/windows/compliance/frpc-BinaryInfo.txt"
 sha256sum "$DIST/linux/bin/frpc" > "$DIST/linux/compliance/frpc-SHA256.txt"
@@ -132,7 +150,7 @@ cat > "$DIST/linux/版本信息.txt" <<EOF
 开物内网连接器 ${VERSION}
 提交：${COMMIT}
 构建时间：${BUILD_TIME}
-包含：kaiwu-connector、frpc 0.61.1（Apache License 2.0）
+包含：kaiwu-connector、frpc 0.61.1（Apache License 2.0）、Go 1.27.4 标准库（BSD License）
 EOF
 cp "$DIST/linux/版本信息.txt" "$DIST/windows/版本信息.txt"
 

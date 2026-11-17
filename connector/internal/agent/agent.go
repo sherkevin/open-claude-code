@@ -81,21 +81,23 @@ type persistedState struct {
 
 // Status 是给本机界面和心跳使用的快照。
 type Status struct {
-	State        state.State     `json:"state"`
-	StateLabel   string          `json:"state_label"`
-	Reason       string          `json:"reason,omitempty"`
-	Bound        bool            `json:"bound"`
-	ConnectorID  string          `json:"connector_id,omitempty"`
-	TenantName   string          `json:"tenant_name,omitempty"`
-	TenantID     string          `json:"tenant_id,omitempty"`
-	Sources      []config.Source `json:"sources"`
-	FrpcRunning  bool            `json:"frpc_running"`
-	FrpcRestarts int             `json:"frpc_restarts"`
-	LastError    string          `json:"last_error,omitempty"`
-	Version      string          `json:"version"`
-	EdgeBase     string          `json:"edge_base,omitempty"`
-	AuthProfiles []SourceAuth    `json:"auth_profiles"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	State           state.State     `json:"state"`
+	StateLabel      string          `json:"state_label"`
+	Reason          string          `json:"reason,omitempty"`
+	Bound           bool            `json:"bound"`
+	CloudConfigured bool            `json:"cloud_configured"`
+	EdgeConfigured  bool            `json:"edge_configured"`
+	ConnectorID     string          `json:"connector_id,omitempty"`
+	TenantName      string          `json:"tenant_name,omitempty"`
+	TenantID        string          `json:"tenant_id,omitempty"`
+	Sources         []config.Source `json:"sources"`
+	FrpcRunning     bool            `json:"frpc_running"`
+	FrpcRestarts    int             `json:"frpc_restarts"`
+	LastError       string          `json:"last_error,omitempty"`
+	Version         string          `json:"version"`
+	EdgeBase        string          `json:"edge_base,omitempty"`
+	AuthProfiles    []SourceAuth    `json:"auth_profiles"`
+	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
 // SourceAuth is a non-secret view of the local dynamic authentication state.
@@ -277,6 +279,42 @@ func (a *Agent) edgeBase() string {
 	return a.opts.EdgeBase
 }
 
+func endpointConfigured(raw string) bool {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return host != "api.example.com"
+	case "http":
+		ip := net.ParseIP(host)
+		return host == "localhost" || (ip != nil && ip.IsLoopback())
+	default:
+		return false
+	}
+}
+
+// CloudReadyForTrial reports whether this build has a real control-plane and
+// Edge endpoint configured. Development example endpoints never enable cloud
+// actions in the trial UI.
+func (a *Agent) CloudReadyForTrial() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return endpointConfigured(a.cloudBase()) && endpointConfigured(a.edgeBase())
+}
+
+func (a *Agent) cloudConfigured() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return endpointConfigured(a.cloudBase())
+}
+
 // Status 返回当前快照。
 func (a *Agent) Status() Status {
 	a.mu.RLock()
@@ -289,6 +327,9 @@ func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return a.Status(), errors.New("请输入接入码")
+	}
+	if !a.cloudConfigured() {
+		return a.Status(), errors.New("本机环境未配置云端控制面，当前诊断试用包不能绑定企业")
 	}
 	if a.cloud == nil {
 		client, err := cloud.New(a.cloudBase(), "")
@@ -481,6 +522,9 @@ func containsTool(tools []string, wanted string) bool {
 
 // Connect 拉取期望状态、生成通道配置并启动 frpc。
 func (a *Agent) Connect(ctx context.Context) (Status, error) {
+	if !a.CloudReadyForTrial() {
+		return a.Status(), errors.New("本机环境未配置云端中继，当前诊断试用包不能建立连接")
+	}
 	if a.cloud == nil || a.identity.DeviceToken == "" {
 		return a.Status(), errors.New("请先绑定企业")
 	}
@@ -630,8 +674,9 @@ func (a *Agent) Revoke(ctx context.Context) (Status, error) {
 func (a *Agent) Export() ([]byte, error) {
 	a.mu.RLock()
 	sources := append([]config.Source(nil), a.config.Sources...)
+	edgeBase := a.edgeBase()
 	a.mu.RUnlock()
-	return config.BuildPlatformConfig(sources, a.edgeBase(), "")
+	return config.BuildPlatformConfig(sources, edgeBase, "")
 }
 
 func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error) {

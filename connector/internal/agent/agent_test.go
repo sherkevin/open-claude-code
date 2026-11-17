@@ -221,6 +221,51 @@ func TestConnectFailsWithoutFrpc(t *testing.T) {
 	}
 }
 
+func TestCloudActionsFailClosedWithoutConfiguredRelay(t *testing.T) {
+	instance, err := New(Options{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := instance.Status()
+	if status.CloudConfigured || status.EdgeConfigured || instance.CloudReadyForTrial() {
+		t.Fatalf("默认地址不得启用云端试用操作: %+v", status)
+	}
+	if _, err := instance.Bind(context.Background(), "code-1"); err == nil || !strings.Contains(err.Error(), "未配置云端控制面") {
+		t.Fatalf("未配置控制面时应拒绝绑定，实际 %v", err)
+	}
+	if _, err := instance.Connect(context.Background()); err == nil || !strings.Contains(err.Error(), "未配置云端中继") {
+		t.Fatalf("未配置中继时应拒绝连接，实际 %v", err)
+	}
+}
+
+func TestCloudActionsEnabledOnlyWithRealControlPlaneAndEdge(t *testing.T) {
+	instance, err := New(Options{
+		DataDir:   t.TempDir(),
+		CloudBase: "https://control.example.net",
+		EdgeBase:  "https://edge.example.net",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := instance.Status()
+	if !status.CloudConfigured || !status.EdgeConfigured || !instance.CloudReadyForTrial() {
+		t.Fatalf("有效 HTTPS 端点应启用云端试用操作: %+v", status)
+	}
+
+	insecure, err := New(Options{
+		DataDir:   t.TempDir(),
+		CloudBase: "http://control.example.net",
+		EdgeBase:  "http://edge.example.net",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status = insecure.Status()
+	if status.CloudConfigured || status.EdgeConfigured || insecure.CloudReadyForTrial() {
+		t.Fatalf("非回环明文端点不得启用云端试用操作: %+v", status)
+	}
+}
+
 func TestAuthProfilePersistsWithoutExposingSecret(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

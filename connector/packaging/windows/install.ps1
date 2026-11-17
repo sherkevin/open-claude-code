@@ -62,14 +62,20 @@ $EnvFile = Join-Path $Source "config\connector.env.example"
 if (Test-Path $EnvFile) {
   $envText = [System.IO.File]::ReadAllText($EnvFile, [System.Text.Encoding]::UTF8)
   foreach ($line in ($envText -split "`r?`n")) {
-    if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.+?)\s*$') {
+    if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$') {
       $name = $matches[1]
-      $value = $matches[2]
-      [Environment]::SetEnvironmentVariable($name, $value, "Machine")
-      Set-Item -Path ("Env:" + $name) -Value $value
-      $check = [Environment]::GetEnvironmentVariable($name, "Machine")
-      if ($check -ne $value) { throw "写入机器级环境变量失败: $name" }
-      Write-Host "已设置环境变量 $name"
+      $value = $matches[2].Trim()
+      if ([string]::IsNullOrWhiteSpace($value)) {
+        [Environment]::SetEnvironmentVariable($name, $null, "Machine")
+        Remove-Item -Path ("Env:" + $name) -ErrorAction SilentlyContinue
+        Write-Host "已清空未配置的环境变量 $name"
+      } else {
+        [Environment]::SetEnvironmentVariable($name, $value, "Machine")
+        Set-Item -Path ("Env:" + $name) -Value $value
+        $check = [Environment]::GetEnvironmentVariable($name, "Machine")
+        if ($check -ne $value) { throw "写入机器级环境变量失败: $name" }
+        Write-Host "已设置环境变量 $name"
+      }
     }
   }
 }

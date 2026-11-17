@@ -181,19 +181,21 @@ func (a *Agent) authStatusLocked() []SourceAuth {
 
 func (a *Agent) statusLocked() Status {
 	status := Status{
-		State:        a.state.Current(),
-		StateLabel:   a.state.Current().Label(),
-		Reason:       a.state.Reason(),
-		Bound:        a.identity.DeviceToken != "",
-		ConnectorID:  a.identity.ConnectorID,
-		TenantName:   a.identity.TenantName,
-		TenantID:     a.identity.TenantID,
-		Sources:      append([]config.Source(nil), a.config.Sources...),
-		LastError:    a.lastError,
-		Version:      version.String(),
-		EdgeBase:     a.edgeBase(),
-		AuthProfiles: a.authStatusLocked(),
-		UpdatedAt:    time.Now().UTC(),
+		State:           a.state.Current(),
+		StateLabel:      a.state.Current().Label(),
+		Reason:          a.state.Reason(),
+		Bound:           a.identity.DeviceToken != "",
+		CloudConfigured: endpointConfigured(a.cloudBase()),
+		EdgeConfigured:  endpointConfigured(a.edgeBase()),
+		ConnectorID:     a.identity.ConnectorID,
+		TenantName:      a.identity.TenantName,
+		TenantID:        a.identity.TenantID,
+		Sources:         append([]config.Source(nil), a.config.Sources...),
+		LastError:       a.lastError,
+		Version:         version.String(),
+		EdgeBase:        a.edgeBase(),
+		AuthProfiles:    a.authStatusLocked(),
+		UpdatedAt:       time.Now().UTC(),
 	}
 	if a.supervisor != nil {
 		status.FrpcRunning = a.supervisor.Running()

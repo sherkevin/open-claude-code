@@ -32,11 +32,19 @@ ul.issues li.err{color:var(--err)}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .kv{font-size:13px;color:var(--muted)}.kv b{display:block;color:var(--ink);font-size:14px;margin-top:4px;word-break:break-all}
 .steps{font-size:12px;color:var(--muted);margin-bottom:6px}
+.trial{border-left:4px solid var(--warn);background:#fffaf0}
+.trial strong{display:block;margin-bottom:6px;color:var(--ink)}
+.trial p{margin:0;color:var(--muted);font-size:13px;line-height:1.65}
 </style>
 </head>
 <body>
 <header><div class="brand">开物<small>内网连接器</small></div><span class="pill" id="statePill">读取中…</span></header>
 <main>
+<section class="card trial">
+  <strong>本机诊断试用包</strong>
+  <p>用于安装、MCP 配置导入、动态认证配置和本机连通性诊断。当前不代表开物平台已经能够调用客户内网 MCP；云端中继仍需完成 C 段接入和真实联调。</p>
+</section>
+
 <section class="card">
   <div class="grid">
     <div class="kv">企业<b id="tenant">—</b></div>
@@ -48,9 +56,9 @@ ul.issues li.err{color:var(--err)}
 </section>
 
 <section class="card">
-  <div class="steps">第 1 步</div><h2>绑定企业</h2>
-  <p class="hint">向交付人员索取一次性接入码，输入后完成绑定。接入码只能使用一次。</p>
-  <div class="row"><input id="code" placeholder="一次性接入码" autocomplete="off"><button class="primary" id="bindBtn">绑定</button></div>
+  <div class="steps">第 1 步</div><h2>绑定企业（需要云端控制面）</h2>
+  <p class="hint" id="bindHint">读取本机配置后确定是否可用。一次性接入码只能使用一次。</p>
+  <div class="row"><input id="code" placeholder="一次性接入码" autocomplete="off"><button class="primary" id="bindBtn" disabled>绑定</button></div>
 </section>
 
 <section class="card">
@@ -83,15 +91,15 @@ ul.issues li.err{color:var(--err)}
 </section>
 
 <section class="card">
-  <div class="steps">第 5 步</div><h2>连接云端</h2>
-  <p class="hint">启动加密通道并与云端完成端到端检测。</p>
-  <div class="row"><button class="primary" id="connectBtn">连接</button><button id="pauseBtn">暂停</button><button id="disconnectBtn">断开</button></div>
+  <div class="steps">第 5 步</div><h2>云端中继联调（待云端 C 段接入）</h2>
+  <p class="hint" id="cloudHint">本机环境未配置云端中继。当前诊断试用包不能建立云端通道。</p>
+  <div class="row"><button class="primary" id="connectBtn" disabled>连接</button><button id="pauseBtn">暂停</button><button id="disconnectBtn">断开</button></div>
 </section>
 
 <section class="card">
   <div class="steps">第 6 步</div><h2>导出平台配置</h2>
-  <p class="hint">把下面的配置交给平台管理员导入。凭据占位符会在平台创建授权时替换。</p>
-  <div class="row"><button id="exportBtn">生成配置</button></div>
+  <p class="hint" id="exportHint">本机环境未配置云端 Edge，不能导出可用的平台连接。</p>
+  <div class="row"><button id="exportBtn" disabled>生成配置</button></div>
   <pre id="exportOut" hidden></pre>
 </section>
 
@@ -105,6 +113,33 @@ ul.issues li.err{color:var(--err)}
 <script>
 const TOKEN = "__CONNECTOR_TOKEN__";
 const $ = (id) => document.getElementById(id);
+function setActionAvailability(button, enabled){
+  button.disabled = !enabled;
+  button.dataset.trialBlocked = enabled ? "" : "1";
+}
+function applyCloudAvailability(status){
+  const cloudConfigured = status.cloud_configured === true;
+  const edgeConfigured = status.edge_configured === true;
+  const relayConfigured = cloudConfigured && edgeConfigured;
+  setActionAvailability($("bindBtn"), cloudConfigured);
+  setActionAvailability($("connectBtn"), relayConfigured);
+  setActionAvailability($("exportBtn"), edgeConfigured);
+  $("bindHint").textContent = cloudConfigured
+    ? "输入交付人员提供的一次性接入码完成设备绑定。接入码只能使用一次。"
+    : "本机环境未配置云端控制面，当前诊断试用包不能绑定企业。";
+  $("cloudHint").textContent = relayConfigured
+    ? "本机已配置云端控制面和 Edge。是否可用仍取决于云端 C 段、设备授权和真实联调结果。"
+    : "本机环境未配置云端中继。当前诊断试用包只能完成本机安装、配置导入和连通性诊断，不能建立云端通道。";
+  $("exportHint").textContent = edgeConfigured
+    ? "导出内容仅应在平台完成授权后用于联调，不得把占位凭据当作已生效授权。"
+    : "本机环境未配置云端 Edge，不能导出可用的平台连接。";
+}
+function disableCloudActions(message){
+  ["bindBtn","connectBtn","exportBtn"].forEach(id=>setActionAvailability($(id), false));
+  $("bindHint").textContent = message;
+  $("cloudHint").textContent = message;
+  $("exportHint").textContent = message;
+}
 function headers(){return {"Content-Type":"application/json","X-Connector-Token":TOKEN};}
 async function api(path, body){
   const options = body === undefined ? {headers:{"X-Connector-Token":TOKEN}} : {method:"POST",headers:headers(),body:JSON.stringify(body)};
@@ -124,6 +159,7 @@ function render(status){
   $("version").textContent = status.version || "—";
   $("reason").textContent = status.last_error || "";
   renderAuthSources(status);
+  applyCloudAvailability(status);
 }
 function renderAuthSources(status){
   const select = $("authSource");
@@ -143,10 +179,17 @@ function renderAuthSources(status){
     $("hwTools").value = auth.allowed_tools.join(",");
   }
 }
-async function refresh(){ try{ render(await api("/api/status")); }catch(e){ $("statePill").textContent = "本机服务未就绪"; } }
+async function refresh(){
+  try{
+    render(await api("/api/status"));
+  }catch(e){
+    $("statePill").textContent = "本机服务未就绪";
+    disableCloudActions("无法读取本机连接器状态，云端操作已按最小权限原则禁用。");
+  }
+}
 async function act(button, fn){
   button.disabled = true;
-  try{ await fn(); }catch(e){ alert(e.message); } finally { button.disabled = false; refresh(); }
+  try{ await fn(); }catch(e){ alert(e.message); } finally { await refresh(); }
 }
 $("bindBtn").onclick = () => act($("bindBtn"), async ()=>{ await api("/api/bind",{code:$("code").value}); });
 $("importBtn").onclick = () => act($("importBtn"), async ()=>{
@@ -165,7 +208,7 @@ $("authBtn").onclick = () => act($("authBtn"), async ()=>{
     tools:$("hwTools").value
   });
   $("hwHMACKey").value = "";
-  alert("本机认证配置已保存。请重新检测后再连接。");
+  alert("本机认证配置已保存。请重新执行本机检测；云端中继联调需等待 C 段接入。");
 });
 $("diagBtn").onclick = () => act($("diagBtn"), async ()=>{
   const reports = await api("/api/diagnose",{});

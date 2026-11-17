@@ -4,6 +4,8 @@
 
 面向客户现场的实施与运维文档见 [`docs/交付与运维说明.md`](docs/交付与运维说明.md)。本文件面向开发和构建。
 
+> 当前 `1.1.0` 是受控本机诊断试用候选包。安装包默认不配置云端控制面和 Edge，因此只启用安装、MCP 导入、动态认证配置和本机诊断；绑定、连接云端和导出平台配置会失败关闭。它不代表开物平台已经能够调用客户内网 MCP。
+
 ## 架构
 
 ```
@@ -51,7 +53,7 @@
 
 ## 构建
 
-需要 Go 1.22+、`zip`、`cyclonedx-gomod v1.7.0`、`govulncheck v1.1.4`，以及 `packaging/bin/` 下的 frpc 二进制（`frpc-linux-amd64`、`frpc-windows-amd64.exe`）。第三方 frpc 获取和哈希要求见 `packaging/bin/README.md`。
+需要固定版本 Go `1.27.4`、`zip`、`cyclonedx-gomod v1.12.0`、`govulncheck v1.9.0`，以及 `packaging/bin/` 下的 frpc 二进制（`frpc-linux-amd64`、`frpc-windows-amd64.exe`）。第三方 frpc 获取和哈希要求见 `packaging/bin/README.md`。
 
 如果工具不在 `PATH` 中，可显式指定：
 
@@ -72,7 +74,7 @@ bash scripts/build.sh            # 版本默认 1.1.0，可用 VERSION=... 覆�
 - `kaiwu-connector-<版本>-linux-amd64.tar.gz`
 - `kaiwu-connector-<版本>-windows-amd64.zip`
 
-构建使用 `CGO_ENABLED=0` 交叉编译、`-trimpath`，并通过 ldflags 注入版本、提交号、构建时间。构建会执行 `govulncheck`，发现已知漏洞时失败。包内生成 `SHA256SUMS`、CycloneDX 1.5 JSON SBOM、漏洞扫描结果、Go 模块清单、二进制构建信息、构建日志和 frp 许可证；外层压缩包哈希写入 `dist/SHA256SUMS`。SBOM 和漏洞扫描是构建证据，不代表包内二进制已完成 Windows 实机、恶意软件或秘密扫描。
+构建使用 `CGO_ENABLED=0` 交叉编译、`-trimpath`，并通过 ldflags 注入版本、提交号、构建时间。构建会执行 `govulncheck`，发现已知漏洞时失败。包内生成 `SHA256SUMS`、CycloneDX 1.5 JSON SBOM、SBOM 警告、漏洞扫描结果、Go 模块清单、二进制构建信息、构建日志、frp 许可证和 Go 标准库许可证；外层压缩包哈希写入 `dist/SHA256SUMS`。SBOM 和漏洞扫描是构建证据，不代表包内二进制已完成 Windows 实机、恶意软件或秘密扫描。
 
 ## 本地运行
 
@@ -123,3 +125,5 @@ connector version
 ## frpc 许可
 
 随包分发的 frpc 为 0.61.1，来自 [fatedier/frp](https://github.com/fatedier/frp)，遵循 Apache License 2.0。分发时保留 `版本信息.txt` 中的声明。
+
+构建产物还包含固定 Go 1.27.4 工具链的 `go-LICENSE.txt` 和 `go-PATENTS.txt`，用于说明静态链接进二进制的 Go 标准库许可。
