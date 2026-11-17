@@ -7,6 +7,7 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/agent"
+	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 )
 
 // Server 是本机配置界面。
@@ -30,6 +32,9 @@ type Server struct {
 
 // New 创建服务并生成一次性会话令牌。
 func New(a *agent.Agent, addr string) (*Server, error) {
+	if !isLoopbackListenAddr(addr) {
+		return nil, errors.New("本机界面只允许监听回环地址")
+	}
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		return nil, err
@@ -48,7 +53,18 @@ func (s *Server) ListenAndServe() error {
 
 // Serve 在已创建的监听器上提供本机界面。
 func (s *Server) Serve(listener net.Listener) error {
-	server := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	if listener == nil || !isLoopbackListenAddr(listener.Addr().String()) {
+		if listener != nil {
+			_ = listener.Close()
+		}
+		return errors.New("拒绝在非回环地址提供本机界面")
+	}
+	server := &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    32 << 10,
+	}
 	s.httpServer = server
 	err := server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
@@ -72,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status", s.guard(s.handleStatus))
 	mux.HandleFunc("/api/bind", s.guard(s.handleBind))
 	mux.HandleFunc("/api/import", s.guard(s.handleImport))
+	mux.HandleFunc("/api/auth-profile", s.guard(s.handleAuthProfile))
 	mux.HandleFunc("/api/diagnose", s.guard(s.handleDiagnose))
 	mux.HandleFunc("/api/connect", s.guard(s.handleConnect))
 	mux.HandleFunc("/api/pause", s.guard(s.handlePause))
@@ -83,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
 		if !isLoopbackHost(r.Host) {
 			writeError(w, http.StatusForbidden, "HOST_NOT_ALLOWED", "只允许通过本机地址访问")
 			return
@@ -91,7 +109,7 @@ func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, "ORIGIN_NOT_ALLOWED", "来源站点不受信任")
 			return
 		}
-		if r.Method == http.MethodPost && r.Header.Get("X-Connector-Token") != s.Token {
+		if r.Method == http.MethodPost && !tokenMatches(r.Header.Get("X-Connector-Token"), s.Token) {
 			writeError(w, http.StatusForbidden, "TOKEN_REQUIRED", "缺少本机会话令牌，请刷新页面后重试")
 			return
 		}
@@ -109,6 +127,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "只允许本机访问", http.StatusForbidden)
 		return
 	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "只支持 GET 请求", http.StatusMethodNotAllowed)
+		return
+	}
 	if origin := r.Header.Get("Origin"); origin != "" && !originAllowed(origin, r.Host) {
 		http.Error(w, "来源站点不受信任", http.StatusForbidden)
 		return
@@ -122,10 +145,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	setSecurityHeaders(w)
 	io.WriteString(w, strings.Replace(page, "__CONNECTOR_TOKEN__", s.Token, 1))
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET 请求")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": s.Agent.Status()})
 }
 
@@ -181,6 +209,34 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": reports})
 }
 
+func (s *Server) handleAuthProfile(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SourceID string `json:"source_id"`
+		AppID    string `json:"app_id"`
+		Channel  string `json:"channel"`
+		UserID   string `json:"user_id"`
+		HMACKey  string `json:"hmac_key"`
+		Tools    string `json:"tools"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	tools := strings.FieldsFunc(body.Tools, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t'
+	})
+	status, err := s.Agent.SetAuthProfile(body.SourceID, huaweiauth.Profile{
+		AppID:   strings.TrimSpace(body.AppID),
+		Channel: strings.TrimSpace(body.Channel),
+		UserID:  strings.TrimSpace(body.UserID),
+		HMACKey: body.HMACKey,
+	}, tools)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": status})
+}
+
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
@@ -216,6 +272,10 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET 请求")
+		return
+	}
 	raw, err := s.Agent.Export()
 	if err != nil {
 		writeAPIError(w, err)
@@ -278,6 +338,33 @@ func isLoopbackHost(hostport string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func isLoopbackListenAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func tokenMatches(got, expected string) bool {
+	if len(got) != len(expected) || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
+}
+
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 }
 
 func originAllowed(origin, host string) bool {

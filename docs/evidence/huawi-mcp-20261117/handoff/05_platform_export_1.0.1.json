@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "华微库存演示": {
+      "type": "http",
+      "url": "https://flintw.com/projects/kaiwu/mcp/sources/928b0c97/mcp",
+      "headers": {
+        "Authorization": "Bearer <EDGE_ACCESS_TOKEN>"
+      }
+    }
+  }
+}

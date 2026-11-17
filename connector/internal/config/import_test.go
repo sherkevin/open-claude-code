@@ -77,6 +77,44 @@ func TestParseRejectsHostOutsideAllowlist(t *testing.T) {
 	}
 }
 
+func TestParseRejectsReservedAndDuplicateHeaders(t *testing.T) {
+	raw := []byte(`{
+	  "mcpServers": {
+	    "订单": {
+	      "type": "http",
+	      "url": "http://10.0.0.9:9000/mcp",
+	      "headers": {
+	        "Authorization": "Bearer ok",
+	        "authorization": "Bearer duplicate",
+	        "Host": "evil.example.com"
+	      }
+	    }
+	  }
+	}`)
+	report, err := ParseHostConfig(raw, ImportOptions{})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	codes := map[string]bool{}
+	for _, issue := range report.Errors() {
+		codes[issue.Code] = true
+	}
+	if !codes["CONFIG_DUPLICATE_HEADER"] || !codes["CONFIG_HEADER_NOT_ALLOWED"] {
+		t.Fatalf("请求头约束未生效: %+v", report.Errors())
+	}
+}
+
+func TestParseRejectsQueryAndFragmentInUpstreamURL(t *testing.T) {
+	raw := []byte(`{"mcpServers":{"订单":{"type":"http","url":"http://10.0.0.9:9000/mcp?target=evil#fragment"}}}`)
+	report, err := ParseHostConfig(raw, ImportOptions{})
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("上游查询串和片段必须拒绝")
+	}
+}
+
 func TestBuildPlatformConfigMatchesContract(t *testing.T) {
 	sources := []Source{{
 		SchemaVersion: 1, SourceID: "src_inventory", DisplayName: "库存查询",

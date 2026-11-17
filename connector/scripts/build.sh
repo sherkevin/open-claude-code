@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.1.0}"
 COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 DIST="$ROOT/dist"
@@ -16,6 +16,10 @@ LDFLAGS="-s -w -X ${MODULE}.Version=${VERSION} -X ${MODULE}.Commit=${COMMIT} -X 
 
 FRPC_LINUX="$ROOT/packaging/bin/frpc-linux-amd64"
 FRPC_WINDOWS="$ROOT/packaging/bin/frpc-windows-amd64.exe"
+FRPC_LINUX_SHA256="${FRPC_LINUX_SHA256:-0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b}"
+FRPC_WINDOWS_SHA256="${FRPC_WINDOWS_SHA256:-d9a8cf8bc61bd5c8d57a2a4801316a18291f76d45dc5fd8aaf425bd91b57159d}"
+SBOM_TOOL="${CYCLONEDX_GOMOD:-$(command -v cyclonedx-gomod || true)}"
+VULN_TOOL="${GOVULNCHECK:-$(command -v govulncheck || true)}"
 
 for file in "$FRPC_LINUX" "$FRPC_WINDOWS"; do
   if [ ! -f "$file" ]; then
@@ -24,12 +28,54 @@ for file in "$FRPC_LINUX" "$FRPC_WINDOWS"; do
   fi
 done
 
+if [ -z "$SBOM_TOOL" ] || [ ! -x "$SBOM_TOOL" ]; then
+  echo "缺少 cyclonedx-gomod，无法生成受控试装 SBOM" >&2
+  exit 1
+fi
+if [ -z "$VULN_TOOL" ] || [ ! -x "$VULN_TOOL" ]; then
+  echo "缺少 govulncheck，无法执行依赖漏洞扫描" >&2
+  exit 1
+fi
+
+verify_frpc_hash() {
+  local file="$1"
+  local expected="$2"
+  local actual
+  if [ "$expected" = "PENDING" ]; then
+    echo "缺少已冻结的 frpc 二进制 SHA-256: $file" >&2
+    exit 1
+  fi
+  actual="$(sha256sum "$file" | awk '{print $1}')"
+  if [ "$actual" != "$expected" ]; then
+    echo "frpc 二进制哈希不匹配: $file" >&2
+    echo "expected=$expected actual=$actual" >&2
+    exit 1
+  fi
+}
+
+verify_frpc_hash "$FRPC_LINUX" "$FRPC_LINUX_SHA256"
+verify_frpc_hash "$FRPC_WINDOWS" "$FRPC_WINDOWS_SHA256"
+
 rm -rf "$DIST"
-mkdir -p "$DIST/linux/bin" "$DIST/linux/docs" "$DIST/linux/systemd" "$DIST/linux/config" \
-         "$DIST/windows/bin" "$DIST/windows/docs" "$DIST/windows/config"
+mkdir -p "$DIST/linux/bin" "$DIST/linux/docs" "$DIST/linux/systemd" "$DIST/linux/config" "$DIST/linux/compliance" \
+         "$DIST/windows/bin" "$DIST/windows/docs" "$DIST/windows/config" "$DIST/windows/compliance"
 
 export CGO_ENABLED=0
 export GOFLAGS=-trimpath
+
+BUILD_LOG="$DIST/build.log"
+{
+  echo "Kaiwu connector build"
+  echo "version=$VERSION"
+  echo "commit=$COMMIT"
+  echo "build_time=$BUILD_TIME"
+  echo "go_version=$(go version)"
+  echo "host=$(uname -a)"
+  echo "cyclonedx_gomod=$("$SBOM_TOOL" version 2>&1 | tr '\n' ' ')"
+  echo "govulncheck=$("$VULN_TOOL" -version 2>&1 | tr '\n' ' ')"
+  echo "frpc_linux_sha256=$(sha256sum "$FRPC_LINUX" | awk '{print $1}')"
+  echo "frpc_windows_sha256=$(sha256sum "$FRPC_WINDOWS" | awk '{print $1}')"
+} > "$BUILD_LOG"
 
 echo "构建 Linux 版本..."
 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o "$DIST/linux/bin/kaiwu-connector" "$ROOT/cmd/connector"
@@ -51,6 +97,37 @@ cp "$ROOT/docs/"*.md "$DIST/windows/docs/"
 cp "$ROOT/README.md" "$DIST/linux/docs/"
 cp "$ROOT/README.md" "$DIST/windows/docs/"
 
+for target in linux windows; do
+  cp "$ROOT/third_party/README.md" "$DIST/$target/compliance/THIRD_PARTY_NOTICES.md"
+  cp "$ROOT/third_party/frp/LICENSE" "$DIST/$target/compliance/frp-LICENSE"
+  cp "$ROOT/third_party/frp/NOTICE.txt" "$DIST/$target/compliance/frp-NOTICE.txt"
+  cp "$ROOT/third_party/frp/OFFICIAL_ARCHIVE_CHECKSUMS.txt" "$DIST/$target/compliance/frp-OFFICIAL_ARCHIVE_CHECKSUMS.txt"
+  cp "$ROOT/third_party/frp/OFFICIAL_BINARY_SHA256.txt" "$DIST/$target/compliance/frp-OFFICIAL_BINARY_SHA256.txt"
+  cp "$BUILD_LOG" "$DIST/$target/compliance/BUILD_LOG.txt"
+done
+
+(
+  cd "$ROOT"
+  go list -m -json all
+) > "$DIST/linux/compliance/GoModules.json"
+cp "$DIST/linux/compliance/GoModules.json" "$DIST/windows/compliance/GoModules.json"
+
+(
+  cd "$ROOT"
+  "$SBOM_TOOL" mod -licenses -assert-licenses -noserial -type application -std \
+    -output-version 1.5 -json -output "$DIST/linux/compliance/SBOM.cdx.json" .
+  "$VULN_TOOL" ./...
+) > "$DIST/linux/compliance/GOVULNCHECK.txt" 2>&1
+cp "$DIST/linux/compliance/SBOM.cdx.json" "$DIST/windows/compliance/SBOM.cdx.json"
+cp "$DIST/linux/compliance/GOVULNCHECK.txt" "$DIST/windows/compliance/GOVULNCHECK.txt"
+
+go version -m "$DIST/linux/bin/kaiwu-connector" > "$DIST/linux/compliance/BinaryBuildInfo.txt"
+go version -m "$DIST/windows/bin/kaiwu-connector.exe" > "$DIST/windows/compliance/BinaryBuildInfo.txt"
+file "$DIST/linux/bin/frpc" > "$DIST/linux/compliance/frpc-BinaryInfo.txt"
+file "$DIST/windows/bin/frpc.exe" > "$DIST/windows/compliance/frpc-BinaryInfo.txt"
+sha256sum "$DIST/linux/bin/frpc" > "$DIST/linux/compliance/frpc-SHA256.txt"
+sha256sum "$DIST/windows/bin/frpc.exe" > "$DIST/windows/compliance/frpc-SHA256.txt"
+
 cat > "$DIST/linux/版本信息.txt" <<EOF
 开物内网连接器 ${VERSION}
 提交：${COMMIT}
@@ -59,14 +136,26 @@ cat > "$DIST/linux/版本信息.txt" <<EOF
 EOF
 cp "$DIST/linux/版本信息.txt" "$DIST/windows/版本信息.txt"
 
+for target in linux windows; do
+  (
+    cd "$DIST/$target"
+    find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+  )
+done
+
 (
   cd "$DIST/linux"
-  tar -czf "$DIST/kaiwu-connector-${VERSION}-linux-amd64.tar.gz" .
+  tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 --numeric-owner -czf "$DIST/kaiwu-connector-${VERSION}-linux-amd64.tar.gz" .
 )
 (
   cd "$DIST/windows"
-  zip -qr "$DIST/kaiwu-connector-${VERSION}-windows-amd64.zip" .
+  zip -X -qr "$DIST/kaiwu-connector-${VERSION}-windows-amd64.zip" .
+)
+
+(
+  cd "$DIST"
+  sha256sum kaiwu-connector-"${VERSION}"-linux-amd64.tar.gz kaiwu-connector-"${VERSION}"-windows-amd64.zip > SHA256SUMS
 )
 
 echo "完成："
-ls -lh "$DIST"/*.tar.gz "$DIST"/*.zip
+ls -lh "$DIST"/*.tar.gz "$DIST"/*.zip "$DIST"/SHA256SUMS

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,9 @@ type Client struct {
 	ProtocolVersion string
 	ClientName      string
 	ClientVersion   string
+	// HeaderProvider can add request-specific authentication headers. The
+	// connector uses it for HwMain's per-call dynamic identity and HMAC.
+	HeaderProvider func(method, tool string) (map[string]string, error)
 
 	nextID    atomic.Int64
 	sessionID string
@@ -73,10 +77,17 @@ type rpcResponse struct {
 }
 
 func (c *Client) httpClient() *http.Client {
+	var base *http.Client
 	if c.HTTP != nil {
-		return c.HTTP
+		base = c.HTTP
+	} else {
+		base = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	clone := *base
+	clone.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &clone
 }
 
 // Initialize 执行 MCP 初始化握手。
@@ -95,7 +106,7 @@ func (c *Client) Initialize(ctx context.Context) (ServerInfo, error) {
 		"clientInfo":      map[string]any{"name": name, "version": c.ClientVersion},
 	}
 	var info ServerInfo
-	if err := c.call(ctx, "initialize", params, &info); err != nil {
+	if err := c.call(ctx, "initialize", "", params, &info); err != nil {
 		return info, err
 	}
 	c.notify(ctx, "notifications/initialized")
@@ -107,7 +118,7 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 	var result struct {
 		Tools []Tool `json:"tools"`
 	}
-	if err := c.call(ctx, "tools/list", map[string]any{}, &result); err != nil {
+	if err := c.call(ctx, "tools/list", "", map[string]any{}, &result); err != nil {
 		return nil, err
 	}
 	return result.Tools, nil
@@ -116,13 +127,13 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 // CallTool 调用一个工具并返回原始结果。
 func (c *Client) CallTool(ctx context.Context, name string, arguments any) (json.RawMessage, error) {
 	var result json.RawMessage
-	if err := c.call(ctx, "tools/call", map[string]any{"name": name, "arguments": arguments}, &result); err != nil {
+	if err := c.call(ctx, "tools/call", name, map[string]any{"name": name, "arguments": arguments}, &result); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func (c *Client) call(ctx context.Context, method string, params any, out any) error {
+func (c *Client) call(ctx context.Context, method, tool string, params any, out any) error {
 	id := c.nextID.Add(1)
 	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params})
 	if err != nil {
@@ -143,6 +154,9 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	for key, value := range c.Headers {
 		req.Header.Set(key, value)
 	}
+	if err := c.applyHeaderProvider(req, method, tool); err != nil {
+		return err
+	}
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
@@ -152,19 +166,24 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		c.sessionID = sid
 	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return fmt.Errorf("上游返回重定向 HTTP %d，连接器拒绝跟随", resp.StatusCode)
+	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("上游认证失败: HTTP %d", resp.StatusCode)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("上游返回 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+		return fmt.Errorf("上游返回 HTTP %d", resp.StatusCode)
 	}
 
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
 		return c.readSSE(resp.Body, id, out)
 	}
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if contentType != "" && !strings.Contains(contentType, "application/json") && !strings.Contains(contentType, "+json") {
+		return fmt.Errorf("上游返回了不支持的 Content-Type: %s", contentType)
+	}
+	payload, err := readLimited(resp.Body, 4<<20)
 	if err != nil {
 		return err
 	}
@@ -173,16 +192,31 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 
 func (c *Client) readSSE(body io.Reader, id int64, out any) error {
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
+	scanner.Buffer(make([]byte, 0, 64<<10), 256<<10)
 	var data strings.Builder
+	var total int64
+	events := 0
 	for scanner.Scan() {
 		line := scanner.Text()
+		total += int64(len(line)) + 1
+		if total > 4<<20 {
+			return errors.New("上游事件流超过 4 MiB 限制")
+		}
 		switch {
 		case strings.HasPrefix(line, "data:"):
-			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			value := strings.TrimPrefix(line, "data:")
+			value = strings.TrimPrefix(value, " ")
+			if data.Len()+len(value) > 256<<10 {
+				return errors.New("单个上游事件超过 256 KiB 限制")
+			}
+			data.WriteString(value)
 		case line == "":
 			if data.Len() == 0 {
 				continue
+			}
+			events++
+			if events > 1000 {
+				return errors.New("上游事件数量超过 1000 条限制")
 			}
 			if matched := matchID([]byte(data.String()), id); matched {
 				return decodeResponse([]byte(data.String()), id, out)
@@ -197,6 +231,17 @@ func (c *Client) readSSE(body io.Reader, id int64, out any) error {
 		return decodeResponse([]byte(data.String()), id, out)
 	}
 	return fmt.Errorf("事件流结束前未收到响应 id=%d", id)
+}
+
+func readLimited(reader io.Reader, limit int64) ([]byte, error) {
+	payload, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > limit {
+		return nil, fmt.Errorf("上游响应超过 %d 字节限制", limit)
+	}
+	return payload, nil
 }
 
 func matchID(payload []byte, id int64) bool {
@@ -248,8 +293,28 @@ func (c *Client) notify(ctx context.Context, method string) {
 	for key, value := range c.Headers {
 		req.Header.Set(key, value)
 	}
+	if err := c.applyHeaderProvider(req, method, ""); err != nil {
+		return
+	}
 	resp, err := c.httpClient().Do(req)
 	if err == nil {
 		resp.Body.Close()
 	}
+}
+
+func (c *Client) applyHeaderProvider(req *http.Request, method, tool string) error {
+	if c.HeaderProvider == nil {
+		return nil
+	}
+	headers, err := c.HeaderProvider(method, tool)
+	if err != nil {
+		return err
+	}
+	for key, value := range headers {
+		if key == "" || strings.ContainsAny(key, "\r\n:") || strings.ContainsAny(value, "\r\n") {
+			return errors.New("认证头包含非法字符")
+		}
+		req.Header.Set(key, value)
+	}
+	return nil
 }

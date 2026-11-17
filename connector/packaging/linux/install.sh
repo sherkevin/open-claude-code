@@ -15,14 +15,27 @@ DATA_DIR=/var/lib/kaiwu-connector
 SERVICE_FILE=/etc/systemd/system/kaiwu-connector.service
 SERVICE_USER=kaiwu-connector
 
+if [ ! -f "$SRC/SHA256SUMS" ]; then
+  echo "安装包缺少 SHA256SUMS，拒绝安装" >&2
+  exit 1
+fi
+(
+  cd "$SRC"
+  sha256sum -c SHA256SUMS
+) || {
+  echo "安装包文件校验失败，拒绝安装" >&2
+  exit 1
+}
+
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
 
-install -d -m 0755 "$INSTALL_DIR" "$INSTALL_DIR/bin" "$INSTALL_DIR/docs"
+install -d -m 0755 "$INSTALL_DIR" "$INSTALL_DIR/bin" "$INSTALL_DIR/docs" "$INSTALL_DIR/compliance"
 install -m 0755 "$SRC/bin/kaiwu-connector" "$INSTALL_DIR/bin/kaiwu-connector"
 install -m 0755 "$SRC/bin/frpc" "$INSTALL_DIR/bin/frpc"
 install -m 0644 "$SRC"/docs/*.md "$INSTALL_DIR/docs/" 2>/dev/null || true
+install -m 0644 "$SRC"/compliance/* "$INSTALL_DIR/compliance/" 2>/dev/null || true
 
 install -d -m 0750 -o root -g "$SERVICE_USER" "$CONFIG_DIR"
 if [ ! -f "$CONFIG_DIR/connector.env" ]; then

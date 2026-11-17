@@ -1,0 +1,9 @@
+frp (Fast Reverse Proxy)
+Version: 0.61.1
+Upstream: https://github.com/fatedier/frp
+License: Apache License 2.0
+
+This product includes frpc binaries distributed by the frp project. The full
+license text is in LICENSE. Official release archive checksums are retained in
+OFFICIAL_ARCHIVE_CHECKSUMS.txt. Binary-level provenance and verification are
+recorded in each release's compliance directory during the build.

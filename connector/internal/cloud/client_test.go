@@ -28,7 +28,7 @@ func TestRedeemAndDesiredState(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{
 				"revision": 3,
 				"sources": []map[string]any{{
-					"source_id": "src_1", "display_name": "库存", "local_host": "10.0.0.8", "local_port": 8000, "stcp_secret": "s3",
+					"source_id": "src_1", "display_name": "库存", "stcp_secret": "s3",
 				}},
 			})
 		default:
@@ -54,7 +54,7 @@ func TestRedeemAndDesiredState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("拉取期望状态失败: %v", err)
 	}
-	if desired.Revision != 3 || len(desired.Sources) != 1 || desired.Sources[0].LocalPort != 8000 {
+	if desired.Revision != 3 || len(desired.Sources) != 1 || desired.Sources[0].SourceID != "src_1" {
 		t.Fatalf("期望状态解析错误: %+v", desired)
 	}
 }

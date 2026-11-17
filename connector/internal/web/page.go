@@ -21,7 +21,7 @@ main{max-width:880px;margin:0 auto;padding:20px}
 .pill.ok{background:#e6f4ec;color:var(--ok)}.pill.err{background:#fdeceb;color:var(--err)}.pill.warn{background:#fdf3e2;color:var(--warn)}
 h2{font-size:15px;margin:0 0 12px}
 p.hint{color:var(--muted);font-size:13px;margin:6px 0 12px;line-height:1.6}
-input,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+input,textarea,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
 textarea{min-height:120px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
 button{padding:9px 16px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer;font:inherit}
 button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
@@ -62,20 +62,34 @@ ul.issues li.err{color:var(--err)}
 </section>
 
 <section class="card">
-  <div class="steps">第 3 步</div><h2>检测内网</h2>
+  <div class="steps">第 3 步</div><h2>配置本机动态认证</h2>
+  <p class="hint">如客户 MCP 的 <code>tools/call</code> 需要华微渠道身份和 HMAC，请先在这里配置。密钥只保存在本机数据目录，不会显示或导出。</p>
+  <div class="grid">
+    <select id="authSource"></select>
+    <input id="hwAppID" placeholder="华微 appid" autocomplete="off">
+    <input id="hwChannel" placeholder="华微 channel" autocomplete="off">
+    <input id="hwUserID" placeholder="华微 userid" autocomplete="off">
+    <input id="hwHMACKey" type="password" placeholder="HMAC-SHA256 密钥" autocomplete="new-password">
+    <input id="hwTools" placeholder="允许工具，逗号分隔，例如 manual_search" autocomplete="off">
+  </div>
+  <div class="row" style="margin-top:10px"><button id="authBtn">保存本机认证配置</button></div>
+</section>
+
+<section class="card">
+  <div class="steps">第 4 步</div><h2>检测内网</h2>
   <p class="hint">按网络、证书、协议、认证的顺序检查，不会遍历执行所有工具。</p>
   <div class="row"><button id="diagBtn">开始检测</button></div>
   <pre id="diagOut" hidden></pre>
 </section>
 
 <section class="card">
-  <div class="steps">第 4 步</div><h2>连接云端</h2>
+  <div class="steps">第 5 步</div><h2>连接云端</h2>
   <p class="hint">启动加密通道并与云端完成端到端检测。</p>
   <div class="row"><button class="primary" id="connectBtn">连接</button><button id="pauseBtn">暂停</button><button id="disconnectBtn">断开</button></div>
 </section>
 
 <section class="card">
-  <div class="steps">第 5 步</div><h2>导出平台配置</h2>
+  <div class="steps">第 6 步</div><h2>导出平台配置</h2>
   <p class="hint">把下面的配置交给平台管理员导入。凭据占位符会在平台创建授权时替换。</p>
   <div class="row"><button id="exportBtn">生成配置</button></div>
   <pre id="exportOut" hidden></pre>
@@ -109,6 +123,25 @@ function render(status){
   $("frpc").textContent = status.frpc_running ? ("运行中，重启 " + status.frpc_restarts + " 次") : "未运行";
   $("version").textContent = status.version || "—";
   $("reason").textContent = status.last_error || "";
+  renderAuthSources(status);
+}
+function renderAuthSources(status){
+  const select = $("authSource");
+  const previous = select.value;
+  select.innerHTML = "";
+  (status.sources || []).forEach(source=>{
+    const option = document.createElement("option");
+    option.value = source.source_id;
+    const auth = (status.auth_profiles || []).find(item=>item.source_id===source.source_id);
+    option.textContent = source.display_name + (auth && auth.configured ? "（已配置动态认证）" : "");
+    select.appendChild(option);
+  });
+  if(previous){ select.value = previous; }
+  const selected = select.value;
+  const auth = (status.auth_profiles || []).find(item=>item.source_id===selected);
+  if(auth && auth.allowed_tools && auth.allowed_tools.length && !$("hwTools").value){
+    $("hwTools").value = auth.allowed_tools.join(",");
+  }
 }
 async function refresh(){ try{ render(await api("/api/status")); }catch(e){ $("statePill").textContent = "本机服务未就绪"; } }
 async function act(button, fn){
@@ -121,6 +154,18 @@ $("importBtn").onclick = () => act($("importBtn"), async ()=>{
   const list = $("issues"); list.innerHTML = "";
   (report.issues||[]).forEach(item=>{ const li=document.createElement("li"); li.textContent = "["+item.code+"] "+(item.path?item.path+"：":"")+item.message; if(item.severity==="error") li.className="err"; list.appendChild(li); });
   if(!(report.issues||[]).length){ const li=document.createElement("li"); li.textContent="配置校验通过"; list.appendChild(li); }
+});
+$("authBtn").onclick = () => act($("authBtn"), async ()=>{
+  await api("/api/auth-profile",{
+    source_id:$("authSource").value,
+    app_id:$("hwAppID").value,
+    channel:$("hwChannel").value,
+    user_id:$("hwUserID").value,
+    hmac_key:$("hwHMACKey").value,
+    tools:$("hwTools").value
+  });
+  $("hwHMACKey").value = "";
+  alert("本机认证配置已保存。请重新检测后再连接。");
 });
 $("diagBtn").onclick = () => act($("diagBtn"), async ()=>{
   const reports = await api("/api/diagnose",{});

@@ -3,6 +3,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,10 +20,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sherkevin/open-claude-code/connector/internal/authproxy"
 	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
 	"github.com/sherkevin/open-claude-code/connector/internal/diag"
 	"github.com/sherkevin/open-claude-code/connector/internal/frpc"
+	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 	"github.com/sherkevin/open-claude-code/connector/internal/state"
 	"github.com/sherkevin/open-claude-code/connector/internal/store"
 	"github.com/sherkevin/open-claude-code/connector/internal/supervisor"
@@ -33,6 +37,7 @@ const (
 	fileIdentity = "identity.json"
 	fileConfig   = "config.json"
 	fileSecrets  = "secrets.json"
+	fileAuth     = "auth_profiles.json"
 	fileFrpc     = "frpc.toml"
 	fileState    = "state.json"
 )
@@ -58,9 +63,11 @@ type Agent struct {
 	identity  cloud.Identity
 	config    config.Connector
 	secrets   map[string]map[string]string
+	profiles  map[string]huaweiauth.Profile
 	lastError string
 
 	supervisor *supervisor.Supervisor
+	proxies    map[string]*authproxy.Server
 	heartbeat  context.CancelFunc
 
 	persistMu   sync.Mutex
@@ -87,7 +94,15 @@ type Status struct {
 	LastError    string          `json:"last_error,omitempty"`
 	Version      string          `json:"version"`
 	EdgeBase     string          `json:"edge_base,omitempty"`
+	AuthProfiles []SourceAuth    `json:"auth_profiles"`
 	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+// SourceAuth is a non-secret view of the local dynamic authentication state.
+type SourceAuth struct {
+	SourceID     string   `json:"source_id"`
+	Configured   bool     `json:"configured"`
+	AllowedTools []string `json:"allowed_tools"`
 }
 
 // New 载入本机状态并返回连接器主体。
@@ -100,11 +115,13 @@ func New(opts Options) (*Agent, error) {
 		return nil, err
 	}
 	agent := &Agent{
-		opts:    opts,
-		store:   st,
-		state:   state.NewMachine(state.Unpaired),
-		secrets: map[string]map[string]string{},
-		config:  config.Connector{SchemaVersion: config.CurrentSchemaVersion},
+		opts:     opts,
+		store:    st,
+		state:    state.NewMachine(state.Unpaired),
+		secrets:  map[string]map[string]string{},
+		profiles: map[string]huaweiauth.Profile{},
+		proxies:  map[string]*authproxy.Server{},
+		config:   config.Connector{SchemaVersion: config.CurrentSchemaVersion},
 	}
 	agent.state.SetObserver(func(from, to state.State, reason string) {
 		agent.mu.Lock()
@@ -131,6 +148,15 @@ func New(opts Options) (*Agent, error) {
 	}
 	if err := st.ReadJSON(fileSecrets, &agent.secrets); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
+	}
+	if err := st.ReadJSON(fileAuth, &agent.profiles); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if agent.secrets == nil {
+		agent.secrets = map[string]map[string]string{}
+	}
+	if agent.profiles == nil {
+		agent.profiles = map[string]huaweiauth.Profile{}
 	}
 	// 未绑定但已经导入来源时，重启后应回到“待配置”，而不是退回“尚未绑定”。
 	if agent.identity.DeviceToken == "" && len(agent.config.Sources) > 0 && saved.State != state.Revoked {
@@ -255,25 +281,7 @@ func (a *Agent) edgeBase() string {
 func (a *Agent) Status() Status {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	status := Status{
-		State:       a.state.Current(),
-		StateLabel:  a.state.Current().Label(),
-		Reason:      a.state.Reason(),
-		Bound:       a.identity.DeviceToken != "",
-		ConnectorID: a.identity.ConnectorID,
-		TenantName:  a.identity.TenantName,
-		TenantID:    a.identity.TenantID,
-		Sources:     a.config.Sources,
-		LastError:   a.lastError,
-		Version:     version.String(),
-		EdgeBase:    a.edgeBase(),
-		UpdatedAt:   time.Now().UTC(),
-	}
-	if a.supervisor != nil {
-		status.FrpcRunning = a.supervisor.Running()
-		status.FrpcRestarts = a.supervisor.Restarts()
-	}
-	return status
+	return a.statusLocked()
 }
 
 // Bind 用一次性接入码兑换设备身份。
@@ -319,10 +327,28 @@ func (a *Agent) ImportConfig(ctx context.Context, raw []byte) (config.ImportRepo
 	if report.HasErrors() {
 		return report, nil
 	}
+	if len(report.Sources) > 16 {
+		return report, errors.New("单个连接器最多允许 16 个来源")
+	}
 	a.mu.Lock()
+	report.Sources, report.Secrets, err = assignSourceIDs(report.Sources, report.Secrets, a.config.Sources)
+	if err != nil {
+		a.mu.Unlock()
+		return report, err
+	}
 	a.config.Sources = report.Sources
+	a.secrets = map[string]map[string]string{}
 	for sourceID, headerValues := range report.Secrets {
 		a.secrets[sourceID] = headerValues
+	}
+	activeSources := map[string]bool{}
+	for _, source := range a.config.Sources {
+		activeSources[source.SourceID] = true
+	}
+	for sourceID := range a.profiles {
+		if !activeSources[sourceID] {
+			delete(a.profiles, sourceID)
+		}
 	}
 	a.mu.Unlock()
 	if err := a.store.WriteJSON(fileConfig, a.config); err != nil {
@@ -331,10 +357,71 @@ func (a *Agent) ImportConfig(ctx context.Context, raw []byte) (config.ImportRepo
 	if err := a.store.WriteJSON(fileSecrets, a.secrets); err != nil {
 		return report, err
 	}
+	if err := a.store.WriteJSON(fileAuth, a.profiles); err != nil {
+		return report, err
+	}
 	if a.state.Current() == state.Unpaired || a.state.Current() == state.Configuring {
 		a.state.Transition(state.Configuring, "已导入来源配置")
 	}
 	return report, nil
+}
+
+// assignSourceIDs treats the upstream URL as the stable identity. A display
+// name may change without rotating the opaque source ID. When several existing
+// sources share the same URL, the match is ambiguous and the incoming source
+// receives a new ID rather than risking cross-source authorization reuse.
+func assignSourceIDs(sources []config.Source, secrets map[string]map[string]string, existing []config.Source) ([]config.Source, map[string]map[string]string, error) {
+	existingIDsByURL := map[string][]string{}
+	for _, source := range existing {
+		if isOpaqueSourceID(source.SourceID) {
+			existingIDsByURL[source.UpstreamURL] = append(existingIDsByURL[source.UpstreamURL], source.SourceID)
+		}
+	}
+	used := map[string]bool{}
+	assignedSecrets := map[string]map[string]string{}
+	for index := range sources {
+		oldID := sources[index].SourceID
+		nextID := ""
+		if candidates := existingIDsByURL[sources[index].UpstreamURL]; len(candidates) == 1 {
+			nextID = candidates[0]
+		}
+		if nextID == "" || used[nextID] {
+			var err error
+			nextID, err = newSourceID()
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		for used[nextID] {
+			var err error
+			nextID, err = newSourceID()
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		used[nextID] = true
+		sources[index].SourceID = nextID
+		if headers := secrets[oldID]; len(headers) > 0 {
+			assignedSecrets[nextID] = headers
+		}
+	}
+	return sources, assignedSecrets, nil
+}
+
+func newSourceID() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("生成来源编号失败: %w", err)
+	}
+	return "src_" + hex.EncodeToString(raw), nil
+}
+
+func isOpaqueSourceID(value string) bool {
+	if len(value) != len("src_")+32 || !strings.HasPrefix(value, "src_") {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "src_"))
+	return err == nil
 }
 
 // Diagnose 对指定来源执行分层诊断；sourceID 为空表示全部来源。
@@ -354,13 +441,42 @@ func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) ([]diag.Re
 		if sourceID != "" && source.SourceID != sourceID {
 			continue
 		}
-		report := diag.Run(ctx, source, diag.Options{HeaderValues: secrets[source.SourceID], ToolProbe: probe})
+		a.mu.RLock()
+		profile, hasProfile := a.profiles[source.SourceID]
+		a.mu.RUnlock()
+		if probe != "" {
+			if !hasProfile {
+				return nil, errors.New("试调用前请先导入本机动态认证配置")
+			}
+			if !containsTool(source.ToolAllowlist, probe) {
+				return nil, errors.New("试调用工具不在客户允许列表内")
+			}
+		}
+		options := diag.Options{HeaderValues: secrets[source.SourceID], ToolProbe: probe}
+		if hasProfile {
+			options.HeaderProvider = func(method, tool string) (map[string]string, error) {
+				if method != "tools/call" {
+					return nil, nil
+				}
+				return huaweiauth.SignedHeaders(profile, time.Now(), rand.Reader)
+			}
+		}
+		report := diag.Run(ctx, source, options)
 		reports = append(reports, report)
 	}
 	if len(reports) == 0 {
 		return nil, fmt.Errorf("未找到来源 %s", sourceID)
 	}
 	return reports, nil
+}
+
+func containsTool(tools []string, wanted string) bool {
+	for _, tool := range tools {
+		if tool == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // Connect 拉取期望状态、生成通道配置并启动 frpc。
@@ -391,23 +507,32 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 		return a.Status(), errors.New("连接器已被撤销")
 	}
 	secretsState, err := a.cloud.TransportSecrets(ctx, a.identity.ConnectorID)
-	if err == nil {
-		desired = mergeSecrets(desired, secretsState)
+	if err != nil {
+		a.state.Transition(state.DegradedRelay, "获取通道密钥失败")
+		return a.Status(), fmt.Errorf("获取通道密钥失败: %w", err)
 	}
+	desired = mergeSecrets(desired, secretsState)
 
+	if err := a.startAuthProxies(); err != nil {
+		a.state.Transition(state.DegradedRelay, "启动本机认证代理失败: "+err.Error())
+		return a.Status(), err
+	}
 	generated, err := a.buildFrpcConfig(desired)
 	if err != nil {
+		a.stopAuthProxies()
 		a.state.Transition(state.DegradedRelay, "通道配置无效: "+err.Error())
 		return a.Status(), err
 	}
 	configPath := a.store.Path(fileFrpc)
 	if err := generated.WriteFile(configPath); err != nil {
+		a.stopAuthProxies()
 		a.state.Transition(state.DegradedRelay, "写入通道配置失败: "+err.Error())
 		return a.Status(), err
 	}
 
 	binary := a.frpcBinary()
 	if _, err := os.Stat(binary); err != nil {
+		a.stopAuthProxies()
 		a.state.Transition(state.DegradedRelay, "找不到 frpc 程序")
 		return a.Status(), fmt.Errorf("找不到 frpc 程序: %s", binary)
 	}
@@ -434,12 +559,14 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 		}
 	}
 	if err := s.Start(ctx); err != nil {
+		a.stopAuthProxies()
 		a.state.Transition(state.DegradedRelay, err.Error())
 		return a.Status(), err
 	}
 
 	time.Sleep(800 * time.Millisecond)
 	if !s.Running() {
+		a.stopAuthProxies()
 		a.state.Transition(state.DegradedRelay, "通道未启动: "+s.LastError())
 		return a.Status(), errors.New("通道未启动")
 	}
@@ -471,6 +598,7 @@ func (a *Agent) Pause(ctx context.Context) Status {
 	if s != nil {
 		_ = s.Stop(ctx)
 	}
+	a.stopAuthProxies()
 	a.state.Transition(state.Paused, "本机暂停")
 	return a.Status()
 }
@@ -509,6 +637,10 @@ func (a *Agent) Export() ([]byte, error) {
 func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error) {
 	a.mu.RLock()
 	sources := append([]config.Source(nil), a.config.Sources...)
+	proxies := make(map[string]*authproxy.Server, len(a.proxies))
+	for sourceID, proxy := range a.proxies {
+		proxies[sourceID] = proxy
+	}
 	a.mu.RUnlock()
 
 	relay := desired.Relay
@@ -539,14 +671,13 @@ func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error)
 	}
 	for _, source := range sources {
 		item, ok := byID[source.SourceID]
-		host, port := localTarget(source.UpstreamURL)
-		if ok {
-			if item.LocalHost != "" {
-				host = item.LocalHost
-			}
-			if item.LocalPort > 0 {
-				port = item.LocalPort
-			}
+		proxy := proxies[source.SourceID]
+		if proxy == nil {
+			return generated, fmt.Errorf("来源 %s 缺少本机认证代理", source.DisplayName)
+		}
+		host, port, err := proxy.Endpoint()
+		if err != nil {
+			return generated, err
 		}
 		secret := ""
 		if ok {
@@ -619,6 +750,18 @@ func (a *Agent) startHeartbeat() {
 }
 
 func mergeSecrets(base, secrets cloud.DesiredState) cloud.DesiredState {
+	if secrets.Relay.Token != "" {
+		base.Relay.Token = secrets.Relay.Token
+	}
+	if secrets.Relay.User != "" {
+		base.Relay.User = secrets.Relay.User
+	}
+	if secrets.Relay.Address != "" {
+		base.Relay.Address = secrets.Relay.Address
+	}
+	if secrets.Relay.Port > 0 {
+		base.Relay.Port = secrets.Relay.Port
+	}
 	if len(secrets.Sources) == 0 {
 		return base
 	}

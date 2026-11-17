@@ -54,6 +54,9 @@ type Options struct {
 	ToolProbe string
 	// ToolArguments 是试调用参数，默认空对象。
 	ToolArguments any
+	// HeaderProvider injects request-specific authentication headers. It is
+	// only used by local diagnosis and must not be sourced from browser input.
+	HeaderProvider func(method, tool string) (map[string]string, error)
 }
 
 func (o Options) timeout() time.Duration {
@@ -93,7 +96,12 @@ func Run(ctx context.Context, source config.Source, opts Options) Report {
 		report.Checks = append(report.Checks, Check{Name: "tls", Label: "证书校验", Status: StatusSkip, Detail: "来源使用明文 HTTP，按客户已批准的内网范围执行"})
 	}
 
-	client := &mcp.Client{Endpoint: source.UpstreamURL, Headers: opts.HeaderValues, HTTP: newHTTPClient(opts.timeout())}
+	client := &mcp.Client{
+		Endpoint:       source.UpstreamURL,
+		Headers:        opts.HeaderValues,
+		HTTP:           newHTTPClient(opts.timeout()),
+		HeaderProvider: opts.HeaderProvider,
+	}
 
 	initCtx, cancel := context.WithTimeout(ctx, opts.timeout())
 	info, initErr := client.Initialize(initCtx)

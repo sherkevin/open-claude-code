@@ -9,6 +9,20 @@ $DataDir = Join-Path $env:ProgramData "Kaiwu\Connector"
 $ServiceName = "KaiwuConnector"
 $Listen = "127.0.0.1:17872"
 
+$ChecksumFile = Join-Path $Source "SHA256SUMS"
+if (-not (Test-Path $ChecksumFile)) {
+  throw "安装包缺少 SHA256SUMS，拒绝安装"
+}
+foreach ($line in [System.IO.File]::ReadAllLines($ChecksumFile, [System.Text.Encoding]::UTF8)) {
+  if ($line -notmatch '^([0-9a-fA-F]{64})\s+(.+)$') { continue }
+  $expected = $matches[1].ToLowerInvariant()
+  $relative = $matches[2].TrimStart('.', '\', '/')
+  $target = Join-Path $Source $relative
+  if (-not (Test-Path $target)) { throw "安装包缺少文件: $relative" }
+  $actual = (Get-FileHash -Path $target -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($actual -ne $expected) { throw "安装包文件校验失败: $relative" }
+}
+
 function Wait-ServiceAbsent {
   param([int]$TimeoutSeconds = 15)
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -30,12 +44,15 @@ if ($existing) {
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "docs") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "compliance") | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
 Copy-Item (Join-Path $Source "bin\kaiwu-connector.exe") $InstallDir -Force
 Copy-Item (Join-Path $Source "bin\frpc.exe") $InstallDir -Force
 Get-ChildItem (Join-Path $Source "docs\*.md") -ErrorAction SilentlyContinue |
   Copy-Item -Destination (Join-Path $InstallDir "docs") -Force
+Get-ChildItem (Join-Path $Source "compliance\*") -File -ErrorAction SilentlyContinue |
+  Copy-Item -Destination (Join-Path $InstallDir "compliance") -Force
 
 # 数据目录只允许 SYSTEM 和 Administrators 访问。服务以 LocalSystem 运行。
 icacls $DataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /t | Out-Null

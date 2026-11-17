@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 )
 
 func fakeCloud(t *testing.T) *httptest.Server {
@@ -62,12 +65,16 @@ func TestBindImportExport(t *testing.T) {
 	if report.HasErrors() || len(report.Sources) != 1 {
 		t.Fatalf("导入结果不符: %+v", report)
 	}
+	sourceID := report.Sources[0].SourceID
+	if !isOpaqueSourceID(sourceID) {
+		t.Fatalf("来源编号不是 128 位不透明编号: %s", sourceID)
+	}
 
 	exported, err := instance.Export()
 	if err != nil {
 		t.Fatalf("导出失败: %v", err)
 	}
-	if !strings.Contains(string(exported), "https://mcp.example.com/sources/inventory/mcp") {
+	if !strings.Contains(string(exported), "https://mcp.example.com/sources/"+sourceID+"/mcp") {
 		t.Fatalf("导出地址不符: %s", exported)
 	}
 
@@ -79,6 +86,73 @@ func TestBindImportExport(t *testing.T) {
 	snapshot := reloaded.Status()
 	if !snapshot.Bound || len(snapshot.Sources) != 1 {
 		t.Fatalf("重启后状态丢失: %+v", snapshot)
+	}
+}
+
+func TestAssignSourceIDsPreservesIDAcrossDisplayNameChange(t *testing.T) {
+	existing := []config.Source{{
+		SourceID: "src_00112233445566778899aabbccddeeff", DisplayName: "库存旧名称",
+		UpstreamURL: "https://mcp.example.com/inventory",
+	}}
+	incoming := []config.Source{{
+		SourceID: "inventory", DisplayName: "库存新名称",
+		UpstreamURL: "https://mcp.example.com/inventory",
+	}}
+	secrets := map[string]map[string]string{
+		"inventory": {"Authorization": "Bearer synthetic-token"},
+	}
+
+	got, gotSecrets, err := assignSourceIDs(incoming, secrets, existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].SourceID != existing[0].SourceID {
+		t.Fatalf("显示名变化不应改变来源编号: got=%s want=%s", got[0].SourceID, existing[0].SourceID)
+	}
+	if gotSecrets[existing[0].SourceID]["Authorization"] != "Bearer synthetic-token" {
+		t.Fatal("来源秘密未迁移到保留后的来源编号")
+	}
+}
+
+func TestAssignSourceIDsRotatesIDWhenUpstreamChanges(t *testing.T) {
+	existing := []config.Source{{
+		SourceID: "src_00112233445566778899aabbccddeeff", DisplayName: "库存",
+		UpstreamURL: "https://mcp.example.com/inventory",
+	}}
+	incoming := []config.Source{{
+		SourceID: "inventory", DisplayName: "库存",
+		UpstreamURL: "https://mcp.example.com/inventory-v2",
+	}}
+
+	got, _, err := assignSourceIDs(incoming, nil, existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].SourceID == existing[0].SourceID {
+		t.Fatal("上游地址变化必须生成新的来源编号")
+	}
+	if !isOpaqueSourceID(got[0].SourceID) {
+		t.Fatalf("新来源编号无效: %s", got[0].SourceID)
+	}
+}
+
+func TestAssignSourceIDsDoesNotGuessForDuplicateURLs(t *testing.T) {
+	existing := []config.Source{
+		{SourceID: "src_00112233445566778899aabbccddeeff", DisplayName: "库存甲", UpstreamURL: "https://mcp.example.com/shared"},
+		{SourceID: "src_ffeeddccbbaa99887766554433221100", DisplayName: "库存乙", UpstreamURL: "https://mcp.example.com/shared"},
+	}
+	incoming := []config.Source{{
+		SourceID: "inventory", DisplayName: "库存丙", UpstreamURL: "https://mcp.example.com/shared",
+	}}
+
+	got, _, err := assignSourceIDs(incoming, nil, existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range existing {
+		if got[0].SourceID == source.SourceID {
+			t.Fatal("同一地址存在多个旧来源时不能猜测并复用其中任意编号")
+		}
 	}
 }
 
@@ -144,5 +218,62 @@ func TestConnectFailsWithoutFrpc(t *testing.T) {
 	}
 	if got := instance.Status().State; got != "DEGRADED_RELAY" {
 		t.Fatalf("应进入公网通道不可用状态，实际 %s", got)
+	}
+}
+
+func TestAuthProfilePersistsWithoutExposingSecret(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	instance, err := New(Options{DataDir: dir, CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"mcpServers":{"销售查询":{"type":"http","url":"` + upstream.URL + `/mcp","headers":{"Authorization":"Bearer customer-secret"}}}}`)
+	report, err := instance.ImportConfig(context.Background(), raw)
+	if err != nil || report.HasErrors() {
+		t.Fatalf("导入失败: %v %+v", err, report)
+	}
+	sourceID := report.Sources[0].SourceID
+	secret := "0123456789abcdef0123456789abcdef"
+	status, err := instance.SetAuthProfile(sourceID, huaweiauth.Profile{
+		AppID: "app", Channel: "channel", UserID: "user", HMACKey: secret,
+	}, []string{"manual_search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.AuthProfiles) != 1 || !status.AuthProfiles[0].Configured ||
+		len(status.AuthProfiles[0].AllowedTools) != 1 || status.AuthProfiles[0].AllowedTools[0] != "manual_search" {
+		t.Fatalf("认证状态不符: %+v", status.AuthProfiles)
+	}
+	statusJSON, _ := json.Marshal(status)
+	if strings.Contains(string(statusJSON), secret) || strings.Contains(string(statusJSON), "customer-secret") {
+		t.Fatal("状态响应不能包含客户秘密")
+	}
+
+	reloaded, err := New(Options{DataDir: dir, CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedStatus := reloaded.Status()
+	if len(reloadedStatus.AuthProfiles) != 1 || !reloadedStatus.AuthProfiles[0].Configured {
+		t.Fatalf("重启后认证配置丢失: %+v", reloadedStatus.AuthProfiles)
+	}
+	if err := reloaded.startAuthProxies(); err != nil {
+		t.Fatalf("启动来源代理失败: %v", err)
+	}
+	defer reloaded.stopAuthProxies()
+	reloaded.mu.RLock()
+	proxy := reloaded.proxies[sourceID]
+	reloaded.mu.RUnlock()
+	if proxy == nil {
+		t.Fatal("来源代理未创建")
+	}
+	host, port, err := proxy.Endpoint()
+	if err != nil || host != "127.0.0.1" || port <= 0 {
+		t.Fatalf("来源代理不是回环地址: host=%s port=%d err=%v", host, port, err)
 	}
 }

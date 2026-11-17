@@ -1,0 +1,55 @@
+﻿华微灵犀智能体接口接入技术说明
+Windows 连接器接入核实清单   2026年11月17日
+目前能确认的是，仓库记录了华微灵犀使用 MCP 和身份代理的架构。本次核实仅读取本地工作区文件，没有实际连接灵犀服务器，也没有调用其业务接口。线上地址、上游认证契约和可信身份接入方案仍需确认。
+来源标记：A = 当前对话或本地文件直接看到；B = 依据证据推断；C = 不知道，需要检查确认。文件证据不等同于线上部署状态。
+1 连接方式
+A：本轮直接读取本地工作区，没有通过 Custom GPT Actions 或灵犀业务 Connector 发起调用。
+A：仓库描述的运行架构为 OpenClaw → MCP 身份代理 → 管理系统业务 MCP。来源 S1。
+C：线上目前是否仍按该版本运行，不知道。需检查实际服务配置和运行入口。
+2 地址认证与文档
+A：身份代理代码生成 http://127.0.0.1:<config.port>/mcp。这是服务器内部回环地址；C：具体端口不知道。来源 S1。
+A：上游地址从 config.url 读取，代码校验其路径以 /mcp/<服务标识> 结尾；C：实际配置值不知道。来源 S1。
+A：代理认证为 Bearer，Header 名称为 Authorization，令牌根据可信消息上下文签发。来源 S1。
+A：代码读取 secretFile 并交给代理模块；C：上游实际认证类型、Header 名称及签名规则不知道，不能据此称为 API Key。来源 S1。
+C：不知道是否存在 OpenAPI 或 Swagger，本次未找到可确认的文档地址。A：仓库要求通过 MCP tools/list 获取实时工具定义，这不等同于 Swagger 文档。来源 S2。
+3 绑定操作与请求示例
+C：不知道绑定操作实际使用哪个 HTTP 方法和路径。本轮没有执行绑定，所见材料也未证明存在某个绑定接口调用。
+A：维护规则记录的绑定涉及代理 allowedTools、MCP toolFilter.include 和智能体 alsoAllow 等配置。来源 S2。
+A：本地手册服务明确实现 POST /mcp。以下是根据源码构造的协议示例，不是绑定请求，也不是实际请求记录。来源 S3。
+POST /mcp
+Content-Type: application/json
+
+{"jsonrpc":"2.0","id":1,"method":"ping"}
+{"jsonrpc":"2.0","id":1,"result":{}}
+该示例中手册服务的认证方式不能代表业务身份代理。
+4 三个只读工具
+manual_search
+A：检索系统操作手册。入参 query 必填；system、top_k 可选，top_k 为 1–10。MCP 结果含 content[].type、content[].text、isError。C：文本内业务结构本次未核实。来源 S3。
+hwmcp__test_sales_order_query
+A：仓库将其列为销售订单查询工具。C：入参字段、出参字段不知道。来源 S4。
+hwmcp_sales_log__sales_log_list
+A：客访日志列表查询。C：入参字段、出参字段不知道。来源 S4。
+C：三个工具当前是否在线、当前账号是否可见，需要实时 tools/list 确认。
+5 Windows 连接器能否直接调用
+B：从架构推断，业务调用不必依赖 ChatGPT，源码中的 MCP 连接由 OpenClaw 和身份代理处理。C：能否直接复用现有 URL 与认证，目前不知道。
+A：现有代理代码只监听服务器的 127.0.0.1；Windows 上的 127.0.0.1 指向 Windows 自己。代理令牌依赖可信渠道身份，不能把聊天文本中的用户名直接当作身份，也不能假定复制一个 Bearer 就完成接入。来源 S1。
+C：还需确认对外入口、网络访问方式、Windows 连接器的可信身份接入和令牌签发方案，以及管理系统授权。
+6 信息获取与确认清单
+管理系统页面
+A：数字员工 → MCP服务定义。检查启用服务、连接地址、工具定义；C：确认是否有 Swagger 或 OpenAPI。找管理系统 MCP 后端负责人，具体姓名不知道。
+OpenClaw 配置
+A：服务器 /home/ubuntu/.openclaw-hwbzshow/openclaw.json。检查 mcp.servers、agents.entries.hwlingxi.tools.alsoAllow 和身份插件 configFile。找 OpenClaw 部署负责人，具体姓名不知道（C）。来源 S2。
+身份插件配置
+A：检查 configFile 指向配置中的 url、port、sources、allowedTools；只确认 secretFile 引用，不读取或传递密钥内容。找身份代理维护工程师，具体姓名不知道（C）。来源 S1。
+实际代理与服务启动配置
+C：确认上游认证 Header、签名规则、对外代理入口、令牌签发方式。找身份代理后端与运维负责人，具体姓名不知道。
+经授权的 MCP 会话
+A：仓库要求以实时 tools/list 验证工具目录。获取 initialize、tools/list 结果及三个工具的完整 schema 和脱敏调用结果。找 MCP 服务维护工程师。来源 S2。
+Windows 连接器配置
+C：页面和字段名不知道。需确认支持的 MCP 传输、认证配置和身份传递方式。找该 Windows 连接器开发负责人。
+证据文件索引
+以下均为本地仓库文件，仓库根目录为 D:\文档\ChatGPT\hwlingxi智能体。它们证明文件中记录的实现或规则，不证明线上当前状态。
+S1  release/report-repair-20261112/hwmcp-identity/index.mjs
+S2  skills/hwlingxi-mcp-maintenance/SKILL.md
+S3  skills/system-manual-qa/scripts/mcp_server.py
+S4  skills/hwlingxi-sales-log/references/runtime-rules.md

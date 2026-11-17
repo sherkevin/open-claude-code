@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -220,16 +221,31 @@ func parseServerEntry(name string, raw json.RawMessage, opts ImportOptions) (*So
 				headerNames = append(headerNames, header)
 			}
 			sort.Strings(headerNames)
+			seenHeaders := map[string]bool{}
 			for _, header := range headerNames {
 				value := headers[header]
-				header = strings.TrimSpace(header)
-				if header == "" {
+				canonical := http.CanonicalHeaderKey(strings.TrimSpace(header))
+				if canonical == "" {
+					issues = append(issues, errorIssue("CONFIG_INVALID", name+".headers", "请求头名称不能为空"))
 					continue
 				}
-				source.HeaderNames = append(source.HeaderNames, header)
-				secrets[header] = value
+				if seenHeaders[canonical] {
+					issues = append(issues, errorIssue("CONFIG_DUPLICATE_HEADER", name+".headers."+canonical, "请求头名称在规范化后重复"))
+					continue
+				}
+				seenHeaders[canonical] = true
+				if canonical != "Authorization" {
+					issues = append(issues, errorIssue("CONFIG_HEADER_NOT_ALLOWED", name+".headers."+canonical, "首版只允许导入 Authorization 请求头"))
+					continue
+				}
+				if strings.ContainsAny(value, "\r\n") {
+					issues = append(issues, errorIssue("CONFIG_INVALID", name+".headers."+canonical, "请求头值不能包含换行符"))
+					continue
+				}
+				source.HeaderNames = append(source.HeaderNames, canonical)
+				secrets[canonical] = strings.TrimSpace(value)
 				if variablePattern.MatchString(value) {
-					issues = append(issues, errorIssue("CONFIG_UNRESOLVED_VARIABLE", name+".headers."+header, "请求头中包含未解析变量: "+variablePattern.FindString(value)))
+					issues = append(issues, errorIssue("CONFIG_UNRESOLVED_VARIABLE", name+".headers."+canonical, "请求头中包含未解析变量: "+variablePattern.FindString(value)))
 				}
 			}
 		} else {
@@ -277,6 +293,12 @@ func validateSource(source *Source, opts ImportOptions) []Issue {
 			}
 			if parsed.Scheme != "http" && parsed.Scheme != "https" {
 				issues = append(issues, errorIssue("CONFIG_INVALID", source.DisplayName+".url", "只支持 http 或 https 地址"))
+			}
+			if parsed.RawQuery != "" {
+				issues = append(issues, errorIssue("CONFIG_INVALID", source.DisplayName+".url", "上游地址默认不允许查询串"))
+			}
+			if parsed.Fragment != "" {
+				issues = append(issues, errorIssue("CONFIG_INVALID", source.DisplayName+".url", "上游地址默认不允许片段"))
 			}
 			if len(opts.AllowedHosts) > 0 && !hostAllowed(parsed.Hostname(), opts.AllowedHosts) {
 				issues = append(issues, errorIssue("SOURCE_HOST_NOT_ALLOWED", source.DisplayName+".url", "主机不在本机允许范围内: "+parsed.Hostname()))

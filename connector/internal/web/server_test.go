@@ -118,3 +118,43 @@ func TestStatusReportsUnpaired(t *testing.T) {
 		t.Fatalf("初始状态应为未绑定: %s", recorder.Body.String())
 	}
 }
+
+func TestAuthProfileEndpointDoesNotReturnSecrets(t *testing.T) {
+	server := newTestServer(t)
+	importBody := `{"config":"{\"mcpServers\":{\"库存\":{\"type\":\"http\",\"url\":\"http://10.0.0.8:8000/mcp\",\"headers\":{\"Authorization\":\"Bearer customer-secret\"}}}}"}`
+	importRequest := httptest.NewRequest(http.MethodPost, "/api/import", strings.NewReader(importBody))
+	importRequest.Host = loopbackHost
+	importRequest.Header.Set("X-Connector-Token", server.Token)
+	importRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(importRecorder, importRequest)
+	if importRecorder.Code != http.StatusOK {
+		t.Fatalf("导入失败: %d %s", importRecorder.Code, importRecorder.Body.String())
+	}
+	var imported struct {
+		Data struct {
+			Sources []struct {
+				SourceID string `json:"source_id"`
+			} `json:"sources"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(importRecorder.Body.Bytes(), &imported); err != nil || len(imported.Data.Sources) != 1 {
+		t.Fatalf("导入响应无效: %v %s", err, importRecorder.Body.String())
+	}
+	body, _ := json.Marshal(map[string]any{
+		"source_id": imported.Data.Sources[0].SourceID,
+		"app_id":    "app", "channel": "channel", "user_id": "user",
+		"hmac_key": "0123456789abcdef0123456789abcdef",
+		"tools":    "manual_search",
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/auth-profile", strings.NewReader(string(body)))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("认证配置失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "0123456789abcdef") || strings.Contains(recorder.Body.String(), "customer-secret") {
+		t.Fatal("接口响应泄漏秘密")
+	}
+}

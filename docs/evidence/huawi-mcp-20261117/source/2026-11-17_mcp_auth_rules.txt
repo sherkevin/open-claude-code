@@ -1,0 +1,56 @@
+﻿MCP 调用与认证说明
+华微灵犀 × 开物平台　｜　连接器开发与联调　｜　2026 年 11 月 17 日
+本说明适用于开物连接器调用华微 HwMain 承载的 HTTP MCP 服务。以下订单、渠道、用户、密钥及签名算例均为虚构测试值。实际端点、凭据和渠道用户映射由双方另行配置。
+请求地址与公共头
+POST https://<host>/<application>/mcp/<server_code>
+Content-Type: application/json
+Accept: application/json, text/event-stream
+所有方法向同一端点发送 JSON-RPC 2.0 请求。使用 HTTPS；由连接器的可信组件读取凭据并添加认证头，避免在日志中记录密钥。
+初始化与工具发现
+initialize、notifications/initialized、tools/list 和 ping 使用 Authorization: Bearer <共享密钥>。按原值传入密钥，保留大小写。服务端可检查来源 IP；如启用白名单，请核对华微服务端实际看到的连接器出口地址。
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+  "protocolVersion":"2025-06-18","capabilities":{},
+  "clientInfo":{"name":"connector-demo","version":"1.0"}}}
+2025-06-18 为手册示例版本。成功后读取 result.protocolVersion，后续请求通过 MCP-Protocol-Version 头携带协商值。发送初始化完成通知时省略 id；通知响应可以没有正文。
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}
+上面两行分别发送。按返回的工具名称及 inputSchema 构建入参；若提供 outputSchema，按其解析结果。
+
+业务调用的动态签名
+tools/call 需在 HTTP 头传入以下六项。历史代理同时携带 Bearer；静态 Bearer 本身不足以完成业务调用。
+appid: MCP
+channel: <渠道编码>
+userid: <已映射的渠道用户 ID>
+requestId: <为本次请求新生成的 GUID>
+timestamp: <UTC Unix 时间戳，单位为秒>
+sign: <HMAC-SHA256 小写十六进制摘要>
+按下面算例的字段顺序拼接原文，不增加空格，不做 URL 编码。密钥和原文均按 UTF-8 编码；正文不参与签名。每次重试重新生成 requestId、时间戳和签名。时效窗口按华微服务端配置。
+离线校验样例　示例密钥为 demo-key-only。下列原文是一行，历史时间戳仅用于复算摘要。
+appid=MCP&channel=demo&userid=u01&requestId=00000000-0000-4000-8000-000000000001&timestamp=1700000000
+650d825ca0684ad7cf57ca0ca26a44536b6a4bf263fbf944e79c115b72bf9e51
+订单查询与返回示例
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{
+  "name":"test_sales_order_grid_query",
+  "arguments":{"page":1,"rows":20}}}
+示例查询第 1 页，每页最多 20 条。JSON-RPC 的 id 用于请求响应关联；HTTP 头 requestId 用于签名及防重。当前用户、组织和可见数据范围由华微根据渠道身份确定。
+{
+ "jsonrpc": "2.0",
+ "id": 5,
+ "result": {
+  "isError": false,
+  "structuredContent": {
+   "rows": [
+    { "Order_No": "DEMO-001"
+    }
+   ],
+   "total": 1
+  },
+  "content": [
+   {
+    "type": "text",
+    "text": "{\"rows\":[{\"Order_No\":\"DEMO-001\"}],\"total\":1}"
+   }
+  ]
+ }
+}
+JSON 响应直接解析；SSE 响应按事件读取 data 中的 JSON。先判断 HTTP 状态、JSON-RPC error 和 result.isError，再读取业务结果。遇到 401，核对凭据、来源 IP；业务调用另需核对签名、时钟和渠道用户映射。

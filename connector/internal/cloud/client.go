@@ -48,8 +48,6 @@ type Identity struct {
 type DesiredSource struct {
 	SourceID    string   `json:"source_id"`
 	DisplayName string   `json:"display_name"`
-	LocalHost   string   `json:"local_host"`
-	LocalPort   int      `json:"local_port"`
 	STCPSecret  string   `json:"stcp_secret,omitempty"`
 	AllowUsers  []string `json:"allow_users,omitempty"`
 }
