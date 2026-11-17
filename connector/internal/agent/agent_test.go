@@ -3,15 +3,20 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
+	"github.com/sherkevin/open-claude-code/connector/internal/mcp"
 )
 
 func fakeCloud(t *testing.T) *httptest.Server {
@@ -33,6 +38,33 @@ func fakeCloud(t *testing.T) *httptest.Server {
 					"source_id": "mcp", "display_name": "库存", "local_host": "10.0.0.8", "local_port": 8000, "stcp_secret": "s1",
 				}},
 			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func fakeMCPToolServer(t *testing.T, toolsJSON string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if request.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case "initialize":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"synthetic-mcp","version":"1.0"}}}`, request.ID)
+		case "tools/list":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":%s}}`, request.ID, toolsJSON)
 		default:
 			http.NotFound(w, r)
 		}
@@ -320,5 +352,248 @@ func TestAuthProfilePersistsWithoutExposingSecret(t *testing.T) {
 	host, port, err := proxy.Endpoint()
 	if err != nil || host != "127.0.0.1" || port <= 0 {
 		t.Fatalf("来源代理不是回环地址: host=%s port=%d err=%v", host, port, err)
+	}
+}
+
+func TestRevokeIsLocalFirstAndTombstoneSurvivesCloudFailure(t *testing.T) {
+	var revokeCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/enrollments/redeem":
+			_, _ = w.Write([]byte(`{"connector_id":"conn_revoke","tenant_id":"tenant_1","tenant_name":"合成企业","device_token":"device-token","device_key_id":"key_1","relay":{"address":"relay.example.com","port":7443,"user":"conn_revoke","token":"relay-token"}}`))
+		case "/v1/connectors/conn_revoke/self-revoke":
+			revokeCalls.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"code":"CONTROL_UNAVAILABLE","message":"合成故障"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	instance, err := New(Options{
+		DataDir: dir, CloudBase: server.URL, EdgeBase: "https://edge.example.net",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Bind(context.Background(), "code-1"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := instance.Revoke(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "本机已撤销") {
+		t.Fatalf("云端通知失败应明确返回，但不能回滚本机撤销: %v", err)
+	}
+	if revokeCalls.Load() != 1 {
+		t.Fatalf("应尝试通知云端一次: %d", revokeCalls.Load())
+	}
+	if status.State != "REVOKED" || status.Bound {
+		t.Fatalf("本机撤销状态不符: %+v", status)
+	}
+	if _, err := os.Stat(filepath.Join(dir, fileIdentity)); !os.IsNotExist(err) {
+		t.Fatal("设备身份文件必须删除")
+	}
+	if _, err := os.Stat(filepath.Join(dir, fileRevoked)); err != nil {
+		t.Fatalf("撤销墓碑必须持久化: %v", err)
+	}
+
+	reloaded, err := New(Options{
+		DataDir: dir, CloudBase: server.URL, EdgeBase: "https://edge.example.net",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Status().State != "REVOKED" || reloaded.Status().Bound {
+		t.Fatalf("重启后不得复活设备身份: %+v", reloaded.Status())
+	}
+}
+
+func TestConnectRegistersMetadataOnlyAndHonorsDraining(t *testing.T) {
+	upstream := fakeMCPToolServer(t, `[{"name":"query_orders","description":"查询合成销售订单","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"}}}}]`)
+	defer upstream.Close()
+	var registered map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/enrollments/redeem":
+			_, _ = w.Write([]byte(`{"connector_id":"conn_drain","tenant_id":"tenant_1","tenant_name":"合成企业","device_token":"device-token","device_key_id":"key_1","relay":{"address":"relay.example.com","port":7443,"user":"conn_drain","token":"relay-token"}}`))
+		case r.URL.Path == "/v1/sources":
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &registered)
+			_, _ = w.Write([]byte(`{"revision":2}`))
+		case r.URL.Path == "/v1/connectors/conn_drain/desired-state":
+			_, _ = w.Write([]byte(`{"revision":2,"sources":[],"revoked":false,"draining":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	instance, err := New(Options{
+		DataDir: t.TempDir(), CloudBase: server.URL, EdgeBase: "https://edge.example.net",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Bind(context.Background(), "code-1"); err != nil {
+		t.Fatal(err)
+	}
+	report, err := instance.ImportConfig(context.Background(), []byte(
+		`{"mcpServers":{"销售查询":{"type":"http","url":"`+upstream.URL+`/mcp"}}}`,
+	))
+	if err != nil || report.HasErrors() {
+		t.Fatalf("导入失败: %v %+v", err, report)
+	}
+	instance.config.Sources[0].ToolAllowlist = []string{"query_orders"}
+
+	status, err := instance.Connect(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "排空") {
+		t.Fatalf("云端排空必须阻止建立新通道: %v", err)
+	}
+	if status.State != "PAUSED" {
+		t.Fatalf("排空后状态应为 PAUSED: %s", status.State)
+	}
+	if registered == nil {
+		t.Fatal("来源登记未被调用")
+	}
+	if registered["source_id"] != instance.config.Sources[0].SourceID {
+		t.Fatalf("来源编号不符: %+v", registered)
+	}
+	info := mcp.ServerInfo{ProtocolVersion: "2025-06-18"}
+	info.ServerInfo.Name = "synthetic-mcp"
+	info.ServerInfo.Version = "1.0"
+	expectedDigest, err := digestToolSchema(
+		info,
+		[]mcp.Tool{{
+			Name:        "query_orders",
+			Description: "查询合成销售订单",
+			Raw:         json.RawMessage(`{"name":"query_orders","description":"查询合成销售订单","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"}}}}`),
+		}},
+		[]string{"query_orders"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered["tool_schema_sha256"] != expectedDigest {
+		t.Fatalf("工具 schema 摘要不是真实目录摘要: got=%v want=%s", registered["tool_schema_sha256"], expectedDigest)
+	}
+	raw, _ := json.Marshal(registered)
+	for _, forbidden := range []string{"upstream_url", "local_host", "local_port", "Authorization", "10.0.0.8"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("来源登记泄漏本地目标或凭据 %s: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestConnectRejectsCloudSuppliedLocalTargetFields(t *testing.T) {
+	upstream := fakeMCPToolServer(t, `[{"name":"query_orders","inputSchema":{"type":"object"}}]`)
+	defer upstream.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/enrollments/redeem":
+			_, _ = w.Write([]byte(`{"connector_id":"conn_bad","tenant_id":"tenant_1","tenant_name":"合成企业","device_token":"device-token","device_key_id":"key_1","relay":{"address":"relay.example.com","port":7443,"user":"conn_bad","token":"relay-token"}}`))
+		case r.URL.Path == "/v1/sources":
+			_, _ = w.Write([]byte(`{"revision":2}`))
+		case r.URL.Path == "/v1/connectors/conn_bad/desired-state":
+			_, _ = w.Write([]byte(`{"revision":2,"sources":[{"source_id":"src_00112233445566778899aabbccddeeff","display_name":"销售","local_host":"10.0.0.8","local_port":80}],"revoked":false,"draining":false}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	instance, err := New(Options{
+		DataDir: t.TempDir(), CloudBase: server.URL, EdgeBase: "https://edge.example.net",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Bind(context.Background(), "code-1"); err != nil {
+		t.Fatal(err)
+	}
+	report, err := instance.ImportConfig(context.Background(), []byte(
+		`{"mcpServers":{"销售查询":{"type":"http","url":"`+upstream.URL+`/mcp"}}}`,
+	))
+	if err != nil || report.HasErrors() {
+		t.Fatalf("导入失败: %v %+v", err, report)
+	}
+	instance.config.Sources[0].ToolAllowlist = []string{"query_orders"}
+	status, err := instance.Connect(context.Background())
+	if err == nil {
+		t.Fatal("含 local_host/local_port 的期望状态必须拒绝")
+	}
+	if status.State != "DEGRADED_RELAY" {
+		t.Fatalf("拒绝恶意期望状态后应降级: %s", status.State)
+	}
+}
+
+func TestToolSchemaDigestIsCanonicalAndSchemaSensitive(t *testing.T) {
+	info := mcp.ServerInfo{ProtocolVersion: "2025-06-18"}
+	info.ServerInfo.Name = "inventory"
+	info.ServerInfo.Version = "1.0"
+	allowlist := []string{"query_orders"}
+	first := []mcp.Tool{{
+		Name: "query_orders",
+		Raw:  json.RawMessage(`{"name":"query_orders","description":"查询订单","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"}}},"annotations":{"readOnlyHint":true}}`),
+	}}
+	sameSchemaDifferentOrder := []mcp.Tool{{
+		Name: "query_orders",
+		Raw:  json.RawMessage(`{"inputSchema":{"properties":{"limit":{"type":"integer"}},"type":"object"},"annotations":{"readOnlyHint":true},"description":"查询订单","name":"query_orders"}`),
+	}}
+	changedSchema := []mcp.Tool{{
+		Name: "query_orders",
+		Raw:  json.RawMessage(`{"name":"query_orders","description":"查询订单","inputSchema":{"type":"object","properties":{"limit":{"type":"string"}}},"annotations":{"readOnlyHint":true}}`),
+	}}
+
+	firstDigest, err := digestToolSchema(info, first, allowlist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reorderedDigest, err := digestToolSchema(info, sameSchemaDifferentOrder, allowlist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedDigest, err := digestToolSchema(info, changedSchema, allowlist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != reorderedDigest {
+		t.Fatalf("JSON 键顺序变化不应改变摘要: %s != %s", firstDigest, reorderedDigest)
+	}
+	if firstDigest == changedDigest {
+		t.Fatal("输入 schema 变化必须改变摘要")
+	}
+	if _, err := digestToolSchema(info, first, []string{"missing_tool"}); err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Fatalf("缺少允许工具时必须拒绝: %v", err)
+	}
+	unlistedChange := append([]mcp.Tool(nil), first...)
+	unlistedChange = append(unlistedChange, mcp.Tool{
+		Name: "internal_admin", Raw: json.RawMessage(`{"name":"internal_admin","inputSchema":{"type":"object"}}`),
+	})
+	withoutUnlistedDigest, err := digestToolSchema(info, unlistedChange, allowlist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutUnlistedDigest != firstDigest {
+		t.Fatal("未获准工具的 schema 不得影响已批准摘要")
+	}
+}
+
+func TestBuildFrpcConfigStartsOnlyCloudApprovedSources(t *testing.T) {
+	instance, err := New(Options{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.config.Sources = []config.Source{{
+		SchemaVersion: 1,
+		SourceID:      "src_00112233445566778899aabbccddeeff",
+		DisplayName:   "销售只读",
+		Transport:     config.TransportStreamableHTTP,
+		UpstreamURL:   "http://10.0.0.8:8000/mcp",
+		ToolAllowlist: []string{"query_orders"},
+	}}
+	if _, err := instance.buildFrpcConfig(cloud.DesiredState{Revision: 1}); err == nil ||
+		!strings.Contains(err.Error(), "尚未批准任何可用来源") {
+		t.Fatalf("未获云端批准的来源不能启动通道: %v", err)
 	}
 }

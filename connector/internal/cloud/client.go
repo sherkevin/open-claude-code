@@ -41,15 +41,18 @@ type Identity struct {
 	TenantID    string `json:"tenant_id"`
 	TenantName  string `json:"tenant_name"`
 	DeviceToken string `json:"device_token"`
+	DeviceKeyID string `json:"device_key_id,omitempty"`
 	Relay       Relay  `json:"relay"`
 }
 
 // DesiredSource 是云端下发的来源期望状态。
 type DesiredSource struct {
-	SourceID    string   `json:"source_id"`
-	DisplayName string   `json:"display_name"`
-	STCPSecret  string   `json:"stcp_secret,omitempty"`
-	AllowUsers  []string `json:"allow_users,omitempty"`
+	SourceID     string   `json:"source_id"`
+	DisplayName  string   `json:"display_name"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	STCPSecret   string   `json:"stcp_secret,omitempty"`
+	AllowUsers   []string `json:"allow_users,omitempty"`
+	Revision     int      `json:"revision,omitempty"`
 }
 
 // DesiredState 是连接器的期望状态。
@@ -66,8 +69,25 @@ type Heartbeat struct {
 	State      string    `json:"state"`
 	Version    string    `json:"version"`
 	ObservedAt time.Time `json:"observed_at"`
-	SourceIDs  []string  `json:"source_ids,omitempty"`
-	LastError  string    `json:"last_error,omitempty"`
+	SourceIDs  []string  `json:"source_ids"`
+	LastError  string    `json:"last_error"`
+}
+
+// SourceRegistration is the metadata-only source contract. It never contains
+// the customer's upstream URL, host, port or credentials.
+type SourceRegistration struct {
+	SourceID            string   `json:"source_id"`
+	DisplayName         string   `json:"display_name"`
+	AllowedTools        []string `json:"allowed_tools"`
+	ToolSchemaSHA256    string   `json:"tool_schema_sha256"`
+	TargetBindingSHA256 string   `json:"target_binding_sha256"`
+	Transport           string   `json:"transport"`
+}
+
+// RequestSigner signs the exact control-plane request.
+type RequestSigner interface {
+	KeyID() string
+	SignRequest(method, path string, body []byte) (timestamp, nonce, signature string, err error)
 }
 
 // APIError 是云端返回的结构化错误。
@@ -90,18 +110,31 @@ func (e *APIError) Error() string {
 type Client struct {
 	BaseURL     string
 	DeviceToken string
+	Signer      RequestSigner
 	HTTP        *http.Client
 	UserAgent   string
 }
 
 // New 创建客户端并校验地址。
 func New(baseURL, deviceToken string) (*Client, error) {
+	return NewWithSigner(baseURL, deviceToken, nil)
+}
+
+// NewWithSigner creates a device client. Device control requests must use this
+// constructor so method, path and body are signed with the local private key.
+func NewWithSigner(baseURL, deviceToken string, signer RequestSigner) (*Client, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" {
 		return nil, fmt.Errorf("云端地址无效")
 	}
-	return &Client{BaseURL: baseURL, DeviceToken: deviceToken, HTTP: &http.Client{Timeout: 20 * time.Second}, UserAgent: "kaiwu-intranet-connector"}, nil
+	return &Client{
+		BaseURL:     baseURL,
+		DeviceToken: deviceToken,
+		Signer:      signer,
+		HTTP:        &http.Client{Timeout: 20 * time.Second},
+		UserAgent:   "kaiwu-intranet-connector",
+	}, nil
 }
 
 // Redeem 用一次性接入码兑换设备身份。
@@ -118,15 +151,22 @@ func (c *Client) Redeem(ctx context.Context, code string, devicePublicKey string
 // DesiredState 拉取期望状态。
 func (c *Client) DesiredState(ctx context.Context, connectorID string) (DesiredState, error) {
 	var state DesiredState
-	err := c.do(ctx, http.MethodGet, "/v1/connectors/"+url.PathEscape(connectorID)+"/desired-state", nil, &state)
+	err := c.doStrict(ctx, http.MethodGet, "/v1/connectors/"+url.PathEscape(connectorID)+"/desired-state", nil, &state)
 	return state, err
 }
 
 // TransportSecrets 拉取通道材料（中继令牌与每个来源的 STCP 密钥）。
 func (c *Client) TransportSecrets(ctx context.Context, connectorID string) (DesiredState, error) {
 	var state DesiredState
-	err := c.do(ctx, http.MethodGet, "/v1/connectors/"+url.PathEscape(connectorID)+"/transport-secrets", nil, &state)
+	err := c.doStrict(ctx, http.MethodGet, "/v1/connectors/"+url.PathEscape(connectorID)+"/transport-secrets", nil, &state)
 	return state, err
+}
+
+// RegisterSource registers only opaque metadata and a local target digest.
+func (c *Client) RegisterSource(ctx context.Context, source SourceRegistration) (map[string]any, error) {
+	var result map[string]any
+	err := c.do(ctx, http.MethodPost, "/v1/sources", source, &result)
+	return result, err
 }
 
 // Heartbeat 上报运行状态。
@@ -146,19 +186,32 @@ func (c *Client) Resume(ctx context.Context, connectorID string) error {
 
 // Revoke 请求撤销本设备。
 func (c *Client) Revoke(ctx context.Context, connectorID string) error {
-	return c.do(ctx, http.MethodPost, "/v1/connectors/"+url.PathEscape(connectorID)+"/revoke", map[string]any{}, nil)
+	return c.do(ctx, http.MethodPost, "/v1/connectors/"+url.PathEscape(connectorID)+"/self-revoke", map[string]any{}, nil)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
-	var reader io.Reader
+	return c.request(ctx, method, path, body, out, false)
+}
+
+func (c *Client) doStrict(ctx context.Context, method, path string, body any, out any) error {
+	return c.request(ctx, method, path, body, out, true)
+}
+
+func (c *Client) request(ctx context.Context, method, path string, body any, out any, strict bool) error {
+	var rawBody []byte
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(raw)
+		rawBody = raw
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
+	var reader io.Reader
+	if rawBody != nil {
+		reader = bytes.NewReader(rawBody)
+	}
+	target := c.BaseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
 		return err
 	}
@@ -168,6 +221,20 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	if c.DeviceToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.DeviceToken)
+	}
+	if c.Signer != nil && c.DeviceToken != "" {
+		targetURL, parseErr := url.Parse(target)
+		if parseErr != nil {
+			return parseErr
+		}
+		timestamp, nonce, signature, signErr := c.Signer.SignRequest(method, targetURL.EscapedPath(), rawBody)
+		if signErr != nil {
+			return signErr
+		}
+		req.Header.Set("X-Kaiwu-Device-Key", c.Signer.KeyID())
+		req.Header.Set("X-Kaiwu-Timestamp", timestamp)
+		req.Header.Set("X-Kaiwu-Nonce", nonce)
+		req.Header.Set("X-Kaiwu-Signature", signature)
 	}
 	if c.UserAgent != "" {
 		req.Header.Set("User-Agent", c.UserAgent)
@@ -212,6 +279,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	if out == nil || len(payload) == 0 {
 		return nil
+	}
+	if strict {
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		decoder.DisallowUnknownFields()
+		return decoder.Decode(out)
 	}
 	return json.Unmarshal(payload, out)
 }

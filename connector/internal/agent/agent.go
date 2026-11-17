@@ -2,19 +2,23 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,9 +27,11 @@ import (
 	"github.com/sherkevin/open-claude-code/connector/internal/authproxy"
 	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/devicekey"
 	"github.com/sherkevin/open-claude-code/connector/internal/diag"
 	"github.com/sherkevin/open-claude-code/connector/internal/frpc"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
+	"github.com/sherkevin/open-claude-code/connector/internal/mcp"
 	"github.com/sherkevin/open-claude-code/connector/internal/state"
 	"github.com/sherkevin/open-claude-code/connector/internal/store"
 	"github.com/sherkevin/open-claude-code/connector/internal/supervisor"
@@ -34,12 +40,14 @@ import (
 
 // 本机文件名。
 const (
-	fileIdentity = "identity.json"
-	fileConfig   = "config.json"
-	fileSecrets  = "secrets.json"
-	fileAuth     = "auth_profiles.json"
-	fileFrpc     = "frpc.toml"
-	fileState    = "state.json"
+	fileIdentity  = "identity.json"
+	fileConfig    = "config.json"
+	fileSecrets   = "secrets.json"
+	fileAuth      = "auth_profiles.json"
+	fileFrpc      = "frpc.toml"
+	fileState     = "state.json"
+	fileDeviceKey = "device_key.json"
+	fileRevoked   = "revoked.json"
 )
 
 // Options 是连接器启动参数。
@@ -54,10 +62,11 @@ type Options struct {
 
 // Agent 是连接器运行主体。
 type Agent struct {
-	opts  Options
-	store *store.Store
-	state *state.Machine
-	cloud *cloud.Client
+	opts      Options
+	store     *store.Store
+	state     *state.Machine
+	cloud     *cloud.Client
+	deviceKey *devicekey.Key
 
 	mu        sync.RWMutex
 	identity  cloud.Identity
@@ -125,6 +134,11 @@ func New(opts Options) (*Agent, error) {
 		proxies:  map[string]*authproxy.Server{},
 		config:   config.Connector{SchemaVersion: config.CurrentSchemaVersion},
 	}
+	deviceKey, _, err := devicekey.LoadOrCreate(st.Path(fileDeviceKey))
+	if err != nil {
+		return nil, err
+	}
+	agent.deviceKey = deviceKey
 	agent.state.SetObserver(func(from, to state.State, reason string) {
 		agent.mu.Lock()
 		if to == state.Ready || to == state.Connecting {
@@ -142,8 +156,11 @@ func New(opts Options) (*Agent, error) {
 	if err := st.ReadJSON(fileState, &saved); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	if err := st.ReadJSON(fileIdentity, &agent.identity); err == nil && agent.identity.DeviceToken != "" {
-		agent.state.Transition(state.Configuring, "已载入设备身份")
+	tombstoned := st.Exists(fileRevoked)
+	if !tombstoned {
+		if err := st.ReadJSON(fileIdentity, &agent.identity); err == nil && agent.identity.DeviceToken != "" {
+			agent.state.Transition(state.Configuring, "已载入设备身份")
+		}
 	}
 	if err := st.ReadJSON(fileConfig, &agent.config); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
@@ -161,8 +178,12 @@ func New(opts Options) (*Agent, error) {
 		agent.profiles = map[string]huaweiauth.Profile{}
 	}
 	// 未绑定但已经导入来源时，重启后应回到“待配置”，而不是退回“尚未绑定”。
-	if agent.identity.DeviceToken == "" && len(agent.config.Sources) > 0 && saved.State != state.Revoked {
+	if !tombstoned && agent.identity.DeviceToken == "" && len(agent.config.Sources) > 0 && saved.State != state.Revoked {
 		agent.state.Transition(state.Configuring, "已载入来源配置")
+	}
+	if tombstoned {
+		agent.identity = cloud.Identity{}
+		agent.state.Transition(state.Revoked, "本机撤销墓碑已生效")
 	}
 	if agent.identity.DeviceToken != "" && len(agent.config.Sources) > 0 {
 		switch saved.State {
@@ -171,7 +192,7 @@ func New(opts Options) (*Agent, error) {
 		}
 	}
 	if agent.identity.DeviceToken != "" {
-		client, err := cloud.New(agent.cloudBase(), agent.identity.DeviceToken)
+		client, err := cloud.NewWithSigner(agent.cloudBase(), agent.identity.DeviceToken, agent.deviceKey)
 		if err != nil {
 			return nil, err
 		}
@@ -332,13 +353,13 @@ func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
 		return a.Status(), errors.New("本机环境未配置云端控制面，当前诊断试用包不能绑定企业")
 	}
 	if a.cloud == nil {
-		client, err := cloud.New(a.cloudBase(), "")
+		client, err := cloud.NewWithSigner(a.cloudBase(), "", a.deviceKey)
 		if err != nil {
 			return a.Status(), err
 		}
 		a.cloud = client
 	}
-	identity, err := a.cloud.Redeem(ctx, code, "")
+	identity, err := a.cloud.Redeem(ctx, code, a.deviceKey.PublicKey())
 	if err != nil {
 		return a.Status(), err
 	}
@@ -351,7 +372,7 @@ func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
 	if err := a.store.WriteJSON(fileIdentity, identity); err != nil {
 		return a.Status(), err
 	}
-	client, err := cloud.New(a.cloudBase(), identity.DeviceToken)
+	client, err := cloud.NewWithSigner(a.cloudBase(), identity.DeviceToken, a.deviceKey)
 	if err == nil {
 		a.cloud = client
 	}
@@ -520,6 +541,142 @@ func containsTool(tools []string, wanted string) bool {
 	return false
 }
 
+// registerSources publishes only opaque source metadata to the control plane.
+// Customer URLs, credentials and local proxy targets remain local.
+func (a *Agent) registerSources(ctx context.Context) error {
+	a.mu.RLock()
+	sources := append([]config.Source(nil), a.config.Sources...)
+	proxies := make(map[string]*authproxy.Server, len(a.proxies))
+	for sourceID, proxy := range a.proxies {
+		proxies[sourceID] = proxy
+	}
+	a.mu.RUnlock()
+	if a.cloud == nil {
+		return errors.New("请先绑定企业")
+	}
+	for _, source := range sources {
+		allowedTools, err := normalizeTools(source.ToolAllowlist)
+		if err != nil {
+			return fmt.Errorf("来源 %s 的工具允许列表无效: %w", source.DisplayName, err)
+		}
+		if len(allowedTools) == 0 {
+			return fmt.Errorf("来源 %s 未设置客户本机只读工具允许列表", source.DisplayName)
+		}
+		proxy := proxies[source.SourceID]
+		if proxy == nil {
+			return fmt.Errorf("来源 %s 缺少本机认证代理", source.DisplayName)
+		}
+		schemaDigest, err := discoverToolSchemaDigest(ctx, proxy, allowedTools)
+		if err != nil {
+			return fmt.Errorf("来源 %s 的工具 schema 发现失败: %w", source.DisplayName, err)
+		}
+		if _, fail := a.cloud.RegisterSource(ctx, cloud.SourceRegistration{
+			SourceID:            source.SourceID,
+			DisplayName:         source.DisplayName,
+			AllowedTools:        allowedTools,
+			ToolSchemaSHA256:    schemaDigest,
+			TargetBindingSHA256: digestString(strings.TrimRight(source.UpstreamURL, "/")),
+			Transport:           source.Transport,
+		}); fail != nil {
+			return fmt.Errorf("登记来源 %s 失败: %w", source.DisplayName, fail)
+		}
+	}
+	return nil
+}
+
+func discoverToolSchemaDigest(ctx context.Context, proxy *authproxy.Server, allowlist []string) (string, error) {
+	host, port, err := proxy.Endpoint()
+	if err != nil {
+		return "", err
+	}
+	client := &mcp.Client{
+		Endpoint: fmt.Sprintf("http://%s:%d/mcp", host, port),
+		HTTP:     &http.Client{Timeout: 15 * time.Second},
+	}
+	discoveryCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	info, err := client.Initialize(discoveryCtx)
+	if err != nil {
+		return "", fmt.Errorf("MCP 初始化失败: %w", err)
+	}
+	tools, err := client.ListTools(discoveryCtx)
+	if err != nil {
+		return "", fmt.Errorf("读取工具目录失败: %w", err)
+	}
+	return digestToolSchema(info, tools, allowlist)
+}
+
+// digestToolSchema hashes only the approved tools and the schema-bearing
+// fields that affect call semantics. Map keys are sorted by encoding/json, so
+// cosmetic ordering changes do not rotate the digest.
+func digestToolSchema(info mcp.ServerInfo, tools []mcp.Tool, allowlist []string) (string, error) {
+	allowed := make(map[string]bool, len(allowlist))
+	for _, name := range allowlist {
+		allowed[name] = true
+	}
+	byName := make(map[string]mcp.Tool, len(tools))
+	for _, tool := range tools {
+		if tool.Name == "" {
+			return "", errors.New("工具目录包含空名称")
+		}
+		if _, exists := byName[tool.Name]; exists {
+			return "", fmt.Errorf("工具目录包含重复名称: %s", tool.Name)
+		}
+		byName[tool.Name] = tool
+	}
+	names := make([]string, 0, len(allowlist))
+	for _, name := range allowlist {
+		if _, exists := byName[name]; !exists {
+			return "", fmt.Errorf("允许列表中的工具不存在: %s", name)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	canonicalTools := make([]any, 0, len(names))
+	for _, name := range names {
+		tool := byName[name]
+		raw := tool.Raw
+		if len(raw) == 0 {
+			encoded, err := json.Marshal(tool)
+			if err != nil {
+				return "", err
+			}
+			raw = encoded
+		}
+		var object map[string]any
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&object); err != nil {
+			return "", fmt.Errorf("工具 %s 的定义不是 JSON 对象: %w", name, err)
+		}
+		canonical := map[string]any{"name": name}
+		for _, key := range []string{"title", "description", "inputSchema", "outputSchema", "annotations"} {
+			if value, exists := object[key]; exists {
+				canonical[key] = value
+			}
+		}
+		canonicalTools = append(canonicalTools, canonical)
+	}
+	manifest := map[string]any{
+		"digest_schema_version": 1,
+		"protocol_version":      info.ProtocolVersion,
+		"server_name":           info.ServerInfo.Name,
+		"server_version":        info.ServerInfo.Version,
+		"tools":                 canonicalTools,
+	}
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		return "", err
+	}
+	return digestString(string(payload)), nil
+}
+
+func digestString(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
 // Connect 拉取期望状态、生成通道配置并启动 frpc。
 func (a *Agent) Connect(ctx context.Context) (Status, error) {
 	if !a.CloudReadyForTrial() {
@@ -541,26 +698,38 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 		a.state.Transition(state.Connecting, "开始建立通道")
 	}
 
+	if err := a.startAuthProxies(); err != nil {
+		a.state.Transition(state.DegradedRelay, "启动本机认证代理失败: "+err.Error())
+		return a.Status(), err
+	}
+	if err := a.registerSources(ctx); err != nil {
+		a.stopAuthProxies()
+		a.state.Transition(state.DegradedRelay, err.Error())
+		return a.Status(), err
+	}
 	desired, err := a.cloud.DesiredState(ctx, a.identity.ConnectorID)
 	if err != nil {
+		a.stopAuthProxies()
 		a.state.Transition(state.DegradedRelay, "获取云端状态失败: "+err.Error())
 		return a.Status(), err
 	}
 	if desired.Revoked {
+		a.stopAuthProxies()
 		a.state.Transition(state.Revoked, "云端已撤销该连接器")
 		return a.Status(), errors.New("连接器已被撤销")
 	}
+	if desired.Draining {
+		status := a.Pause(ctx)
+		return status, errors.New("云端已将该连接器排空，新的平台调用将被拒绝")
+	}
 	secretsState, err := a.cloud.TransportSecrets(ctx, a.identity.ConnectorID)
 	if err != nil {
+		a.stopAuthProxies()
 		a.state.Transition(state.DegradedRelay, "获取通道密钥失败")
 		return a.Status(), fmt.Errorf("获取通道密钥失败: %w", err)
 	}
 	desired = mergeSecrets(desired, secretsState)
 
-	if err := a.startAuthProxies(); err != nil {
-		a.state.Transition(state.DegradedRelay, "启动本机认证代理失败: "+err.Error())
-		return a.Status(), err
-	}
 	generated, err := a.buildFrpcConfig(desired)
 	if err != nil {
 		a.stopAuthProxies()
@@ -656,17 +825,34 @@ func (a *Agent) Disconnect(ctx context.Context) Status {
 
 // Revoke 撤销本机设备。
 func (a *Agent) Revoke(ctx context.Context) (Status, error) {
-	if a.cloud != nil && a.identity.ConnectorID != "" {
-		if err := a.cloud.Revoke(ctx, a.identity.ConnectorID); err != nil {
-			return a.Status(), err
-		}
-	}
+	a.mu.RLock()
+	client := a.cloud
+	connectorID := a.identity.ConnectorID
+	a.mu.RUnlock()
+
+	// Local revocation is authoritative. A control-plane outage must never
+	// leave the device identity usable or allow a later reconnection.
 	a.Pause(ctx)
 	a.mu.Lock()
 	a.identity = cloud.Identity{}
+	a.cloud = nil
+	a.secrets = map[string]map[string]string{}
+	a.profiles = map[string]huaweiauth.Profile{}
 	a.mu.Unlock()
 	_ = a.store.Remove(fileIdentity)
+	_ = a.store.Remove(fileSecrets)
+	_ = a.store.Remove(fileAuth)
+	_ = a.store.Remove(fileFrpc)
+	_ = a.store.WriteJSON(fileRevoked, map[string]string{
+		"connector_id": connectorID,
+		"revoked_at":   time.Now().UTC().Format(time.RFC3339Nano),
+	})
 	a.state.Transition(state.Revoked, "设备已撤销")
+	if client != nil && connectorID != "" {
+		if err := client.Revoke(ctx, connectorID); err != nil {
+			return a.Status(), fmt.Errorf("本机已撤销，云端通知未完成: %w", err)
+		}
+	}
 	return a.Status(), nil
 }
 
@@ -714,8 +900,15 @@ func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error)
 	for _, item := range desired.Sources {
 		byID[item.SourceID] = item
 	}
+	localByID := map[string]config.Source{}
 	for _, source := range sources {
-		item, ok := byID[source.SourceID]
+		localByID[source.SourceID] = source
+	}
+	for _, item := range desired.Sources {
+		source, ok := localByID[item.SourceID]
+		if !ok {
+			return generated, fmt.Errorf("云端引用了本机未导入的来源 %s", item.SourceID)
+		}
 		proxy := proxies[source.SourceID]
 		if proxy == nil {
 			return generated, fmt.Errorf("来源 %s 缺少本机认证代理", source.DisplayName)
@@ -724,17 +917,16 @@ func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error)
 		if err != nil {
 			return generated, err
 		}
-		secret := ""
-		if ok {
-			secret = item.STCPSecret
-		}
 		generated.Proxies = append(generated.Proxies, frpc.Proxy{
 			Name:       source.SourceID,
-			SecretKey:  secret,
+			SecretKey:  item.STCPSecret,
 			LocalIP:    host,
 			LocalPort:  port,
 			AllowUsers: item.AllowUsers,
 		})
+	}
+	if len(generated.Proxies) == 0 {
+		return generated, errors.New("云端尚未批准任何可用来源")
 	}
 	if err := generated.Validate(); err != nil {
 		return generated, err
@@ -777,14 +969,19 @@ func (a *Agent) startHeartbeat() {
 					continue
 				}
 				status := a.Status()
+				a.mu.RLock()
+				activeSources := make([]string, 0, len(a.proxies))
+				for sourceID := range a.proxies {
+					activeSources = append(activeSources, sourceID)
+				}
+				a.mu.RUnlock()
+				sort.Strings(activeSources)
 				beat := cloud.Heartbeat{
 					State:      string(status.State),
 					Version:    version.String(),
 					ObservedAt: time.Now().UTC(),
 					LastError:  status.LastError,
-				}
-				for _, source := range status.Sources {
-					beat.SourceIDs = append(beat.SourceIDs, source.SourceID)
+					SourceIDs:  activeSources,
 				}
 				beatCtx, beatCancel := context.WithTimeout(ctx, 10*time.Second)
 				_ = a.cloud.Heartbeat(beatCtx, a.identity.ConnectorID, beat)

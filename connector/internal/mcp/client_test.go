@@ -72,6 +72,9 @@ func TestClientHandlesJSONAndSSE(t *testing.T) {
 	if len(tools) != 1 || tools[0].Name != "get_inventory" {
 		t.Fatalf("工具解析错误: %+v", tools)
 	}
+	if len(tools[0].Raw) == 0 || !strings.Contains(string(tools[0].Raw), `"description":"查询库存"`) {
+		t.Fatalf("未保留完整工具定义: %s", tools[0].Raw)
+	}
 	if _, err := client.CallTool(ctx, "get_inventory", map[string]any{}); err != nil {
 		t.Fatalf("调用工具失败: %v", err)
 	}

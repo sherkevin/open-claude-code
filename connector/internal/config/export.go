@@ -17,13 +17,13 @@ func EdgeSourcePath(sourceID string) string {
 type PlatformConnection struct {
 	Type    string            `json:"type"`
 	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // BuildPlatformConfig 生成平台可直接导入的 MCP 配置。
 //
-// 平台导入器只接受 mcpServers 容器、http 类型和唯一的 Authorization 请求头，
-// 因此这里严格按该格式输出；地址指向云端 Edge，凭据为平台签发的调用凭据。
+// 平台配置只描述 Edge 地址。正式授权必须通过用户会话和 OAuth Token
+// Exchange 在请求时取得；这里禁止写入静态用户 Bearer 或长期共享令牌。
 func BuildPlatformConfig(sources []Source, edgeBase, accessToken string) ([]byte, error) {
 	edgeBase = strings.TrimRight(strings.TrimSpace(edgeBase), "/")
 	if edgeBase == "" {
@@ -33,12 +33,8 @@ func BuildPlatformConfig(sources []Source, edgeBase, accessToken string) ([]byte
 	if err != nil || parsed.Host == "" {
 		return nil, fmt.Errorf("%w: 云端 Edge 地址无效", ErrInvalid)
 	}
-	token := strings.TrimSpace(accessToken)
-	if token == "" {
-		token = "<EDGE_ACCESS_TOKEN>"
-	}
-	if !strings.HasPrefix(strings.ToLower(token), "bearer ") {
-		token = "Bearer " + token
+	if strings.TrimSpace(accessToken) != "" {
+		return nil, fmt.Errorf("%w: 平台配置不能包含静态用户令牌", ErrInvalid)
 	}
 
 	servers := map[string]PlatformConnection{}
@@ -53,9 +49,8 @@ func BuildPlatformConfig(sources []Source, edgeBase, accessToken string) ([]byte
 			name = fmt.Sprintf("%s-%d", name, used[name])
 		}
 		servers[name] = PlatformConnection{
-			Type:    "http",
-			URL:     edgeBase + EdgeSourcePath(source.SourceID),
-			Headers: map[string]string{"Authorization": token},
+			Type: "http",
+			URL:  edgeBase + EdgeSourcePath(source.SourceID),
 		}
 	}
 	if len(servers) == 0 {

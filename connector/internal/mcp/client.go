@@ -36,9 +36,28 @@ type Client struct {
 
 // Tool 是服务端返回的工具描述。
 type Tool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	Name         string          `json:"name"`
+	Title        string          `json:"title,omitempty"`
+	Description  string          `json:"description,omitempty"`
+	InputSchema  json.RawMessage `json:"inputSchema,omitempty"`
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
+	Annotations  json.RawMessage `json:"annotations,omitempty"`
+	// Raw preserves the complete server definition so callers can compute a
+	// deterministic digest without silently dropping schema extensions.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps both the typed view used by callers and the exact tool
+// object returned by the server.
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	type toolAlias Tool
+	var decoded toolAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*t = Tool(decoded)
+	t.Raw = append(t.Raw[:0], data...)
+	return nil
 }
 
 // ServerInfo 是初始化结果中的服务端信息。

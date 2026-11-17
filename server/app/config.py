@@ -176,6 +176,22 @@ class Settings:
     feishu_api_base: str = field(default_factory=lambda: os.getenv("FEISHU_API_BASE_URL", "https://open.feishu.cn").rstrip("/"))
     feishu_h5_allowed_open_ids: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip() for x in os.getenv("AGENT_FEISHU_H5_ALLOWED_OPEN_IDS", os.getenv("AGENT_FEISHU_ALLOWED_OPEN_IDS", "")).split(",") if x.strip()))
     feishu_h5_user_map: str = field(default_factory=lambda: os.getenv("AGENT_FEISHU_H5_USER_MAP", "").strip())
+    # Intranet-connector control plane. Disabled unless an operator supplies a
+    # dedicated administrator token and relay endpoint. The administrator
+    # token is intentionally separate from user sessions and connector device
+    # tokens; none of these values is returned by /config or status APIs.
+    kaiwu_control_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ENABLED", "false").lower() == "true")
+    kaiwu_control_admin_token: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ADMIN_TOKEN", "").strip(), repr=False)
+    kaiwu_control_admin_token_file: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ADMIN_TOKEN_FILE", "").strip())
+    kaiwu_control_relay_address: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_ADDRESS", "").strip())
+    kaiwu_control_relay_port: int = field(default_factory=lambda: int(os.getenv("AGENT_KAIWU_CONTROL_RELAY_PORT", "0")))
+    kaiwu_control_relay_protocol: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_PROTOCOL", "wss").strip().lower())
+    kaiwu_control_relay_tls_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_TLS_ENABLED", "true").lower() == "true")
+    kaiwu_control_relay_tls_server_name: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_TLS_SERVER_NAME", "").strip())
+    kaiwu_control_edge_user: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_EDGE_USER", "kaiwu-edge").strip())
+    # Public key only. The Edge private key must live in the Edge signing
+    # service, never in this application process.
+    kaiwu_control_edge_public_key: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_EDGE_PUBLIC_KEY", "").strip())
 
     def __post_init__(self) -> None:
         if not isinstance(self.session_cookie_name, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}", self.session_cookie_name):
@@ -220,6 +236,10 @@ class Settings:
             raise ValueError("AGENT_HARNESS_COMPACTION_TIMEOUT_SECONDS must be an integer from 1 to 3600")
         if not self.model:
             self.model = self.provider_env().get("ANTHROPIC_MODEL") or DEFAULT_MODEL
+        if type(self.kaiwu_control_relay_port) is not int or not 0 <= self.kaiwu_control_relay_port <= 65535:
+            raise ValueError("AGENT_KAIWU_CONTROL_RELAY_PORT must be between 0 and 65535")
+        if self.kaiwu_control_relay_protocol not in {"tcp", "quic", "websocket", "wss"}:
+            raise ValueError("AGENT_KAIWU_CONTROL_RELAY_PROTOCOL must be tcp, quic, websocket or wss")
 
     def deployment_policy(self) -> DeploymentPolicy:
         return DeploymentPolicy(self.deployment_mode, self.trial_capabilities)
@@ -236,6 +256,17 @@ class Settings:
             if value:
                 return value
         return self.feishu_bridge_token.strip()
+
+    def kaiwu_control_token(self) -> str:
+        """Return the dedicated control-plane administrator token."""
+        if self.kaiwu_control_admin_token_file:
+            try:
+                value = Path(self.kaiwu_control_admin_token_file).read_text(encoding="utf-8").strip()
+            except OSError:
+                value = ""
+            if value:
+                return value
+        return self.kaiwu_control_admin_token.strip()
 
     @property
     def feishu_h5_ready(self) -> bool:

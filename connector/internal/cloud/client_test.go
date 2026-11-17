@@ -5,8 +5,25 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
+
+type testSigner struct {
+	method string
+	path   string
+	body   []byte
+}
+
+func (s *testSigner) KeyID() string { return "device-key-1" }
+
+func (s *testSigner) SignRequest(method, path string, body []byte) (string, string, string, error) {
+	s.method = method
+	s.path = path
+	s.body = append([]byte(nil), body...)
+	return "1700000000", "synthetic-nonce-123", "synthetic-signature", nil
+}
 
 func TestRedeemAndDesiredState(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,5 +98,126 @@ func TestAPIErrorParsing(t *testing.T) {
 func TestRejectsInvalidBaseURL(t *testing.T) {
 	if _, err := New("not-a-url", ""); err == nil {
 		t.Fatal("非法地址应被拒绝")
+	}
+}
+
+func TestDeviceClientSignsExactMethodPathAndBody(t *testing.T) {
+	signer := &testSigner{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Kaiwu-Device-Key"); got != "device-key-1" {
+			t.Errorf("设备密钥编号缺失: %q", got)
+		}
+		if got := r.Header.Get("X-Kaiwu-Timestamp"); got != "1700000000" {
+			t.Errorf("时间戳缺失: %q", got)
+		}
+		if got := r.Header.Get("X-Kaiwu-Nonce"); got != "synthetic-nonce-123" {
+			t.Errorf("nonce 缺失: %q", got)
+		}
+		if got := r.Header.Get("X-Kaiwu-Signature"); got != "synthetic-signature" {
+			t.Errorf("签名缺失: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"revision":1,"sources":[],"revoked":false,"draining":false}`))
+	}))
+	defer server.Close()
+
+	client, err := NewWithSigner(server.URL+"/api/kaiwu", "device-token", signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DesiredState(context.Background(), "conn_1"); err != nil {
+		t.Fatal(err)
+	}
+	if signer.method != http.MethodGet {
+		t.Fatalf("签名方法不符: %s", signer.method)
+	}
+	if signer.path != "/api/kaiwu/v1/connectors/conn_1/desired-state" {
+		t.Fatalf("签名路径不符: %s", signer.path)
+	}
+	if len(signer.body) != 0 {
+		t.Fatalf("GET 签名正文应为空: %q", signer.body)
+	}
+}
+
+func TestDesiredStateStrictlyRejectsLocalTargetFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"revision":1,"sources":[{"source_id":"src_1","display_name":"源","local_host":"10.0.0.8","local_port":80}],"revoked":false,"draining":false}`))
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, "device-token")
+	if _, err := client.DesiredState(context.Background(), "conn_1"); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("含内网目标字段的期望状态必须拒绝: %v", err)
+	}
+}
+
+func TestHeartbeatKeepsExplicitEmptyFields(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, "device-token")
+	err := client.Heartbeat(context.Background(), "conn_1", Heartbeat{
+		State:      "READY",
+		Version:    "test",
+		ObservedAt: time.Unix(1, 0).UTC(),
+		SourceIDs:  []string{},
+		LastError:  "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["source_ids"]; !ok {
+		t.Fatal("空 source_ids 必须显式上报")
+	}
+	if _, ok := payload["last_error"]; !ok {
+		t.Fatal("空 last_error 必须显式上报")
+	}
+}
+
+func TestRegisterSourceSendsMetadataOnlyAndRevokeUsesSelfRoute(t *testing.T) {
+	var sourceBody map[string]any
+	var revokePath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sources" {
+			_ = json.NewDecoder(r.Body).Decode(&sourceBody)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/self-revoke") {
+			revokePath = r.URL.Path
+			_, _ = w.Write([]byte(`{"revoked":true}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, "device-token")
+	_, err := client.RegisterSource(context.Background(), SourceRegistration{
+		SourceID:            "src_1",
+		DisplayName:         "销售只读",
+		AllowedTools:        []string{"query_orders"},
+		ToolSchemaSHA256:    strings.Repeat("a", 64),
+		TargetBindingSHA256: strings.Repeat("b", 64),
+		Transport:           "streamable_http",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"upstream_url", "host", "port", "path", "credential"} {
+		if _, exists := sourceBody[forbidden]; exists {
+			t.Fatalf("来源登记不得上传 %s: %+v", forbidden, sourceBody)
+		}
+	}
+	if err := client.Revoke(context.Background(), "conn_1"); err != nil {
+		t.Fatal(err)
+	}
+	if revokePath != "/v1/connectors/conn_1/self-revoke" {
+		t.Fatalf("撤销路径不符合设备平面: %s", revokePath)
 	}
 }

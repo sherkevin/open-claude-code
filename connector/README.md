@@ -4,7 +4,7 @@
 
 面向客户现场的实施与运维文档见 [`docs/交付与运维说明.md`](docs/交付与运维说明.md)。本文件面向开发和构建。
 
-> 当前 `1.1.0` 是受控本机诊断试用候选包。安装包默认不配置云端控制面和 Edge，因此只启用安装、MCP 导入、动态认证配置和本机诊断；绑定、连接云端和导出平台配置会失败关闭。它不代表开物平台已经能够调用客户内网 MCP。
+> 当前 `1.2.0` 是受控本机诊断试用候选包。安装包默认不配置云端控制面和 Edge，因此只启用安装、MCP 导入、动态认证配置和本机诊断；绑定、连接云端和平台授权流程会失败关闭。它不代表开物平台已经能够调用客户内网 MCP。
 
 ## 架构
 
@@ -66,7 +66,7 @@ bash scripts/build.sh
 ```bash
 cd connector
 go test ./...
-bash scripts/build.sh            # 版本默认 1.1.0，可用 VERSION=... 覆盖
+bash scripts/build.sh            # 版本默认 1.2.0，可用 VERSION=... 覆盖
 ```
 
 产物在 `dist/`：
@@ -104,23 +104,26 @@ connector version
 
 ## 控制面接口
 
-连接器按以下接口与云端交互（均为 `Authorization: Bearer <设备令牌>`）：
+连接器按以下接口与云端交互。设备请求同时携带 `Authorization: Bearer <设备令牌>`，并用本机 Ed25519 私钥签名 HTTP 方法、精确路径、正文摘要、时间戳和一次性 nonce：
 
 - `POST /v1/enrollments/redeem`：一次性接入码兑换设备身份
+- `POST /v1/sources`：登记不透明来源元数据、客户本机批准的工具，以及从真实 `tools/list` 规范化计算出的工具 schema 摘要
 - `GET  /v1/connectors/{id}/desired-state`：期望状态、来源、中继参数
 - `GET  /v1/connectors/{id}/transport-secrets`：通道密钥
 - `POST /v1/connectors/{id}/heartbeat`：30 秒心跳
-- `POST /v1/connectors/{id}/drain|resume|revoke`：优雅停止、恢复、撤销
+- `POST /v1/connectors/{id}/self-revoke`：本机已撤销后通知云端
+
+管理员的 drain、resume 和 revoke 使用独立管理员凭据，连接器设备令牌不能调用。
 
 ## 平台导入契约
 
-当前平台导入器接受 `mcpServers` 容器、`http` / `streamable-http` 类型，并只支持一个 `Authorization` 请求头。连接器导出的 `<EDGE_ACCESS_TOKEN>` 是显式占位符，不是授权，导入后不能证明链路可用：
+当前导出只包含 Edge 地址，不包含 `Authorization`、静态用户 Bearer、设备令牌或客户上游凭据：
 
 ```json
-{"mcpServers":{"名称":{"type":"http","url":"https://<edge>/sources/<id>/mcp","headers":{"Authorization":"Bearer <EDGE_ACCESS_TOKEN>"}}}}
+{"mcpServers":{"名称":{"type":"http","url":"https://<edge>/sources/<id>/mcp"}}}
 ```
 
-正式平台配置必须通过 OAuth Token Exchange 获取短期 `AT_user`，不得把静态用户 Bearer 写入平台。该能力尚未完成，因此当前导出只能用于本机诊断试用，不能作为 G7 或端到端验收证据。
+正式平台必须通过用户会话和 OAuth Token Exchange 在请求时获取短期 `AT_user`，不得把静态用户 Bearer 写入平台。该能力尚未完成，因此当前导出只能用于核对 Edge 路径，导入后不能证明链路可用，也不能作为 G7 或端到端验收证据。
 
 ## frpc 许可
 

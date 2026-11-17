@@ -17,7 +17,7 @@
 Windows 测试包：
 
 ```text
-kaiwu-connector-1.1.0-windows-amd64.zip
+kaiwu-connector-1.2.0-windows-amd64.zip
 ```
 
 当前版本的已知边界：
@@ -99,7 +99,7 @@ Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumb
 把交付包放到例如 `C:\Users\<你的用户名>\Downloads\`，然后执行：
 
 ```powershell
-$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.1.0-windows-amd64.zip"
+$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.2.0-windows-amd64.zip"
 Get-FileHash -Algorithm SHA256 $Package |
   Format-List |
   Tee-Object (Join-Path $Evidence "package-hash.txt")

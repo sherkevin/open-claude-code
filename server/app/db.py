@@ -189,6 +189,85 @@ CREATE TABLE IF NOT EXISTS feishu_inbound_events(
     received_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS feishu_inbound_events_received ON feishu_inbound_events(received_at);
+-- Kaiwu intranet connector control plane. These tables intentionally retain
+-- only hashes, public keys and operational metadata; device tokens, enrollment
+-- codes and relay secrets are never stored in plaintext.
+CREATE TABLE IF NOT EXISTS kaiwu_enrollments(
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    tenant_name TEXT NOT NULL,
+    code_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    connector_id TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kaiwu_enrollments_expiry ON kaiwu_enrollments(expires_at,used_at);
+CREATE TABLE IF NOT EXISTS kaiwu_connectors(
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    tenant_name TEXT NOT NULL,
+    device_public_key TEXT NOT NULL,
+    device_key_id TEXT NOT NULL,
+    device_token_hash TEXT NOT NULL UNIQUE,
+    relay_token_hash TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    draining INTEGER NOT NULL DEFAULT 0,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS kaiwu_connectors_tenant ON kaiwu_connectors(tenant_id,created_at);
+CREATE TABLE IF NOT EXISTS kaiwu_sources(
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    tenant_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    allowed_tools TEXT NOT NULL,
+    tool_schema_sha256 TEXT NOT NULL,
+    target_binding_sha256 TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    stcp_secret TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(connector_id,source_id)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_sources_tenant ON kaiwu_sources(tenant_id,connector_id);
+CREATE TABLE IF NOT EXISTS kaiwu_device_nonces(
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    nonce TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(connector_id,nonce)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_device_nonces_expiry ON kaiwu_device_nonces(expires_at);
+CREATE TABLE IF NOT EXISTS kaiwu_heartbeats(
+    connector_id TEXT PRIMARY KEY REFERENCES kaiwu_connectors(id),
+    state TEXT NOT NULL,
+    connector_version TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    source_ids TEXT NOT NULL,
+    last_error TEXT NOT NULL,
+    received_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kaiwu_control_audit(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id TEXT NOT NULL,
+    connector_id TEXT,
+    source_id TEXT,
+    actor_type TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '{}',
+    trace_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kaiwu_control_audit_connector ON kaiwu_control_audit(connector_id,id);
+CREATE INDEX IF NOT EXISTS kaiwu_control_audit_tenant ON kaiwu_control_audit(tenant_id,id);
 """
 
 

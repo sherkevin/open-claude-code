@@ -120,7 +120,7 @@ func TestBuildPlatformConfigMatchesContract(t *testing.T) {
 		SchemaVersion: 1, SourceID: "src_inventory", DisplayName: "库存查询",
 		Transport: TransportStreamableHTTP, UpstreamURL: "http://10.0.0.8:8000/mcp",
 	}}
-	raw, err := BuildPlatformConfig(sources, "https://mcp.example.com/", "abc")
+	raw, err := BuildPlatformConfig(sources, "https://mcp.example.com/", "")
 	if err != nil {
 		t.Fatalf("导出失败: %v", err)
 	}
@@ -144,18 +144,14 @@ func TestBuildPlatformConfigMatchesContract(t *testing.T) {
 	if entry.URL != "https://mcp.example.com/sources/src_inventory/mcp" {
 		t.Fatalf("地址不符合 Edge 约定: %s", entry.URL)
 	}
-	if entry.Headers["Authorization"] != "Bearer abc" {
-		t.Fatalf("凭据头不符合平台约定: %s", entry.Headers["Authorization"])
+	if len(entry.Headers) != 0 {
+		t.Fatalf("平台配置不得导出静态授权头: %+v", entry.Headers)
 	}
 }
 
-func TestBuildPlatformConfigUsesPlaceholder(t *testing.T) {
+func TestBuildPlatformConfigRejectsStaticBearer(t *testing.T) {
 	sources := []Source{{SourceID: "s1", DisplayName: "库存", UpstreamURL: "http://10.0.0.1/mcp", Transport: TransportStreamableHTTP}}
-	raw, err := BuildPlatformConfig(sources, "https://mcp.example.com", "")
-	if err != nil {
-		t.Fatalf("导出失败: %v", err)
-	}
-	if !strings.Contains(string(raw), "<EDGE_ACCESS_TOKEN>") {
-		t.Fatalf("空凭据应输出占位符: %s", raw)
+	if _, err := BuildPlatformConfig(sources, "https://mcp.example.com", "static-token"); err == nil {
+		t.Fatal("静态用户令牌必须被拒绝")
 	}
 }
