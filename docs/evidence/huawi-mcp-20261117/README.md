@@ -46,15 +46,24 @@
 
 | 文件 | 说明 |
 | --- | --- |
+| `kaiwu-connector-1.1.0-windows-amd64.zip` | 当前 Windows 本机诊断候选包，版本 `1.1.0`，提交 `b098e3a`，从干净 isolated worktree 交叉编译 |
+| `kaiwu-connector-1.1.0-linux-amd64.tar.gz` | 当前 Linux 构建与包级启动验证产物，版本 `1.1.0`，提交 `b098e3a` |
 | `kaiwu-connector-1.0.1-windows-amd64.zip` | 2026-11-17 的 Windows 候选安装包，版本 `1.0.1`，提交 `89c38b2`，构建时间 `2026-11-17T05:51:52Z` |
 
-候选包 SHA-256：
+当前 `1.1.0` 候选包 SHA-256：
+
+```text
+2BF5E93E5E27476A28CE92E1A7C9A22182E222194D1C73C547111415B8BF3964  kaiwu-connector-1.1.0-windows-amd64.zip
+39D5057EA9A811009E2CC4856F081A3E1F5DB2AB4BB99A398831C6C4E0CB9176  kaiwu-connector-1.1.0-linux-amd64.tar.gz
+```
+
+历史 `1.0.1` 包 SHA-256：
 
 ```text
 9305E142580CE3908B1B5C334F6F3FEA160F0767BE23702AAAB99C2C46FE5E1F
 ```
 
-该哈希与验收报告和测试摘要一致。候选包只适合受控试装，不能作为“平台端到端已接通”的证明。
+`1.0.1` 哈希与历史验收报告和测试摘要一致。当前 `1.1.0` 包已经完成源码测试、竞态测试、漏洞扫描、SBOM、双平台交叉构建、内层哈希和 Linux 包级启动验证，但尚未在 Windows 实机执行。两个版本都不能作为“平台端到端已接通”的证明。
 
 ### 评审与声明文档
 
@@ -67,7 +76,7 @@
 
 当前需求与交付计划位于
 `docs/plans/2026-11-17-huawi-kaiwu-mcp-bridge-requirements-and-delivery-plan.md`，
-状态为 `v0.4-review`。在第三轮业务、安全和交付三路独立复核通过前，不得把该计划当作冻结实施基线，也不得据此宣称云端 C 段已闭环或产品已可正式交付。
+状态为 `v0.7-diagnostic-candidate`。第三轮审核意见已经进入 `v0.6-execution-baseline`，当前 `v0.7` 记录 `1.1.0` 候选包的构建和验证进展；这仍不代表云端 C 段已闭环或产品已可正式交付。
 
 ## 已确认的关键事实
 
@@ -77,6 +86,7 @@
 4. `initialize`、`tools/list` 和 `ping` 使用固定 Bearer；`tools/call` 还需要 `appid`、`channel`、`userid`、`requestId`、`timestamp`、`sign`。
 5. HMAC 原文顺序为 `appid=<...>&channel=<...>&userid=<...>&requestId=<...>&timestamp=<...>`，使用 HMAC-SHA256 和小写十六进制。
 6. `1.0.1` 的 Windows 本机安装、服务、回环页面、本地 MCP 导入、诊断、错误凭据拒绝、服务重启和卸载通过；云端 C 段未闭环。
+7. `1.1.0` 新增本机动态认证代理、固定上游、来源编号稳定化、传输和协议加固、默认失败关闭的云端操作以及受控构建合规文件；目前只有 Linux 合成和包级证据，尚未完成 Windows 实机。
 
 ## 证据完整性限制
 
@@ -87,6 +97,8 @@
 3. 正常停止连接器后 5 秒内返回 `503` 尚未验证，只是 C 段联调的验收目标。
 4. 补齐原始证据或重新执行后，必须更新 `CLAIM_LEDGER_2026-11-17.md`，不能只改文字结论。
 5. 验收报告中的系统版本写作“Windows 10 Home China，2009，Build 26200”，该组合与常见 Windows 版本命名不一致；在没有 `windows-info.txt` 的情况下，不能把这段文字当作可审计环境证据。
+6. `1.1.0` 的 Windows ZIP 只证明交叉编译成功和包内哈希一致；当前环境没有 Windows 运行时，不能据此声明安装脚本、Windows 服务、重启恢复或卸载已经通过。
+7. `1.1.0` 尚未执行恶意软件扫描、秘密扫描、Authenticode 签名和正式发布独立双构建，不能进入 G7a 或正式交付。
 
 ## 敏感信息检查
 
