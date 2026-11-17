@@ -355,6 +355,86 @@ func TestAuthProfilePersistsWithoutExposingSecret(t *testing.T) {
 	}
 }
 
+func TestReimportPreservesApprovedToolAllowlist(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	instance, err := New(Options{DataDir: dir, CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"mcpServers":{"销售查询":{"type":"http","url":"` + upstream.URL + `/mcp","headers":{"Authorization":"Bearer customer-secret"}}}}`)
+	first, err := instance.ImportConfig(context.Background(), raw)
+	if err != nil || first.HasErrors() {
+		t.Fatalf("首次导入失败: %v %+v", err, first)
+	}
+	sourceID := first.Sources[0].SourceID
+	if _, err := instance.SetAuthProfile(sourceID, huaweiauth.Profile{
+		AppID: "app", Channel: "channel", UserID: "user", HMACKey: "0123456789abcdef0123456789abcdef",
+	}, []string{"manual_search"}); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := instance.ImportConfig(context.Background(), raw)
+	if err != nil || second.HasErrors() {
+		t.Fatalf("重复导入失败: %v %+v", err, second)
+	}
+	if second.Sources[0].SourceID != sourceID {
+		t.Fatalf("同一上游 URL 的来源编号发生变化: got=%s want=%s", second.Sources[0].SourceID, sourceID)
+	}
+	if got := second.Sources[0].ToolAllowlist; len(got) != 1 || got[0] != "manual_search" {
+		t.Fatalf("重复导入不得清空工具允许列表: %+v", got)
+	}
+	status := instance.Status()
+	if len(status.AuthProfiles) != 1 || !status.AuthProfiles[0].Configured ||
+		len(status.AuthProfiles[0].AllowedTools) != 1 || status.AuthProfiles[0].AllowedTools[0] != "manual_search" {
+		t.Fatalf("重复导入后认证状态不一致: %+v", status.AuthProfiles)
+	}
+
+	reloaded, err := New(Options{DataDir: dir, CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedStatus := reloaded.Status()
+	if len(reloadedStatus.AuthProfiles) != 1 ||
+		len(reloadedStatus.AuthProfiles[0].AllowedTools) != 1 ||
+		reloadedStatus.AuthProfiles[0].AllowedTools[0] != "manual_search" {
+		t.Fatalf("重启后工具允许列表丢失: %+v", reloadedStatus.AuthProfiles)
+	}
+}
+
+func TestCorrectAuthorizationSurvivesReimportAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	instance, err := New(Options{DataDir: dir, CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	correct := []byte(`{"mcpServers":{"销售查询":{"type":"http","url":"http://127.0.0.1:28765/mcp","headers":{"Authorization":"Bearer customer-secret"}}}}`)
+	wrong := []byte(`{"mcpServers":{"销售查询":{"type":"http","url":"http://127.0.0.1:28765/mcp","headers":{"Authorization":"Bearer wrong-token"}}}}`)
+	for index, raw := range [][]byte{correct, wrong, correct} {
+		report, err := instance.ImportConfig(context.Background(), raw)
+		if err != nil || report.HasErrors() {
+			t.Fatalf("第 %d 次导入失败: %v %+v", index+1, err, report)
+		}
+	}
+
+	reloaded, err := New(Options{DataDir: dir, CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.mu.RLock()
+	sourceID := reloaded.config.Sources[0].SourceID
+	got := reloaded.secrets[sourceID]["Authorization"]
+	reloaded.mu.RUnlock()
+	if got != "Bearer customer-secret" {
+		t.Fatalf("重启后 Authorization 不是最后一次导入的正确值: %q", got)
+	}
+}
+
 func TestRevokeIsLocalFirstAndTombstoneSurvivesCloudFailure(t *testing.T) {
 	var revokeCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

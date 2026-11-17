@@ -17,7 +17,7 @@
 Windows 测试包：
 
 ```text
-kaiwu-connector-1.2.0-windows-amd64.zip
+kaiwu-connector-1.2.1-windows-amd64.zip
 ```
 
 当前版本的已知边界：
@@ -99,7 +99,7 @@ Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumb
 把交付包放到例如 `C:\Users\<你的用户名>\Downloads\`，然后执行：
 
 ```powershell
-$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.2.0-windows-amd64.zip"
+$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.2.1-windows-amd64.zip"
 Get-FileHash -Algorithm SHA256 $Package |
   Format-List |
   Tee-Object (Join-Path $Evidence "package-hash.txt")
@@ -413,6 +413,15 @@ C:\Users\<你的用户名>\Desktop\KaiwuConnectorTest\evidence\diagnose.json
 
 重新导入并再次诊断。预期出现认证失败，错误码应接近 `UPSTREAM_AUTH_FAILED` 或 HTTP 401。完成后必须把凭据改回 `Bearer demo-token-123`，重新导入并确认诊断恢复通过。
 
+恢复正确凭据后，再导入同一份配置一次，并确认：
+
+1. 第 2 步仍然保留同一个来源编号；
+2. 第 3 步的动态认证工具允许列表仍然包含 `get_inventory`；
+3. `/api/status` 的 `sources[].tool_allowlist` 不为空；
+4. 带 `tool_probe=get_inventory` 的诊断仍然通过。
+
+这是 `1.2.0` 现场发现的 D01 回归项：重新导入同一模型上下文协议地址时，不能静默清空管理员已经批准的工具允许列表。
+
 ## 十、验证 Windows 服务重启恢复
 
 执行：
@@ -437,6 +446,7 @@ Invoke-RestMethod "http://127.0.0.1:17872/api/status" |
 3. 状态仍然是“待配置”，英文状态为 `CONFIGURING`；
 4. 之前导入的模拟 MCP 配置没有丢失；
 5. 再次点击“开始检测”，协议和工具目录检查仍然通过。
+6. 重启后再次确认 `tool_allowlist` 包含 `get_inventory`，并且 `tool_probe=get_inventory` 仍然通过。
 
 这一步通过，说明 Windows 服务重启后能够恢复本机来源配置和密钥文件。
 

@@ -76,17 +76,18 @@
 
 当前需求与交付计划位于
 `docs/plans/2026-11-17-huawi-kaiwu-mcp-bridge-requirements-and-delivery-plan.md`，
-状态为 `v0.7-diagnostic-candidate`。第三轮审核意见已经进入 `v0.6-execution-baseline`，当前 `v0.7` 记录 `1.1.0` 候选包的构建和验证进展；这仍不代表云端 C 段已闭环或产品已可正式交付。
+状态为 `v0.8-execution-baseline`。第三轮及后续审核意见已经进入执行基线；当前计划同时冻结了部署决定：连接器安装在承载 HwMain 业务的 Windows Server 2019 Datacenter 候选机，Linux OpenClaw 身份代理的历史回环入口不属于本次 Windows 连接器路径。这仍不代表云端 C 段已闭环或产品已可正式交付。
 
 ## 已确认的关键事实
 
 1. HwMain 业务 MCP 运行在 Windows Server 2019 Datacenter，64 位，Build `17763.9020`。
-2. 候选销售 MCP 入口为 `https://svr39.bjhwsj.com/SysDevCore/mcp/sales_test`，初始化探测返回 HTTP 401。
-3. Linux OpenClaw 身份代理历史监听 `127.0.0.1:18790/mcp`，Windows 连接器不能把该地址当作其他主机的回环入口。
-4. `initialize`、`tools/list` 和 `ping` 使用固定 Bearer；`tools/call` 还需要 `appid`、`channel`、`userid`、`requestId`、`timestamp`、`sign`。
-5. HMAC 原文顺序为 `appid=<...>&channel=<...>&userid=<...>&requestId=<...>&timestamp=<...>`，使用 HMAC-SHA256 和小写十六进制。
-6. `1.0.1` 的 Windows 本机安装、服务、回环页面、本地 MCP 导入、诊断、错误凭据拒绝、服务重启和卸载通过；云端 C 段未闭环。
-7. `1.1.0` 新增本机动态认证代理、固定上游、来源编号稳定化、传输和协议加固、默认失败关闭的云端操作以及受控构建合规文件；目前只有 Linux 合成和包级证据，尚未完成 Windows 实机。
+2. 本项目连接器固定安装在该 Windows 候选机，与 HwMain 业务 MCP 同机部署；不再由客户在 Windows 与 Linux 之间选择安装位置。
+3. 候选销售 MCP 入口为 `https://svr39.bjhwsj.com/SysDevCore/mcp/sales_test`，初始化探测返回 HTTP 401。
+4. Linux OpenClaw 身份代理历史监听 `127.0.0.1:18790/mcp`，Windows 连接器不能把该地址当作其他主机的回环入口。
+5. `initialize`、`tools/list` 和 `ping` 使用固定 Bearer；`tools/call` 还需要 `appid`、`channel`、`userid`、`requestId`、`timestamp`、`sign`。
+6. HMAC 原文顺序为 `appid=<...>&channel=<...>&userid=<...>&requestId=<...>&timestamp=<...>`，使用 HMAC-SHA256 和小写十六进制。
+7. `1.0.1` 的 Windows 本机安装、服务、回环页面、本地 MCP 导入、诊断、错误凭据拒绝、服务重启和卸载通过；云端 C 段未闭环。
+8. `1.1.0` 新增本机动态认证代理、固定上游、来源编号稳定化、传输和协议加固、默认失败关闭的云端操作以及受控构建合规文件；目前只有 Linux 合成和包级证据，尚未完成 Windows 实机。
 
 ## 证据完整性限制
 

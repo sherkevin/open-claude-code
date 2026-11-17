@@ -405,7 +405,9 @@ func (a *Agent) ImportConfig(ctx context.Context, raw []byte) (config.ImportRepo
 	}
 	activeSources := map[string]bool{}
 	for _, source := range a.config.Sources {
-		activeSources[source.SourceID] = true
+		// An auth profile without an approved tool list is unusable and must
+		// not remain presented as a valid local authorization.
+		activeSources[source.SourceID] = len(source.ToolAllowlist) > 0
 	}
 	for sourceID := range a.profiles {
 		if !activeSources[sourceID] {
@@ -434,9 +436,11 @@ func (a *Agent) ImportConfig(ctx context.Context, raw []byte) (config.ImportRepo
 // receives a new ID rather than risking cross-source authorization reuse.
 func assignSourceIDs(sources []config.Source, secrets map[string]map[string]string, existing []config.Source) ([]config.Source, map[string]map[string]string, error) {
 	existingIDsByURL := map[string][]string{}
+	existingByID := map[string]config.Source{}
 	for _, source := range existing {
 		if isOpaqueSourceID(source.SourceID) {
 			existingIDsByURL[source.UpstreamURL] = append(existingIDsByURL[source.UpstreamURL], source.SourceID)
+			existingByID[source.SourceID] = source
 		}
 	}
 	used := map[string]bool{}
@@ -463,6 +467,14 @@ func assignSourceIDs(sources []config.Source, secrets map[string]map[string]stri
 		}
 		used[nextID] = true
 		sources[index].SourceID = nextID
+		if previous, ok := existingByID[nextID]; ok &&
+			len(sources[index].ToolAllowlist) == 0 &&
+			previous.UpstreamURL == sources[index].UpstreamURL &&
+			previous.Transport == sources[index].Transport {
+			// Re-importing the same MCP endpoint must not silently revoke the
+			// administrator-approved tool allowlist.
+			sources[index].ToolAllowlist = append([]string(nil), previous.ToolAllowlist...)
+		}
 		if headers := secrets[oldID]; len(headers) > 0 {
 			assignedSecrets[nextID] = headers
 		}

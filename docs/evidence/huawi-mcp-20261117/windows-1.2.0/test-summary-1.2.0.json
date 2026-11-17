@@ -1,0 +1,203 @@
+{
+  "test": "Windows 内网 MCP 连接器本地验收（1.2.0 诊断试用包）",
+  "date": "2026-11-17",
+  "host": "SHERVIN",
+  "environment": {
+    "windows_product": "Windows 10 Home China",
+    "windows_version": "2009",
+    "windows_build": "26200",
+    "architecture": "64-bit",
+    "user": "SHERVIN\\shers",
+    "interactive_session_elevated": false,
+    "elevated_session_used_for_install_restart_uninstall": true,
+    "powershell": "5.1.26100.9818",
+    "defender_realtime_protection": false,
+    "defender_note": "Get-MpComputerStatus reported disabled before and after testing; this was not changed by the test"
+  },
+  "package": {
+    "file": "kaiwu-connector-1.2.0-windows-amd64.zip",
+    "sha256_expected": "0d9b7abc3d700390fc52476b0b896b7439e9fc6630b060ff30fb0838202c51d6",
+    "sha256_actual": "0d9b7abc3d700390fc52476b0b896b7439e9fc6630b060ff30fb0838202c51d6",
+    "sha256_match": true,
+    "version": "1.2.0",
+    "commit": "b26e131",
+    "built": "2026-11-17T12:11:01Z",
+    "frpc": "0.61.1",
+    "go_stdlib": "Go 1.27.4",
+    "internal_sha256sums": {
+      "checked": 25,
+      "failed": 0
+    },
+    "sbom_warnings": [
+      "main module version could not be determined because git object was not found",
+      "Go standard library license was not detected; BSD-3-Clause is injected by the build and Go LICENSE/PATENTS are included"
+    ]
+  },
+  "results": {
+    "A_local_install": {
+      "status": "pass",
+      "service_name": "KaiwuConnector",
+      "service_state": "Running",
+      "service_start_type": "Automatic",
+      "service_account": "LocalSystem",
+      "listen": "127.0.0.1:17872",
+      "page_http": 200,
+      "restart_service": "pass",
+      "uninstall_removed_service": true,
+      "uninstall_removed_program_dir": true,
+      "uninstall_purged_data_dir": true,
+      "listener_after_uninstall": "none (only TIME_WAIT entries)"
+    },
+    "B_local_mcp": {
+      "status": "pass",
+      "mock_server": "kaiwu-mock-inventory",
+      "mock_server_version": "1.0.0",
+      "protocol_version": "2025-06-18",
+      "tools": [
+        "get_inventory"
+      ],
+      "mock_initialize": true,
+      "import": true,
+      "diagnosis": true,
+      "tool_probe": true,
+      "tool_probe_auth": "synthetic local dynamic-auth profile; not a real customer HMAC credential",
+      "wrong_credential_rejected": true,
+      "wrong_credential_code": "UPSTREAM_AUTH_FAILED",
+      "wrong_credential_http": 401,
+      "restore_after_wrong_credential": true,
+      "clean_service_restart_recovery": true,
+      "state_after_restart": "CONFIGURING",
+      "source_after_restart": "src_4853fc5ee3cc19cfc68f0d9e1751bf35",
+      "tool_allowlist_after_restart": [
+        "get_inventory"
+      ],
+      "auth_profile_after_restart": true,
+      "diagnosis_after_restart": true,
+      "tool_probe_after_restart": true
+    },
+    "C_cloud_bridge": {
+      "status": "blocked",
+      "executed": false,
+      "reason": "缺少真实一次性接入码、控制面地址、relay/visitor 和 Edge；1.2.0 诊断试用包默认不配置云端，页面第 1/5/6 步按预期失败关闭",
+      "cloud_configured": false,
+      "edge_configured": false,
+      "bind_button_disabled": true,
+      "connect_button_disabled": true,
+      "export_button_disabled": true,
+      "export_error": "CONFIG_INVALID: 缺少云端 Edge 地址",
+      "outbound_443": false
+    }
+  },
+  "diagnostics": {
+    "source_id": "src_4853fc5ee3cc19cfc68f0d9e1751bf35",
+    "normal": {
+      "config": "pass",
+      "network": "pass",
+      "tls": "skip",
+      "protocol": "pass",
+      "auth": "pass",
+      "ok": true
+    },
+    "tool_probe": {
+      "tool": "pass",
+      "detail": "调用成功: get_inventory",
+      "ok": true
+    },
+    "wrong_credential": {
+      "config": "pass",
+      "network": "pass",
+      "tls": "skip",
+      "protocol": "fail",
+      "code": "UPSTREAM_AUTH_FAILED",
+      "http": 401,
+      "ok": false
+    },
+    "restored": {
+      "ok": true,
+      "tool": "pass"
+    },
+    "after_clean_restart": {
+      "normal_ok": true,
+      "tool_probe_ok": true
+    }
+  },
+  "network": {
+    "listen_17872": "127.0.0.1",
+    "listen_28765": "127.0.0.1",
+    "firewall_profiles_enabled": {
+      "Domain": true,
+      "Private": true,
+      "Public": true
+    },
+    "inbound_allow_rules_matching_test_ports": 0,
+    "lan_ip": [
+      "172.20.128.1",
+      "10.81.17.189"
+    ],
+    "lan_probe_17872": false,
+    "lan_probe_28765": false,
+    "loopback_probe_17872": true,
+    "loopback_probe_28765": true,
+    "external_device_probe": "not executed, no second device",
+    "flint_direct_windows_access": "not executed; C stage blocked; listeners are loopback-only",
+    "outbound_443_from_service": false
+  },
+  "defects": [
+    {
+      "id": "D01",
+      "severity": "medium",
+      "title": "重新导入 MCP 配置后动态认证工具允许列表被清空",
+      "impact": "不影响本次 A/B 正常诊断；影响 1.2.0 新增动态认证的工具试调用，状态显示已配置但 allowed_tools 为空",
+      "evidence": [
+        "evidence/defect-dynamic-auth-allowlist.md",
+        "evidence/auth-profile.json",
+        "evidence/auth-profile-restored.json",
+        "evidence/diagnose-tool-probe.json"
+      ]
+    },
+    {
+      "id": "D02",
+      "severity": "low",
+      "title": "第一次服务重启后出现 401（测试观察，待人工浏览器复现）",
+      "impact": "API 重新导入同一配置后恢复；第二次干净重启通过，暂不判定为确认产品缺陷",
+      "evidence": [
+        "evidence/restart-401-observation.md",
+        "evidence/mock-mcp.log",
+        "evidence/import-after-restart-fix.json",
+        "evidence/diagnose-after-restart-fix.json",
+        "evidence/status-after-restart-clean.json"
+      ]
+    },
+    {
+      "id": "C-BLOCKER",
+      "severity": "blocker",
+      "title": "云端完整桥梁 C 阻塞",
+      "impact": "没有真实接入码、控制面、relay/visitor 和 Edge；不能从 Flint 调用；不能把 A/B 通过写成完整交付通过",
+      "evidence": [
+        "evidence/ui-cloud-state.json",
+        "evidence/cloud-binding-not-attempted.txt",
+        "evidence/export-no-cloud.json"
+      ]
+    }
+  ],
+  "evidence": {
+    "screenshots": [
+      "evidence/screenshot-01-service-running.png",
+      "evidence/screenshot-02-import-ok.png",
+      "evidence/screenshot-03-auth-profile.png",
+      "evidence/screenshot-04-diagnose-ok.png",
+      "evidence/screenshot-05-diagnose-tool-probe.png",
+      "evidence/screenshot-06-wrong-token.png",
+      "evidence/screenshot-07-restored-ok.png",
+      "evidence/screenshot-08-after-restart.png",
+      "evidence/screenshot-09-diagnose-after-restart.png"
+    ],
+    "diagnose_json": "evidence/diagnose.json",
+    "diagnose_tool_probe_json": "evidence/diagnose-tool-probe.json",
+    "diagnose_wrong_credential_json": "evidence/diagnose-wrong-token.json",
+    "diagnose_restored_json": "evidence/diagnose-restored.json",
+    "diagnose_after_restart_json": "evidence/diagnose-after-restart.json",
+    "diagnose_tool_after_restart_json": "evidence/diagnose-tool-after-restart.json",
+    "status_after_restart_json": "evidence/status-after-restart-clean.json"
+  }
+}
