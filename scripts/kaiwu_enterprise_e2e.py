@@ -52,7 +52,10 @@ def source_snapshot() -> dict[str, Any]:
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
     tracked_changes = subprocess.check_output(
-        ["git", "status", "--porcelain", "--untracked-files=no"],
+        [
+            "git", "status", "--porcelain", "--untracked-files=no",
+            "--", "connector", "server", "scripts", "deploy",
+        ],
         cwd=ROOT,
         text=True,
     ).strip()
