@@ -190,6 +190,19 @@ try {
     }
     Add-Step -Name "import_and_local_storage" -Status "passed" -Detail $DataDir
 
+    foreach ($name in @("secrets.json", "auth_profiles.json", "identity.json", "device_key.json")) {
+        $path = Join-Path $DataDir $name
+        if (-not (Test-Path $path)) { continue }
+        $text = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+        if (-not $text.StartsWith("KAIWU-DPAPI-V1`n")) {
+            throw "本机秘密文件未使用 Windows DPAPI: $name"
+        }
+        if ($text.Contains("windows-ci-secret")) {
+            throw "本机秘密文件中出现明文客户凭据: $name"
+        }
+    }
+    Add-Step -Name "dpapi_secret_files" -Status "passed" -Detail "prefix marker present; no test bearer plaintext"
+
     Restart-Service -Name $ServiceName -Force
     $service = Wait-ServiceState -Expected "Running"
     Start-Sleep -Seconds 1
@@ -198,6 +211,42 @@ try {
         throw "重启后未恢复已绑定/待配置状态，实际为 $($statusAfterRestart.data.state)"
     }
     Add-Step -Name "service_restart_recovery" -Status "passed" -Detail $statusAfterRestart.data.state
+
+    $savedSecrets = Join-Path $DataDir "secrets.json"
+    $configPath = Join-Path $DataDir "config.json"
+    $configAfterRestart = [System.IO.File]::ReadAllText($configPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $sourceID = $configAfterRestart.sources[0].source_id
+    if ([string]::IsNullOrWhiteSpace($sourceID)) {
+        throw "迁移测试无法取得来源编号"
+    }
+    Stop-Service -Name $ServiceName -Force
+    Wait-ServiceState -Expected "Stopped" | Out-Null
+    $legacySecrets = @{}
+    $legacySecrets[$sourceID] = @{ Authorization = "Bearer windows-ci-secret" }
+    [System.IO.File]::WriteAllText(
+        $savedSecrets,
+        ($legacySecrets | ConvertTo-Json -Depth 5 -Compress),
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    Start-Service -Name $ServiceName
+    Wait-ServiceState -Expected "Running" | Out-Null
+    Start-Sleep -Seconds 1
+    $migrated = [System.IO.File]::ReadAllText($savedSecrets, [System.Text.Encoding]::UTF8)
+    if (-not $migrated.StartsWith("KAIWU-DPAPI-V1`n")) {
+        throw "旧明文 secrets.json 未在服务启动后迁移为 DPAPI"
+    }
+    if ($migrated.Contains("windows-ci-secret")) {
+        throw "迁移后的 secrets.json 仍包含明文"
+    }
+    Add-Step -Name "legacy_plaintext_migration" -Status "passed" -Detail $sourceID
+
+    & (Join-Path $PackageRoot "install.ps1")
+    $service = Wait-ServiceState -Expected "Running"
+    $upgradeStatus = Invoke-RestMethod -Uri "$BaseURL/api/status" -Method Get -TimeoutSec 10
+    if (-not $upgradeStatus.ok -or $upgradeStatus.data.state -ne "CONFIGURING") {
+        throw "升级重装后本机配置未恢复"
+    }
+    Add-Step -Name "upgrade_reinstall" -Status "passed" -Detail "configuration retained"
 
     $Evidence.service = [ordered]@{
         name = $ServiceName

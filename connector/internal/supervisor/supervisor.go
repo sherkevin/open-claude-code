@@ -13,6 +13,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,9 @@ type Supervisor struct {
 	PIDFile string
 	// OnChange 在进程启动或退出时回调，running 表示当前是否有进程在跑。
 	OnChange func(running bool, detail string)
+	// Environment supplies non-persisted secrets through the child process
+	// environment. Keys are restricted to KAIWU_* by minimalEnv.
+	Environment map[string]string
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
@@ -80,7 +84,7 @@ func (s *Supervisor) loop(ctx context.Context, done chan struct{}) {
 		}
 		started := time.Now()
 		cmd := exec.CommandContext(ctx, s.BinaryPath, "-c", s.ConfigPath)
-		cmd.Env = minimalEnv()
+		cmd.Env = minimalEnv(s.Environment)
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
 			s.fail(err)
@@ -268,14 +272,37 @@ func trim(value string) string {
 	return value
 }
 
-func minimalEnv() []string {
+func minimalEnv(extra map[string]string) []string {
 	env := []string{"PATH=" + os.Getenv("PATH")}
 	for _, key := range []string{"SYSTEMROOT", "WINDIR", "TEMP", "TMP"} {
 		if value := os.Getenv(key); value != "" {
 			env = append(env, key+"="+value)
 		}
 	}
+	keys := make([]string, 0, len(extra))
+	for key := range extra {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if !safeEnvironmentName(key) || strings.ContainsAny(extra[key], "\x00\r\n") {
+			continue
+		}
+		env = append(env, key+"="+extra[key])
+	}
 	return env
+}
+
+func safeEnvironmentName(value string) bool {
+	if !strings.HasPrefix(value, "KAIWU_") || value == "" {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // ErrStopped 表示守护循环已结束。

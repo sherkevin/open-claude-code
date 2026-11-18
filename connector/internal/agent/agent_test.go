@@ -5,18 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 	"github.com/sherkevin/open-claude-code/connector/internal/mcp"
+	"github.com/sherkevin/open-claude-code/connector/internal/state"
+	"github.com/sherkevin/open-claude-code/connector/internal/supervisor"
 )
 
 func fakeCloud(t *testing.T) *httptest.Server {
@@ -675,5 +680,121 @@ func TestBuildFrpcConfigStartsOnlyCloudApprovedSources(t *testing.T) {
 	if _, err := instance.buildFrpcConfig(cloud.DesiredState{Revision: 1}); err == nil ||
 		!strings.Contains(err.Error(), "尚未批准任何可用来源") {
 		t.Fatalf("未获云端批准的来源不能启动通道: %v", err)
+	}
+}
+
+func TestQueryFrpcTunnelRequiresRunningProxyPhase(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, ok := r.BasicAuth()
+		if !ok || user != "kaiwu" || password != "synthetic-admin" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"stcp":[{"name":"src_synthetic","status":"running"}]}`))
+	}))
+	defer upstream.Close()
+	port := upstream.Listener.Addr().(*net.TCPAddr).Port
+	connected, detail := queryFrpcTunnel(port, "kaiwu", "synthetic-admin", 1)
+	if !connected || !strings.Contains(detail, "1") {
+		t.Fatalf("running 代理应判定为已连通: connected=%v detail=%s", connected, detail)
+	}
+
+	waiting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"stcp":[{"name":"src_synthetic","status":"wait start"}]}`))
+	}))
+	defer waiting.Close()
+	port = waiting.Listener.Addr().(*net.TCPAddr).Port
+	connected, detail = queryFrpcTunnel(port, "kaiwu", "synthetic-admin", 1)
+	if connected || !strings.Contains(detail, "0/1") {
+		t.Fatalf("wait start 不能被误报为已连通: connected=%v detail=%s", connected, detail)
+	}
+}
+
+func TestRecoverTunnelRequiresRunningFrpcProxies(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("synthetic frpc process uses a POSIX shell script")
+	}
+
+	upstream := fakeMCPToolServer(t, `[]`)
+	defer upstream.Close()
+
+	var proxyRunning atomic.Bool
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, ok := r.BasicAuth()
+		if !ok || user != "kaiwu" || password != "synthetic-admin" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		status := "wait start"
+		if proxyRunning.Load() {
+			status = "running"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"stcp":[{"name":"src_synthetic","status":%q}]}`, status)
+	}))
+	defer admin.Close()
+
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "frpc")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "frpc.toml")
+	if err := os.WriteFile(configPath, []byte("synthetic = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := New(Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.config.Sources = []config.Source{{
+		SchemaVersion: 1,
+		SourceID:      "src_synthetic",
+		DisplayName:   "合成来源",
+		Transport:     config.TransportStreamableHTTP,
+		UpstreamURL:   upstream.URL + "/mcp",
+	}}
+	instance.state = state.NewMachine(state.DegradedRelay)
+	instance.supervisor = supervisor.New(binary, configPath)
+	instance.frpcAdminPort = admin.Listener.Addr().(*net.TCPAddr).Port
+	instance.frpcAdminUser = "kaiwu"
+	instance.frpcAdminPassword = "synthetic-admin"
+	instance.frpcProxyCount = 1
+
+	supCtx, supCancel := context.WithCancel(context.Background())
+	defer supCancel()
+	if err := instance.supervisor.Start(supCtx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = instance.supervisor.Stop(stopCtx)
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for !instance.supervisor.Running() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !instance.supervisor.Running() {
+		t.Fatal("synthetic frpc process did not start")
+	}
+
+	instance.recoverTunnel()
+	if got := instance.state.Current(); got != state.DegradedRelay {
+		t.Fatalf("wait start proxy must remain degraded, got %s", got)
+	}
+
+	proxyRunning.Store(true)
+	instance.recoverTunnel()
+	if got := instance.state.Current(); got != state.Ready {
+		t.Fatalf("running proxy should recover to ready, got %s", got)
+	}
+	instance.mu.RLock()
+	stopHeartbeat := instance.heartbeat
+	instance.mu.RUnlock()
+	if stopHeartbeat != nil {
+		stopHeartbeat()
 	}
 }

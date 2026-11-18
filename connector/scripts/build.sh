@@ -7,9 +7,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.2.1}"
-COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VERSION="${VERSION:-1.3.0}"
+COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+# Bind package metadata and ZIP timestamps to the source commit unless the
+# release operator supplies an explicit epoch. Rebuilding the same commit then
+# produces the same timestamps instead of silently changing the candidate.
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date -u +%s)}"
+if [[ ! "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+  echo "SOURCE_DATE_EPOCH 必须是非负整数秒" >&2
+  exit 1
+fi
+BUILD_TIME="${BUILD_TIME:-$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)}"
+export SOURCE_DATE_EPOCH
 DIST="$ROOT/dist"
 MODULE="github.com/sherkevin/open-claude-code/connector/internal/version"
 LDFLAGS="-s -w -X ${MODULE}.Version=${VERSION} -X ${MODULE}.Commit=${COMMIT} -X ${MODULE}.BuildTime=${BUILD_TIME}"
@@ -210,19 +219,23 @@ EOF
 cp "$DIST/linux/版本信息.txt" "$DIST/windows/版本信息.txt"
 
 for target in linux windows; do
+  # ZIP records local file times. Normalize every package entry first, then
+  # normalize the checksum file itself after it has been generated.
+  find "$DIST/$target" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
   (
     cd "$DIST/$target"
-    find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+    LC_ALL=C find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
+    touch -d "@${SOURCE_DATE_EPOCH}" SHA256SUMS
   )
 done
 
 (
   cd "$DIST/linux"
-  tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 --numeric-owner -czf "$DIST/kaiwu-connector-${VERSION}-linux-amd64.tar.gz" .
+  TZ=UTC LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -czf "$DIST/kaiwu-connector-${VERSION}-linux-amd64.tar.gz" .
 )
 (
   cd "$DIST/windows"
-  zip -X -qr "$DIST/kaiwu-connector-${VERSION}-windows-amd64.zip" .
+  LC_ALL=C find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort | TZ=UTC zip -X -q "$DIST/kaiwu-connector-${VERSION}-windows-amd64.zip" -@
 )
 
 (

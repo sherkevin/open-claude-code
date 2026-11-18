@@ -4,7 +4,7 @@
 
 面向客户现场的实施与运维文档见 [`docs/交付与运维说明.md`](docs/交付与运维说明.md)。本文件面向开发和构建。
 
-> 当前 `1.2.1` 是受控本机诊断试用候选包。安装包默认不配置云端控制面和 Edge，因此只启用安装、MCP 导入、动态认证配置和本机诊断；绑定、连接云端和平台授权流程会失败关闭。它不代表开物平台已经能够调用客户内网 MCP。
+> 当前 `1.3.0` 是企业统一入口候选版本。一个 Windows 连接器对应一个专属原版 frps 实例和一组云端 visitor 路由；开物侧使用云端管理员一次性签发的企业集成凭据 K 和标准 MCP JSON。安装包仍默认失败关闭，只有显式配置控制面、Edge 和中继后才启用绑定与连接。
 
 ## 架构
 
@@ -17,9 +17,9 @@
         │        ── frpc 配置生成 + supervisor 进程守护
         │        ── 每来源回环认证代理（固定目标、工具白名单、Bearer、HMAC）
         ▼
-   frpc（固定 0.61.1）── STCP 隧道 ──▶ 云端 MCP Edge
+   frpc（固定 0.61.1）── STCP + 专属 frps ──▶ 云端 visitor
         ▲                                      │
-        └──── 客户内网认证代理 ◀── MCP 请求 ─────┘
+        └──── 客户内网认证代理 ◀── MCP 请求 ── MCP Edge
                        │
                        ▼
                  客户内网 MCP
@@ -27,10 +27,11 @@
 
 凭据分离是本项目的硬约束：
 
-- 设备身份只用于控制面，不能读取平台授权 A 或客户 MCP 凭据 B；
-- 平台授权 A 不能当作客户 MCP 凭据 B 使用；
+- 设备身份只用于控制面，不能读取企业集成凭据 K 或客户 MCP 凭据 B；
+- 企业集成凭据 K 不能当作客户 MCP 凭据 B 使用；
 - 客户 MCP 凭据 B 和动态签名密钥 S 只保存在本机，只由回环认证代理使用；
 - Edge 和中继只能到达逐来源代理的 STCP 入口，不能改写固定上游目标。
+- 企业集成凭据 K 只由开物调用我方 Edge；K 不转发到客户业务 MCP，B／S 不进入开物 JSON。
 
 ## 目录
 
@@ -39,15 +40,16 @@
 | `cmd/connector` | 命令行入口：`serve` / `import` / `export` / `diagnose` / `version` |
 | `internal/config` | 宿主 MCP 配置解析、内部来源模型、平台配置生成 |
 | `internal/state` | 连接器状态机与中文状态标签 |
-| `internal/frpc` | frpc TOML 生成与 0600 原子写入 |
+| `internal/frpc` | frpc TOML 生成；R／T 使用官方环境模板，不写入磁盘 |
 | `internal/supervisor` | frpc 进程守护，指数退避 1s→30s 带抖动 |
 | `internal/mcp` | 最小 MCP 客户端（initialize / tools/list / tools/call，SSE 解析） |
 | `internal/diag` | 分层诊断与错误码 |
 | `internal/cloud` | 控制面 API 客户端 |
 | `internal/agent` | 运行主体，串联以上模块 |
-| `internal/authproxy` | 回环认证代理、固定上游重建、工具交集、会话映射和响应过滤 |
+| `internal/authproxy` | 回环认证代理、固定上游重建、工具交集、会话映射、增量 SSE 和响应过滤 |
 | `internal/huaweiauth` | 华微渠道身份与 HMAC-SHA256 动态签名 |
 | `internal/web` | 仅回环的本机界面与 API，会话令牌 + Host/Origin 校验 |
+| `internal/secretfile` | Windows 机器级 DPAPI、秘密文件原子写入和旧明文迁移 |
 | `packaging/` | 安装包素材：systemd 单元、安装卸载脚本、地址模板、frpc 二进制 |
 | `scripts/build.sh` | 生成 Linux/Windows 交付包 |
 
@@ -66,7 +68,7 @@ bash scripts/build.sh
 ```bash
 cd connector
 go test ./...
-bash scripts/build.sh            # 版本默认 1.2.1，可用 VERSION=... 覆盖
+bash scripts/build.sh            # 版本默认 1.3.0，可用 VERSION=... 覆盖
 ```
 
 产物在 `dist/`：
@@ -97,7 +99,7 @@ go run ./cmd/connector serve --data-dir /tmp/kaiwu-connector --listen 127.0.0.1:
 
 ```bash
 connector import --file mcp.json          # 只校验并打印导入报告
-connector export --data-dir <目录>        # 打印平台可导入配置
+connector export --data-dir <目录>        # 打印不含凭据的 Edge 地址预览
 connector diagnose --data-dir <目录>      # 执行一次分层诊断，JSON 输出
 connector version
 ```
@@ -110,20 +112,36 @@ connector version
 - `POST /v1/sources`：登记不透明来源元数据、客户本机批准的工具，以及从真实 `tools/list` 规范化计算出的工具 schema 摘要
 - `GET  /v1/connectors/{id}/desired-state`：期望状态、来源、中继参数
 - `GET  /v1/connectors/{id}/transport-secrets`：通道密钥
+- `GET  /v1/connectors/{id}/data-plane`：管理员读取专属 frps 与 visitor 配置材料
 - `POST /v1/connectors/{id}/heartbeat`：30 秒心跳
 - `POST /v1/connectors/{id}/self-revoke`：本机已撤销后通知云端
 
-管理员的 drain、resume 和 revoke 使用独立管理员凭据，连接器设备令牌不能调用。
+管理员的企业集成、drain、resume、revoke 和数据面材料接口使用独立管理员凭据，连接器设备令牌不能调用。
+
+- `POST /v1/integrations`：创建、绑定来源并一次性返回 K 与完整开物 JSON
+- `GET  /v1/integrations` / `GET  /v1/integrations/{id}`：只返回非秘密状态
+- `POST /v1/integrations/{id}/rotate`：原子轮换 K 并重新签发 JSON
+- `POST /v1/integrations/{id}/revoke`：立即撤销企业集成
 
 ## 平台导入契约
 
-当前导出只包含 Edge 地址，不包含 `Authorization`、静态用户 Bearer、设备令牌或客户上游凭据：
+连接器本机“导出”只生成不含授权信息的 Edge 地址预览：
 
 ```json
 {"mcpServers":{"名称":{"type":"http","url":"https://<edge>/sources/<id>/mcp"}}}
 ```
 
-正式平台必须通过用户会话和 OAuth Token Exchange 在请求时获取短期 `AT_user`，不得把静态用户 Bearer 写入平台。该能力尚未完成，因此当前导出只能用于核对 Edge 路径，导入后不能证明链路可用，也不能作为 G7 或端到端验收证据。
+正式开物 JSON 由云端管理员创建企业集成时一次性生成：
+
+```json
+{"mcpServers":{"华微业务查询":{"type":"http","url":"https://<edge>/sources/<source_id>/mcp","headers":{"Authorization":"Bearer <企业集成凭据K>"}}}}
+```
+
+K 绑定企业、连接器和允许来源，支持过期、轮换和撤销；服务端只保存不可逆验证值。K 不是客户 Bearer，不转发到客户业务 MCP。设备令牌、客户 B／S 和隧道 R／T 均不得进入开物 JSON。
+
+## Windows 秘密保护
+
+设备身份、设备私钥、客户 Bearer、HMAC 密钥、认证配置和通道材料通过 Windows 机器级 DPAPI 加密后原子写入。安装脚本强制只允许 `SYSTEM` 和 `Administrators` 访问数据目录；ACL 设置或校验失败会中止安装。旧明文 JSON 在服务启动读取时原子迁移，迁移失败不会覆盖原文件。
 
 ## frpc 许可
 

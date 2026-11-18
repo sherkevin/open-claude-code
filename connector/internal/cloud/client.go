@@ -47,12 +47,15 @@ type Identity struct {
 
 // DesiredSource 是云端下发的来源期望状态。
 type DesiredSource struct {
-	SourceID     string   `json:"source_id"`
-	DisplayName  string   `json:"display_name"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
-	STCPSecret   string   `json:"stcp_secret,omitempty"`
-	AllowUsers   []string `json:"allow_users,omitempty"`
-	Revision     int      `json:"revision,omitempty"`
+	SourceID            string   `json:"source_id"`
+	DisplayName         string   `json:"display_name"`
+	AllowedTools        []string `json:"allowed_tools,omitempty"`
+	ToolSchemaSHA256    string   `json:"tool_schema_sha256,omitempty"`
+	TargetBindingSHA256 string   `json:"target_binding_sha256,omitempty"`
+	Transport           string   `json:"transport,omitempty"`
+	STCPSecret          string   `json:"stcp_secret,omitempty"`
+	AllowUsers          []string `json:"allow_users,omitempty"`
+	Revision            int      `json:"revision,omitempty"`
 }
 
 // DesiredState 是连接器的期望状态。

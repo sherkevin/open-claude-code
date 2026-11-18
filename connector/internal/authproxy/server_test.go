@@ -1,6 +1,7 @@
 package authproxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -165,6 +166,93 @@ func TestProxyFiltersSSEToolList(t *testing.T) {
 	}
 }
 
+func TestProxyStreamsFirstSSEEventBeforeUpstreamClose(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+		_, _ = io.WriteString(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
+		flusher.Flush()
+		<-release
+	}))
+	defer func() {
+		close(release)
+		upstream.Close()
+	}()
+
+	proxy, baseURL := startTestProxy(t, Options{SourceID: "src_stream", UpstreamURL: upstream.URL})
+	defer proxy.Close(testContext(t))
+	payload := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`)
+	request, err := http.NewRequest(http.MethodPost, baseURL, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	type result struct {
+		response *http.Response
+		err      error
+	}
+	results := make(chan result, 1)
+	go func() {
+		response, requestErr := http.DefaultClient.Do(request)
+		results <- result{response: response, err: requestErr}
+	}()
+	var response *http.Response
+	select {
+	case got := <-results:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		response = got.response
+	case <-time.After(2 * time.Second):
+		t.Fatal("代理在客户端取得首个事件前缓冲了整个 SSE 响应")
+	}
+	defer response.Body.Close()
+	reader := bufio.NewReader(response.Body)
+	first, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first, "event: message") {
+		t.Fatalf("首个事件不完整: %q", first)
+	}
+	second, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(second, `"result":{}`) {
+		t.Fatalf("首个数据事件未及时转发: %q", second)
+	}
+}
+
+func TestProxyMergesMultilineSSEDataOnce(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"event: message\nid: 7\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\n"+
+				"data: \"result\":{\"tools\":[{\"name\":\"manual_search\"},{\"name\":\"dangerous_write\"}]}}\n\n",
+		)
+	}))
+	defer upstream.Close()
+	proxy, baseURL := startTestProxy(t, Options{
+		SourceID: "src_multiline", UpstreamURL: upstream.URL,
+		ToolAllowlist: []string{"manual_search"},
+	})
+	defer proxy.Close(testContext(t))
+	status, _, body := postMCP(t, baseURL, "", "tools/list", map[string]any{})
+	if status != http.StatusOK {
+		t.Fatalf("SSE 工具目录请求失败: %d %s", status, body)
+	}
+	if strings.Count(body, "data:") != 1 {
+		t.Fatalf("多行 data 必须合并为一个有效载荷: %s", body)
+	}
+	if !strings.Contains(body, "id: 7") || !strings.Contains(body, "manual_search") || strings.Contains(body, "dangerous_write") {
+		t.Fatalf("多行 SSE 过滤结果不符: %s", body)
+	}
+}
+
 func TestProxyRejectsRedirectWithoutFollowing(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "http://127.0.0.1:1/secret", http.StatusTemporaryRedirect)
@@ -209,6 +297,12 @@ func postMCP(t *testing.T, endpoint, session, method string, params any) (int, s
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer edge-only-token")
 	request.Header.Set("X-Edge-Token", "must-be-removed")
+	request.Header.Set("appid", "forged-app")
+	request.Header.Set("channel", "forged-channel")
+	request.Header.Set("userid", "forged-user")
+	request.Header.Set("requestId", "forged-request")
+	request.Header.Set("timestamp", "1")
+	request.Header.Set("sign", "forged-signature")
 	if session != "" {
 		request.Header.Set("Mcp-Session-Id", session)
 	}

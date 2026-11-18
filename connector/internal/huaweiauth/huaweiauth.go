@@ -38,8 +38,8 @@ func Validate(profile Profile) error {
 			return fmt.Errorf("华微渠道字段 %s 格式无效", name)
 		}
 	}
-	if len(profile.HMACKey) < 16 || len(profile.HMACKey) > 4096 || strings.ContainsAny(profile.HMACKey, "\r\n") {
-		return errors.New("HMAC 密钥长度无效或包含换行符")
+	if strings.TrimSpace(profile.HMACKey) == "" || len(profile.HMACKey) > 4096 || strings.ContainsAny(profile.HMACKey, "\r\n") {
+		return errors.New("HMAC 密钥不能为空、超长或包含换行符")
 	}
 	return nil
 }

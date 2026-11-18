@@ -20,10 +20,10 @@ type PlatformConnection struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// BuildPlatformConfig 生成平台可直接导入的 MCP 配置。
+// BuildPlatformConfig 生成不含授权信息的 Edge 地址预览。
 //
-// 平台配置只描述 Edge 地址。正式授权必须通过用户会话和 OAuth Token
-// Exchange 在请求时取得；这里禁止写入静态用户 Bearer 或长期共享令牌。
+// 正式开物 JSON 由云端管理员签发企业集成凭据 K 后生成。本机导出器不持有
+// K、设备令牌、客户 B 或 S，避免把地址预览误当成可直接使用的授权配置。
 func BuildPlatformConfig(sources []Source, edgeBase, accessToken string) ([]byte, error) {
 	edgeBase = strings.TrimRight(strings.TrimSpace(edgeBase), "/")
 	if edgeBase == "" {
@@ -34,7 +34,7 @@ func BuildPlatformConfig(sources []Source, edgeBase, accessToken string) ([]byte
 		return nil, fmt.Errorf("%w: 云端 Edge 地址无效", ErrInvalid)
 	}
 	if strings.TrimSpace(accessToken) != "" {
-		return nil, fmt.Errorf("%w: 平台配置不能包含静态用户令牌", ErrInvalid)
+		return nil, fmt.Errorf("%w: 地址预览不能包含凭据", ErrInvalid)
 	}
 
 	servers := map[string]PlatformConnection{}
@@ -67,7 +67,7 @@ func BuildPlatformConfig(sources []Source, edgeBase, accessToken string) ([]byte
 	return bytes.TrimRight(buffer.Bytes(), "\n"), nil
 }
 
-// ExportPreview 是给界面展示的导出预览，凭据只显示占位符。
+// ExportPreview 是给界面展示的地址预览，不包含任何授权信息。
 func ExportPreview(sources []Source, edgeBase string) (map[string]any, error) {
 	raw, err := BuildPlatformConfig(sources, edgeBase, "")
 	if err != nil {

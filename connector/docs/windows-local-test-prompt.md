@@ -17,18 +17,18 @@
 Windows 测试包：
 
 ```text
-kaiwu-connector-1.2.1-windows-amd64.zip
+kaiwu-connector-1.3.0-windows-amd64.zip
 ```
 
 当前版本的已知边界：
 
 1. 压缩包 SHA-256 和包内程序提交号以交付消息、`版本信息.txt` 及交付证据中的 `SHA256SUMS` 为准；不要使用任务书内嵌的旧哈希或旧提交号。
-2. 云端连接器控制面还没有完成真实联调；如果没有平台提供的有效接入码，不要自行伪造接入码，也不要把“绑定企业”失败判定为 Windows 安装失败。
+2. 云端连接器控制面、专属 FRP 和 MCP Edge 已在工程测试与本机合成链路中实现，但还没有完成真实公网部署和实际开物联调；如果没有我方平台提供的有效接入码，不要自行伪造接入码，也不要把“绑定企业”失败判定为 Windows 安装失败。
 3. 本次必须先完成“本地 Windows 安装 + 模拟内网 MCP 诊断”，这是连接器本体能够工作的基础证据。
 4. 不要把连接器的本机配置页面开放到局域网或公网。它只允许访问 `http://127.0.0.1:17872/`。
 5. 不要关闭 Windows Defender、防火墙或 TLS 校验来让测试通过。
 6. 不要使用 `0.0.0.0` 监听连接器配置页面。
-7. 本诊断试用包默认不配置云端控制面和 Edge。页面第 1、5、6 步会显示未配置或待 C 段接入；这是预期失败关闭，不是 Windows 服务故障。
+7. 本安装包默认不配置云端控制面和 Edge。页面第 1、5、6 步会显示未配置；这是预期失败关闭，不是 Windows 服务故障。
 8. 客户目标 Windows Server 2019 已确认具备图形化客户端桌面。本次必须在管理员图形界面中完成安装包解压、PowerShell 安装、Windows 服务查看、浏览器访问 `http://127.0.0.1:17872/` 和人工复测，不能只提交静默安装或命令行结果。
 
 ### 强制网络方向验收条件
@@ -100,7 +100,7 @@ Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumb
 把交付包放到例如 `C:\Users\<你的用户名>\Downloads\`，然后执行：
 
 ```powershell
-$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.2.1-windows-amd64.zip"
+$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.3.0-windows-amd64.zip"
 Get-FileHash -Algorithm SHA256 $Package |
   Format-List |
   Tee-Object (Join-Path $Evidence "package-hash.txt")
@@ -513,8 +513,8 @@ Get-NetFirewallProfile |
 4. 绑定成功后点击“连接”；
 5. 保存“通道状态”“状态原因”和任何错误信息；
 6. 确认 Windows 主动向开物控制面和 Edge 建立出站连接；
-7. 记录连接器导出的平台配置，确认其中只有云端 Edge 地址，没有 Windows 地址；
-8. 将连接器导出的 Edge 配置导入 Flint；
+7. 记录连接器导出的“Edge 地址预览”，确认其中没有 Authorization、客户 Bearer 或 Windows 地址；该预览不是可直接使用的正式平台授权；
+8. 由云端管理员签发企业集成凭据 K，取得完整的 `mcpServers` JSON，再导入 Flint；
 9. 从 Flint 调用模拟 MCP 工具并验证库存结果；
 10. 不要反复点击，避免制造无意义的请求。
 
@@ -537,9 +537,9 @@ Get-NetTCPConnection -State Established |
 
 当前需要特别记录的已知问题：
 
-1. 包内默认不提供云端控制面和 Edge 地址；只有在交付人员完成 C 段联调并明确提供测试地址后才允许配置；
-2. 云端控制面的接入码兑换、期望状态、通道密钥和心跳接口尚未闭环；
-3. 如果没有云端中继和平台配置，连接器不能完成“安装 → 平台配置 → 调用内网 MCP”的完整桥梁验收。
+1. 包内默认不提供云端控制面和 Edge 地址；只有在交付人员完成云端 Edge、专属 relay 和证书准备并明确提供测试地址后才允许配置；
+2. 控制面已经提供接入码兑换、期望状态、通道材料、心跳和企业集成签发，但本提示不能代替实际云端部署、DNS/证书和公网可达性验收；
+3. 如果没有已部署的云端中继、Edge 和正式企业集成 JSON，连接器不能完成“安装 → 平台配置 → 调用内网 MCP”的完整桥梁验收。
 
 因此，云端阶段失败时必须区分：
 
@@ -629,7 +629,7 @@ Test-Path "$env:ProgramData\Kaiwu\Connector" |
 - Flint 不能直接访问 Windows 的 `28765` 或 `17872`；
 - 断开或撤销后平台不能继续调用。
 
-如果 C 无法执行，必须明确写“云端控制面或中继未闭环”，不能把 A、B 通过写成完整交付通过。如果 Flint 能直接访问 Windows 端口，即使工具调用成功，C 也必须判定失败。
+如果 C 无法执行，必须明确写“真实公网控制面、中继或 Edge 尚未部署或联调，或撤销与来源隔离验证尚未完成”，不能把 A、B 通过写成完整交付通过。如果 Flint 能直接访问 Windows 端口，即使工具调用成功，C 也必须判定失败。
 
 ## 十六、最终回复格式
 

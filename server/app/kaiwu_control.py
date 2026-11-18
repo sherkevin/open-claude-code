@@ -29,6 +29,7 @@ import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
+from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -37,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import Settings
 from .db import Database, dump, now, uid
+from .kaiwu_bridge import BridgeError, build_bridge_material, derive_secret
 from .security import AppError
 
 
@@ -49,6 +51,9 @@ TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 TENANT_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+INTEGRATION_ID_RE = re.compile(r"^int_[0-9a-f]{32}$")
+CONNECTOR_ID_RE = re.compile(r"^conn_[0-9a-f]{32}$")
+INTEGRATION_TTL_MAX = 365 * 24 * 60 * 60
 
 
 class StrictModel(BaseModel):
@@ -156,6 +161,52 @@ class HeartbeatRequest(StrictModel):
         return values
 
 
+class IntegrationCreateRequest(StrictModel):
+    tenant_id: str = Field(min_length=1, max_length=128)
+    connector_id: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=128)
+    source_ids: list[str] = Field(min_length=1, max_length=MAX_SOURCES)
+    ttl_seconds: int | None = Field(default=None, ge=60, le=INTEGRATION_TTL_MAX)
+
+    @field_validator("tenant_id")
+    @classmethod
+    def valid_tenant(cls, value: str) -> str:
+        value = value.strip()
+        if not TENANT_RE.fullmatch(value):
+            raise ValueError("tenant_id contains unsupported characters")
+        return value
+
+    @field_validator("connector_id")
+    @classmethod
+    def valid_connector(cls, value: str) -> str:
+        value = value.strip()
+        if not CONNECTOR_ID_RE.fullmatch(value):
+            raise ValueError("connector_id is invalid")
+        return value
+
+    @field_validator("display_name")
+    @classmethod
+    def valid_display_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(ord(char) < 32 for char in value):
+            raise ValueError("display_name is invalid")
+        return value
+
+    @field_validator("source_ids")
+    @classmethod
+    def valid_source_ids(cls, values: list[str]) -> list[str]:
+        normalized = [str(value).strip() for value in values]
+        if len(set(normalized)) != len(normalized) or any(
+            not SOURCE_ID_RE.fullmatch(value) for value in normalized
+        ):
+            raise ValueError("source_ids must contain unique opaque source IDs")
+        return sorted(normalized)
+
+
+class IntegrationRotateRequest(StrictModel):
+    ttl_seconds: int | None = Field(default=None, ge=60, le=INTEGRATION_TTL_MAX)
+
+
 def _base64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -186,11 +237,10 @@ def _derive_secret(settings: Settings, purpose: str, value: str) -> str:
     never returned or logged. This keeps testable trial material deterministic
     while database dumps contain only derivation hashes.
     """
-    root = settings.kaiwu_control_token()
-    if not root:
-        raise AppError(503, "CONTROL_PLANE_DISABLED", "内网连接器控制面尚未启用")
-    digest = hmac.new(root.encode("utf-8"), f"{purpose}:{value}".encode("utf-8"), hashlib.sha256).digest()
-    return _base64url(digest)
+    try:
+        return derive_secret(settings, purpose, value)
+    except BridgeError as exc:
+        raise AppError(503, "CONTROL_PLANE_DISABLED", str(exc)) from None
 
 
 def _sanitize_last_error(value: str) -> str:
@@ -272,6 +322,134 @@ def _source_view(row: dict, settings: Settings) -> dict:
         "allow_users": [settings.kaiwu_control_edge_user],
         "revision": row["revision"],
     }
+
+
+def _integration_view(db: Database, row: dict) -> dict:
+    sources = [
+        item["source_id"]
+        for item in db.all(
+            "SELECT source_id FROM kaiwu_integration_sources "
+            "WHERE integration_id=? ORDER BY source_id",
+            (row["id"],),
+        )
+    ]
+    return {
+        "integration_id": row["id"],
+        "tenant_id": row["tenant_id"],
+        "connector_id": row["connector_id"],
+        "display_name": row["display_name"],
+        "token_prefix": row["token_prefix"],
+        "source_ids": sources,
+        "expires_at": row["expires_at"],
+        "revision": row["revision"],
+        "rotated_at": row["rotated_at"],
+        "revoked_at": row["revoked_at"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _edge_public_base(settings: Settings) -> str:
+    raw = settings.kaiwu_edge_public_base.rstrip("/")
+    if not raw:
+        raise AppError(503, "EDGE_NOT_CONFIGURED", "云端 Edge 公网地址尚未配置，不能签发平台配置")
+    parsed = urlsplit(raw)
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise AppError(503, "EDGE_NOT_CONFIGURED", "云端 Edge 公网地址格式无效")
+    host = (parsed.hostname or "").lower()
+    local_http = parsed.scheme == "http" and host in {"127.0.0.1", "localhost", "::1", "testserver"}
+    if parsed.scheme != "https" and not local_http:
+        raise AppError(503, "EDGE_NOT_CONFIGURED", "云端 Edge 必须使用 HTTPS")
+    expected_path = settings.kaiwu_edge_mount_path.rstrip("/")
+    if parsed.path.rstrip("/") != expected_path:
+        raise AppError(
+            503,
+            "EDGE_NOT_CONFIGURED",
+            f"云端 Edge 公网路径必须与挂载路径 {expected_path} 一致",
+        )
+    return raw
+
+
+def _platform_config(settings: Settings, sources: list[dict], token: str, display_name: str) -> dict:
+    base = _edge_public_base(settings)
+    servers = {}
+    for row in sources:
+        source_id = row["source_id"]
+        name = display_name if len(sources) == 1 else f"{display_name} ({source_id[-6:]})"
+        servers[name] = {
+            "type": "http",
+            "url": f"{base}/sources/{source_id}/mcp",
+            "headers": {"Authorization": f"Bearer {token}"},
+        }
+    return {"mcpServers": servers}
+
+
+def _new_integration_token() -> str:
+    return "kw_int_" + secrets.token_urlsafe(48)
+
+
+def _token_prefix(token: str) -> str:
+    return token[:15] + "..." + token[-6:]
+
+
+def _allocate_visitor_port(db: Database, settings: Settings) -> int:
+    used = {
+        int(row["visitor_port"])
+        for row in db.all("SELECT visitor_port FROM kaiwu_edge_routes")
+    }
+    for port in range(settings.kaiwu_edge_visitor_port_start, settings.kaiwu_edge_visitor_port_end + 1):
+        if port not in used:
+            return port
+    raise AppError(409, "EDGE_ROUTE_EXHAUSTED", "云端 visitor 端口范围已耗尽")
+
+
+def _integration_rows(db: Database, connector_id: str, source_ids: list[str]) -> list[dict]:
+    placeholders = ",".join("?" for _ in source_ids)
+    rows = db.all(
+        "SELECT s.*, r.visitor_host, r.visitor_port "
+        "FROM kaiwu_sources s LEFT JOIN kaiwu_edge_routes r "
+        "ON r.connector_id=s.connector_id AND r.source_id=s.source_id "
+        f"WHERE s.connector_id=? AND s.source_id IN ({placeholders}) ORDER BY s.source_id",
+        (connector_id, *source_ids),
+    )
+    if {row["source_id"] for row in rows} != set(source_ids):
+        raise AppError(403, "INTEGRATION_SOURCE_DENIED", "来源不属于该连接器或尚未登记")
+    if any(row["visitor_port"] is None for row in rows):
+        raise AppError(409, "EDGE_ROUTE_NOT_READY", "云端 visitor 路由尚未分配，请先完成来源登记")
+    return rows
+
+
+def _revoke_connector_integrations(db: Database, connector_id: str, actor_type: str, actor_id: str) -> int:
+    rows = db.all(
+        "SELECT id,tenant_id FROM kaiwu_integrations WHERE connector_id=? AND revoked_at IS NULL",
+        (connector_id,),
+    )
+    timestamp = now()
+    for row in rows:
+        db.execute(
+            "UPDATE kaiwu_integrations SET revoked_at=?,updated_at=?,revision=revision+1 "
+            "WHERE id=? AND revoked_at IS NULL",
+            (timestamp, timestamp, row["id"]),
+        )
+        _audit(
+            db,
+            tenant_id=row["tenant_id"],
+            connector_id=connector_id,
+            source_id=None,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            action="integration.revoked_by_connector",
+            outcome="allow",
+            trace_id="tr_" + uid(),
+            detail={"integration_id": row["id"]},
+        )
+    return len(rows)
+
+
+def _release_connector_routes(db: Database, connector_id: str) -> None:
+    """Release visitor ports once a connector can never be resumed."""
+    db.execute("DELETE FROM kaiwu_edge_routes WHERE connector_id=?", (connector_id,))
 
 
 def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
@@ -505,6 +683,249 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             ]
         }
 
+    @router.post("/v1/integrations", status_code=201)
+    def create_integration(
+        data: IntegrationCreateRequest,
+        response: Response,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        settings: Settings = admin_ctx["settings"]
+        connector = service_obj.db.one(
+            "SELECT * FROM kaiwu_connectors WHERE id=?",
+            (data.connector_id,),
+        )
+        if not connector or connector["revoked"]:
+            raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在或已撤销")
+        if connector["tenant_id"] != data.tenant_id:
+            raise AppError(403, "INTEGRATION_TENANT_DENIED", "连接器不属于该企业")
+        sources = _integration_rows(service_obj.db, data.connector_id, data.source_ids)
+        _edge_public_base(settings)
+        token = _new_integration_token()
+        ttl = data.ttl_seconds or settings.kaiwu_integration_default_ttl_seconds
+        integration_id = "int_" + uid()
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
+        timestamp = now()
+        trace_id = "tr_" + uid()
+        with service_obj.db.transaction():
+            service_obj.db.execute(
+                "INSERT INTO kaiwu_integrations"
+                "(id,tenant_id,connector_id,display_name,token_hash,token_prefix,expires_at,"
+                "revision,rotated_at,revoked_at,created_by,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?,?,1,NULL,NULL,?,?,?)",
+                (
+                    integration_id,
+                    data.tenant_id,
+                    data.connector_id,
+                    data.display_name,
+                    _hash_secret(token),
+                    _token_prefix(token),
+                    expires_at,
+                    admin_ctx["actor_id"],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            service_obj.db.executemany(
+                "INSERT INTO kaiwu_integration_sources"
+                "(integration_id,connector_id,source_id) VALUES(?,?,?)",
+                [(integration_id, data.connector_id, source["source_id"]) for source in sources],
+            )
+            _audit(
+                service_obj.db,
+                tenant_id=data.tenant_id,
+                connector_id=data.connector_id,
+                source_id=None,
+                actor_type="admin",
+                actor_id=admin_ctx["actor_id"],
+                action="integration.created",
+                outcome="allow",
+                trace_id=trace_id,
+                detail={
+                    "integration_id": integration_id,
+                    "source_ids": data.source_ids,
+                    "expires_at": expires_at,
+                },
+            )
+        row = service_obj.db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
+        config = _platform_config(settings, sources, token, data.display_name)
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "integration": _integration_view(service_obj.db, row),
+            "access_token": token,
+            "mcp_config": config,
+            "mcp_config_json": json.dumps(config, ensure_ascii=False, indent=2),
+            "trace_id": trace_id,
+        }
+
+    @router.get("/v1/integrations")
+    def list_integrations(
+        connector_id: str = "",
+        tenant_id: str = "",
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        del admin_ctx
+        clauses = []
+        values: list[str] = []
+        if connector_id:
+            if not CONNECTOR_ID_RE.fullmatch(connector_id):
+                raise AppError(422, "CONNECTOR_ID_INVALID", "连接器编号无效")
+            clauses.append("connector_id=?")
+            values.append(connector_id)
+        if tenant_id:
+            if not TENANT_RE.fullmatch(tenant_id):
+                raise AppError(422, "TENANT_ID_INVALID", "企业编号无效")
+            clauses.append("tenant_id=?")
+            values.append(tenant_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = service_obj.db.all(
+            "SELECT * FROM kaiwu_integrations" + where + " ORDER BY created_at DESC",
+            tuple(values),
+        )
+        return {"integrations": [_integration_view(service_obj.db, row) for row in rows]}
+
+    @router.get("/v1/integrations/{integration_id}")
+    def get_integration(
+        integration_id: str,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        del admin_ctx
+        if not INTEGRATION_ID_RE.fullmatch(integration_id):
+            raise AppError(404, "INTEGRATION_NOT_FOUND", "企业集成不存在")
+        row = service_obj.db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
+        if not row:
+            raise AppError(404, "INTEGRATION_NOT_FOUND", "企业集成不存在")
+        return {"integration": _integration_view(service_obj.db, row)}
+
+    @router.post("/v1/integrations/{integration_id}/rotate")
+    def rotate_integration(
+        integration_id: str,
+        data: IntegrationRotateRequest,
+        response: Response,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        settings: Settings = admin_ctx["settings"]
+        if not INTEGRATION_ID_RE.fullmatch(integration_id):
+            raise AppError(404, "INTEGRATION_NOT_FOUND", "企业集成不存在")
+        row = service_obj.db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
+        if not row:
+            raise AppError(404, "INTEGRATION_NOT_FOUND", "企业集成不存在")
+        if row["revoked_at"]:
+            raise AppError(403, "INTEGRATION_REVOKED", "企业集成已撤销")
+        connector = service_obj.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (row["connector_id"],))
+        if not connector or connector["revoked"]:
+            raise AppError(403, "INTEGRATION_REVOKED", "连接器已撤销")
+        source_ids = [
+            item["source_id"]
+            for item in service_obj.db.all(
+                "SELECT source_id FROM kaiwu_integration_sources "
+                "WHERE integration_id=? ORDER BY source_id",
+                (integration_id,),
+            )
+        ]
+        sources = _integration_rows(service_obj.db, row["connector_id"], source_ids)
+        _edge_public_base(settings)
+        token = _new_integration_token()
+        ttl = data.ttl_seconds or settings.kaiwu_integration_default_ttl_seconds
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
+        timestamp = now()
+        trace_id = "tr_" + uid()
+        with service_obj.db.transaction():
+            service_obj.db.execute(
+                "UPDATE kaiwu_integrations SET token_hash=?,token_prefix=?,expires_at=?,"
+                "revision=revision+1,rotated_at=?,updated_at=? WHERE id=? AND revoked_at IS NULL",
+                (_hash_secret(token), _token_prefix(token), expires_at, timestamp, timestamp, integration_id),
+            )
+            _audit(
+                service_obj.db,
+                tenant_id=row["tenant_id"],
+                connector_id=row["connector_id"],
+                source_id=None,
+                actor_type="admin",
+                actor_id=admin_ctx["actor_id"],
+                action="integration.rotated",
+                outcome="allow",
+                trace_id=trace_id,
+                detail={"integration_id": integration_id, "expires_at": expires_at},
+            )
+        updated = service_obj.db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
+        config = _platform_config(settings, sources, token, row["display_name"])
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "integration": _integration_view(service_obj.db, updated),
+            "access_token": token,
+            "mcp_config": config,
+            "mcp_config_json": json.dumps(config, ensure_ascii=False, indent=2),
+            "trace_id": trace_id,
+        }
+
+    @router.post("/v1/integrations/{integration_id}/revoke")
+    def revoke_integration(
+        integration_id: str,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        if not INTEGRATION_ID_RE.fullmatch(integration_id):
+            raise AppError(404, "INTEGRATION_NOT_FOUND", "企业集成不存在")
+        row = service_obj.db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
+        if not row:
+            raise AppError(404, "INTEGRATION_NOT_FOUND", "企业集成不存在")
+        timestamp = now()
+        trace_id = "tr_" + uid()
+        with service_obj.db.transaction():
+            service_obj.db.execute(
+                "UPDATE kaiwu_integrations SET revoked_at=COALESCE(revoked_at,?),updated_at=?,"
+                "revision=revision+1 WHERE id=?",
+                (timestamp, timestamp, integration_id),
+            )
+            _audit(
+                service_obj.db,
+                tenant_id=row["tenant_id"],
+                connector_id=row["connector_id"],
+                source_id=None,
+                actor_type="admin",
+                actor_id=admin_ctx["actor_id"],
+                action="integration.revoked",
+                outcome="allow",
+                trace_id=trace_id,
+                detail={"integration_id": integration_id},
+            )
+        updated = service_obj.db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
+        return {
+            "integration": _integration_view(service_obj.db, updated),
+            "revoked": True,
+            "trace_id": trace_id,
+        }
+
+    @router.get("/v1/connectors/{connector_id}/data-plane")
+    def connector_data_plane(
+        connector_id: str,
+        response: Response,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        if not CONNECTOR_ID_RE.fullmatch(connector_id):
+            raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在")
+        try:
+            material = build_bridge_material(
+                service_obj.db,
+                admin_ctx["settings"],
+                connector_id,
+            )
+        except BridgeError as exc:
+            raise AppError(409, "DATA_PLANE_NOT_READY", str(exc)) from None
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "connector_id": connector_id,
+            "revision": material.revision,
+            "source_ids": list(material.source_ids),
+            "frps_toml": material.frps_toml,
+            "visitor_toml": material.visitor_toml,
+        }
+
     @router.get("/v1/connectors/{connector_id}/desired-state")
     def desired_state(
         connector_id: str,
@@ -602,6 +1023,39 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             current = {key: existing[key] for key in desired}
             if current != desired:
                 raise AppError(409, "SOURCE_CONFIG_CONFLICT", "同一来源编号的配置发生变化，请重新审核")
+            route = service_obj.db.one(
+                "SELECT 1 FROM kaiwu_edge_routes WHERE connector_id=? AND source_id=?",
+                (connector["id"], data.source_id),
+            )
+            if not route:
+                timestamp = now()
+                with service_obj.db.transaction():
+                    visitor_port = _allocate_visitor_port(service_obj.db, device_ctx["settings"])
+                    service_obj.db.execute(
+                        "INSERT INTO kaiwu_edge_routes"
+                        "(connector_id,source_id,visitor_host,visitor_port,created_at,updated_at)"
+                        " VALUES(?,?,?,?,?,?)",
+                        (
+                            connector["id"],
+                            data.source_id,
+                            device_ctx["settings"].kaiwu_edge_visitor_host,
+                            visitor_port,
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    _audit(
+                        service_obj.db,
+                        tenant_id=connector["tenant_id"],
+                        connector_id=connector["id"],
+                        source_id=data.source_id,
+                        actor_type="device",
+                        actor_id=connector["device_key_id"],
+                        action="source.route_migrated",
+                        outcome="allow",
+                        trace_id=trace_id,
+                        detail={"visitor_port": visitor_port},
+                    )
             return {"source": _source_view(existing, device_ctx["settings"]), "revision": connector["revision"], "trace_id": trace_id}
         count = service_obj.db.one(
             "SELECT COUNT(*) AS n FROM kaiwu_sources WHERE connector_id=?",
@@ -613,6 +1067,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             device_ctx["settings"], "stcp", f"{connector['id']}:{data.source_id}:1"
         )
         with service_obj.db.transaction():
+            visitor_port = _allocate_visitor_port(service_obj.db, device_ctx["settings"])
             service_obj.db.execute(
                 "INSERT INTO kaiwu_sources"
                 "(connector_id,tenant_id,source_id,display_name,allowed_tools,tool_schema_sha256,"
@@ -628,6 +1083,19 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                     data.target_binding_sha256,
                     data.transport,
                     _hash_secret(derived),
+                    now(),
+                    now(),
+                ),
+            )
+            service_obj.db.execute(
+                "INSERT INTO kaiwu_edge_routes"
+                "(connector_id,source_id,visitor_host,visitor_port,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (
+                    connector["id"],
+                    data.source_id,
+                    device_ctx["settings"].kaiwu_edge_visitor_host,
+                    visitor_port,
                     now(),
                     now(),
                 ),
@@ -736,7 +1204,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         connector = service_obj.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
         if not connector:
             raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在")
-        if connector["revoked"] and action != "revoked":
+        if connector["revoked"] and action != "revoke":
             raise AppError(403, "DEVICE_REVOKED", "连接器已撤销")
         if action == "drain":
             draining, revoked = 1, 0
@@ -746,10 +1214,20 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             draining, revoked = 1, 1
         changed = bool(connector["draining"]) != bool(draining) or bool(connector["revoked"]) != bool(revoked)
         if changed:
-            service_obj.db.execute(
-                "UPDATE kaiwu_connectors SET draining=?,revoked=?,revision=revision+1,updated_at=?,revoked_at=? WHERE id=?",
-                (draining, revoked, now(), now() if revoked else connector["revoked_at"], connector_id),
-            )
+            timestamp = now()
+            with service_obj.db.transaction():
+                service_obj.db.execute(
+                    "UPDATE kaiwu_connectors SET draining=?,revoked=?,revision=revision+1,updated_at=?,revoked_at=? WHERE id=?",
+                    (draining, revoked, timestamp, timestamp if revoked else connector["revoked_at"], connector_id),
+                )
+                if revoked:
+                    _revoke_connector_integrations(
+                        service_obj.db,
+                        connector_id,
+                        "admin",
+                        admin_ctx["actor_id"],
+                    )
+                    _release_connector_routes(service_obj.db, connector_id)
         current = service_obj.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
         trace_id = "tr_" + uid()
         _audit(
@@ -788,22 +1266,31 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         if connector["id"] != connector_id:
             raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
         trace_id = "tr_" + uid()
-        service_obj.db.execute(
-            "UPDATE kaiwu_connectors SET draining=1,revoked=1,revision=revision+1,updated_at=?,revoked_at=? WHERE id=?",
-            (now(), now(), connector_id),
-        )
-        _audit(
-            service_obj.db,
-            tenant_id=connector["tenant_id"],
-            connector_id=connector_id,
-            source_id=None,
-            actor_type="device",
-            actor_id=connector["device_key_id"],
-            action="connector.self_revoked",
-            outcome="allow",
-            trace_id=trace_id,
-            detail={},
-        )
+        timestamp = now()
+        with service_obj.db.transaction():
+            service_obj.db.execute(
+                "UPDATE kaiwu_connectors SET draining=1,revoked=1,revision=revision+1,updated_at=?,revoked_at=? WHERE id=?",
+                (timestamp, timestamp, connector_id),
+            )
+            _revoke_connector_integrations(
+                service_obj.db,
+                connector_id,
+                "device",
+                connector["device_key_id"],
+            )
+            _release_connector_routes(service_obj.db, connector_id)
+            _audit(
+                service_obj.db,
+                tenant_id=connector["tenant_id"],
+                connector_id=connector_id,
+                source_id=None,
+                actor_type="device",
+                actor_id=connector["device_key_id"],
+                action="connector.self_revoked",
+                outcome="allow",
+                trace_id=trace_id,
+                detail={},
+            )
         return {"connector_id": connector_id, "revoked": True, "trace_id": trace_id}
 
     return router

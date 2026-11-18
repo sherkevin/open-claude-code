@@ -54,8 +54,8 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), "内网连接器") {
 		t.Fatal("页面内容不完整")
 	}
-	if !strings.Contains(recorder.Body.String(), "本机诊断试用包") || !strings.Contains(recorder.Body.String(), "不代表开物平台已经能够调用客户内网 MCP") {
-		t.Fatal("页面未明确展示本机诊断试用边界")
+	if !strings.Contains(recorder.Body.String(), "企业统一入口候选版本") || !strings.Contains(recorder.Body.String(), "公网是否可用必须以云端 Edge") {
+		t.Fatal("页面未明确展示企业桥接验收边界")
 	}
 	if strings.Contains(recorder.Body.String(), "启动加密通道并与云端完成端到端检测") {
 		t.Fatal("页面不得把候选连接器描述成已完成端到端联调")

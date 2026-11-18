@@ -261,14 +261,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeProxyError(w, http.StatusBadGateway, "UPSTREAM_REDIRECT_DENIED", "客户 MCP 返回了不允许的重定向")
 		return
 	}
+	contentType := resp.Header.Get("Content-Type")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, s.opts.MaxResponseSize))
+		writeProxyError(w, http.StatusBadGateway, "UPSTREAM_HTTP_ERROR", "客户 MCP 请求失败")
+		return
+	}
+	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		if upstreamSID := resp.Header.Get("Mcp-Session-Id"); upstreamSID != "" {
+			proxySessionID = s.rememberSession(proxySessionID, upstreamSID)
+		}
+		if proxySessionID != "" {
+			w.Header().Set("Mcp-Session-Id", proxySessionID)
+		}
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(resp.StatusCode)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		flusher.Flush()
+		_ = s.streamSSE(resp.Body, w, flusher, envelope.Method)
+		return
+	}
 	payload, err := readLimited(resp.Body, s.opts.MaxResponseSize)
 	if err != nil {
 		writeProxyError(w, http.StatusBadGateway, "UPSTREAM_RESPONSE_TOO_LARGE", "客户 MCP 响应超过大小限制")
-		return
-	}
-	contentType := resp.Header.Get("Content-Type")
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		writeProxyError(w, http.StatusBadGateway, "UPSTREAM_HTTP_ERROR", "客户 MCP 请求失败")
 		return
 	}
 	payload, err = s.filterResponse(envelope.Method, payload, contentType)
@@ -378,10 +400,11 @@ func (s *Server) expireSessions(now time.Time) {
 }
 
 func (s *Server) filterResponse(method string, payload []byte, contentType string) ([]byte, error) {
-	if strings.Contains(contentType, "text/event-stream") {
-		return s.filterSSE(method, payload)
+	lowerType := strings.ToLower(contentType)
+	if strings.Contains(lowerType, "text/event-stream") {
+		return nil, errors.New("SSE responses must be streamed")
 	}
-	if contentType != "" && !strings.Contains(contentType, "application/json") && !strings.Contains(contentType, "+json") {
+	if contentType != "" && !strings.Contains(lowerType, "application/json") && !strings.Contains(lowerType, "+json") {
 		return nil, errors.New("unsupported response content type")
 	}
 	return s.filterJSON(method, payload)
@@ -408,64 +431,104 @@ func (s *Server) filterJSON(method string, payload []byte) ([]byte, error) {
 	return json.Marshal(object)
 }
 
-func (s *Server) filterSSE(method string, payload []byte) ([]byte, error) {
-	if method != "tools/list" && method != "initialize" {
-		return payload, nil
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(payload))
-	scanner.Buffer(make([]byte, 0, 64<<10), 512<<10)
-	var out strings.Builder
+// streamSSE forwards one upstream SSE event at a time. Only initialize and
+// tools/list events are rewritten; all other event payloads stay byte-for-byte
+// equivalent at the event boundary. Multiple data lines are joined before one
+// JSON filter pass and emitted as one data line, so a filtered result is never
+// duplicated once per source line.
+func (s *Server) streamSSE(body io.Reader, writer io.Writer, flusher http.Flusher, method string) error {
+	reader := bufio.NewReaderSize(body, 32<<10)
 	var event []string
-	flush := func() error {
+	eventBytes := 0
+	limit := s.opts.MaxResponseSize
+	if limit <= 0 {
+		limit = defaultMaxResponseBytes
+	}
+	flushEvent := func() error {
 		if len(event) == 0 {
 			return nil
 		}
-		data := make([]string, 0, len(event))
+		var output strings.Builder
+		dataLines := make([]string, 0, len(event))
 		for _, line := range event {
 			if strings.HasPrefix(line, "data:") {
-				data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+				dataLines = append(dataLines, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 			}
 		}
-		if len(data) > 0 {
-			filtered, err := s.filterJSON(method, []byte(strings.Join(data, "\n")))
+		if len(dataLines) > 0 && (method == "initialize" || method == "tools/list") {
+			filtered, err := s.filterJSON(method, []byte(strings.Join(dataLines, "\n")))
 			if err != nil {
 				return err
 			}
 			for _, line := range event {
-				if strings.HasPrefix(line, "data:") {
-					out.WriteString("data: ")
-					out.Write(filtered)
-					out.WriteByte('\n')
-				} else {
-					out.WriteString(line)
-					out.WriteByte('\n')
+				if !strings.HasPrefix(line, "data:") {
+					output.WriteString(line)
+					output.WriteByte('\n')
 				}
 			}
+			output.WriteString("data: ")
+			output.Write(filtered)
+			output.WriteString("\n\n")
 		} else {
-			out.WriteString(strings.Join(event, "\n"))
-			out.WriteByte('\n')
+			for _, line := range event {
+				output.WriteString(line)
+				output.WriteByte('\n')
+			}
+			output.WriteByte('\n')
 		}
-		out.WriteByte('\n')
+		if _, err := io.WriteString(writer, output.String()); err != nil {
+			return err
+		}
+		flusher.Flush()
 		event = event[:0]
+		eventBytes = 0
 		return nil
 	}
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			if err := flush(); err != nil {
-				return nil, err
+
+	for {
+		line, readErr := readSSELine(reader, limit)
+		if len(line) > 0 {
+			line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+			if line == "" {
+				if err := flushEvent(); err != nil {
+					return err
+				}
+			} else {
+				eventBytes += len(line) + 1
+				if int64(eventBytes) > limit {
+					return errors.New("SSE event exceeds response limit")
+				}
+				event = append(event, line)
 			}
-			continue
 		}
-		event = append(event, line)
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return flushEvent()
+			}
+			return readErr
+		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+}
+
+func readSSELine(reader *bufio.Reader, limit int64) (string, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			if int64(len(line)+len(fragment)) > limit {
+				return "", errors.New("SSE line exceeds response limit")
+			}
+			line = append(line, fragment...)
+		}
+		switch {
+		case err == nil:
+			return string(line), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return string(line), err
+		}
 	}
-	if err := flush(); err != nil {
-		return nil, err
-	}
-	return []byte(out.String()), nil
 }
 
 func (s *Server) filterToolsObject(object map[string]any) (map[string]any, error) {

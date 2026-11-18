@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -79,6 +80,11 @@ type Agent struct {
 	proxies    map[string]*authproxy.Server
 	heartbeat  context.CancelFunc
 
+	frpcAdminPort     int
+	frpcAdminUser     string
+	frpcAdminPassword string
+	frpcProxyCount    int
+
 	persistMu   sync.Mutex
 	autoConnect bool
 }
@@ -102,6 +108,8 @@ type Status struct {
 	Sources         []config.Source `json:"sources"`
 	FrpcRunning     bool            `json:"frpc_running"`
 	FrpcRestarts    int             `json:"frpc_restarts"`
+	TunnelConnected bool            `json:"tunnel_connected"`
+	TunnelDetail    string          `json:"tunnel_detail,omitempty"`
 	LastError       string          `json:"last_error,omitempty"`
 	Version         string          `json:"version"`
 	EdgeBase        string          `json:"edge_base,omitempty"`
@@ -158,17 +166,17 @@ func New(opts Options) (*Agent, error) {
 	}
 	tombstoned := st.Exists(fileRevoked)
 	if !tombstoned {
-		if err := st.ReadJSON(fileIdentity, &agent.identity); err == nil && agent.identity.DeviceToken != "" {
+		if err := st.ReadProtectedJSON(fileIdentity, &agent.identity); err == nil && agent.identity.DeviceToken != "" {
 			agent.state.Transition(state.Configuring, "已载入设备身份")
 		}
 	}
 	if err := st.ReadJSON(fileConfig, &agent.config); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	if err := st.ReadJSON(fileSecrets, &agent.secrets); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := st.ReadProtectedJSON(fileSecrets, &agent.secrets); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	if err := st.ReadJSON(fileAuth, &agent.profiles); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := st.ReadProtectedJSON(fileAuth, &agent.profiles); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 	if agent.secrets == nil {
@@ -256,11 +264,20 @@ func (a *Agent) recoverTunnel() {
 	}
 	a.mu.RLock()
 	s := a.supervisor
+	adminPort := a.frpcAdminPort
+	adminUser := a.frpcAdminUser
+	adminPassword := a.frpcAdminPassword
+	proxyCount := a.frpcProxyCount
 	a.mu.RUnlock()
 	if s == nil || !s.Running() {
 		return
 	}
 	if detail := strings.ToLower(s.LastError()); strings.Contains(detail, "error") || strings.Contains(detail, "failed") {
+		return
+	}
+	// A live frpc process is not enough: it may still be waiting for relay
+	// login or for every approved STCP proxy to enter the running phase.
+	if connected, _ := queryFrpcTunnel(adminPort, adminUser, adminPassword, proxyCount); !connected {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -321,6 +338,60 @@ func endpointConfigured(raw string) bool {
 	}
 }
 
+type frpcProxyStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Err    string `json:"err"`
+}
+
+func queryFrpcTunnel(port int, user, password string, expected int) (bool, string) {
+	if port <= 0 || expected <= 0 {
+		return false, "frpc 尚未配置可检查的来源代理"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
+	defer cancel()
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/api/status", port),
+		nil,
+	)
+	if err != nil {
+		return false, "frpc 状态接口不可用"
+	}
+	request.SetBasicAuth(user, password)
+	response, err := (&http.Client{Timeout: time.Second}).Do(request)
+	if err != nil {
+		return false, "frpc 尚未完成中继登录"
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return false, "frpc 状态接口返回异常"
+	}
+	payload, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+	if err != nil || len(payload) > 1<<20 {
+		return false, "frpc 状态响应无效"
+	}
+	var groups map[string][]frpcProxyStatus
+	if err := json.Unmarshal(payload, &groups); err != nil {
+		return false, "frpc 状态响应不是有效 JSON"
+	}
+	running := 0
+	for _, statuses := range groups {
+		for _, item := range statuses {
+			if item.Status == "running" {
+				running++
+			} else if item.Err != "" {
+				return false, "来源代理 " + item.Name + " 启动失败"
+			}
+		}
+	}
+	if running < expected {
+		return false, fmt.Sprintf("来源代理尚未全部运行（%d/%d）", running, expected)
+	}
+	return true, fmt.Sprintf("%d 个来源代理已运行", running)
+}
+
 // CloudReadyForTrial reports whether this build has a real control-plane and
 // Edge endpoint configured. Development example endpoints never enable cloud
 // actions in the trial UI.
@@ -339,8 +410,27 @@ func (a *Agent) cloudConfigured() bool {
 // Status 返回当前快照。
 func (a *Agent) Status() Status {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.statusLocked()
+	status := a.statusLocked()
+	adminPort := a.frpcAdminPort
+	adminUser := a.frpcAdminUser
+	adminPassword := a.frpcAdminPassword
+	proxyCount := a.frpcProxyCount
+	a.mu.RUnlock()
+	if !status.FrpcRunning || adminPort <= 0 {
+		return status
+	}
+	connected, detail := queryFrpcTunnel(adminPort, adminUser, adminPassword, proxyCount)
+	if connected && a.state.Current() == state.DegradedRelay {
+		a.state.Transition(state.Ready, "中继代理已进入运行状态")
+	} else if !connected && a.state.Current() == state.Ready {
+		a.state.Transition(state.DegradedRelay, detail)
+	}
+	a.mu.RLock()
+	status = a.statusLocked()
+	a.mu.RUnlock()
+	status.TunnelConnected = connected
+	status.TunnelDetail = detail
+	return status
 }
 
 // Bind 用一次性接入码兑换设备身份。
@@ -369,7 +459,7 @@ func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
 	a.mu.Lock()
 	a.identity = identity
 	a.mu.Unlock()
-	if err := a.store.WriteJSON(fileIdentity, identity); err != nil {
+	if err := a.store.WriteProtectedJSON(fileIdentity, identity); err != nil {
 		return a.Status(), err
 	}
 	client, err := cloud.NewWithSigner(a.cloudBase(), identity.DeviceToken, a.deviceKey)
@@ -418,10 +508,10 @@ func (a *Agent) ImportConfig(ctx context.Context, raw []byte) (config.ImportRepo
 	if err := a.store.WriteJSON(fileConfig, a.config); err != nil {
 		return report, err
 	}
-	if err := a.store.WriteJSON(fileSecrets, a.secrets); err != nil {
+	if err := a.store.WriteProtectedJSON(fileSecrets, a.secrets); err != nil {
 		return report, err
 	}
-	if err := a.store.WriteJSON(fileAuth, a.profiles); err != nil {
+	if err := a.store.WriteProtectedJSON(fileAuth, a.profiles); err != nil {
 		return report, err
 	}
 	if a.state.Current() == state.Unpaired || a.state.Current() == state.Configuring {
@@ -488,6 +578,27 @@ func newSourceID() (string, error) {
 		return "", fmt.Errorf("生成来源编号失败: %w", err)
 	}
 	return "src_" + hex.EncodeToString(raw), nil
+}
+
+func freeLoopbackPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer listener.Close()
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, errors.New("本机管理端口地址无效")
+	}
+	return address.Port, nil
+}
+
+func randomHex(bytesLen int) (string, error) {
+	raw := make([]byte, bytesLen)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
 }
 
 func isOpaqueSourceID(value string) bool {
@@ -748,8 +859,24 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 		a.state.Transition(state.DegradedRelay, "通道配置无效: "+err.Error())
 		return a.Status(), err
 	}
+	adminPort, err := freeLoopbackPort()
+	if err != nil {
+		a.stopAuthProxies()
+		a.state.Transition(state.DegradedRelay, "分配 frpc 本机管理端口失败")
+		return a.Status(), err
+	}
+	adminPassword, err := randomHex(24)
+	if err != nil {
+		a.stopAuthProxies()
+		a.state.Transition(state.DegradedRelay, "生成 frpc 本机管理凭据失败")
+		return a.Status(), err
+	}
+	generated.AdminPort = adminPort
+	generated.AdminUser = "kaiwu"
+	generated.AdminPassword = adminPassword
 	configPath := a.store.Path(fileFrpc)
-	if err := generated.WriteFile(configPath); err != nil {
+	frpcEnvironment, err := generated.WriteEnvFile(configPath)
+	if err != nil {
 		a.stopAuthProxies()
 		a.state.Transition(state.DegradedRelay, "写入通道配置失败: "+err.Error())
 		return a.Status(), err
@@ -766,8 +893,13 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 	if a.supervisor != nil {
 		_ = a.supervisor.Stop(context.Background())
 	}
+	a.frpcAdminPort = adminPort
+	a.frpcAdminUser = generated.AdminUser
+	a.frpcAdminPassword = adminPassword
+	a.frpcProxyCount = len(generated.Proxies)
 	a.supervisor = supervisor.New(binary, configPath)
 	a.supervisor.PIDFile = a.store.Path("frpc.pid")
+	a.supervisor.Environment = frpcEnvironment
 	s := a.supervisor
 	stopHeartbeat := a.heartbeat
 	a.mu.Unlock()
@@ -800,9 +932,26 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 		return a.Status(), errors.New("连接已取消")
 	}
 
+	tunnelConnected := false
+	tunnelDetail := "frpc 尚未完成中继登录"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tunnelConnected, tunnelDetail = queryFrpcTunnel(
+			adminPort,
+			generated.AdminUser,
+			adminPassword,
+			len(generated.Proxies),
+		)
+		if tunnelConnected {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 	reports, diagErr := a.Diagnose(ctx, "", "")
 	if diagErr == nil && !allOK(reports) {
 		a.state.Transition(state.DegradedUpstream, "内网来源检查未通过")
+	} else if !tunnelConnected {
+		a.state.Transition(state.DegradedRelay, tunnelDetail)
 	} else {
 		a.state.Transition(state.Ready, "通道已建立")
 	}
@@ -816,6 +965,10 @@ func (a *Agent) Pause(ctx context.Context) Status {
 	s := a.supervisor
 	stopHeartbeat := a.heartbeat
 	a.heartbeat = nil
+	a.frpcAdminPort = 0
+	a.frpcAdminUser = ""
+	a.frpcAdminPassword = ""
+	a.frpcProxyCount = 0
 	a.mu.Unlock()
 	if stopHeartbeat != nil {
 		stopHeartbeat()

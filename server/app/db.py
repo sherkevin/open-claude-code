@@ -268,6 +268,45 @@ CREATE TABLE IF NOT EXISTS kaiwu_control_audit(
 );
 CREATE INDEX IF NOT EXISTS kaiwu_control_audit_connector ON kaiwu_control_audit(connector_id,id);
 CREATE INDEX IF NOT EXISTS kaiwu_control_audit_tenant ON kaiwu_control_audit(tenant_id,id);
+-- Enterprise integration credentials are hashed at rest. A route is the
+-- loopback visitor listener paired with one connector source.
+CREATE TABLE IF NOT EXISTS kaiwu_integrations(
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    display_name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    rotated_at TEXT,
+    revoked_at TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kaiwu_integrations_tenant ON kaiwu_integrations(tenant_id,created_at);
+CREATE INDEX IF NOT EXISTS kaiwu_integrations_connector ON kaiwu_integrations(connector_id,created_at);
+CREATE TABLE IF NOT EXISTS kaiwu_integration_sources(
+    integration_id TEXT NOT NULL REFERENCES kaiwu_integrations(id),
+    connector_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    PRIMARY KEY(integration_id,connector_id,source_id),
+    FOREIGN KEY(connector_id,source_id) REFERENCES kaiwu_sources(connector_id,source_id)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_integration_sources_source ON kaiwu_integration_sources(connector_id,source_id);
+CREATE TABLE IF NOT EXISTS kaiwu_edge_routes(
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    source_id TEXT NOT NULL,
+    visitor_host TEXT NOT NULL,
+    visitor_port INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(connector_id,source_id),
+    FOREIGN KEY(connector_id,source_id) REFERENCES kaiwu_sources(connector_id,source_id),
+    UNIQUE(visitor_port)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_edge_routes_source ON kaiwu_edge_routes(source_id);
 """
 
 

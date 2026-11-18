@@ -61,7 +61,7 @@ func (a *Agent) SetAuthProfile(sourceID string, profile huaweiauth.Profile, tool
 		a.mu.Unlock()
 		return a.Status(), err
 	}
-	if err := a.store.WriteJSON(fileAuth, a.profiles); err != nil {
+	if err := a.store.WriteProtectedJSON(fileAuth, a.profiles); err != nil {
 		a.mu.Unlock()
 		return a.Status(), err
 	}

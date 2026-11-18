@@ -2,8 +2,8 @@
 //
 // The private key is local-only and is never sent to the cloud. Every device
 // control-plane request is signed over the exact method, path and body digest.
-// Persistence uses an atomic 0600 file; platform-specific DPAPI wrapping remains
-// a separate Windows acceptance requirement.
+// Persistence uses the shared atomic secret-file store. Windows builds wrap the
+// key with machine-scoped DPAPI before writing it.
 package devicekey
 
 import (
@@ -12,13 +12,12 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/sherkevin/open-claude-code/connector/internal/secretfile"
 )
 
 type document struct {
@@ -36,12 +35,9 @@ type Key struct {
 // LoadOrCreate loads an existing private key or creates one atomically.
 func LoadOrCreate(path string) (*Key, bool, error) {
 	var stored document
-	raw, err := os.ReadFile(path)
+	_, err := secretfile.ReadJSON(path, &stored)
 	switch {
 	case err == nil:
-		if err := json.Unmarshal(raw, &stored); err != nil {
-			return nil, false, fmt.Errorf("读取设备密钥失败: %w", err)
-		}
 		encoded, err := base64.RawURLEncoding.DecodeString(stored.PrivateKey)
 		if err != nil {
 			return nil, false, fmt.Errorf("设备密钥编码无效: %w", err)
@@ -73,19 +69,7 @@ func LoadOrCreate(path string) (*Key, bool, error) {
 		SchemaVersion: 1,
 		PrivateKey:    base64.RawURLEncoding.EncodeToString(encoded),
 	}
-	raw, err = json.MarshalIndent(stored, "", "  ")
-	if err != nil {
-		return nil, false, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, false, err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return nil, false, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := secretfile.WriteJSON(path, stored); err != nil {
 		return nil, false, err
 	}
 	return fromPrivate(private), true, nil

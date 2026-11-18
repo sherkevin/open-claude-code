@@ -13,6 +13,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/sherkevin/open-claude-code/connector/internal/secretfile"
 )
 
 // Store 是本机数据目录。
@@ -48,6 +50,13 @@ func (s *Store) ReadJSON(name string, target any) error {
 	return nil
 }
 
+// ReadProtectedJSON reads identity, credentials and channel material. On
+// Windows, legacy plaintext files are atomically migrated to DPAPI.
+func (s *Store) ReadProtectedJSON(name string, target any) error {
+	_, err := secretfile.ReadJSON(s.Path(name), target)
+	return err
+}
+
 // WriteJSON 原子写入 JSON 文件，权限 0600。
 func (s *Store) WriteJSON(name string, value any) error {
 	raw, err := json.MarshalIndent(value, "", "  ")
@@ -55,6 +64,11 @@ func (s *Store) WriteJSON(name string, value any) error {
 		return err
 	}
 	return s.WriteFile(name, raw)
+}
+
+// WriteProtectedJSON writes sensitive JSON through the platform secret store.
+func (s *Store) WriteProtectedJSON(name string, value any) error {
+	return secretfile.WriteJSON(s.Path(name), value)
 }
 
 // WriteFile 原子写入任意内容，权限 0600。

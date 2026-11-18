@@ -233,6 +233,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     app.include_router(create_workflow_router(svc, authenticated, enabled=settings.workflows_enabled))
     from .kaiwu_control import create_kaiwu_control_router
     app.include_router(create_kaiwu_control_router(svc))
+    from .kaiwu_edge import create_kaiwu_edge_router
+    app.include_router(create_kaiwu_edge_router(svc, settings))
 
     prefix = "/api/v1"
 

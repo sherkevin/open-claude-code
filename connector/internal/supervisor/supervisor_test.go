@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,5 +44,20 @@ func TestStartDetachesFromParentCancellation(t *testing.T) {
 	}
 	if instance.Running() {
 		t.Fatal("显式停止后 frpc 应退出")
+	}
+}
+
+func TestMinimalEnvPassesOnlyKaiwuSecrets(t *testing.T) {
+	env := minimalEnv(map[string]string{
+		"KAIWU_RELAY_TOKEN": "synthetic-relay",
+		"UNSAFE_TOKEN":      "must-not-pass",
+		"KAIWU_BAD-NAME":    "must-not-pass",
+	})
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "KAIWU_RELAY_TOKEN=synthetic-relay") {
+		t.Fatalf("KAIWU 秘密环境未传入: %s", joined)
+	}
+	if strings.Contains(joined, "must-not-pass") {
+		t.Fatalf("不安全的秘密环境被传入: %s", joined)
 	}
 }

@@ -41,8 +41,8 @@ ul.issues li.err{color:var(--err)}
 <header><div class="brand">开物<small>内网连接器</small></div><span class="pill" id="statePill">读取中…</span></header>
 <main>
 <section class="card trial">
-  <strong>本机诊断试用包</strong>
-  <p>用于安装、MCP 配置导入、动态认证配置和本机连通性诊断。当前不代表开物平台已经能够调用客户内网 MCP；云端中继仍需完成 C 段接入和真实联调。</p>
+  <strong>企业统一入口候选版本</strong>
+  <p>当前版本为企业统一入口候选版本，用于安装、MCP 配置导入、动态认证配置、本机诊断和企业桥接。公网是否可用必须以云端 Edge、真实 frps／visitor 和开物导入调用结果为准。</p>
 </section>
 
 <section class="card">
@@ -91,15 +91,15 @@ ul.issues li.err{color:var(--err)}
 </section>
 
 <section class="card">
-  <div class="steps">第 5 步</div><h2>云端中继联调（待云端 C 段接入）</h2>
+  <div class="steps">第 5 步</div><h2>云端中继与数据面</h2>
   <p class="hint" id="cloudHint">本机环境未配置云端中继。当前诊断试用包不能建立云端通道。</p>
   <div class="row"><button class="primary" id="connectBtn" disabled>连接</button><button id="pauseBtn">暂停</button><button id="disconnectBtn">断开</button></div>
 </section>
 
 <section class="card">
-  <div class="steps">第 6 步</div><h2>导出平台配置</h2>
-  <p class="hint" id="exportHint">本机环境未配置云端 Edge，不能导出可用的平台连接。</p>
-  <div class="row"><button id="exportBtn" disabled>生成配置</button></div>
+  <div class="steps">第 6 步</div><h2>Edge 地址预览</h2>
+  <p class="hint" id="exportHint">正式 MCP JSON 由云端管理员签发企业集成凭据后生成，本机只预览不含凭据的 Edge 地址。</p>
+  <div class="row"><button id="exportBtn" disabled>生成地址预览</button></div>
   <pre id="exportOut" hidden></pre>
 </section>
 
@@ -128,11 +128,11 @@ function applyCloudAvailability(status){
     ? "输入交付人员提供的一次性接入码完成设备绑定。接入码只能使用一次。"
     : "本机环境未配置云端控制面，当前诊断试用包不能绑定企业。";
   $("cloudHint").textContent = relayConfigured
-    ? "本机已配置云端控制面和 Edge。是否可用仍取决于云端 C 段、设备授权和真实联调结果。"
+    ? "本机已配置控制面和 Edge。连接结果仍需结合云端来源路由、设备授权和真实工具调用判断。"
     : "本机环境未配置云端中继。当前诊断试用包只能完成本机安装、配置导入和连通性诊断，不能建立云端通道。";
   $("exportHint").textContent = edgeConfigured
-    ? "导出内容仅应在平台完成授权后用于联调，不得把占位凭据当作已生效授权。"
-    : "本机环境未配置云端 Edge，不能导出可用的平台连接。";
+    ? "这里只生成本机 Edge 地址预览，不包含 Authorization。正式 MCP JSON 与可撤销的企业集成凭据 K 由云端管理员一次性签发。"
+    : "本机环境未配置云端 Edge，不能生成地址预览。";
 }
 function disableCloudActions(message){
   ["bindBtn","connectBtn","exportBtn"].forEach(id=>setActionAvailability($(id), false));
@@ -155,7 +155,9 @@ function render(status){
   pill.className = "pill " + stateClass(status.state);
   $("tenant").textContent = status.tenant_name || "未绑定";
   $("connector").textContent = status.connector_id || "—";
-  $("frpc").textContent = status.frpc_running ? ("运行中，重启 " + status.frpc_restarts + " 次") : "未运行";
+  $("frpc").textContent = status.frpc_running
+    ? ((status.tunnel_connected ? "中继代理已运行" : "进程运行中，中继尚未就绪") + "，重启 " + status.frpc_restarts + " 次")
+    : "未运行";
   $("version").textContent = status.version || "—";
   $("reason").textContent = status.last_error || "";
   renderAuthSources(status);
@@ -208,7 +210,7 @@ $("authBtn").onclick = () => act($("authBtn"), async ()=>{
     tools:$("hwTools").value
   });
   $("hwHMACKey").value = "";
-  alert("本机认证配置已保存。请重新执行本机检测；云端中继联调需等待 C 段接入。");
+  alert("本机认证配置已保存。请重新执行本机检测，再检查云端中继和 Edge 状态。");
 });
 $("diagBtn").onclick = () => act($("diagBtn"), async ()=>{
   const reports = await api("/api/diagnose",{});

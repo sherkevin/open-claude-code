@@ -32,6 +32,7 @@ func TestRenderContainsRestrictedProxy(t *testing.T) {
 		`localIP = "10.0.0.8"`,
 		`allowUsers = ["tenant01"]`,
 		`transport.tls.enable = true`,
+		`loginFailExit = false`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("配置缺少 %q:\n%s", want, text)
@@ -82,5 +83,31 @@ func TestRenderEscapesQuotes(t *testing.T) {
 	}
 	if !strings.Contains(text, `secretKey = "a\"b"`) {
 		t.Fatalf("引号未转义: %s", text)
+	}
+}
+
+func TestRenderWithEnvSecretsKeepsSecretsOffDisk(t *testing.T) {
+	config := validConfig()
+	config.AdminPort = 39000
+	config.AdminUser = "kaiwu"
+	config.AdminPassword = "synthetic-admin-password"
+	text, environment, err := config.RenderWithEnvSecrets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{config.AuthToken, config.Proxies[0].SecretKey, config.AdminPassword} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("磁盘配置不得包含明文秘密: %s", text)
+		}
+	}
+	if !strings.Contains(text, "{{ .Envs.KAIWU_RELAY_TOKEN }}") ||
+		!strings.Contains(text, "{{ .Envs.KAIWU_STCP_SRC_01 }}") ||
+		!strings.Contains(text, "{{ .Envs.KAIWU_FRPC_ADMIN_PASSWORD }}") {
+		t.Fatalf("frp 环境模板缺失: %s", text)
+	}
+	if environment["KAIWU_RELAY_TOKEN"] != config.AuthToken ||
+		environment["KAIWU_STCP_SRC_01"] != config.Proxies[0].SecretKey ||
+		environment["KAIWU_FRPC_ADMIN_PASSWORD"] != config.AdminPassword {
+		t.Fatalf("子进程环境秘密不完整: %+v", environment)
 	}
 }

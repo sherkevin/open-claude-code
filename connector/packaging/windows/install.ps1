@@ -34,6 +34,58 @@ function Wait-ServiceAbsent {
   throw "服务 $ServiceName 未能及时删除"
 }
 
+function Set-PrivateDataAcl {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  & icacls.exe $Path /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "设置数据目录 ACL 失败，icacls 退出码为 $LASTEXITCODE: $Path"
+  }
+
+  $systemSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+  $adminSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+  $items = @(Get-Item -LiteralPath $Path -Force) + @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop)
+  foreach ($item in $items) {
+    $acl = Get-Acl -LiteralPath $item.FullName
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) {
+      $acl.RemoveAccessRuleSpecific($rule) | Out-Null
+    }
+    if ($item.PSIsContainer) {
+      $inheritance = (
+        [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+      )
+    } else {
+      $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+    }
+    foreach ($sid in @($systemSid, $adminSid)) {
+      $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $sid,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        $inheritance,
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow
+      )
+      $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $item.FullName -AclObject $acl
+  }
+
+  $verified = Get-Acl -LiteralPath $Path
+  if (-not $verified.AreAccessRulesProtected) {
+    throw "数据目录 ACL 仍会继承上级权限: $Path"
+  }
+  foreach ($rule in @($verified.Access)) {
+    $sid = $rule.IdentityReference.Translate(
+      [System.Security.Principal.SecurityIdentifier]
+    ).Value
+    if ($sid -notin @("S-1-5-18", "S-1-5-32-544")) {
+      throw "数据目录 ACL 含有未授权主体 $sid: $Path"
+    }
+  }
+}
+
 # 先停止旧服务，避免覆盖正在运行的二进制。
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
@@ -47,15 +99,41 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "docs") | Out-N
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "compliance") | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
+Set-PrivateDataAcl -Path $DataDir
+
+# 升级前保留身份、通道材料和认证配置。备份仍在受 ACL 保护的数据目录内。
+$SensitiveFiles = @(
+  "identity.json",
+  "device_key.json",
+  "secrets.json",
+  "auth_profiles.json",
+  "config.json",
+  "frpc.toml",
+  "state.json",
+  "revoked.json"
+)
+$ExistingSensitive = @($SensitiveFiles | ForEach-Object { Join-Path $DataDir $_ } | Where-Object { Test-Path $_ })
+if ($ExistingSensitive.Count -gt 0) {
+  $BackupDir = Join-Path $DataDir ("backups\" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+  New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+  foreach ($sourceFile in $ExistingSensitive) {
+    Copy-Item -LiteralPath $sourceFile -Destination $BackupDir -Force
+  }
+  [System.IO.File]::WriteAllText(
+    (Join-Path $BackupDir "backup-info.txt"),
+    "created_at=$((Get-Date).ToUniversalTime().ToString("o"))`r`nprevious_install=$InstallDir`r`n",
+    [System.Text.Encoding]::UTF8
+  )
+  Set-PrivateDataAcl -Path $BackupDir
+  Write-Host "升级前本机秘密与配置已备份到 $BackupDir"
+}
+
 Copy-Item (Join-Path $Source "bin\kaiwu-connector.exe") $InstallDir -Force
 Copy-Item (Join-Path $Source "bin\frpc.exe") $InstallDir -Force
 Get-ChildItem (Join-Path $Source "docs\*.md") -ErrorAction SilentlyContinue |
   Copy-Item -Destination (Join-Path $InstallDir "docs") -Force
 Get-ChildItem (Join-Path $Source "compliance\*") -File -ErrorAction SilentlyContinue |
   Copy-Item -Destination (Join-Path $InstallDir "compliance") -Force
-
-# 数据目录只允许 SYSTEM 和 Administrators 访问。服务以 LocalSystem 运行。
-icacls $DataDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /t | Out-Null
 
 # 写入云端地址模板。失败时立即停止，避免安装出一个导出不可用的连接器。
 $EnvFile = Join-Path $Source "config\connector.env.example"

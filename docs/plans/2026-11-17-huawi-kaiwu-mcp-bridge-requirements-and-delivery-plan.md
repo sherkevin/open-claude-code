@@ -1,5 +1,7 @@
 # 华微内网 MCP 接入开物平台：需求清单与实施计划
 
+> 范围更新（2026-11-18）：本轮以 [`2026-11-18-huawi-kaiwu-enterprise-bridge-plan.md`](2026-11-18-huawi-kaiwu-enterprise-bridge-plan.md) 的 `v1.1` 为实施基线。旧版中的逐员工身份映射、OAuth Token Exchange、`AT_user` 前置条件已被企业集成凭据 K、客户本机固定业务身份和原版 FRP 专属实例替代；本文件保留为历史需求和验收依据，冲突处以新版 Plan 为准。
+
 > 文档状态：`v0.9-local-candidate`
 >
 > 编制日期：2026-11-17
