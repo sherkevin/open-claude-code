@@ -13,6 +13,8 @@ $BaseURL = "http://127.0.0.1:17872"
 $InstallDir = Join-Path $env:ProgramFiles "Kaiwu\Connector"
 $DataDir = Join-Path $env:ProgramData "Kaiwu\Connector"
 $LogPath = Join-Path $env:TEMP "kaiwu-connector-windows-smoke.log"
+$StateBackupRoot = Join-Path $env:ProgramData "Kaiwu\ConnectorSmokeBackups"
+$StateBackup = $null
 
 $PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
 $Installer = Join-Path $PackageRoot "install.ps1"
@@ -32,7 +34,7 @@ $Evidence = [ordered]@{
     package_root = $PackageRoot
     setup_path = $SetupPath
     installer_mode = if ($UseSetup) { "nsis-setup" } else { "portable-package" }
-    uninstall_mode = "default preserves data; -Purge is not run by this smoke test"
+    uninstall_mode = "default uninstall preserves data; the smoke test separately restores the protected pre-test snapshot"
     steps = @()
     os = [ordered]@{}
     before = [ordered]@{}
@@ -42,6 +44,8 @@ $Evidence = [ordered]@{
     service = [ordered]@{}
     data = [ordered]@{}
     synthetic_mcp = [ordered]@{}
+    state_backup = [ordered]@{}
+    restoration = [ordered]@{}
     error = $null
 }
 
@@ -543,6 +547,340 @@ function Assert-ConnectorState {
     return $status
 }
 
+function Get-OptionalConnectorState {
+    try {
+        $status = Get-ConnectorStatus
+        return [string]$status.data.state
+    } catch {
+        return $null
+    }
+}
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-TextSha256 {
+    param([AllowNull()][string]$Text)
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-ConfigurationFingerprint {
+    $entries = @()
+    if (Test-Path -LiteralPath $DataDir) {
+        foreach ($name in @(
+            "config.json",
+            "secrets.json",
+            "auth_profiles.json",
+            "identity.json",
+            "device_key.json",
+            "frpc.toml",
+            "revoked.json"
+        )) {
+            $path = Join-Path $DataDir $name
+            $entries += [ordered]@{
+                name = $name
+                sha256 = if (Test-Path -LiteralPath $path) { Get-FileSha256 -Path $path } else { $null }
+            }
+        }
+    }
+    $environment = @()
+    foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")) {
+        $value = [Environment]::GetEnvironmentVariable($name, "Machine")
+        $environment += [ordered]@{
+            name = $name
+            sha256 = if ([string]::IsNullOrWhiteSpace($value)) { $null } else { Get-TextSha256 -Text $value }
+        }
+    }
+    $canonical = [ordered]@{ files = $entries; environment = $environment } | ConvertTo-Json -Depth 5 -Compress
+    return [ordered]@{
+        sha256 = Get-TextSha256 -Text $canonical
+        files = $entries
+        environment = $environment
+    }
+}
+
+function Set-PrivateAcl {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    }
+    & icacls.exe $Path /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "设置受保护目录 ACL 失败，icacls 退出码为 ${LASTEXITCODE}: $Path"
+    }
+    $systemSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+    $adminSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+    $items = @(Get-Item -LiteralPath $Path -Force) + @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop)
+    foreach ($item in $items) {
+        $acl = Get-Acl -LiteralPath $item.FullName
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($rule in @($acl.Access)) {
+            $acl.RemoveAccessRuleSpecific($rule) | Out-Null
+        }
+        if ($item.PSIsContainer) {
+            $inheritance = (
+                [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+            )
+        } else {
+            $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+        }
+        foreach ($sid in @($systemSid, $adminSid)) {
+            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                $sid,
+                [System.Security.AccessControl.FileSystemRights]::FullControl,
+                $inheritance,
+                [System.Security.AccessControl.PropagationFlags]::None,
+                [System.Security.AccessControl.AccessControlType]::Allow
+            )
+            $acl.AddAccessRule($rule)
+        }
+        Set-Acl -LiteralPath $item.FullName -AclObject $acl
+    }
+    Assert-PrivateAcl -Path $Path
+}
+
+function Copy-DirectoryContents {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    foreach ($item in @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop)) {
+        Copy-Item -LiteralPath $item.FullName -Destination $Destination -Recurse -Force
+    }
+}
+
+function Remove-RegistryKey {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateSet(32, 64)][int]$View
+    )
+    $subPath = $Path -replace '^HKLM\\', ''
+    $registryView = if ($View -eq 64) {
+        [Microsoft.Win32.RegistryView]::Registry64
+    } else {
+        [Microsoft.Win32.RegistryView]::Registry32
+    }
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine,
+        $registryView
+    )
+    try {
+        $baseKey.DeleteSubKeyTree($subPath, $false)
+    } finally {
+        $baseKey.Dispose()
+    }
+}
+
+function New-TestStateBackup {
+    $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
+    $backup = Join-Path $StateBackupRoot ($stamp + "-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    New-Item -ItemType Directory -Force -Path $backup | Out-Null
+    $service = Get-ServiceSnapshot
+    $dataExisted = Test-Path -LiteralPath $DataDir
+    $programExisted = Test-Path -LiteralPath $InstallDir
+    $fingerprint = Get-ConfigurationFingerprint
+    $environment = [ordered]@{}
+    foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")) {
+        $environment[$name] = [Environment]::GetEnvironmentVariable($name, "Machine")
+    }
+    $state = [ordered]@{
+        created_at = (Get-Date).ToUniversalTime().ToString("o")
+        service = $service
+        data_existed = $dataExisted
+        program_existed = $programExisted
+        configuration_fingerprint = $fingerprint
+        environment = $environment
+        connector_state = if ($service -and $service.state -eq "Running") { Get-OptionalConnectorState } else { $null }
+    }
+    if ($dataExisted) {
+        Copy-DirectoryContents -Source $DataDir -Destination (Join-Path $backup "data")
+    }
+    if ($programExisted) {
+        Copy-DirectoryContents -Source $InstallDir -Destination (Join-Path $backup "program")
+    }
+    $state | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $backup "state.json") -Encoding UTF8
+    Set-PrivateAcl -Path $backup
+    $script:StateBackup = [ordered]@{
+        path = $backup
+        state = $state
+    }
+    $Evidence.state_backup = [ordered]@{
+        path = $backup
+        protected_acl = $true
+        data_existed = $dataExisted
+        program_existed = $programExisted
+        configuration_sha256 = $fingerprint.sha256
+        service_state = if ($service) { $service.state } else { "Absent" }
+    }
+    return $script:StateBackup
+}
+
+function Remove-TestInstallArtifacts {
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($service) {
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        sc.exe delete $ServiceName | Out-Null
+        Wait-ServiceState -Expected "Absent" | Out-Null
+    }
+    foreach ($path in @(
+        $InstallDir,
+        (Join-Path ${env:ProgramFiles(x86)} "Kaiwu\Connector"),
+        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\开物内网连接器"),
+        (Join-Path $env:PUBLIC "Desktop\开物内网连接器配置.lnk")
+    )) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Recurse -Force -Confirm:$false
+        }
+    }
+    $uninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
+    Remove-RegistryKey -Path $uninstallKey -View 64
+    Remove-RegistryKey -Path $uninstallKey -View 32
+}
+
+function Restore-OriginalState {
+    if ($null -eq $script:StateBackup) {
+        throw "没有可用于恢复的测试前状态快照"
+    }
+    $backup = [string]$script:StateBackup.path
+    $state = $script:StateBackup.state
+    $currentService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($currentService) {
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        sc.exe delete $ServiceName | Out-Null
+        Wait-ServiceState -Expected "Absent" | Out-Null
+    }
+
+    if ($state.program_existed) {
+        if (Test-Path -LiteralPath $InstallDir) {
+            Remove-Item -LiteralPath $InstallDir -Recurse -Force -Confirm:$false
+        }
+        New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+        Copy-DirectoryContents -Source (Join-Path $backup "program") -Destination $InstallDir
+    } elseif (Test-Path -LiteralPath $InstallDir) {
+        Remove-Item -LiteralPath $InstallDir -Recurse -Force -Confirm:$false
+    }
+
+    if ($state.data_existed) {
+        if (Test-Path -LiteralPath $DataDir) {
+            Remove-Item -LiteralPath $DataDir -Recurse -Force -Confirm:$false
+        }
+        New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+        Copy-DirectoryContents -Source (Join-Path $backup "data") -Destination $DataDir
+        Set-PrivateAcl -Path $DataDir
+    } elseif (Test-Path -LiteralPath $DataDir) {
+        Remove-Item -LiteralPath $DataDir -Recurse -Force -Confirm:$false
+    }
+
+    foreach ($property in $state.environment.PSObject.Properties) {
+        [Environment]::SetEnvironmentVariable($property.Name, $property.Value, "Machine")
+    }
+
+    if ($null -ne $state.service) {
+        $snapshot = $state.service
+        $startupType = switch ($snapshot.start_mode) {
+            "Auto" { "Automatic" }
+            "Manual" { "Manual" }
+            "Disabled" { "Disabled" }
+            default { "Automatic" }
+        }
+        $displayName = [string]$snapshot.display_name
+        if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = "Kaiwu Intranet Connector" }
+        New-Service -Name $ServiceName -BinaryPathName ([string]$snapshot.binary_path) `
+            -StartupType $startupType -DisplayName $displayName -ErrorAction Stop | Out-Null
+        if ($snapshot.delayed_auto_start -and $startupType -eq "Automatic") {
+            sc.exe config $ServiceName start= delayed-auto | Out-Null
+        }
+        sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+        if ($snapshot.state -eq "Running") {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+            Wait-ServiceState -Expected "Running" | Out-Null
+            Start-Sleep -Seconds 1
+        }
+    } else {
+        Remove-TestInstallArtifacts
+    }
+
+    $restoredFingerprint = Get-ConfigurationFingerprint
+    if ($restoredFingerprint.sha256 -ne $state.configuration_fingerprint.sha256) {
+        throw "恢复后的配置指纹与测试前不一致"
+    }
+    $restoredService = Get-ServiceSnapshot
+    if ($null -eq $state.service -and $null -ne $restoredService) {
+        throw "测试前服务不存在，但恢复后服务仍存在"
+    }
+    if ($null -ne $state.service) {
+        if ($null -eq $restoredService) { throw "测试前服务存在，但恢复后服务不存在" }
+        if ($restoredService.state -ne $state.service.state) {
+            throw "恢复后的服务状态不一致：测试前=$($state.service.state)，恢复后=$($restoredService.state)"
+        }
+    }
+    $restoredConnectorState = $null
+    if ($restoredService -and $restoredService.state -eq "Running") {
+        $deadline = (Get-Date).AddSeconds(20)
+        do {
+            $restoredConnectorState = Get-OptionalConnectorState
+            if ($null -ne $restoredConnectorState) { break }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+        if ($null -ne $state.connector_state -and $restoredConnectorState -ne $state.connector_state) {
+            throw "恢复后的连接器状态不一致：测试前=$($state.connector_state)，恢复后=$($restoredConnectorState)"
+        }
+    }
+    if ($state.data_existed) {
+        Assert-PrivateAcl -Path $DataDir
+    }
+    return [ordered]@{
+        backup_path = $backup
+        configuration_sha256_before = $state.configuration_fingerprint.sha256
+        configuration_sha256_after = $restoredFingerprint.sha256
+        service_before = if ($state.service) { $state.service.state } else { "Absent" }
+        service_after = if ($restoredService) { $restoredService.state } else { "Absent" }
+        connector_state_before = $state.connector_state
+        connector_state_after = $restoredConnectorState
+        acl_verified = $state.data_existed
+    }
+}
+
+function Restore-TestStateAndRecord {
+    if ($null -eq $script:StateBackup) {
+        return $true
+    }
+    try {
+        $result = Restore-OriginalState
+        $Evidence.restoration = $result
+        Add-Step -Name "original_configuration_restored" -Status "passed" -Detail "fingerprint/service/ACL verified"
+        try {
+            Remove-Item -LiteralPath $script:StateBackup.path -Recurse -Force -Confirm:$false
+            $Evidence.restoration.backup_removed = $true
+        } catch {
+            $Evidence.restoration.backup_removed = $false
+            $Evidence.restoration.backup_cleanup_warning = $_.Exception.Message
+            Add-Step -Name "test_backup_cleanup" -Status "warning" -Detail $script:StateBackup.path
+        }
+        return $true
+    } catch {
+        $Evidence.status = "failed"
+        $Evidence.restoration = [ordered]@{
+            status = "failed"
+            backup_path = if ($script:StateBackup) { $script:StateBackup.path } else { $null }
+            error = $_.Exception.Message
+            backup_retained = $true
+        }
+        Add-Step -Name "original_configuration_restored" -Status "failed" -Detail $_.Exception.Message
+        return $false
+    }
+}
+
 function Assert-SecretsProtected {
     foreach ($name in @("secrets.json", "auth_profiles.json", "identity.json", "device_key.json")) {
         $path = Join-Path $DataDir $name
@@ -567,6 +905,8 @@ try {
         architecture = $os.OSArchitecture
         user = $identity.Name
         is_system = $identity.IsSystem
+        powershell_version = $PSVersionTable.PSVersion.ToString()
+        powershell_edition = $PSVersionTable.PSEdition
     }
     Add-Step -Name "collect_os" -Status "passed" -Detail "$($os.Caption) $($os.Version)"
 
@@ -610,11 +950,18 @@ try {
 
     $beforeService = Get-ServiceSnapshot
     $beforeData = Get-DataSnapshot
+    $beforeFingerprint = Get-ConfigurationFingerprint
+    $beforeConnectorState = if ($beforeService -and $beforeService.state -eq "Running") { Get-OptionalConnectorState } else { $null }
     $Evidence.before = [ordered]@{
         service = $beforeService
         data = $beforeData
+        configuration_fingerprint = $beforeFingerprint
+        connector_state = $beforeConnectorState
     }
     Add-Step -Name "before_snapshot" -Status "passed" -Detail "service=$([bool]$beforeService); data_files=$($beforeData.files.Count)"
+
+    $stateBackup = New-TestStateBackup
+    Add-Step -Name "protected_state_backup" -Status "passed" -Detail $stateBackup.path
 
     Invoke-PackageInstaller
     $service = Wait-ServiceState -Expected "Running"
@@ -854,7 +1201,12 @@ try {
 
     $Evidence.status = "passed"
     Stop-SyntheticMcp
+    $restoreOk = Restore-TestStateAndRecord
     Save-Evidence
+    if (-not $restoreOk) {
+        Write-Error "测试主体完成，但测试前配置或服务状态恢复失败；受保护备份已保留。"
+        exit 1
+    }
     exit 0
 } catch {
     $Evidence.status = "failed"
@@ -869,7 +1221,11 @@ try {
         $Evidence.synthetic_mcp.events = @(Get-SyntheticMcpEvents)
     } catch {}
     Stop-SyntheticMcp
+    $restoreOk = Restore-TestStateAndRecord
     Save-Evidence
+    if (-not $restoreOk) {
+        Write-Error "测试失败，并且测试前配置或服务状态恢复也失败；受保护备份已保留。"
+    }
     Write-Error $_
     exit 1
 }

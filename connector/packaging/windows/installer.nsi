@@ -83,6 +83,15 @@ Function .onInit
     MessageBox MB_ICONSTOP "系统缺少 64 位 Windows PowerShell，无法完成安装。"
     Abort
   ${EndIf}
+  ; Windows Server 2019 ships Windows PowerShell 5.1. Fail before changing
+  ; the machine if the native 64-bit PowerShell is older than 5.0.
+  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -NonInteractive -Command "exit [int]((Get-Host).Version.Major -lt 5)"'
+  Pop $0
+  Pop $1
+  ${If} "$0" != "0"
+    MessageBox MB_ICONSTOP "64 位 Windows PowerShell 版本过低或无法启动。本安装包要求 Windows PowerShell 5.0 及以上；Windows Server 2019 默认提供 5.1。检测退出码：$0"
+    Abort
+  ${EndIf}
   InitPluginsDir
 FunctionEnd
 
