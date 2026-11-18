@@ -32,6 +32,7 @@
 | CLM-024 | `1.2.1` Windows 产物来自提交 `9ccfdf5` 的 x86-64 PE，Go VCS 信息为 `vcs.modified=false` | `independently_reproduced` | 只证明干净交叉编译和构建来源，不证明 Windows 运行 | `artifacts/kaiwu-connector-1.2.1-windows-amd64.zip` | `34e0f560287b8649c677e557c36cf1cc6dbf80578ec02411db792c3c3d175266` | 2026-11-18 / 学校云项目构建检查 | 包被替换或重新构建时 |
 | CLM-025 | `1.2.1` Linux 最终包可以启动本机页面，未配置云端时状态为 `UNPAIRED`、`cloud_configured=false`、`edge_configured=false` | `independently_reproduced` | Linux 包级启动和失败关闭检查；不代表 Windows 行为 | `CONNECTOR_1.2.1_BUILD_EVIDENCE_2026-11-18.md` | 由 `SHA256SUMS` 校验 | 2026-11-18 / 学校云项目包级烟雾检查 | 包被替换或重新构建时 |
 | CLM-026 | `1.2.1` 已在 Windows 实机完成 D01、D02、整机重启和安全软件默认开启复测 | `unverified` | 当前没有 Windows 运行环境和实机复测证据 | 尚无 | 尚无 | 尚未执行 | Windows 实机复测后更新 |
+| CLM-027 | 客户目标 Windows Server 2019 具备图形化客户端桌面 | `report_claim` | 项目负责人于 2026-11-18 同步；只证明环境具备图形化验收条件，不证明安装和浏览器流程已执行 | 尚无 | 尚无 | 2026-11-18 / 项目负责人同步 | 客户目标环境变化时 |
 
 ## 状态升级规则
 
