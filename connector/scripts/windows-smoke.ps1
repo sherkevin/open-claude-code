@@ -14,6 +14,7 @@ $InstallDir = Join-Path $env:ProgramFiles "Kaiwu\Connector"
 $DataDir = Join-Path $env:ProgramData "Kaiwu\Connector"
 $LogPath = Join-Path $env:TEMP "kaiwu-connector-windows-smoke.log"
 $StateBackupRoot = Join-Path $env:ProgramData "Kaiwu\ConnectorSmokeBackups"
+$UninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
 $StateBackup = $null
 
 $PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
@@ -379,11 +380,10 @@ function Assert-NativeWindowsInstall {
         throw "Windows 服务没有从原生 64 位安装目录启动: $binaryPath"
     }
 
-    $uninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
-    if (-not (Test-RegistryKey -Path $uninstallKey -View 64)) {
+    if (-not (Test-RegistryKey -Path $UninstallKey -View 64)) {
         throw "缺少原生 64 位卸载登记"
     }
-    if (Test-RegistryKey -Path $uninstallKey -View 32) {
+    if (Test-RegistryKey -Path $UninstallKey -View 32) {
         throw "旧 32 位卸载登记仍然存在"
     }
 
@@ -681,6 +681,169 @@ function Remove-RegistryKey {
     }
 }
 
+function Get-RegistryNodeSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][Microsoft.Win32.RegistryKey]$Key
+    )
+    $values = @()
+    foreach ($name in @($Key.GetValueNames() | Sort-Object)) {
+        $kind = $Key.GetValueKind($name).ToString()
+        $raw = $Key.GetValue(
+            $name,
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+        switch ($kind) {
+            "String" { $value = [string]$raw }
+            "ExpandString" { $value = [string]$raw }
+            "DWord" { $value = [Convert]::ToString([uint32]$raw, 10) }
+            "QWord" { $value = [Convert]::ToString([uint64]$raw, 10) }
+            "Binary" { $value = [Convert]::ToBase64String([byte[]]$raw) }
+            "MultiString" { $value = @($raw | ForEach-Object { [string]$_ }) }
+            "None" { $value = $null }
+            default { throw "不支持的注册表值类型 ${kind}: $name" }
+        }
+        $values += [ordered]@{
+            name = [string]$name
+            kind = $kind
+            value = $value
+        }
+    }
+
+    $subkeys = @()
+    foreach ($subkeyName in @($Key.GetSubKeyNames() | Sort-Object)) {
+        $child = $Key.OpenSubKey($subkeyName, $false)
+        if ($null -eq $child) {
+            throw "无法读取注册表子项: $subkeyName"
+        }
+        try {
+            $subkeys += [ordered]@{
+                name = [string]$subkeyName
+                node = (Get-RegistryNodeSnapshot -Key $child)
+            }
+        } finally {
+            $child.Dispose()
+        }
+    }
+    return [ordered]@{
+        values = $values
+        subkeys = $subkeys
+    }
+}
+
+function Get-RegistryKeySnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateSet(32, 64)][int]$View
+    )
+    $subPath = $Path -replace '^HKLM\\', ''
+    $registryView = if ($View -eq 64) {
+        [Microsoft.Win32.RegistryView]::Registry64
+    } else {
+        [Microsoft.Win32.RegistryView]::Registry32
+    }
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine,
+        $registryView
+    )
+    $key = $null
+    try {
+        $key = $baseKey.OpenSubKey($subPath, $false)
+        if ($null -eq $key) {
+            return [ordered]@{
+                exists = $false
+                node = $null
+            }
+        }
+        return [ordered]@{
+            exists = $true
+            node = (Get-RegistryNodeSnapshot -Key $key)
+        }
+    } finally {
+        if ($null -ne $key) { $key.Dispose() }
+        $baseKey.Dispose()
+    }
+}
+
+function Set-RegistryNodeSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][Microsoft.Win32.RegistryKey]$Key,
+        [Parameter(Mandatory = $true)]$Snapshot
+    )
+    foreach ($entry in @($Snapshot.values)) {
+        $name = [string]$entry.name
+        switch ([string]$entry.kind) {
+            "String" { $value = [string]$entry.value; $kind = [Microsoft.Win32.RegistryValueKind]::String }
+            "ExpandString" { $value = [string]$entry.value; $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString }
+            "DWord" { $value = [uint32]::Parse([string]$entry.value); $kind = [Microsoft.Win32.RegistryValueKind]::DWord }
+            "QWord" { $value = [uint64]::Parse([string]$entry.value); $kind = [Microsoft.Win32.RegistryValueKind]::QWord }
+            "Binary" { $value = [Convert]::FromBase64String([string]$entry.value); $kind = [Microsoft.Win32.RegistryValueKind]::Binary }
+            "MultiString" { $value = [string[]]@($entry.value); $kind = [Microsoft.Win32.RegistryValueKind]::MultiString }
+            "None" { $value = $null; $kind = [Microsoft.Win32.RegistryValueKind]::None }
+            default { throw "不支持的注册表快照值类型: $($entry.kind)" }
+        }
+        $Key.SetValue($name, $value, $kind)
+    }
+    foreach ($subkey in @($Snapshot.subkeys)) {
+        $child = $Key.CreateSubKey([string]$subkey.name)
+        if ($null -eq $child) { throw "无法创建注册表子项: $($subkey.name)" }
+        try {
+            Set-RegistryNodeSnapshot -Key $child -Snapshot $subkey.node
+        } finally {
+            $child.Dispose()
+        }
+    }
+}
+
+function Get-UninstallRegistrySnapshot {
+    return [ordered]@{
+        key = $UninstallKey
+        views = [ordered]@{
+            "32" = (Get-RegistryKeySnapshot -Path $UninstallKey -View 32)
+            "64" = (Get-RegistryKeySnapshot -Path $UninstallKey -View 64)
+        }
+    }
+}
+
+function Get-UninstallRegistryFingerprint {
+    param([Parameter(Mandatory = $true)]$Snapshot)
+    $canonical = $Snapshot | ConvertTo-Json -Depth 20 -Compress
+    return Get-TextSha256 -Text $canonical
+}
+
+function Restore-UninstallRegistrySnapshot {
+    param([Parameter(Mandatory = $true)]$Snapshot)
+    if ([string]$Snapshot.key -ne $UninstallKey) {
+        throw "卸载登记快照目标不匹配: $($Snapshot.key)"
+    }
+    foreach ($view in @(64, 32)) {
+        $viewKey = [string]$view
+        $viewSnapshot = $Snapshot.views[$viewKey]
+        Remove-RegistryKey -Path $UninstallKey -View $view
+        if (-not $viewSnapshot.exists) { continue }
+
+        $subPath = $UninstallKey -replace '^HKLM\\', ''
+        $registryView = if ($view -eq 64) {
+            [Microsoft.Win32.RegistryView]::Registry64
+        } else {
+            [Microsoft.Win32.RegistryView]::Registry32
+        }
+        $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            $registryView
+        )
+        $key = $null
+        try {
+            $key = $baseKey.CreateSubKey($subPath)
+            if ($null -eq $key) { throw "无法恢复卸载登记，注册表视图: $view" }
+            Set-RegistryNodeSnapshot -Key $key -Snapshot $viewSnapshot.node
+        } finally {
+            if ($null -ne $key) { $key.Dispose() }
+            $baseKey.Dispose()
+        }
+    }
+}
+
 function New-TestStateBackup {
     $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
     $backup = Join-Path $StateBackupRoot ($stamp + "-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -689,6 +852,8 @@ function New-TestStateBackup {
     $dataExisted = Test-Path -LiteralPath $DataDir
     $programExisted = Test-Path -LiteralPath $InstallDir
     $fingerprint = Get-ConfigurationFingerprint
+    $uninstallRegistry = Get-UninstallRegistrySnapshot
+    $uninstallRegistryFingerprint = Get-UninstallRegistryFingerprint -Snapshot $uninstallRegistry
     $environment = [ordered]@{}
     foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")) {
         $environment[$name] = [Environment]::GetEnvironmentVariable($name, "Machine")
@@ -699,6 +864,8 @@ function New-TestStateBackup {
         data_existed = $dataExisted
         program_existed = $programExisted
         configuration_fingerprint = $fingerprint
+        uninstall_registry = $uninstallRegistry
+        uninstall_registry_fingerprint = $uninstallRegistryFingerprint
         environment = $environment
         connector_state = if ($service -and $service.state -eq "Running") { Get-OptionalConnectorState } else { $null }
     }
@@ -708,7 +875,7 @@ function New-TestStateBackup {
     if ($programExisted) {
         Copy-DirectoryContents -Source $InstallDir -Destination (Join-Path $backup "program")
     }
-    $state | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $backup "state.json") -Encoding UTF8
+    $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $backup "state.json") -Encoding UTF8
     Set-PrivateAcl -Path $backup
     $script:StateBackup = [ordered]@{
         path = $backup
@@ -720,6 +887,9 @@ function New-TestStateBackup {
         data_existed = $dataExisted
         program_existed = $programExisted
         configuration_sha256 = $fingerprint.sha256
+        uninstall_registry_sha256 = $uninstallRegistryFingerprint
+        uninstall_registry_present_32 = [bool]$uninstallRegistry.views["32"].exists
+        uninstall_registry_present_64 = [bool]$uninstallRegistry.views["64"].exists
         service_state = if ($service) { $service.state } else { "Absent" }
     }
     return $script:StateBackup
@@ -742,9 +912,8 @@ function Remove-TestInstallArtifacts {
             Remove-Item -LiteralPath $path -Recurse -Force -Confirm:$false
         }
     }
-    $uninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
-    Remove-RegistryKey -Path $uninstallKey -View 64
-    Remove-RegistryKey -Path $uninstallKey -View 32
+    Remove-RegistryKey -Path $UninstallKey -View 64
+    Remove-RegistryKey -Path $UninstallKey -View 32
 }
 
 function Restore-OriginalState {
@@ -810,6 +979,12 @@ function Restore-OriginalState {
         Remove-TestInstallArtifacts
     }
 
+    Restore-UninstallRegistrySnapshot -Snapshot $state.uninstall_registry
+    $restoredRegistry = Get-UninstallRegistrySnapshot
+    $restoredRegistryFingerprint = Get-UninstallRegistryFingerprint -Snapshot $restoredRegistry
+    if ($restoredRegistryFingerprint -ne [string]$state.uninstall_registry_fingerprint) {
+        throw "恢复后的卸载登记与测试前不一致"
+    }
     $restoredFingerprint = Get-ConfigurationFingerprint
     if ($restoredFingerprint.sha256 -ne $state.configuration_fingerprint.sha256) {
         throw "恢复后的配置指纹与测试前不一致"
@@ -847,6 +1022,11 @@ function Restore-OriginalState {
         service_after = if ($restoredService) { $restoredService.state } else { "Absent" }
         connector_state_before = $state.connector_state
         connector_state_after = $restoredConnectorState
+        uninstall_registry_sha256_before = $state.uninstall_registry_fingerprint
+        uninstall_registry_sha256_after = $restoredRegistryFingerprint
+        uninstall_registry_present_32 = [bool]$restoredRegistry.views["32"].exists
+        uninstall_registry_present_64 = [bool]$restoredRegistry.views["64"].exists
+        uninstall_registry_verified = $true
         acl_verified = $state.data_existed
     }
 }
@@ -858,7 +1038,7 @@ function Restore-TestStateAndRecord {
     try {
         $result = Restore-OriginalState
         $Evidence.restoration = $result
-        Add-Step -Name "original_configuration_restored" -Status "passed" -Detail "fingerprint/service/ACL verified"
+        Add-Step -Name "original_configuration_restored" -Status "passed" -Detail "fingerprint/service/ACL/uninstall-registry verified"
         try {
             Remove-Item -LiteralPath $script:StateBackup.path -Recurse -Force -Confirm:$false
             $Evidence.restoration.backup_removed = $true
@@ -1147,9 +1327,8 @@ try {
         Assert-PathPresent -Path $DataDir -Label "NSIS 默认卸载后的数据目录"
         Assert-PathPresent -Path (Join-Path $DataDir "config.json") -Label "NSIS 默认卸载后配置"
         Assert-PathPresent -Path (Join-Path $DataDir "secrets.json") -Label "NSIS 默认卸载后本机身份"
-        $uninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
-        if (Test-RegistryKey -Path $uninstallKey -View 64) { throw "NSIS 卸载后仍有 64 位卸载登记" }
-        if (Test-RegistryKey -Path $uninstallKey -View 32) { throw "NSIS 卸载后仍有 32 位卸载登记" }
+        if (Test-RegistryKey -Path $UninstallKey -View 64) { throw "NSIS 卸载后仍有 64 位卸载登记" }
+        if (Test-RegistryKey -Path $UninstallKey -View 32) { throw "NSIS 卸载后仍有 32 位卸载登记" }
         Add-Step -Name "uninstall_default_preserves_data" -Status "passed" -Detail "service/program/registry removed; data retained"
 
         Invoke-PackageInstaller
