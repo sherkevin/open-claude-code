@@ -106,10 +106,10 @@ BUILD_LOG="$DIST/build.log"
 } > "$BUILD_LOG"
 
 echo "构建 Linux 版本..."
-GOOS=linux GOARCH=amd64 "$GO_TOOL" build -trimpath -ldflags "$LDFLAGS" -o "$DIST/linux/bin/kaiwu-connector" "$ROOT/cmd/connector"
+GOOS=linux GOARCH=amd64 "$GO_TOOL" build -trimpath -buildvcs=false -ldflags "$LDFLAGS" -o "$DIST/linux/bin/kaiwu-connector" "$ROOT/cmd/connector"
 
 echo "构建 Windows 版本..."
-GOOS=windows GOARCH=amd64 "$GO_TOOL" build -trimpath -ldflags "$LDFLAGS" -o "$DIST/windows/bin/kaiwu-connector.exe" "$ROOT/cmd/connector"
+GOOS=windows GOARCH=amd64 "$GO_TOOL" build -trimpath -buildvcs=false -ldflags "$LDFLAGS" -o "$DIST/windows/bin/kaiwu-connector.exe" "$ROOT/cmd/connector"
 
 cp "$FRPC_LINUX" "$DIST/linux/bin/frpc"
 cp "$FRPC_WINDOWS" "$DIST/windows/bin/frpc.exe"
@@ -118,6 +118,7 @@ chmod 0755 "$DIST/linux/bin/kaiwu-connector" "$DIST/linux/bin/frpc"
 cp "$ROOT/packaging/linux/"*.sh "$DIST/linux/"
 cp "$ROOT/packaging/linux/"*.service "$DIST/linux/systemd/"
 cp "$ROOT/packaging/windows/"*.ps1 "$DIST/windows/"
+cp "$ROOT/scripts/windows-smoke.ps1" "$DIST/windows/"
 cp "$ROOT/packaging/config/connector.env.example" "$DIST/linux/config/"
 cp "$ROOT/packaging/config/connector.env.example" "$DIST/windows/config/"
 cp "$ROOT/docs/"*.md "$DIST/linux/docs/"
@@ -139,24 +140,62 @@ done
 (
   cd "$ROOT"
   "$GO_TOOL" list -m -json all
-) > "$DIST/linux/compliance/GoModules.json"
+) | "$PYTHON_TOOL" -c '
+import json
+import sys
+
+text = sys.stdin.read()
+decoder = json.JSONDecoder()
+offset = 0
+while offset < len(text):
+    while offset < len(text) and text[offset].isspace():
+        offset += 1
+    if offset >= len(text):
+        break
+    item, offset = decoder.raw_decode(text, offset)
+    item.pop("Dir", None)
+    item.pop("GoMod", None)
+    print(json.dumps(item, ensure_ascii=False, sort_keys=True))
+' > "$DIST/linux/compliance/GoModules.json"
 cp "$DIST/linux/compliance/GoModules.json" "$DIST/windows/compliance/GoModules.json"
 
 (
   cd "$ROOT"
   "$SBOM_TOOL" mod -licenses -assert-licenses -noserial -type application -std \
     -output-version 1.5 -json -output "$DIST/linux/compliance/SBOM.cdx.json" . \
-    2> "$DIST/linux/compliance/SBOM-WARNINGS.txt"
+    2> "$DIST/linux/compliance/SBOM-WARNINGS.raw.txt"
+)
+"$PYTHON_TOOL" - "$DIST/linux/compliance/SBOM-WARNINGS.raw.txt" "$DIST/linux/compliance/SBOM-WARNINGS.txt" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+lines = []
+for line in source.read_text(encoding="utf-8").splitlines():
+    line = re.sub(r"^\d{1,2}:\d{2}(?:AM|PM)\s+", "", line).rstrip()
+    if line.startswith("WRN failed to determine version of main module "):
+        continue
+    if line:
+        lines.append(line)
+target.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+source.unlink()
+PY
+
+(
+  cd "$ROOT"
   "$VULN_TOOL" ./...
 ) > "$DIST/linux/compliance/GOVULNCHECK.txt" 2>&1
 
-"$PYTHON_TOOL" - "$DIST/linux/compliance/SBOM.cdx.json" "$VERSION" "$COMMIT" <<'PY'
+"$PYTHON_TOOL" - "$DIST/linux/compliance/SBOM.cdx.json" "$VERSION" "$COMMIT" "$BUILD_TIME" <<'PY'
 import json
 import sys
 
 path = sys.argv[1]
 release_version = sys.argv[2]
 release_commit = sys.argv[3]
+build_time = sys.argv[4]
 with open(path, encoding="utf-8") as handle:
     document = json.load(handle)
 
@@ -169,7 +208,9 @@ if not std:
     raise SystemExit("SBOM 缺少 Go 标准库组件")
 std["licenses"] = [{"license": {"id": "BSD-3-Clause"}}]
 
-metadata_component = (document.get("metadata") or {}).get("component")
+metadata = document.get("metadata") or {}
+metadata["timestamp"] = build_time
+metadata_component = metadata.get("component")
 if not metadata_component:
     raise SystemExit("SBOM 缺少应用元数据")
 metadata_component["licenses"] = [{"expression": "NOASSERTION"}]
@@ -203,12 +244,12 @@ cp "$DIST/linux/compliance/SBOM-WARNINGS.txt" "$DIST/windows/compliance/SBOM-WAR
 cp "$DIST/linux/compliance/SBOM-NOTES.txt" "$DIST/windows/compliance/SBOM-NOTES.txt"
 cp "$DIST/linux/compliance/GOVULNCHECK.txt" "$DIST/windows/compliance/GOVULNCHECK.txt"
 
-"$GO_TOOL" version -m "$DIST/linux/bin/kaiwu-connector" > "$DIST/linux/compliance/BinaryBuildInfo.txt"
-"$GO_TOOL" version -m "$DIST/windows/bin/kaiwu-connector.exe" > "$DIST/windows/compliance/BinaryBuildInfo.txt"
-file "$DIST/linux/bin/frpc" > "$DIST/linux/compliance/frpc-BinaryInfo.txt"
-file "$DIST/windows/bin/frpc.exe" > "$DIST/windows/compliance/frpc-BinaryInfo.txt"
-sha256sum "$DIST/linux/bin/frpc" > "$DIST/linux/compliance/frpc-SHA256.txt"
-sha256sum "$DIST/windows/bin/frpc.exe" > "$DIST/windows/compliance/frpc-SHA256.txt"
+(cd "$DIST/linux" && "$GO_TOOL" version -m ./bin/kaiwu-connector) > "$DIST/linux/compliance/BinaryBuildInfo.txt"
+(cd "$DIST/windows" && "$GO_TOOL" version -m ./bin/kaiwu-connector.exe) > "$DIST/windows/compliance/BinaryBuildInfo.txt"
+(cd "$DIST/linux" && file ./bin/frpc) > "$DIST/linux/compliance/frpc-BinaryInfo.txt"
+(cd "$DIST/windows" && file ./bin/frpc.exe) > "$DIST/windows/compliance/frpc-BinaryInfo.txt"
+(cd "$DIST/linux" && sha256sum ./bin/frpc) > "$DIST/linux/compliance/frpc-SHA256.txt"
+(cd "$DIST/windows" && sha256sum ./bin/frpc.exe) > "$DIST/windows/compliance/frpc-SHA256.txt"
 
 cat > "$DIST/linux/版本信息.txt" <<EOF
 开物内网连接器 ${VERSION}
