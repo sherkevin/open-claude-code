@@ -1,7 +1,12 @@
 ﻿# 开物内网连接器 Windows 卸载脚本。
-# 用法：以管理员身份运行 PowerShell：.\uninstall.ps1 [-Purge]
-#   默认保留本机身份与配置；-Purge 彻底删除。
-param([switch]$Purge)
+# 用法：以管理员身份运行 PowerShell：.\uninstall.ps1 [-Purge] [-KeepProgramDirectory]
+#   默认保留本机身份、配置和云端环境变量；-Purge 彻底删除。
+#   NSIS 卸载器使用 -KeepProgramDirectory，由卸载器在脚本结束后删除程序目录，
+#   避免脚本删除正在运行的卸载器。
+param(
+  [switch]$Purge,
+  [switch]$KeepProgramDirectory
+)
 #Requires -RunAsAdministrator
 $ErrorActionPreference = "Stop"
 
@@ -21,16 +26,15 @@ if ($service) {
   if ($null -ne $service) { throw "服务 $ServiceName 未能及时删除" }
 }
 
-if (Test-Path $InstallDir) {
+if (-not $KeepProgramDirectory -and (Test-Path $InstallDir)) {
   Remove-Item -LiteralPath $InstallDir -Recurse -Force -Confirm:$false
 }
 
-foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE", "KAIWU_CONNECTOR_DATA")) {
-  [Environment]::SetEnvironmentVariable($name, $null, "Machine")
-  Remove-Item -Path ("Env:" + $name) -ErrorAction SilentlyContinue
-}
-
 if ($Purge) {
+  foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE", "KAIWU_CONNECTOR_DATA")) {
+    [Environment]::SetEnvironmentVariable($name, $null, "Machine")
+    Remove-Item -Path ("Env:" + $name) -ErrorAction SilentlyContinue
+  }
   if (Test-Path $DataDir) {
     Write-Host "删除数据目录：$DataDir"
     Remove-Item -LiteralPath $DataDir -Recurse -Force -Confirm:$false

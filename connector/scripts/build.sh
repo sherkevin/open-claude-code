@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.3.0}"
+VERSION="${VERSION:-1.3.1}"
 COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 # Bind package metadata and ZIP timestamps to the source commit unless the
 # release operator supplies an explicit epoch. Rebuilding the same commit then
@@ -279,10 +279,20 @@ done
   LC_ALL=C find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort | TZ=UTC zip -X -q "$DIST/kaiwu-connector-${VERSION}-windows-amd64.zip" -@
 )
 
+"$ROOT/scripts/build-windows-installer.sh" \
+  "$DIST/windows" \
+  "$VERSION" \
+  "$COMMIT" \
+  "$DIST/kaiwu-connector-${VERSION}-windows-amd64-setup.exe" \
+  "$SOURCE_DATE_EPOCH"
+
 (
   cd "$DIST"
-  sha256sum kaiwu-connector-"${VERSION}"-linux-amd64.tar.gz kaiwu-connector-"${VERSION}"-windows-amd64.zip > SHA256SUMS
+  sha256sum \
+    kaiwu-connector-"${VERSION}"-linux-amd64.tar.gz \
+    kaiwu-connector-"${VERSION}"-windows-amd64.zip \
+    kaiwu-connector-"${VERSION}"-windows-amd64-setup.exe > SHA256SUMS
 )
 
 echo "完成："
-ls -lh "$DIST"/*.tar.gz "$DIST"/*.zip "$DIST"/SHA256SUMS
+ls -lh "$DIST"/*.tar.gz "$DIST"/*.zip "$DIST"/*.exe "$DIST"/SHA256SUMS

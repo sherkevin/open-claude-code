@@ -4,7 +4,7 @@
 
 面向客户现场的实施与运维文档见 [`docs/交付与运维说明.md`](docs/交付与运维说明.md)。本文件面向开发和构建。
 
-> 当前 `1.3.0` 是企业统一入口候选版本。一个 Windows 连接器对应一个专属原版 frps 实例和一组云端 visitor 路由；开物侧使用云端管理员一次性签发的企业集成凭据 K 和标准 MCP JSON。安装包仍默认失败关闭，只有显式配置控制面、Edge 和中继后才启用绑定与连接。
+> 当前 `1.3.1` 是企业统一入口候选版本。一个 Windows 连接器对应一个专属原版 frps 实例和一组云端 visitor 路由；开物侧使用云端管理员一次性签发的企业集成凭据 K 和标准 MCP JSON。安装包仍默认失败关闭，只有显式配置控制面、Edge 和中继后才启用绑定与连接。
 
 ## 架构
 
@@ -55,7 +55,7 @@
 
 ## 构建
 
-需要固定版本 Go `1.27.4`、Python 3、`zip`、`cyclonedx-gomod v1.12.0`、`govulncheck v1.9.0`，以及 `packaging/bin/` 下的 frpc 二进制（`frpc-linux-amd64`、`frpc-windows-amd64.exe`）。第三方 frpc 获取和哈希要求见 `packaging/bin/README.md`。
+需要固定版本 Go `1.27.4`、Python 3、`zip`、NSIS 3.08、`unshare`、`cyclonedx-gomod v1.12.0`、`govulncheck v1.9.0`，以及 `packaging/bin/` 下的 frpc 二进制（`frpc-linux-amd64`、`frpc-windows-amd64.exe`）。第三方 frpc 获取和哈希要求见 `packaging/bin/README.md`。NSIS 通过 `MAKENSIS` 指定 `makensis` 路径，通过 `NSISDIR` 指定其数据目录；构建脚本会在私有挂载命名空间中把 NSIS 硬编码的 `/tmp` 临时文件映射到数据盘，避免根分区写满导致 SIGBUS。
 
 如果工具不在 `PATH` 中，可显式指定：
 
@@ -68,15 +68,16 @@ bash scripts/build.sh
 ```bash
 cd connector
 go test ./...
-bash scripts/build.sh            # 版本默认 1.3.0，可用 VERSION=... 覆盖
+bash scripts/build.sh            # 版本默认 1.3.1，可用 VERSION=... 覆盖
 ```
 
 产物在 `dist/`：
 
 - `kaiwu-connector-<版本>-linux-amd64.tar.gz`
 - `kaiwu-connector-<版本>-windows-amd64.zip`
+- `kaiwu-connector-<版本>-windows-amd64-setup.exe`（客户可双击安装）
 
-构建使用 `CGO_ENABLED=0` 交叉编译、`-trimpath`，并通过 ldflags 注入版本、提交号、构建时间。构建会执行 `govulncheck`，发现已知漏洞时失败。包内生成 `SHA256SUMS`、CycloneDX 1.5 JSON SBOM、SBOM 工具警告与说明、漏洞扫描结果、Go 模块清单、二进制构建信息、构建日志、frp 许可证和 Go 标准库许可证；外层压缩包哈希写入 `dist/SHA256SUMS`。SBOM 和漏洞扫描是构建证据，不代表包内二进制已完成 Windows 实机、恶意软件或秘密扫描。
+构建使用 `CGO_ENABLED=0` 交叉编译、`-trimpath`，并通过 ldflags 注入版本、提交号、构建时间。Windows 安装器使用 NSIS 3.08，复用同一套 Go 程序、官方未修改的 frpc 和服务注册脚本。构建会执行 `govulncheck`，发现已知漏洞时失败。包内生成 `SHA256SUMS`、CycloneDX 1.5 JSON SBOM、SBOM 工具警告与说明、漏洞扫描结果、Go 模块清单、二进制构建信息、构建日志、frp 许可证和 Go 标准库许可证；外层安装包、ZIP 和 TAR 的哈希写入 `dist/SHA256SUMS`。SBOM 和漏洞扫描是构建证据，不代表包内二进制已完成 Windows 实机、恶意软件或秘密扫描。
 
 ## 本地运行
 

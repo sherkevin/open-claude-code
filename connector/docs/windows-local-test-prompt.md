@@ -17,12 +17,12 @@
 Windows 测试包：
 
 ```text
-kaiwu-connector-1.3.0-windows-amd64.zip
+kaiwu-connector-1.3.1-windows-amd64-setup.exe
 ```
 
 当前版本的已知边界：
 
-1. 压缩包 SHA-256 和包内程序提交号以交付消息、`版本信息.txt` 及交付证据中的 `SHA256SUMS` 为准；不要使用任务书内嵌的旧哈希或旧提交号。
+1. 安装包 SHA-256 和包内程序提交号以交付消息、`版本信息.txt` 及交付证据中的 `SHA256SUMS` 为准；不要使用任务书内嵌的旧哈希或旧提交号。
 2. 云端连接器控制面、专属 FRP 和 MCP Edge 已在工程测试与本机合成链路中实现，但还没有完成真实公网部署和实际开物联调；如果没有我方平台提供的有效接入码，不要自行伪造接入码，也不要把“绑定企业”失败判定为 Windows 安装失败。
 3. 本次必须先完成“本地 Windows 安装 + 模拟内网 MCP 诊断”，这是连接器本体能够工作的基础证据。
 4. 不要把连接器的本机配置页面开放到局域网或公网。它只允许访问 `http://127.0.0.1:17872/`。
@@ -95,35 +95,24 @@ whoami /all |
 Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture | Format-List *>&1 | Out-File (Join-Path $Evidence "windows-info.txt")
 ```
 
-## 五、校验并解压安装包
+## 五、校验并运行安装包
 
 把交付包放到例如 `C:\Users\<你的用户名>\Downloads\`，然后执行：
 
 ```powershell
-$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.3.0-windows-amd64.zip"
+$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.3.1-windows-amd64-setup.exe"
 Get-FileHash -Algorithm SHA256 $Package |
   Format-List |
   Tee-Object (Join-Path $Evidence "package-hash.txt")
 
-Expand-Archive -LiteralPath $Package -DestinationPath (Join-Path $Root "package") -Force
-Get-ChildItem (Join-Path $Root "package") -Recurse |
-  Get-FileHash -Algorithm SHA256 |
-  Out-File (Join-Path $Evidence "package-files.sha256.txt")
+Start-Process -FilePath $Package -Wait
 ```
 
-必须确认顶层压缩包的 SHA-256 与上面给出的值一致。如果不一致，立即停止，不要继续安装。
+必须确认安装包文件的 SHA-256 与上面给出的值一致。如果不一致，立即停止，不要继续安装。双击安装包时，Windows 会显示正常的用户账户控制提示；确认发布者信息和安装包来源无误后，选择“是”继续。
 
-## 六、安装 Windows 服务
+## 六、确认安装与服务
 
-在同一个管理员 PowerShell 窗口中执行：
-
-```powershell
-Set-Location (Join-Path $Root "package")
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-.\install.ps1
-```
-
-安装后立即采集服务状态：
+安装器会自动注册并启动 Windows 服务。安装完成后，在同一个管理员 PowerShell 窗口中采集状态：
 
 ```powershell
 Get-Service -Name KaiwuConnector |
@@ -550,11 +539,10 @@ Get-NetTCPConnection -State Established |
 
 ## 十三、卸载验证
 
-在证据采集完成后执行：
+在证据采集完成后，优先从 Windows“设置 → 应用 → 已安装的应用”运行“开物内网连接器”的卸载程序，或从开始菜单运行卸载快捷方式。默认卸载删除程序和服务，保留配置、本机身份和机器级云端地址，便于重新安装后恢复。以下命令用于记录默认卸载结果：
 
 ```powershell
-Set-Location (Join-Path $Root "package")
-.\uninstall.ps1 -Purge
+Start-Process "$env:ProgramFiles\Kaiwu\Connector\uninstall.exe" -Wait
 
 Start-Sleep -Seconds 2
 Get-Service KaiwuConnector -ErrorAction SilentlyContinue |
@@ -572,8 +560,10 @@ Test-Path "$env:ProgramData\Kaiwu\Connector" |
 
 1. `KaiwuConnector` 服务不存在；
 2. 程序目录被删除；
-3. 使用 `-Purge` 后数据目录被删除；
+3. 数据目录仍然存在，配置和本机身份没有被默认卸载删除；
 4. 没有残留监听 `17872` 的进程。
+
+只有在本机已明确是专用测试机、证据已经归档，并且确认不需要再次安装恢复配置时，才允许由我方工程师运行附加 ZIP 中的 `uninstall.ps1 -Purge` 彻底清除。普通客户卸载不得使用 `-Purge`。
 
 ## 十四、必须提交的证据
 
@@ -644,7 +634,7 @@ Windows 环境：
 - 是否管理员：
 
 安装包：
-- 压缩包 SHA-256 是否匹配：
+- 安装包 SHA-256 是否匹配：
 - 包内版本：
 
 安装与服务：

@@ -67,7 +67,7 @@
 
 实际公网 DNS、证书和现网部署如尚未执行，交付对应配置、操作步骤和我方需要填写的参数，不擅自重启共享服务或改线上域名。
 
-用户已在当前工程师会话明确说“先不做这件事情了，先回到主线上”，暂停 Windows 远程匹配/登录。因此本轮不再启动远程授权流程，也不等待 Windows OAuth 阻塞其他收尾。Windows Server 2019 实机、DPAPI 服务读取、整机重启和迁移验收如未执行，应明确标为待执行，并准备好测试步骤。
+【2026-11-18 19:39 更新】用户最新已明确授权使用 Shervin（Shevin）Windows 电脑进行实机测试，并要求最终交付 Windows 安装包。本条覆盖先前暂停 Windows 的安排。请执行同目录 2026-11-18-huawi-kaiwu-windows-acceptance-task.md：在 Windows 实机安装和验证，并如实区分 Shervin Windows 11 与客户 Windows Server 2019。旧的暂停要求不再适用。
 
 ### D. 固定源码并重建候选包
 
