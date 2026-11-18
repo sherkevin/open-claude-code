@@ -1,87 +1,63 @@
-# Windows acceptance status and runbook
+# Windows 实机验收状态与步骤
 
-## Current status
+## 1. 当前状态
 
-Windows remote testing is intentionally paused by the user as of 2026-11-18.
-No Windows Server 2019 machine was logged in to, modified or used for this
-evidence pass. No DPAPI, ACL, service, reboot, upgrade or uninstall result is
-claimed as a real-machine result.
+用户在当前工程师会话明确要求“先不做 Windows 匹配，回到主线”。因此本轮没有连接 Shervin Windows 电脑，没有启动远程 Windows 授权流程，也没有操作客户 Windows Server 2019 或任何别的 Windows 桌面。
 
-The final `1.3.0` package is now built and fixed at:
+本轮实际完成的是 Windows 候选包构建和静态检查，不是 Windows 实机验收：
 
-`/media/data3/dengkw/releases/huawi-connector-1.3.0-8c889fe/kaiwu-connector-1.3.0-windows-amd64.zip`
+- 包路径：`/media/data3/dengkw/releases/huawi-connector-1.3.0-3d0d06c/kaiwu-connector-1.3.0-windows-amd64.zip`
+- SHA-256：`705517ecde9d5ac72bbb30b24c523b607e108203681d79ba16ff69094ea8f5c2`
+- 源码提交：`3d0d06cd87268ce61fc2b7c33b18a679a2d12d66`
+- 包内文件：`install.ps1`、`uninstall.ps1`、`windows-smoke.ps1`、Windows amd64 连接器、官方 `frpc.exe`、配置模板、文档、SBOM、漏洞扫描、许可证和构建证据。
+- 校验：ZIP 完整性、包内 `SHA256SUMS`、PE32+ x86-64 格式和包内版本信息通过。
 
-Its SHA-256 is
-`e9cc49f1dfffeb68ba5061a47648f30ef74df1fd1d332fbb3ab86a784ff1f6ae`.
-The ZIP contains `install.ps1`, `uninstall.ps1`, `windows-smoke.ps1`, the
-cross-compiled connector, official `frpc.exe`, SBOM, vulnerability result,
-licenses and build evidence. These package contents are not a substitute for
-running the acceptance sequence below.
+这些结果只证明包能生成且结构正确，不证明 Windows 服务能安装、DPAPI 能读取、ACL 能生效、重启后能恢复或升级能保留配置。
 
-The repository does contain the Windows implementation and automated coverage:
+## 2. 代码中已经存在、但未做实机验证的能力
 
-- machine-scoped DPAPI for `identity.json`, `device_key.json`, `secrets.json`
-  and `auth_profiles.json`;
-- strict data-directory ACL setup with hard failure when `icacls` or ACL
-  verification fails;
-- upgrade backup into the protected data directory;
-- atomic migration of legacy plaintext JSON on first protected read;
-- Windows service restart and frpc supervision;
-- Windows `frpc.toml` that uses official `.Envs` placeholders instead of
-  persisted relay/STCP secrets;
-- `connector/scripts/windows-smoke.ps1` and the installer script in the ZIP.
+- Windows 机器级 DPAPI，用于 `identity.json`、`device_key.json`、`secrets.json` 和 `auth_profiles.json`；
+- 严格数据目录 ACL，`icacls` 或 ACL 校验失败时中止；
+- 升级前备份到受保护数据目录；
+- 旧明文 JSON 首次读取时的原子迁移；
+- Windows 服务重启和 frpc 子进程守护；
+- Windows `frpc.toml` 使用官方 `.Envs` 占位符，不持久化 relay/STCP 密钥；
+- `windows-smoke.ps1` 和安装脚本。
 
-The Go module’s Windows-specific sources compile in the normal build, but
-cross-compilation is not a substitute for running on Windows Server 2019.
+Go 的 Windows 专用源码交叉编译通过，但不能替代目标机运行。
 
-## Required target
+## 3. 目标环境
 
-- Windows Server 2019 Datacenter 64-bit with a graphical desktop, as confirmed
-  for the customer environment.
-- Administrator access for installation.
-- A synthetic or authorized local MCP endpoint; do not use customer secrets in
-  development evidence.
-- The fixed 1.3.0 package and its `SHA256SUMS` from `RELEASE_REPORT.md`:
-  `/media/data3/dengkw/releases/huawi-connector-1.3.0-8c889fe`.
+- 客户目标是 Windows Server 2019 Datacenter 64 位，有图形桌面和管理员权限。
+- 需要一个合成或获授权的本地 MCP 端点；开发证据不得使用客户真实秘密。
+- 使用本报告开头的固定 ZIP 和 `SHA256SUMS`。
+- 如果以后把 Shervin Windows 11 作为补充环境，必须单独标注系统版本；它不能替代 Windows Server 2019 客户目标验收。
 
-When remote testing resumes, the first device actions must be read-only: verify
-the host name, operating system and user, and record the device ID, process IDs
-and session IDs before changing anything. Do not sign in repeatedly or reuse a
-finished authorization process.
+恢复 Windows 测试时，设备操作必须先只读核对主机名、操作系统、登录用户和设备标识；进程记录必须同时保存设备 ID 与 PID，搜索会话必须保存设备 ID 与会话 ID。
 
-## Acceptance sequence
+## 4. Windows Server 2019 实机步骤
 
-1. Verify the ZIP hash against `RELEASE_REPORT.md` and run `install.ps1` as
-   Administrator.
-2. Confirm the service is `Running` and `http://127.0.0.1:17872/` is reachable.
-3. Inspect the four sensitive files: they start with `KAIWU-DPAPI-V1` and do not
-   contain the synthetic bearer in plaintext.
-4. Inspect the data-directory ACL: only `S-1-5-18` (SYSTEM) and
-   `S-1-5-32-544` (Administrators) may have access; inherited rules must be
-   disabled.
-5. Import the synthetic MCP configuration, approve the intended tool, and run
-   initialize, list and call through the local proxy.
-6. Start the connector, verify tunnel and Edge status, then stop the relay and
-   confirm a bounded 503/failure rather than a silent success.
-7. Restart the Windows service and confirm the persisted configuration is
-   loaded without exposing a plaintext secret.
-8. Restart the whole machine and repeat the service/data-plane checks.
-9. Reinstall the package over the existing data directory and verify the
-   pre-upgrade backup and retained configuration.
-10. Uninstall or revoke the test device and verify local access is denied and
-    the cloud session cannot continue.
+1. 在 Windows 上核对 ZIP SHA-256，解压并以管理员身份运行 `install.ps1`。
+2. 确认 `KaiwuConnector` 服务为 `Running`，`http://127.0.0.1:17872/` 可访问。
+3. 检查四个敏感文件以 `KAIWU-DPAPI-V1` 开头，且不包含测试 Bearer 明文。
+4. 检查数据目录 ACL：只允许 `S-1-5-18`（SYSTEM）和 `S-1-5-32-544`（Administrators）；继承规则应关闭。
+5. 导入合成 MCP 配置，批准目标工具，通过本机认证代理执行 initialize、tools/list 和 tools/call。
+6. 启动连接器，检查隧道和 Edge；停止 relay 后应得到有界 503 或等价失败，而不是静默成功。
+7. 重启 Windows 服务，确认配置和解密能力保留，日志和 UI 不出现明文秘密。
+8. 重启整台 Windows，重复服务和数据面检查。
+9. 覆盖安装同一候选包，确认升级前备份存在且配置保留。
+10. 卸载或撤销测试设备，确认本机访问被拒绝，云端会话不能继续。
 
-## Expected evidence to capture
+## 5. 应保存的证据
 
-- operating-system name/version, host name and time zone;
-- package version and SHA-256;
-- service state before/after restart and reboot;
-- sanitized ACL output;
-- DPAPI prefix and plaintext-secret scan result (never paste real secrets);
-- local MCP lifecycle output with fixed synthetic data;
-- relay-stop and recovery timings;
-- upgrade backup path and retained configuration result;
-- uninstall/revocation result.
+- Windows 名称、版本、主机名和时区；
+- 候选包版本与 SHA-256；
+- 服务和整机重启前后的状态；
+- 脱敏后的 ACL 输出；
+- DPAPI 文件前缀和明文秘密扫描结果，禁止粘贴真实秘密；
+- initialize、tools/list、tools/call 的固定合成结果；
+- relay 停止和恢复时间；
+- 升级备份路径和配置保留结果；
+- 卸载或撤销结果。
 
-Do not record a pass for this document until the steps were executed on the
-target Windows host.
+在以上步骤真正执行前，T11 必须保持“未执行”，不能因为 ZIP 构建成功或 PowerShell 脚本存在而改成通过。

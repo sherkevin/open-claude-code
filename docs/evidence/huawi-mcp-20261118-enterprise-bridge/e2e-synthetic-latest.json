@@ -1,7 +1,9 @@
 {
   "status": "passed",
-  "started_at": "2026-11-18T11:37:07.343898+00:00",
-  "runtime_dir": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T113707Z",
+  "started_at": "2026-11-18T12:24:56.401767+00:00",
+  "runtime_dir": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122456Z",
+  "source_commit": "3d0d06cd87268ce61fc2b7c33b18a679a2d12d66",
+  "source_dirty": false,
   "versions": {
     "go": "go version go1.27.4 linux/amd64",
     "frps": "0.61.1",
@@ -31,7 +33,7 @@
     {
       "check": "platform_import_discovery",
       "status": "passed",
-      "detail": "{\"format\": \"mcp_servers\", \"tool_names\": [\"lookup_order\"], \"url\": \"http://127.0.0.1:50897/projects/kaiwu/mcp/sources/src_14ffe26dca1302badca6ce1a77e07664/mcp\"}"
+      "detail": "{\"format\": \"mcp_servers\", \"tool_names\": [\"lookup_order\"], \"url\": \"http://127.0.0.1:52187/projects/kaiwu/mcp/sources/src_cb6956046678ad9a43734f1f3c24094e/mcp\"}"
     },
     {
       "check": "mcp_lifecycle",
@@ -51,17 +53,17 @@
     {
       "check": "sse_incremental",
       "status": "passed",
-      "detail": "{\"status\": 200, \"first_event_seconds\": 0.186, \"first_event_contains_data\": true, \"content_type\": \"text/event-stream\"}"
+      "detail": "{\"status\": 200, \"first_event_seconds\": 0.149, \"first_event_contains_data\": true, \"content_type\": \"text/event-stream\"}"
     },
     {
       "check": "relay_child_hard_kill_recovery",
       "status": "passed",
-      "detail": "{\"killed_process\": \"frps\", \"down_seconds\": 0.101, \"recovery_seconds\": 2.691, \"edge_status\": 200}"
+      "detail": "{\"killed_process\": \"frps\", \"down_seconds\": 0.101, \"recovery_seconds\": 2.427, \"edge_status\": 200}"
     },
     {
       "check": "relay_stop_fail_closed",
       "status": "passed",
-      "detail": "{\"bridge_stop_exit_code\": 0, \"edge_status\": 503, \"failure_seconds\": 0.184}"
+      "detail": "{\"bridge_stop_exit_code\": 0, \"edge_status\": 503, \"failure_seconds\": 0.183}"
     },
     {
       "check": "connector_status_degrades",
@@ -87,8 +89,8 @@
   "binaries": {
     "frps_sha256": "62c2177b6add2f48d01f73578fe130ecbfafd0ed6571ddeba8ef917434ecb607",
     "frpc_sha256": "0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b",
-    "connector_sha256": "98e0ddc22fcfdbab52dc1213b95f13049fad97086f7f56c997be2f8eb64486ea"
+    "connector_sha256": "fb69f007a590ee345b492abc30e89b833130c6bfc4d2e6d303b92580c0586a06"
   },
-  "finished_at": "2026-11-18T11:37:32.414960+00:00",
-  "duration_seconds": 25.222
+  "finished_at": "2026-11-18T12:25:18.203359+00:00",
+  "duration_seconds": 21.939
 }
