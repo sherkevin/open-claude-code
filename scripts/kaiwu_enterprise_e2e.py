@@ -47,6 +47,18 @@ HMAC_USER = "u01"
 SYNTHETIC_ORDER = "SYNTHETIC-ORDER-42"
 
 
+def source_snapshot() -> dict[str, Any]:
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    tracked_changes = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=ROOT,
+        text=True,
+    ).strip()
+    return {"source_commit": commit, "source_dirty": bool(tracked_changes)}
+
+
 def pick_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -968,6 +980,7 @@ def main() -> int:
         "status": "running",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "runtime_dir": str(driver.runtime),
+        **source_snapshot(),
         "versions": {},
         "checks": driver.checks,
     }

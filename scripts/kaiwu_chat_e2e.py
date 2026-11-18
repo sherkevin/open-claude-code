@@ -31,6 +31,7 @@ from kaiwu_enterprise_e2e import (
     SyntheticMCPHandler,
     pick_port,
     run_checked,
+    source_snapshot,
     terminate,
     wait_http,
 )
@@ -174,9 +175,7 @@ def main() -> int:
         "started_at": started.isoformat(),
         "runtime_dir": str(driver.runtime),
         "workspace": str(ROOT),
-        "source_commit": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-        ).strip(),
+        **source_snapshot(),
         "browser_mode": "actual_product_ui",
         "checks": [],
         "provider": {

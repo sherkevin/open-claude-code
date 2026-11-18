@@ -38,6 +38,7 @@ from kaiwu_enterprise_e2e import (  # noqa: E402
     SyntheticMCPHandler,
     pick_port,
     run_checked,
+    source_snapshot,
     terminate,
     wait_port,
 )
@@ -424,6 +425,7 @@ def main() -> int:
         "scope": "loopback HTTPS/WSS only; not public DNS, production certificate, Tencent Cloud or customer network",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "runtime_dir": str(driver.runtime),
+        **source_snapshot(),
         "versions": {},
         "binaries": {},
         "checks": driver.checks,
