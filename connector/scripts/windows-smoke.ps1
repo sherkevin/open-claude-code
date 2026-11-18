@@ -447,7 +447,17 @@ function Assert-PrivateAcl {
     foreach ($item in $items) {
         $acl = Get-Acl -LiteralPath $item.FullName
         if (-not $acl.AreAccessRulesProtected) {
-            throw "ACL 仍会继承上级权限: $($item.FullName)"
+            # Files created after installation inherit the protected parent
+            # ACL and therefore normally do not carry a protected DACL bit
+            # themselves. Reject only when that parent is not protected too.
+            $parentPath = Split-Path -Parent $item.FullName
+            if ([string]::IsNullOrWhiteSpace($parentPath)) {
+                throw "无法确认 ACL 上级目录: $($item.FullName)"
+            }
+            $parentAcl = Get-Acl -LiteralPath $parentPath
+            if (-not $parentAcl.AreAccessRulesProtected) {
+                throw "ACL 仍会继承未受保护的上级权限: $($item.FullName)"
+            }
         }
         foreach ($rule in @($acl.Access)) {
             $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
