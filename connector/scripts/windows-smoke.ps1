@@ -869,11 +869,24 @@ function New-TestStateBackup {
         environment = $environment
         connector_state = if ($service -and $service.state -eq "Running") { Get-OptionalConnectorState } else { $null }
     }
-    if ($dataExisted) {
-        Copy-DirectoryContents -Source $DataDir -Destination (Join-Path $backup "data")
+    $serviceWasRunning = $false
+    if ($service -and $service.state -eq "Running") {
+        Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+        Wait-ServiceState -Expected "Stopped" | Out-Null
+        $serviceWasRunning = $true
     }
-    if ($programExisted) {
-        Copy-DirectoryContents -Source $InstallDir -Destination (Join-Path $backup "program")
+    try {
+        if ($dataExisted) {
+            Copy-DirectoryContents -Source $DataDir -Destination (Join-Path $backup "data")
+        }
+        if ($programExisted) {
+            Copy-DirectoryContents -Source $InstallDir -Destination (Join-Path $backup "program")
+        }
+    } finally {
+        if ($serviceWasRunning) {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+            Wait-ServiceState -Expected "Running" | Out-Null
+        }
     }
     $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $backup "state.json") -Encoding UTF8
     Set-PrivateAcl -Path $backup
@@ -891,6 +904,7 @@ function New-TestStateBackup {
         uninstall_registry_present_32 = [bool]$uninstallRegistry.views["32"].exists
         uninstall_registry_present_64 = [bool]$uninstallRegistry.views["64"].exists
         service_state = if ($service) { $service.state } else { "Absent" }
+        service_paused_for_backup = $serviceWasRunning
     }
     return $script:StateBackup
 }
