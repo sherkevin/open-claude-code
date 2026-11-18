@@ -84,6 +84,9 @@ def settings(tmp_path, *, enabled: bool = True) -> Settings:
         kaiwu_control_relay_port=7443,
         kaiwu_control_relay_protocol="wss",
         kaiwu_control_relay_tls_enabled=True,
+        kaiwu_control_relay_tls_server_name="relay.test.invalid",
+        kaiwu_control_relay_tls_trusted_ca_file="/etc/kaiwu-bridge/relay-ca.pem",
+        kaiwu_control_relay_tls_client_trusted_ca_file=r"C:\ProgramData\Kaiwu\Connector\relay-ca.crt",
         kaiwu_control_edge_user="edge-test",
     )
 
@@ -145,6 +148,11 @@ def test_enrollment_is_one_time_and_device_signature_is_bound(env):
     assert redeemed.status_code == 200
     identity = redeemed.json()
     assert identity["device_key_id"] == key_id
+    assert identity["relay"]["tls"] == {
+        "enabled": True,
+        "server_name": "relay.test.invalid",
+        "trusted_ca_file": r"C:\ProgramData\Kaiwu\Connector\relay-ca.crt",
+    }
 
     reused = client.post(
         BASE + "/v1/enrollments/redeem",
@@ -162,6 +170,11 @@ def test_enrollment_is_one_time_and_device_signature_is_bound(env):
     assert desired.status_code == 200, desired.text
     assert desired.json()["revision"] == 1
     assert desired.json()["sources"] == []
+    assert desired.json()["relay"]["tls"] == {
+        "enabled": True,
+        "server_name": "relay.test.invalid",
+        "trusted_ca_file": r"C:\ProgramData\Kaiwu\Connector\relay-ca.crt",
+    }
 
     wrong_key, _, _ = key_material()
     forged = client.get(
@@ -270,6 +283,11 @@ def test_source_registration_is_metadata_only_and_desired_state_is_strict(env):
     assert secrets_response.headers["cache-control"] == "no-store"
     payload = secrets_response.json()
     assert payload["relay"]["token"]
+    assert payload["relay"]["tls"] == {
+        "enabled": True,
+        "server_name": "relay.test.invalid",
+        "trusted_ca_file": r"C:\ProgramData\Kaiwu\Connector\relay-ca.crt",
+    }
     assert payload["sources"][0]["stcp_secret"]
     assert "device_token" not in secrets_response.text
     assert "Authorization" not in secrets_response.text

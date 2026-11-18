@@ -137,6 +137,11 @@ def render_visitor_config(
         lines.append(
             f"transport.tls.serverName = {_toml_string(settings.kaiwu_control_relay_tls_server_name)}"
         )
+    if settings.kaiwu_control_relay_tls_trusted_ca_file:
+        lines.append(
+            "transport.tls.trustedCaFile = "
+            f"{_toml_string(settings.kaiwu_control_relay_tls_trusted_ca_file)}"
+        )
     lines.extend([
         "",
         f"log.to = {_toml_string(log_path or './visitor.log')}",

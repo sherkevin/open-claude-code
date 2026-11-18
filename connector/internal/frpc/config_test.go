@@ -14,6 +14,8 @@ func validConfig() Config {
 		User:       "tenant01",
 		AuthToken:  "relay-token",
 		TLSEnabled: true,
+		ServerName: "relay.example.com",
+		TrustedCA:  "/etc/kaiwu/relay-ca.pem",
 		Proxies: []Proxy{{
 			Name: "src_01", SecretKey: "stcp-secret", LocalIP: "10.0.0.8", LocalPort: 8000,
 			AllowUsers: []string{"tenant01"},
@@ -32,6 +34,8 @@ func TestRenderContainsRestrictedProxy(t *testing.T) {
 		`localIP = "10.0.0.8"`,
 		`allowUsers = ["tenant01"]`,
 		`transport.tls.enable = true`,
+		`transport.tls.serverName = "relay.example.com"`,
+		`transport.tls.trustedCaFile = "/etc/kaiwu/relay-ca.pem"`,
 		`loginFailExit = false`,
 	} {
 		if !strings.Contains(text, want) {

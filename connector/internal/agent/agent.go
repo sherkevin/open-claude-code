@@ -1050,6 +1050,7 @@ func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error)
 		AuthToken:  relay.Token,
 		Protocol:   relay.Protocol,
 		TLSEnabled: relay.TLS.Enabled,
+		ServerName: relay.TLS.ServerName,
 		TrustedCA:  relay.TLS.TrustedCA,
 		CertFile:   relay.TLS.CertFile,
 		KeyFile:    relay.TLS.KeyFile,

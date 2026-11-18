@@ -29,6 +29,7 @@ type Config struct {
 	AuthToken  string
 	Protocol   string // tcp / websocket / wss，空值按 tcp
 	TLSEnabled bool
+	ServerName string
 	TrustedCA  string
 	CertFile   string
 	KeyFile    string
@@ -131,6 +132,9 @@ func (c Config) render(useEnvSecrets bool) (string, map[string]string, error) {
 	fmt.Fprintf(&b, "loginFailExit = false\n")
 	fmt.Fprintf(&b, "\ntransport.protocol = %s\n", quote(protocol))
 	fmt.Fprintf(&b, "transport.tls.enable = %t\n", c.TLSEnabled)
+	if c.ServerName != "" {
+		fmt.Fprintf(&b, "transport.tls.serverName = %s\n", quote(c.ServerName))
+	}
 	if c.TrustedCA != "" {
 		fmt.Fprintf(&b, "transport.tls.trustedCaFile = %s\n", quote(c.TrustedCA))
 	}

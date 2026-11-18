@@ -218,7 +218,7 @@ class SyntheticMCPHandler(BaseHTTPRequestHandler):
             params = request.get("params") or {}
             if params.get("name") != "lookup_order":
                 with self.lock:
-                    self.forbidden_calls += 1
+                    type(self).forbidden_calls += 1
                 self._json(200, {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -229,8 +229,8 @@ class SyntheticMCPHandler(BaseHTTPRequestHandler):
                 self._json(401, {"error": "bad signature"})
                 return
             with self.lock:
-                self.calls += 1
-                self.signatures_valid += 1
+                type(self).calls += 1
+                type(self).signatures_valid += 1
             result = {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -271,7 +271,7 @@ class Running:
 
 
 class Driver:
-    def __init__(self) -> None:
+    def __init__(self, server_port: int | None = None) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.runtime = RUNTIME_ROOT / f"huawi-enterprise-e2e-{stamp}"
         self.runtime.mkdir(parents=True, exist_ok=False)
@@ -281,7 +281,7 @@ class Driver:
         self.platform_data = self.runtime / "platform-data"
         self.logs = self.runtime / "logs"
         self.logs.mkdir(mode=0o700)
-        self.server_port = pick_port()
+        self.server_port = server_port or pick_port()
         self.connector_port = pick_port()
         self.mcp_port = pick_port()
         self.relay_port = pick_port()
@@ -307,6 +307,7 @@ class Driver:
         self.identity: dict[str, Any] = {}
         self.source_id = ""
         self.integration: dict[str, Any] = {}
+        self.cloud_env_overrides: dict[str, str] = {}
 
     @property
     def edge_base(self) -> str:
@@ -342,6 +343,7 @@ class Driver:
             "AGENT_KAIWU_EDGE_VISITOR_PORT_END": str(self.visitor_port),
             "AGENT_KAIWU_EDGE_REQUEST_TIMEOUT_SECONDS": "20",
         })
+        env.update(self.cloud_env_overrides)
         return env
 
     def spawn(self, name: str, command: list[str], *, cwd: Path, env: dict[str, str]) -> Running:

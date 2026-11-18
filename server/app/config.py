@@ -188,6 +188,11 @@ class Settings:
     kaiwu_control_relay_protocol: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_PROTOCOL", "wss").strip().lower())
     kaiwu_control_relay_tls_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_TLS_ENABLED", "true").lower() == "true")
     kaiwu_control_relay_tls_server_name: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_TLS_SERVER_NAME", "").strip())
+    kaiwu_control_relay_tls_trusted_ca_file: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_TLS_TRUSTED_CA_FILE", "").strip())
+    # Cloud visitor and Windows frpc run on different machines, so a private
+    # CA can require different local paths. The client path is returned to the
+    # Windows connector; the cloud path is used only by the visitor process.
+    kaiwu_control_relay_tls_client_trusted_ca_file: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_TLS_CLIENT_TRUSTED_CA_FILE", "").strip())
     # frps listens on a private/controlled interface. The public WSS endpoint
     # normally terminates TLS in a reverse proxy and forwards WebSocket
     # upgrades to this internal bind port.

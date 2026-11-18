@@ -21,6 +21,7 @@ def settings(tmp_path) -> Settings:
         kaiwu_control_relay_protocol="wss",
         kaiwu_control_relay_tls_enabled=True,
         kaiwu_control_relay_tls_server_name="relay.example.com",
+        kaiwu_control_relay_tls_trusted_ca_file="/etc/kaiwu/relay-ca.pem",
         kaiwu_control_edge_user="edge-synthetic",
         kaiwu_edge_visitor_host="127.0.0.1",
     )
@@ -45,6 +46,8 @@ def test_wss_config_uses_private_bind_port_and_official_fields(tmp_path):
     assert "vhostWS" not in frps
     assert 'transport.protocol = "wss"' in visitor
     assert "transport.tls.enable = true" in visitor
+    assert 'transport.tls.serverName = "relay.example.com"' in visitor
+    assert 'transport.tls.trustedCaFile = "/etc/kaiwu/relay-ca.pem"' in visitor
     assert "bindPort = 31000" in visitor
 
     binary = os.getenv("KAIWU_FRPS_TEST_BINARY", "")

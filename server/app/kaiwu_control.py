@@ -668,6 +668,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                 "tls": {
                     "enabled": settings.kaiwu_control_relay_tls_enabled,
                     "server_name": settings.kaiwu_control_relay_tls_server_name,
+                    "trusted_ca_file": settings.kaiwu_control_relay_tls_client_trusted_ca_file,
                 },
             },
             "trace_id": trace_id,
@@ -953,6 +954,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                 "tls": {
                     "enabled": settings.kaiwu_control_relay_tls_enabled,
                     "server_name": settings.kaiwu_control_relay_tls_server_name,
+                    "trusted_ca_file": settings.kaiwu_control_relay_tls_client_trusted_ca_file,
                 },
             },
             "sources": sources,
@@ -993,6 +995,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                 "tls": {
                     "enabled": settings.kaiwu_control_relay_tls_enabled,
                     "server_name": settings.kaiwu_control_relay_tls_server_name,
+                    "trusted_ca_file": settings.kaiwu_control_relay_tls_client_trusted_ca_file,
                 },
             },
             "sources": sources,
