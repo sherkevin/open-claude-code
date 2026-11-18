@@ -2,22 +2,22 @@
 
 - 执行日期：2026-11-18
 - 执行环境：学校云 Linux 开发机
-- 候选代码提交：`9ccfdf507772adb57cbdb9df0b70994c11ee2aa2`
+- 候选代码提交：`f942bf7dd0c20e17984ba46cb194650aad6bb518`
 - 功能分支：`feature/intranet-mcp-connector-20261116`
 - 版本：`1.2.1`
-- 构建时间：`2026-11-17T16:11:56Z`
-- 构建工作树：`/media/data3/dengkw/worktrees/kaiwu-connector-1.2.1-build-9ccfdf5`
+- 构建时间：`2026-11-18T01:50:53Z`
+- 构建工作树：`/media/data3/dengkw/worktrees/kaiwu-connector-1.2.1-build-f942bf7`
 
 ## 1. 交付包
 
 | 平台 | 文件 | SHA-256 |
 | --- | --- | --- |
-| Windows amd64 | `artifacts/kaiwu-connector-1.2.1-windows-amd64.zip` | `34e0f560287b8649c677e557c36cf1cc6dbf80578ec02411db792c3c3d175266` |
-| Linux amd64 | `artifacts/kaiwu-connector-1.2.1-linux-amd64.tar.gz` | `e2c9c4d040c2876b5599d73a035b134279d29e2a6070f9257aee4e7556fea6f8` |
+| Windows amd64 | `artifacts/kaiwu-connector-1.2.1-windows-amd64.zip` | `f8ef9a21ae93c7735a988b9c1adefb3a4f9c0c3749c6ea79810688b2e6302e0d` |
+| Linux amd64 | `artifacts/kaiwu-connector-1.2.1-linux-amd64.tar.gz` | `dabbe76e49668c61e11d340ece90e3c0c20832359769213cb7b932ae5ae13bf1` |
 
 两个二进制均记录：
 
-- `vcs.revision=9ccfdf507772adb57cbdb9df0b70994c11ee2aa2`
+- `vcs.revision=f942bf7dd0c20e17984ba46cb194650aad6bb518`
 - `vcs.modified=false`
 - `CGO_ENABLED=0`
 
@@ -49,8 +49,8 @@ Windows 主程序是 `PE32+ x86-64`，Linux 主程序是静态链接的 `ELF 64-
 | 服务端 `pytest -q tests/test_kaiwu_control.py` | 6 项通过 |
 | 内嵌页面脚本 `node --check` | 通过 |
 | Windows ZIP 完整性 | 通过 |
-| Windows 包内 `SHA256SUMS` | 26 个文件全部通过 |
-| Linux TAR 包内 `SHA256SUMS` | 27 个文件全部通过 |
+| Windows 包内 `SHA256SUMS` | 27 个文件全部通过 |
+| Linux TAR 包内 `SHA256SUMS` | 28 个文件全部通过 |
 | CycloneDX SBOM | 1.5 JSON，应用组件版本为 `1.2.1` |
 | `govulncheck` | `No vulnerabilities found.` |
 | Linux 最终包启动 | 本机页面和 `/api/status` 可访问 |
@@ -60,10 +60,11 @@ Windows 主程序是 `PE32+ x86-64`，Linux 主程序是静态链接的 `ELF 64-
 
 ## 4. 本记录能够证明什么
 
-1. `1.2.1` 可由提交 `9ccfdf5` 在干净隔离工作树中重新构建。
+1. `1.2.1` 可由提交 `f942bf7` 在干净隔离工作树中重新构建。
 2. D01 的自动化回归通过，且重复导入不会再静默清空已批准工具。
 3. 当前源码通过单元测试、竞态测试、静态检查、控制面合成测试、依赖漏洞扫描和包内完整性检查。
 4. Windows 交付物是 x86-64 PE，Linux 最终包可以启动并保持默认失败关闭。
+5. 包内 Windows 验收任务书已明确客户目标服务器具备图形化桌面，要求管理员图形界面安装、服务管理、浏览器诊断和人工复测。
 
 ## 5. 本记录不能证明什么
 

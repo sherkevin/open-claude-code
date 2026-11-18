@@ -46,8 +46,8 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `kaiwu-connector-1.2.1-windows-amd64.zip` | 当前 Windows 本机诊断候选包，版本 `1.2.1`，提交 `9ccfdf5`，从干净 isolated worktree 交叉编译 |
-| `kaiwu-connector-1.2.1-linux-amd64.tar.gz` | 当前 Linux 构建与包级启动验证产物，版本 `1.2.1`，提交 `9ccfdf5` |
+| `kaiwu-connector-1.2.1-windows-amd64.zip` | 当前 Windows 本机诊断候选包，版本 `1.2.1`，提交 `f942bf7`，从干净 isolated worktree 交叉编译 |
+| `kaiwu-connector-1.2.1-linux-amd64.tar.gz` | 当前 Linux 构建与包级启动验证产物，版本 `1.2.1`，提交 `f942bf7` |
 | `kaiwu-connector-1.2.0-windows-amd64.zip` | Windows 10 本地验收使用的现场包，版本 `1.2.0`，保留用于复现 D01 |
 | `kaiwu-connector-1.2.0-linux-amd64.tar.gz` | `1.2.0` 对应 Linux 构建产物 |
 | `kaiwu-connector-1.1.0-windows-amd64.zip` | 历史 Windows 本机诊断候选包，版本 `1.1.0`，提交 `b098e3a` |
@@ -57,8 +57,8 @@
 当前 `1.2.1` 候选包 SHA-256：
 
 ```text
-34e0f560287b8649c677e557c36cf1cc6dbf80578ec02411db792c3c3d175266  kaiwu-connector-1.2.1-windows-amd64.zip
-e2c9c4d040c2876b5599d73a035b134279d29e2a6070f9257aee4e7556fea6f8  kaiwu-connector-1.2.1-linux-amd64.tar.gz
+f8ef9a21ae93c7735a988b9c1adefb3a4f9c0c3749c6ea79810688b2e6302e0d  kaiwu-connector-1.2.1-windows-amd64.zip
+dabbe76e49668c61e11d340ece90e3c0c20832359769213cb7b932ae5ae13bf1  kaiwu-connector-1.2.1-linux-amd64.tar.gz
 ```
 
 历史 `1.0.1` 包 SHA-256：
