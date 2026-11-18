@@ -1,7 +1,7 @@
 {
   "status": "passed",
-  "started_at": "2026-11-18T11:26:08.996017+00:00",
-  "runtime_dir": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T112608Z",
+  "started_at": "2026-11-18T11:37:07.343898+00:00",
+  "runtime_dir": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T113707Z",
   "versions": {
     "go": "go version go1.27.4 linux/amd64",
     "frps": "0.61.1",
@@ -31,7 +31,7 @@
     {
       "check": "platform_import_discovery",
       "status": "passed",
-      "detail": "{\"format\": \"mcp_servers\", \"tool_names\": [\"lookup_order\"], \"url\": \"http://127.0.0.1:39327/projects/kaiwu/mcp/sources/src_e4f12d1c4f508231c2665cd3efaa4924/mcp\"}"
+      "detail": "{\"format\": \"mcp_servers\", \"tool_names\": [\"lookup_order\"], \"url\": \"http://127.0.0.1:50897/projects/kaiwu/mcp/sources/src_14ffe26dca1302badca6ce1a77e07664/mcp\"}"
     },
     {
       "check": "mcp_lifecycle",
@@ -51,17 +51,17 @@
     {
       "check": "sse_incremental",
       "status": "passed",
-      "detail": "{\"status\": 200, \"first_event_seconds\": 0.194, \"first_event_contains_data\": true, \"content_type\": \"text/event-stream\"}"
+      "detail": "{\"status\": 200, \"first_event_seconds\": 0.186, \"first_event_contains_data\": true, \"content_type\": \"text/event-stream\"}"
     },
     {
       "check": "relay_child_hard_kill_recovery",
       "status": "passed",
-      "detail": "{\"killed_process\": \"frps\", \"down_seconds\": 0.101, \"recovery_seconds\": 2.745, \"edge_status\": 200}"
+      "detail": "{\"killed_process\": \"frps\", \"down_seconds\": 0.101, \"recovery_seconds\": 2.691, \"edge_status\": 200}"
     },
     {
       "check": "relay_stop_fail_closed",
       "status": "passed",
-      "detail": "{\"bridge_stop_exit_code\": 0, \"edge_status\": 503, \"failure_seconds\": 0.164}"
+      "detail": "{\"bridge_stop_exit_code\": 0, \"edge_status\": 503, \"failure_seconds\": 0.184}"
     },
     {
       "check": "connector_status_degrades",
@@ -81,14 +81,14 @@
     {
       "check": "revocation_stops_data_plane",
       "status": "passed",
-      "detail": "{\"bridge_exit_code\": 0, \"stop_seconds\": 0.501, \"edge_status_after_revoke\": 401, \"frps_port_open\": false, \"visitor_port_open\": false, \"visitor_route_released\": true}"
+      "detail": "{\"bridge_exit_code\": 0, \"stop_seconds\": 0.502, \"edge_status_after_revoke\": 401, \"frps_port_open\": false, \"visitor_port_open\": false, \"visitor_route_released\": true}"
     }
   ],
   "binaries": {
     "frps_sha256": "62c2177b6add2f48d01f73578fe130ecbfafd0ed6571ddeba8ef917434ecb607",
     "frpc_sha256": "0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b",
-    "connector_sha256": "b3e8350463253b47710ee0992faea2bfbc69c453931eaecb7a320782a430e8df"
+    "connector_sha256": "98e0ddc22fcfdbab52dc1213b95f13049fad97086f7f56c997be2f8eb64486ea"
   },
-  "finished_at": "2026-11-18T11:26:34.713187+00:00",
-  "duration_seconds": 25.842
+  "finished_at": "2026-11-18T11:37:32.414960+00:00",
+  "duration_seconds": 25.222
 }

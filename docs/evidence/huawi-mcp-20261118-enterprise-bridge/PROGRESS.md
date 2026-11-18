@@ -45,21 +45,22 @@
 - `git diff --check`: passed.
 - Synthetic end-to-end run used real official `frps` 0.61.1, visitor, connector
   core and Edge on loopback addresses.
-- Latest evidence: `e2e-synthetic-latest.json`.
+- Latest evidence: `e2e-synthetic-latest.json` (rerun against release commit
+  `8c889fe` after the build-script changes).
 - Latest run directory:
-  `.runtime/huawi-enterprise-e2e-20261118T112608Z`.
-- Total synthetic run time: `25.842` seconds.
+  `.runtime/huawi-enterprise-e2e-20261118T113707Z`.
+- Total synthetic run time: `25.222` seconds.
 - Import/discovery returned only `lookup_order`; the complete MCP lifecycle
   returned `SYNTHETIC-ORDER-42`.
 - Wrong K returned 401, a source outside the integration returned 403, and an
   unapproved tool returned 403.
 - Wrong relay token made frpc exit with code 1; wrong STCP key and wrong proxy
   name could not connect.
-- SSE first event arrived in about `0.194` seconds. A normal relay stop failed
-  closed with 503 in about `0.164` seconds. Killing the dedicated frps child
+- SSE first event arrived in about `0.186` seconds. A normal relay stop failed
+  closed with 503 in about `0.184` seconds. Killing the dedicated frps child
   caused about `0.101` seconds of downtime and automatic recovery in about
-  `2.745` seconds.
-- Revocation stopped the dedicated instance in about `0.501` seconds; Edge then
+  `2.691` seconds.
+- Revocation stopped the dedicated instance in about `0.502` seconds; Edge then
   returned 401, both frps/visitor ports were closed, and the visitor route row
   was released.
 - Secret scans of synthetic logs, the control database and the Windows-style
@@ -92,6 +93,22 @@
 - Connector revocation now deletes its visitor route rows in the same
   transaction as integration revocation, allowing the bounded visitor port
   range to be reused instead of leaking one port per retired connector.
+
+### Release completion
+
+- Added `windows-smoke.ps1` to the Windows ZIP and made release metadata
+  reproducible across independent source checkouts.
+- Release source commit: `8c889fec818be8ec4a440a86d742134f9f77927a`.
+- Final package directory:
+  `/media/data3/dengkw/releases/huawi-connector-1.3.0-8c889fe`.
+- Linux package SHA-256:
+  `407a371efa6f8acf071a0830f753a81c045250e86fe04eaac22325f08ee41509`.
+- Windows package SHA-256:
+  `e9cc49f1dfffeb68ba5061a47648f30ef74df1fd1d332fbb3ab86a784ff1f6ae`.
+- Two builds from independent clean source directories produced byte-identical
+  Linux and Windows archives and identical outer `SHA256SUMS`.
+- The final release and test details are in `RELEASE_REPORT.md` and
+  `TEST_REPORT.md`.
 
 Final per-test status is in `ACCEPTANCE_MATRIX.md`. Code completion does not
 imply Windows Server 2019, real public infrastructure or customer business

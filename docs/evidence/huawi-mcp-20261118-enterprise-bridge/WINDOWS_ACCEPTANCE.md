@@ -7,6 +7,17 @@ No Windows Server 2019 machine was logged in to, modified or used for this
 evidence pass. No DPAPI, ACL, service, reboot, upgrade or uninstall result is
 claimed as a real-machine result.
 
+The final `1.3.0` package is now built and fixed at:
+
+`/media/data3/dengkw/releases/huawi-connector-1.3.0-8c889fe/kaiwu-connector-1.3.0-windows-amd64.zip`
+
+Its SHA-256 is
+`e9cc49f1dfffeb68ba5061a47648f30ef74df1fd1d332fbb3ab86a784ff1f6ae`.
+The ZIP contains `install.ps1`, `uninstall.ps1`, `windows-smoke.ps1`, the
+cross-compiled connector, official `frpc.exe`, SBOM, vulnerability result,
+licenses and build evidence. These package contents are not a substitute for
+running the acceptance sequence below.
+
 The repository does contain the Windows implementation and automated coverage:
 
 - machine-scoped DPAPI for `identity.json`, `device_key.json`, `secrets.json`
@@ -30,7 +41,8 @@ cross-compilation is not a substitute for running on Windows Server 2019.
 - Administrator access for installation.
 - A synthetic or authorized local MCP endpoint; do not use customer secrets in
   development evidence.
-- The fixed 1.3.0 package and its `SHA256SUMS` from `RELEASE_REPORT.md`.
+- The fixed 1.3.0 package and its `SHA256SUMS` from `RELEASE_REPORT.md`:
+  `/media/data3/dengkw/releases/huawi-connector-1.3.0-8c889fe`.
 
 When remote testing resumes, the first device actions must be read-only: verify
 the host name, operating system and user, and record the device ID, process IDs

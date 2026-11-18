@@ -32,4 +32,5 @@
 
 - 任务指定模型为 `tencent-cloud/deepseek-v4.1-flash-1017`，实际运行器显示 `deepseek/deepseek-flash`。最终报告不把指定模型写成实际执行模型。
 - 根分区空间极小，所有临时文件和构建缓存必须留在 `/media/data3/dengkw/`；不能把产物写回根分区。
-- 本轮没有构建最终 1.3.0 包之前，任何旧包或旧哈希都不能作为本轮发布证据。最终包和哈希以 `RELEASE_REPORT.md` 为准。
+- 最终 1.3.0 包已经构建、校验并固定到 `/media/data3/dengkw/releases/huawi-connector-1.3.0-8c889fe`；旧候选包和旧哈希仍然不能作为本轮发布证据，最终包和哈希以 `RELEASE_REPORT.md` 为准。
+- 最终包已经通过两次独立源码目录构建的逐字节一致性检查，但这只证明构建可复现，不替代 Windows 实机、真实公网和客户业务验收。
