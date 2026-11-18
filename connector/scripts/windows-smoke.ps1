@@ -1157,8 +1157,14 @@ try {
 
     $installState = Join-Path $DataDir "install-state.json"
     Assert-PathPresent -Path $installState -Label "安装状态文件"
+    if ((Get-Item -LiteralPath $installState).Length -gt 65536) {
+        throw "安装状态文件异常膨胀，可能写入了 PowerShell 管道包装对象"
+    }
     $installStateJson = Get-Content -LiteralPath $installState -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]::IsNullOrWhiteSpace($installStateJson.version) -or $installStateJson.version -notmatch '1\.3\.1') {
+    if ($installStateJson.version -isnot [string]) {
+        throw "安装状态 version 字段不是字符串"
+    }
+    if ($installStateJson.version -notmatch '^开物内网连接器 1\.3\.1$') {
         throw "安装状态版本不正确: $($installStateJson.version)"
     }
     Add-Step -Name "install_state" -Status "passed" -Detail $installStateJson.version

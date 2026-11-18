@@ -321,7 +321,10 @@ try {
   $VersionLine = "unknown"
   $VersionFile = Join-Path $Source "版本信息.txt"
   if (Test-Path -LiteralPath $VersionFile) {
-    $VersionLine = (Get-Content -LiteralPath $VersionFile -Encoding UTF8 | Select-Object -First 1)
+    # Get-Content -TotalCount returns the string itself. Piping through
+    # Select-Object would persist a Selected.System.String wrapper and its
+    # installer-temporary metadata into install-state.json on PowerShell 5.1.
+    $VersionLine = [string](Get-Content -LiteralPath $VersionFile -Encoding UTF8 -TotalCount 1)
   }
   [ordered]@{
     version = $VersionLine
