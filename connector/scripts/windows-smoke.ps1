@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$PackageRoot,
-    [string]$EvidencePath = ""
+    [string]$EvidencePath = "",
+    [string]$SetupPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,10 @@ $LogPath = Join-Path $env:TEMP "kaiwu-connector-windows-smoke.log"
 $PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
 $Installer = Join-Path $PackageRoot "install.ps1"
 $Uninstaller = Join-Path $PackageRoot "uninstall.ps1"
+$UseSetup = -not [string]::IsNullOrWhiteSpace($SetupPath)
+if ($UseSetup) {
+    $SetupPath = (Resolve-Path -LiteralPath $SetupPath).Path
+}
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
     $EvidencePath = Join-Path $PackageRoot "windows-smoke-evidence.json"
 }
@@ -25,6 +30,8 @@ $Evidence = [ordered]@{
     finished_at = $null
     status = "running"
     package_root = $PackageRoot
+    setup_path = $SetupPath
+    installer_mode = if ($UseSetup) { "nsis-setup" } else { "portable-package" }
     uninstall_mode = "default preserves data; -Purge is not run by this smoke test"
     steps = @()
     os = [ordered]@{}
@@ -34,8 +41,20 @@ $Evidence = [ordered]@{
     files = @()
     service = [ordered]@{}
     data = [ordered]@{}
+    synthetic_mcp = [ordered]@{}
     error = $null
 }
+
+$SyntheticPort = 18765
+$SyntheticBearer = "windows-ci-secret"
+$SyntheticHmacKey = "short-key"
+$SyntheticAppID = "synthetic-app"
+$SyntheticChannel = "synthetic-channel"
+$SyntheticUserID = "synthetic-user"
+$SyntheticTool = "lookup_order"
+$SyntheticResult = "SYNTHETIC-ORDER-42"
+$SyntheticLog = Join-Path ([System.IO.Path]::GetTempPath()) "kaiwu-synthetic-mcp-$PID.jsonl"
+$SyntheticJob = $null
 
 function Add-Step {
     param(
@@ -59,6 +78,251 @@ function Save-Evidence {
         New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
     $Evidence | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $EvidencePath -Encoding UTF8
+}
+
+function Test-RegistryKey {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateSet(32, 64)][int]$View
+    )
+    $subPath = $Path -replace '^HKLM\\', ''
+    $registryView = if ($View -eq 64) {
+        [Microsoft.Win32.RegistryView]::Registry64
+    } else {
+        [Microsoft.Win32.RegistryView]::Registry32
+    }
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine,
+        $registryView
+    )
+    $key = $null
+    try {
+        $key = $baseKey.OpenSubKey($subPath)
+        return ($null -ne $key)
+    } finally {
+        if ($null -ne $key) { $key.Dispose() }
+        $baseKey.Dispose()
+    }
+}
+
+function Get-SyntheticMcpEvents {
+    if (-not (Test-Path -LiteralPath $SyntheticLog)) { return @() }
+    return @(
+        Get-Content -LiteralPath $SyntheticLog -Encoding UTF8 -ErrorAction SilentlyContinue |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_ | ConvertFrom-Json }
+    )
+}
+
+function Start-SyntheticMcp {
+    Remove-Item -LiteralPath $SyntheticLog -Force -ErrorAction SilentlyContinue
+    $script:SyntheticJob = Start-Job -ArgumentList @(
+        $SyntheticPort,
+        $SyntheticBearer,
+        $SyntheticHmacKey,
+        $SyntheticAppID,
+        $SyntheticChannel,
+        $SyntheticUserID,
+        $SyntheticTool,
+        $SyntheticResult,
+        $SyntheticLog
+    ) -ScriptBlock {
+        param(
+            $Port,
+            $Bearer,
+            $HmacKey,
+            $AppID,
+            $Channel,
+            $UserID,
+            $ToolName,
+            $ToolResult,
+            $LogPath
+        )
+        $ErrorActionPreference = "Stop"
+
+        function Write-SyntheticEvent {
+            param([hashtable]$Event)
+            $line = ($Event | ConvertTo-Json -Depth 8 -Compress) + "`r`n"
+            [System.IO.File]::AppendAllText($LogPath, $line, [System.Text.UTF8Encoding]::new($false))
+        }
+
+        function Send-SyntheticResponse {
+            param(
+                [System.Net.HttpListenerContext]$Context,
+                [int]$StatusCode,
+                $Payload = $null
+            )
+            $Context.Response.StatusCode = $StatusCode
+            $Context.Response.ContentType = "application/json; charset=utf-8"
+            if ($null -eq $Payload) {
+                $Context.Response.ContentLength64 = 0
+            } else {
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes(($Payload | ConvertTo-Json -Depth 12 -Compress))
+                $Context.Response.ContentLength64 = $bytes.Length
+                $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+            }
+            $Context.Response.OutputStream.Close()
+        }
+
+        function Test-DynamicHeaders {
+            param([System.Net.HttpListenerRequest]$Request)
+            $appid = [string]$Request.Headers["appid"]
+            $channel = [string]$Request.Headers["channel"]
+            $userid = [string]$Request.Headers["userid"]
+            $requestID = [string]$Request.Headers["requestId"]
+            $timestampRaw = [string]$Request.Headers["timestamp"]
+            $sign = [string]$Request.Headers["sign"]
+            if ($appid -ne $AppID -or $channel -ne $Channel -or $userid -ne $UserID) { return $false }
+            if ($requestID -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$') { return $false }
+            [int64]$timestamp = 0
+            if (-not [int64]::TryParse($timestampRaw, [ref]$timestamp)) { return $false }
+            if ([Math]::Abs([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $timestamp) -gt 120) { return $false }
+            $canonical = "appid=$AppID&channel=$Channel&userid=$UserID&requestId=$requestID&timestamp=$timestampRaw"
+            $hmac = [System.Security.Cryptography.HMACSHA256]::new([System.Text.Encoding]::UTF8.GetBytes($HmacKey))
+            try {
+                $expected = (($hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($canonical)) | ForEach-Object { $_.ToString("x2") }) -join "")
+            } finally {
+                $hmac.Dispose()
+            }
+            if ([string]::Equals($expected, $sign, [System.StringComparison]::Ordinal)) { return $true }
+            return $false
+        }
+
+        $listener = [System.Net.HttpListener]::new()
+        $listener.Prefixes.Add("http://127.0.0.1:$Port/")
+        try {
+            $listener.Start()
+        } catch {
+            Write-SyntheticEvent @{ event = "start_failed"; error = $_.Exception.Message; at = (Get-Date).ToUniversalTime().ToString("o") }
+            return
+        }
+        Write-SyntheticEvent @{ event = "started"; port = $Port; at = (Get-Date).ToUniversalTime().ToString("o") }
+
+        try {
+            while ($listener.IsListening) {
+                $context = $listener.GetContext()
+                $method = ""
+                $status = 500
+                $bearerOK = $false
+                $dynamicOK = $null
+                $returnedMarker = $null
+                try {
+                    $reader = [System.IO.StreamReader]::new($context.Request.InputStream, [System.Text.Encoding]::UTF8)
+                    try {
+                        $body = $reader.ReadToEnd()
+                    } finally {
+                        $reader.Dispose()
+                    }
+                    $rpc = $body | ConvertFrom-Json
+                    $method = [string]$rpc.method
+                    $bearerOK = [string]::Equals([string]$context.Request.Headers["Authorization"], "Bearer $Bearer", [System.StringComparison]::Ordinal)
+                    if (-not $bearerOK) {
+                        $status = 401
+                        Send-SyntheticResponse -Context $context -StatusCode $status -Payload @{ error = "unauthorized" }
+                        continue
+                    }
+
+                    if ([string]::IsNullOrWhiteSpace($method) -or $method -eq "notifications/initialized") {
+                        $status = 202
+                        Send-SyntheticResponse -Context $context -StatusCode $status
+                        continue
+                    }
+
+                    switch ($method) {
+                        "initialize" {
+                            $result = @{
+                                protocolVersion = "2025-06-18"
+                                capabilities = @{ tools = @{} }
+                                serverInfo = @{ name = "synthetic-windows-mcp"; version = "1.0.0" }
+                            }
+                            $status = 200
+                        }
+                        "tools/list" {
+                            $result = @{
+                                tools = @(@{
+                                    name = $ToolName
+                                    description = "固定合成订单查询"
+                                    inputSchema = @{
+                                        type = "object"
+                                        properties = @{ order_id = @{ type = "string" } }
+                                        required = @("order_id")
+                                    }
+                                })
+                            }
+                            $status = 200
+                        }
+                        "tools/call" {
+                            $dynamicOK = Test-DynamicHeaders -Request $context.Request
+                            if (-not $dynamicOK) {
+                                $status = 403
+                                Send-SyntheticResponse -Context $context -StatusCode $status -Payload @{ error = "dynamic authentication failed" }
+                                continue
+                            }
+                            if ([string]$rpc.params.name -ne $ToolName) {
+                                $status = 404
+                                Send-SyntheticResponse -Context $context -StatusCode $status -Payload @{ error = "unknown tool" }
+                                continue
+                            }
+                            $result = @{
+                                content = @(@{ type = "text"; text = $ToolResult })
+                                isError = $false
+                            }
+                            $returnedMarker = $ToolResult
+                            $status = 200
+                        }
+                        default {
+                            $status = 404
+                            Send-SyntheticResponse -Context $context -StatusCode $status -Payload @{ error = "unsupported method" }
+                            continue
+                        }
+                    }
+
+                    Send-SyntheticResponse -Context $context -StatusCode $status -Payload @{
+                        jsonrpc = "2.0"
+                        id = $rpc.id
+                        result = $result
+                    }
+                } catch {
+                    $status = 500
+                    try {
+                        Send-SyntheticResponse -Context $context -StatusCode $status -Payload @{ error = $_.Exception.Message }
+                    } catch {}
+                } finally {
+                    Write-SyntheticEvent @{
+                        event = "request"
+                        method = $method
+                        http_status = $status
+                        bearer_ok = $bearerOK
+                        dynamic_headers_ok = $dynamicOK
+                        returned_marker = $returnedMarker
+                        at = (Get-Date).ToUniversalTime().ToString("o")
+                    }
+                }
+            }
+        } finally {
+            if ($listener.IsListening) { $listener.Stop() }
+            $listener.Close()
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 250
+        $events = @(Get-SyntheticMcpEvents)
+        if ($events | Where-Object { $_.event -eq "started" }) { return }
+        if ($script:SyntheticJob.State -eq "Completed") {
+            $jobOutput = Receive-Job -Job $script:SyntheticJob -Keep -ErrorAction SilentlyContinue | Out-String
+            throw "合成 MCP 服务未启动: $jobOutput"
+        }
+    } while ((Get-Date) -lt $deadline)
+    throw "合成 MCP 服务未在 15 秒内监听 127.0.0.1:$SyntheticPort"
+}
+
+function Stop-SyntheticMcp {
+    if ($null -eq $script:SyntheticJob) { return }
+    Stop-Job -Job $script:SyntheticJob -ErrorAction SilentlyContinue
+    Remove-Job -Job $script:SyntheticJob -Force -ErrorAction SilentlyContinue
+    $script:SyntheticJob = $null
 }
 
 function Get-ServiceSnapshot {
@@ -89,6 +353,51 @@ function Wait-ServiceState {
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
     throw "服务未在 $TimeoutSeconds 秒内进入 $Expected 状态"
+}
+
+function Assert-NativeWindowsInstall {
+    param([Parameter(Mandatory = $true)]$ServiceSnapshot)
+    if ([string]::IsNullOrWhiteSpace($env:ProgramW6432)) {
+        throw "当前进程没有读取到 64 位 Program Files 路径"
+    }
+    $expectedDir = [System.IO.Path]::GetFullPath((Join-Path $env:ProgramW6432 "Kaiwu\Connector"))
+    $actualDir = [System.IO.Path]::GetFullPath($InstallDir)
+    if (-not [string]::Equals($expectedDir, $actualDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "安装目录不在原生 64 位 Program Files: $actualDir"
+    }
+    $legacyX86Dir = Join-Path ${env:ProgramFiles(x86)} "Kaiwu\Connector"
+    if (Test-Path -LiteralPath $legacyX86Dir) {
+        throw "旧 32 位程序目录仍然存在: $legacyX86Dir"
+    }
+    Assert-PathPresent -Path (Join-Path $expectedDir "kaiwu-connector.exe") -Label "64 位连接器可执行文件"
+    $binaryPath = ([string]$ServiceSnapshot.binary_path).Trim('"')
+    if (-not $binaryPath.StartsWith($expectedDir + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Windows 服务没有从原生 64 位安装目录启动: $binaryPath"
+    }
+
+    $uninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
+    if (-not (Test-RegistryKey -Path $uninstallKey -View 64)) {
+        throw "缺少原生 64 位卸载登记"
+    }
+    if (Test-RegistryKey -Path $uninstallKey -View 32) {
+        throw "旧 32 位卸载登记仍然存在"
+    }
+
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 17872 -ErrorAction Stop)
+    if ($listeners.Count -eq 0) { throw "17872 端口没有监听进程" }
+    foreach ($listener in $listeners) {
+        if ($listener.LocalAddress -ne "127.0.0.1") {
+            throw "17872 监听地址不是回环地址: $($listener.LocalAddress)"
+        }
+    }
+    return [ordered]@{
+        install_dir = $actualDir
+        legacy_x86_dir_absent = $true
+        service_binary = $binaryPath
+        uninstall_registry_native = $true
+        uninstall_registry_x86 = $false
+        listeners = @($listeners | ForEach-Object { [ordered]@{ address = $_.LocalAddress; port = $_.LocalPort; pid = $_.OwningProcess } })
+    }
 }
 
 function Get-DataSnapshot {
@@ -163,12 +472,26 @@ function Assert-PathAbsent {
 }
 
 function Invoke-PackageInstaller {
+    if ($UseSetup) {
+        if (-not (Test-Path -LiteralPath $SetupPath)) { throw "找不到安装程序: $SetupPath" }
+        $process = Start-Process -FilePath $SetupPath -ArgumentList "/S" -Wait -PassThru
+        if ($process.ExitCode -ne 0) { throw "NSIS 安装程序退出码为 $($process.ExitCode)" }
+        return
+    }
     if (-not (Test-Path -LiteralPath $Installer)) { throw "找不到安装脚本: $Installer" }
     & $Installer
 }
 
 function Invoke-PackageUninstaller {
     param([switch]$KeepProgramDirectory)
+    if ($UseSetup) {
+        if ($KeepProgramDirectory) { throw "NSIS 安装模式不支持 KeepProgramDirectory 中间态" }
+        $setupUninstaller = Join-Path $InstallDir "uninstall.exe"
+        if (-not (Test-Path -LiteralPath $setupUninstaller)) { throw "找不到 NSIS 卸载程序: $setupUninstaller" }
+        $process = Start-Process -FilePath $setupUninstaller -ArgumentList "/S" -Wait -PassThru
+        if ($process.ExitCode -ne 0) { throw "NSIS 卸载程序退出码为 $($process.ExitCode)" }
+        return
+    }
     if (-not (Test-Path -LiteralPath $Uninstaller)) { throw "找不到卸载脚本: $Uninstaller" }
     if ($KeepProgramDirectory) {
         & $Uninstaller -KeepProgramDirectory
@@ -272,6 +595,9 @@ try {
     }
     Add-Step -Name "frpc_binary_version" -Status "passed" -Detail $frpcVersion
 
+    Start-SyntheticMcp
+    Add-Step -Name "synthetic_mcp_start" -Status "passed" -Detail "http://127.0.0.1:$SyntheticPort/mcp"
+
     $beforeService = Get-ServiceSnapshot
     $beforeData = Get-DataSnapshot
     $Evidence.before = [ordered]@{
@@ -285,6 +611,12 @@ try {
     $afterService = Get-ServiceSnapshot
     $Evidence.after_install.service = $afterService
     Add-Step -Name "install_and_start_service" -Status "passed" -Detail "$($service.Status); pid=$($afterService.process_id)"
+    if ($UseSetup) {
+        $Evidence.after_install.native_layout = Assert-NativeWindowsInstall -ServiceSnapshot $afterService
+        Add-Step -Name "native_x64_layout" -Status "passed" -Detail "Program Files, service path, registry, loopback listener"
+    } else {
+        Add-Step -Name "native_x64_layout" -Status "not_applicable" -Detail "portable install.ps1 does not register uninstall entry"
+    }
 
     $installState = Join-Path $DataDir "install-state.json"
     Assert-PathPresent -Path $installState -Label "安装状态文件"
@@ -330,17 +662,94 @@ try {
     if ($missingTokenStatus -ne 403) { throw "无本机会话令牌的写请求应返回 403，实际为 $missingTokenStatus" }
     Add-Step -Name "csrf_token_guard" -Status "passed" -Detail "missing-token=403"
 
+    $wrongBearer = "windows-ci-wrong"
+    $wrongConfig = '{"mcpServers":{"ci-local":{"type":"http","url":"http://127.0.0.1:18765/mcp","headers":{"Authorization":"Bearer windows-ci-wrong"}}}}'
+    $wrongImportBody = @{ config = $wrongConfig } | ConvertTo-Json -Compress
+    $wrongImport = Invoke-RestMethod -Uri "$BaseURL/api/import" -Method Post `
+        -Headers @{ "X-Connector-Token" = $token } -ContentType "application/json" `
+        -Body $wrongImportBody -TimeoutSec 15
+    if (-not $wrongImport.ok -or @($wrongImport.data.issues | Where-Object { $_.severity -eq "error" }).Count -gt 0) {
+        throw "错误 Bearer 测试配置导入失败"
+    }
+    $wrongSourceID = [string](@($wrongImport.data.sources)[0].source_id)
+    if ([string]::IsNullOrWhiteSpace($wrongSourceID)) { throw "错误 Bearer 测试没有取得来源编号" }
+    $wrongDiagnoseBody = @{ source_id = $wrongSourceID; tool_probe = "" } | ConvertTo-Json -Compress
+    $wrongDiagnosis = Invoke-RestMethod -Uri "$BaseURL/api/diagnose" -Method Post `
+        -Headers @{ "X-Connector-Token" = $token } -ContentType "application/json" `
+        -Body $wrongDiagnoseBody -TimeoutSec 30
+    $wrongReport = @($wrongDiagnosis.data | Where-Object { $_.source_id -eq $wrongSourceID })[0]
+    if ($null -eq $wrongReport -or $wrongReport.ok) { throw "错误 Bearer 不应通过上游认证" }
+    if (@($wrongReport.checks | Where-Object { $_.code -eq "UPSTREAM_AUTH_FAILED" }).Count -eq 0) {
+        throw "错误 Bearer 没有返回认证失败结果"
+    }
+    $wrongAuthEvent = @(Get-SyntheticMcpEvents | Where-Object {
+        $_.event -eq "request" -and $_.method -eq "initialize" -and $_.http_status -eq 401 -and $_.bearer_ok -eq $false
+    })
+    if ($wrongAuthEvent.Count -eq 0) { throw "合成 MCP 没有记录错误 Bearer 的 HTTP 401" }
+    Add-Step -Name "wrong_bearer_rejected" -Status "passed" -Detail "initialize HTTP 401; UPSTREAM_AUTH_FAILED"
+
     $mcpConfig = '{"mcpServers":{"ci-local":{"type":"http","url":"http://127.0.0.1:18765/mcp","headers":{"Authorization":"Bearer windows-ci-secret"}}}}'
     $importBody = @{ config = $mcpConfig } | ConvertTo-Json -Compress
     $importResult = Invoke-RestMethod -Uri "$BaseURL/api/import" -Method Post `
         -Headers @{ "X-Connector-Token" = $token } -ContentType "application/json" `
         -Body $importBody -TimeoutSec 15
-    if (-not $importResult.ok -or $importResult.data.HasErrors) { throw "测试来源导入失败" }
+    if (-not $importResult.ok -or @($importResult.data.issues | Where-Object { $_.severity -eq "error" }).Count -gt 0) {
+        throw "测试来源导入失败"
+    }
+    $sourceID = [string](@($importResult.data.sources)[0].source_id)
+    if ([string]::IsNullOrWhiteSpace($sourceID)) { throw "测试来源导入后没有来源编号" }
     foreach ($name in @("config.json", "secrets.json")) {
         Assert-PathPresent -Path (Join-Path $DataDir $name) -Label "导入后本机文件 $name"
     }
     Assert-ConnectorState -Expected "CONFIGURING" -Context "测试来源导入" | Out-Null
     Add-Step -Name "import_and_local_storage" -Status "passed" -Detail $DataDir
+
+    $authProfileBody = @{
+        source_id = $sourceID
+        app_id = $SyntheticAppID
+        channel = $SyntheticChannel
+        user_id = $SyntheticUserID
+        hmac_key = $SyntheticHmacKey
+        tools = $SyntheticTool
+    } | ConvertTo-Json -Compress
+    $authProfileResult = Invoke-RestMethod -Uri "$BaseURL/api/auth-profile" -Method Post `
+        -Headers @{ "X-Connector-Token" = $token } -ContentType "application/json" `
+        -Body $authProfileBody -TimeoutSec 15
+    if (-not $authProfileResult.ok) { throw "本机动态认证配置保存失败" }
+    $configuredProfile = @($authProfileResult.data.auth_profiles | Where-Object { $_.source_id -eq $sourceID })[0]
+    if (-not $configuredProfile.configured -or $SyntheticTool -notin @($configuredProfile.allowed_tools)) {
+        throw "动态认证配置或工具允许列表没有保存"
+    }
+    Add-Step -Name "dynamic_auth_profile" -Status "passed" -Detail $SyntheticTool
+
+    $diagnoseBody = @{ source_id = $sourceID; tool_probe = $SyntheticTool } | ConvertTo-Json -Compress
+    $diagnosis = Invoke-RestMethod -Uri "$BaseURL/api/diagnose" -Method Post `
+        -Headers @{ "X-Connector-Token" = $token } -ContentType "application/json" `
+        -Body $diagnoseBody -TimeoutSec 30
+    $report = @($diagnosis.data | Where-Object { $_.source_id -eq $sourceID })[0]
+    if ($null -eq $report -or -not $report.ok) { throw "合成 MCP 分层诊断没有通过" }
+    $toolCheck = @($report.checks | Where-Object { $_.name -eq "tool" })[0]
+    if ($null -eq $toolCheck -or $toolCheck.status -ne "pass") { throw "合成工具试调用没有通过" }
+    $validCalls = @(Get-SyntheticMcpEvents | Where-Object {
+        $_.event -eq "request" -and $_.method -eq "tools/call" -and $_.http_status -eq 200 -and
+        $_.bearer_ok -eq $true -and $_.dynamic_headers_ok -eq $true -and $_.returned_marker -eq $SyntheticResult
+    })
+    if ($validCalls.Count -eq 0) {
+        throw "没有记录到 Bearer、六项 HMAC 头和固定业务结果均正确的 tools/call"
+    }
+    $Evidence.synthetic_mcp = [ordered]@{
+        source_id = $sourceID
+        tool = $SyntheticTool
+        fixed_result = $SyntheticResult
+        hmac_key_length = $SyntheticHmacKey.Length
+        wrong_bearer_rejected = $true
+        hmac_verified_by_server = $true
+        diagnosis = $report
+        successful_calls = @($validCalls | ForEach-Object {
+            [ordered]@{ method = $_.method; http_status = $_.http_status; returned_marker = $_.returned_marker }
+        })
+    }
+    Add-Step -Name "synthetic_mcp_call" -Status "passed" -Detail "$SyntheticTool -> $SyntheticResult; Bearer/HMAC verified"
 
     Assert-SecretsProtected
     Add-Step -Name "dpapi_secret_files" -Status "passed" -Detail "prefix marker present; no test bearer plaintext"
@@ -374,30 +783,55 @@ try {
     Assert-ConnectorState -Expected "CONFIGURING" -Context "覆盖升级" | Out-Null
     Add-Step -Name "upgrade_reinstall" -Status "passed" -Detail "configuration retained"
 
-    Invoke-PackageUninstaller -KeepProgramDirectory
-    Wait-ServiceState -Expected "Absent" | Out-Null
-    Assert-PathPresent -Path $InstallDir -Label "KeepProgramDirectory 后的程序目录"
-    Assert-PathPresent -Path (Join-Path $DataDir "config.json") -Label "默认卸载后配置"
-    Assert-PathPresent -Path (Join-Path $DataDir "secrets.json") -Label "默认卸载后本机身份"
-    Add-Step -Name "uninstall_keep_program" -Status "passed" -Detail "service removed; program and data retained"
+    if ($UseSetup) {
+        Invoke-PackageUninstaller
+        Wait-ServiceState -Expected "Absent" | Out-Null
+        Assert-PathAbsent -Path $InstallDir -Label "NSIS 默认卸载后的程序目录"
+        Assert-PathPresent -Path $DataDir -Label "NSIS 默认卸载后的数据目录"
+        Assert-PathPresent -Path (Join-Path $DataDir "config.json") -Label "NSIS 默认卸载后配置"
+        Assert-PathPresent -Path (Join-Path $DataDir "secrets.json") -Label "NSIS 默认卸载后本机身份"
+        $uninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
+        if (Test-RegistryKey -Path $uninstallKey -View 64) { throw "NSIS 卸载后仍有 64 位卸载登记" }
+        if (Test-RegistryKey -Path $uninstallKey -View 32) { throw "NSIS 卸载后仍有 32 位卸载登记" }
+        Add-Step -Name "uninstall_default_preserves_data" -Status "passed" -Detail "service/program/registry removed; data retained"
 
-    Invoke-PackageInstaller
-    Wait-ServiceState -Expected "Running" | Out-Null
-    Assert-ConnectorState -Expected "CONFIGURING" -Context "卸载后重新安装" | Out-Null
-    Add-Step -Name "reinstall_after_uninstall" -Status "passed" -Detail "configuration retained"
+        Invoke-PackageInstaller
+        $reinstalledService = Wait-ServiceState -Expected "Running"
+        Assert-ConnectorState -Expected "CONFIGURING" -Context "NSIS 卸载后重新安装" | Out-Null
+        $Evidence.after_reinstall = [ordered]@{
+            service = Get-ServiceSnapshot
+            native_layout = Assert-NativeWindowsInstall -ServiceSnapshot (Get-ServiceSnapshot)
+        }
+        Add-Step -Name "reinstall_after_uninstall" -Status "passed" -Detail "NSIS setup; configuration retained; x64 layout verified"
+    } else {
+        Invoke-PackageUninstaller -KeepProgramDirectory
+        Wait-ServiceState -Expected "Absent" | Out-Null
+        Assert-PathPresent -Path $InstallDir -Label "KeepProgramDirectory 后的程序目录"
+        Assert-PathPresent -Path (Join-Path $DataDir "config.json") -Label "默认卸载后配置"
+        Assert-PathPresent -Path (Join-Path $DataDir "secrets.json") -Label "默认卸载后本机身份"
+        Add-Step -Name "uninstall_keep_program" -Status "passed" -Detail "service removed; program and data retained"
 
-    Invoke-PackageUninstaller
-    Wait-ServiceState -Expected "Absent" | Out-Null
-    Assert-PathAbsent -Path $InstallDir -Label "默认卸载后的程序目录"
-    Assert-PathPresent -Path $DataDir -Label "默认卸载后的数据目录"
-    Assert-PathPresent -Path (Join-Path $DataDir "config.json") -Label "默认卸载后配置"
-    Assert-PathPresent -Path (Join-Path $DataDir "secrets.json") -Label "默认卸载后本机身份"
-    Add-Step -Name "uninstall_default_preserves_data" -Status "passed" -Detail "service and program removed; data retained"
+        Invoke-PackageInstaller
+        Wait-ServiceState -Expected "Running" | Out-Null
+        Assert-ConnectorState -Expected "CONFIGURING" -Context "卸载后重新安装" | Out-Null
+        Add-Step -Name "reinstall_after_uninstall" -Status "passed" -Detail "configuration retained"
 
-    Invoke-PackageInstaller
+        Invoke-PackageUninstaller
+        Wait-ServiceState -Expected "Absent" | Out-Null
+        Assert-PathAbsent -Path $InstallDir -Label "默认卸载后的程序目录"
+        Assert-PathPresent -Path $DataDir -Label "默认卸载后的数据目录"
+        Assert-PathPresent -Path (Join-Path $DataDir "config.json") -Label "默认卸载后配置"
+        Assert-PathPresent -Path (Join-Path $DataDir "secrets.json") -Label "默认卸载后本机身份"
+        Add-Step -Name "uninstall_default_preserves_data" -Status "passed" -Detail "service and program removed; data retained"
+
+        Invoke-PackageInstaller
+    }
     $finalService = Wait-ServiceState -Expected "Running"
     Assert-ConnectorState -Expected "CONFIGURING" -Context "最终恢复安装" | Out-Null
     Assert-PrivateAcl -Path $DataDir
+    if ($UseSetup) {
+        $Evidence.final_native_layout = Assert-NativeWindowsInstall -ServiceSnapshot (Get-ServiceSnapshot)
+    }
     $Evidence.service = [ordered]@{
         name = $ServiceName
         state = $finalService.Status.ToString()
@@ -409,6 +843,7 @@ try {
     Add-Step -Name "final_install" -Status "passed" -Detail "service running; configuration preserved"
 
     $Evidence.status = "passed"
+    Stop-SyntheticMcp
     Save-Evidence
     exit 0
 } catch {
@@ -421,7 +856,9 @@ try {
         if (Test-Path -LiteralPath $DataDir) { $Evidence.data = Get-DataSnapshot }
         if (Test-Path -LiteralPath $LogPath) { $Evidence.service.log_tail = @(Get-Content -LiteralPath $LogPath -Tail 200) }
         $Evidence.backups = @(Get-BackupSnapshot)
+        $Evidence.synthetic_mcp.events = @(Get-SyntheticMcpEvents)
     } catch {}
+    Stop-SyntheticMcp
     Save-Evidence
     Write-Error $_
     exit 1

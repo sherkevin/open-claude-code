@@ -26,6 +26,11 @@ ${Using:StrFunc} UnStrStr
   !error "OUTPUT_FILE is required"
 !endif
 
+; NSIS is a 32-bit process, so $SYSDIR points at SysWOW64. Sysnative is the
+; supported way to start 64-bit Windows PowerShell from the 32-bit installer;
+; this keeps $env:ProgramFiles and the service path on the native x64 tree.
+!define POWERSHELL64 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+
 Name "开物内网连接器 ${VERSION}"
 Caption "开物内网连接器 ${VERSION}"
 BrandingText "Kaiwu Intranet Connector"
@@ -65,6 +70,7 @@ VIAddVersionKey /LANG=2052 "Comments" "source commit ${COMMIT}"
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
 Function .onInit
+  SetRegView 64
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "本安装包仅支持 64 位 Windows。"
     Abort
@@ -73,8 +79,8 @@ Function .onInit
     MessageBox MB_ICONSTOP "本安装包要求 Windows 10 或 Windows Server 2016 及以上版本。"
     Abort
   ${EndIf}
-  ${IfNot} ${FileExists} "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
-    MessageBox MB_ICONSTOP "系统缺少 Windows PowerShell，无法完成安装。"
+  ${IfNot} ${FileExists} "${POWERSHELL64}"
+    MessageBox MB_ICONSTOP "系统缺少 64 位 Windows PowerShell，无法完成安装。"
     Abort
   ${EndIf}
   InitPluginsDir
@@ -89,7 +95,7 @@ Section "安装" SecInstall
   CreateDirectory "$APPDATA\Kaiwu\Connector\logs"
 
   DetailPrint "校验并安装连接器、官方 frpc 和 Windows 服务..."
-  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" 2>&1'
+  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" 2>&1'
   Pop $0
   Pop $1
 
@@ -115,6 +121,16 @@ Section "安装" SecInstall
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateShortCut "$SMPROGRAMS\开物内网连接器\卸载开物内网连接器.lnk" "$INSTDIR\uninstall.exe"
 
+  ; Remove a stale 32-bit uninstall record left by older candidate installers,
+  ; then register the current x64 entry in the native registry view.
+  SetRegView 32
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
+  SetRegView 64
+  ; Early x64 probes were accidentally installed through 32-bit PowerShell.
+  ; Remove only that known stale product directory after the native install
+  ; succeeds; customer configuration remains under ProgramData.
+  RMDir /r "$PROGRAMFILES32\Kaiwu\Connector"
+  RMDir "$PROGRAMFILES32\Kaiwu"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "DisplayName" "开物内网连接器"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "Publisher" "Kaiwu"
@@ -130,6 +146,7 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext all
+  SetRegView 64
   StrCpy $0 ""
   ${UnStrStr} $1 "$CMDLINE" "/PURGE"
   ${If} $1 != ""
@@ -144,7 +161,7 @@ Section "Uninstall"
   ${EndIf}
 
   DetailPrint "停止服务并卸载连接器..."
-  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\uninstall.ps1" $0'
+  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\uninstall.ps1" $0'
   Pop $1
   Pop $2
   FileOpen $3 "$TEMP\KaiwuConnector-uninstall.log" w
@@ -159,5 +176,10 @@ Section "Uninstall"
   Delete "$DESKTOP\开物内网连接器配置.lnk"
   RMDir /r "$SMPROGRAMS\开物内网连接器"
   RMDir /r "$INSTDIR"
+  RMDir /r "$PROGRAMFILES32\Kaiwu\Connector"
+  RMDir "$PROGRAMFILES32\Kaiwu"
+  SetRegView 32
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
+  SetRegView 64
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
 SectionEnd
