@@ -29,6 +29,25 @@ if [[ -z "$MAKENSIS" || ! -x "$MAKENSIS" ]]; then
   exit 1
 fi
 
+# A locally extracted NSIS keeps its executable under <prefix>/usr/bin but the
+# binary still resolves stubs and includes from the compile-time /usr/share/
+# nsis path. When such a prefix is used, bind its share tree inside the private
+# mount namespace below instead of writing anything to the root filesystem.
+NSIS_SHARE_DIR="${NSIS_SHARE_DIR:-}"
+if [[ -z "$NSIS_SHARE_DIR" ]]; then
+  candidate_share="$(cd "$(dirname "$MAKENSIS")/../share" 2>/dev/null && pwd || true)"
+  if [[ -n "$candidate_share" && -f "$candidate_share/nsis/Stubs/zlib-x86-unicode" ]]; then
+    NSIS_SHARE_DIR="$candidate_share"
+  fi
+fi
+if [[ -n "$NSIS_SHARE_DIR" ]]; then
+  NSIS_SHARE_DIR="$(cd "$NSIS_SHARE_DIR" && pwd)"
+  if [[ ! -f "$NSIS_SHARE_DIR/nsis/Stubs/zlib-x86-unicode" ]]; then
+    echo "NSIS_SHARE_DIR 缺少 nsis/Stubs/zlib-x86-unicode: $NSIS_SHARE_DIR" >&2
+    exit 1
+  fi
+fi
+
 # makensis 3.08 hardcodes /tmp for its large compression scratch file. Keep
 # that file on the project data volume through a private mount namespace so a
 # full root filesystem cannot turn the final mmap into SIGBUS.
@@ -44,6 +63,9 @@ export SOURCE_DATE_EPOCH
 unshare -Urmpf --propagation private bash -c '
   set -euo pipefail
   mount --bind "$1" /tmp
+  if [[ -n "${NSIS_SHARE_DIR:-}" ]]; then
+    mount --bind "$NSIS_SHARE_DIR" /usr/share
+  fi
   shift
   exec "$@"
 ' bash "$NSIS_TMPDIR" "$MAKENSIS" -V2 -NOCD \
