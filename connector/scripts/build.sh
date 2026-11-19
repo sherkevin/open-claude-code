@@ -32,6 +32,13 @@ VULN_TOOL="${GOVULNCHECK:-$(command -v govulncheck || true)}"
 GO_TOOL="${GO:-$(command -v go || true)}"
 PYTHON_TOOL="${PYTHON:-$(command -v python3 || true)}"
 
+# Several SBOM/scanning tools invoke `go` as a child process even when the
+# release operator supplies GO explicitly. Keep that toolchain reachable on
+# PATH so a controlled build does not depend on a system-wide installation.
+if [ -n "$GO_TOOL" ] && [ -x "$GO_TOOL" ]; then
+  export PATH="$(cd "$(dirname "$GO_TOOL")" && pwd):$PATH"
+fi
+
 for file in "$FRPC_LINUX" "$FRPC_WINDOWS"; do
   if [ ! -f "$file" ]; then
     echo "缺少 frpc 二进制: $file" >&2
