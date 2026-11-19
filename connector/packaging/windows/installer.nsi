@@ -116,22 +116,56 @@ Section "安装" SecInstall
   SetOutPath "$PLUGINSDIR\payload"
   File /r "${PAYLOAD_DIR}/*"
 
-  CreateDirectory "$INSTDIR"
   CreateDirectory "$APPDATA\Kaiwu\Connector\logs"
 
   DetailPrint "校验并安装连接器、官方 frpc 和 Windows 服务..."
-  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" 2>&1'
+  Delete "$PLUGINSDIR\install-result.txt"
+  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" -ResultPath "$PLUGINSDIR\install-result.txt" 2>&1'
   Pop $0
   Pop $1
 
-  SetOutPath "$INSTDIR"
-  FileOpen $2 "$INSTDIR\install.log" w
+  StrCpy $3 "result=UNKNOWN"
+  ${If} ${FileExists} "$PLUGINSDIR\install-result.txt"
+    FileOpen $4 "$PLUGINSDIR\install-result.txt" r
+    FileRead $4 $3
+    FileClose $4
+    ${TrimNewLines} "$3" "$3"
+  ${EndIf}
+  StrCpy $5 "result=UNKNOWN"
+  ${If} "$3" == "result=INSTALLED"
+  ${OrIf} "$3" == "result=PRECHECK_FAILED"
+  ${OrIf} "$3" == "result=FAILED_RESTORED"
+  ${OrIf} "$3" == "result=FAILED_RECOVERY_UNCONFIRMED"
+  ${OrIf} "$3" == "result=FAILED_NO_PRIOR_CLEANED"
+  ${OrIf} "$3" == "result=FAILED_NO_PRIOR_CLEANUP_UNCONFIRMED"
+    StrCpy $5 "$3"
+  ${EndIf}
+  StrCpy $3 "$5"
+
+  SetOutPath "$PLUGINSDIR"
+  FileOpen $2 "$APPDATA\Kaiwu\Connector\logs\install.log" w
+  FileWrite $2 "$3$\r$\n"
+  FileWrite $2 "---- install.ps1 output ----$\r$\n"
   FileWrite $2 "$1"
   FileClose $2
-  CopyFiles /SILENT "$INSTDIR\install.log" "$APPDATA\Kaiwu\Connector\logs\install.log"
 
-  ${If} "$0" != "0"
-    MessageBox MB_ICONSTOP "安装失败，安装脚本已尝试恢复安装前状态。$\r$\n$\r$\n退出码：$0$\r$\n日志：$APPDATA\Kaiwu\Connector\logs\install.log"
+  ${If} "$0" == "0"
+  ${AndIf} "$3" == "result=INSTALLED"
+    CopyFiles /SILENT "$APPDATA\Kaiwu\Connector\logs\install.log" "$INSTDIR\install.log"
+  ${Else}
+    StrCpy $4 "安装失败，恢复或清理状态未确认。请保留日志并联系技术支持。"
+    ${If} "$3" == "result=PRECHECK_FAILED"
+      StrCpy $4 "安装前检查失败，未开始更改已有安装。"
+    ${ElseIf} "$3" == "result=FAILED_RESTORED"
+      StrCpy $4 "安装失败，已核验恢复安装前的程序和配置。"
+    ${ElseIf} "$3" == "result=FAILED_RECOVERY_UNCONFIRMED"
+      StrCpy $4 "安装失败，未能确认恢复安装前的状态。请不要按已恢复处理，保留日志并联系技术支持。"
+    ${ElseIf} "$3" == "result=FAILED_NO_PRIOR_CLEANED"
+      StrCpy $4 "安装失败，已清理本次新增的受管文件。"
+    ${ElseIf} "$3" == "result=FAILED_NO_PRIOR_CLEANUP_UNCONFIRMED"
+      StrCpy $4 "安装失败，未能确认已清理本次新增的受管文件。请保留日志并联系技术支持。"
+    ${EndIf}
+    MessageBox MB_ICONSTOP "$4$\r$\n$\r$\n退出码：$0$\r$\n状态：$3$\r$\n日志：$APPDATA\Kaiwu\Connector\logs\install.log"
     Abort
   ${EndIf}
 
