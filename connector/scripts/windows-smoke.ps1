@@ -1129,7 +1129,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($versionOutput)) {
         throw "kaiwu-connector.exe version 执行失败: $versionOutput"
     }
-    if ($versionOutput -notmatch '1\.3\.3') { throw "候选包版本不是 1.3.3: $versionOutput" }
+    if ($versionOutput -notmatch '1\.3\.4') { throw "候选包版本不是 1.3.4: $versionOutput" }
     Add-Step -Name "binary_version" -Status "passed" -Detail $versionOutput
 
     $frpcPath = Join-Path $PackageRoot "bin\frpc.exe"
@@ -1178,7 +1178,7 @@ try {
     if ($installStateJson.version -isnot [string]) {
         throw "安装状态 version 字段不是字符串"
     }
-    if ($installStateJson.version -notmatch '^开物内网连接器 1\.3\.1$') {
+    if ($installStateJson.version -notmatch '^开物内网连接器 1\.3\.4$') {
         throw "安装状态版本不正确: $($installStateJson.version)"
     }
     Add-Step -Name "install_state" -Status "passed" -Detail $installStateJson.version

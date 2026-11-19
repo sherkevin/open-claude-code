@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,11 +55,19 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), "内网连接器") {
 		t.Fatal("页面内容不完整")
 	}
-	if !strings.Contains(recorder.Body.String(), "企业统一入口候选版本") || !strings.Contains(recorder.Body.String(), "公网是否可用必须以云端 Edge") {
-		t.Fatal("页面未明确展示企业桥接验收边界")
+	for _, expected := range []string{
+		"安装后填写本机 MCP 参数即可接入",
+		"保存并连接",
+		"读取工具列表",
+		"企业集成凭据 K",
+		"不包含 Authorization，也不是可以直接导入开物平台的完整 MCP JSON",
+	} {
+		if !strings.Contains(recorder.Body.String(), expected) {
+			t.Fatalf("页面缺少普通接入流程或交付边界文案: %s", expected)
+		}
 	}
-	if strings.Contains(recorder.Body.String(), "启动加密通道并与云端完成端到端检测") {
-		t.Fatal("页面不得把候选连接器描述成已完成端到端联调")
+	if strings.Contains(recorder.Body.String(), "第 1 步") {
+		t.Fatal("页面不应继续把本机配置展示成六步技术向导")
 	}
 }
 
@@ -102,6 +111,8 @@ func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 	paths := []string{
 		"/api/bind",
 		"/api/import",
+		"/api/source/save",
+		"/api/source/tools",
 		"/api/auth-profile",
 		"/api/diagnose",
 		"/api/connect",
@@ -135,6 +146,8 @@ func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
 	paths := []string{
 		"/api/bind",
 		"/api/import",
+		"/api/source/save",
+		"/api/source/tools",
 		"/api/auth-profile",
 		"/api/diagnose",
 		"/api/connect",
@@ -177,6 +190,142 @@ func TestImportWithToken(t *testing.T) {
 	}
 	if !payload.OK || len(payload.Data.Sources) != 1 {
 		t.Fatalf("导入结果不符: %s", recorder.Body.String())
+	}
+}
+
+func TestSourceSaveWithTokenCreatesAndUpdatesOneSource(t *testing.T) {
+	server := newTestServer(t)
+	body, _ := json.Marshal(map[string]any{
+		"display_name": "库存查询",
+		"upstream_url": "http://10.0.0.8:8000/mcp",
+		"bearer_token": "synthetic-access-token",
+		"dynamic_auth": false,
+		"tools":        []string{"get_inventory"},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/source/save", strings.NewReader(string(body)))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("保存普通表单来源失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "synthetic-access-token") {
+		t.Fatal("来源保存响应泄漏了访问令牌")
+	}
+	var created struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Created bool `json:"created"`
+			Source  struct {
+				SourceID string `json:"source_id"`
+			} `json:"source"`
+			Status struct {
+				Sources []struct {
+					SourceID string `json:"source_id"`
+				} `json:"sources"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("保存响应不是 JSON: %v", err)
+	}
+	if !created.OK || !created.Data.Created || created.Data.Source.SourceID == "" || len(created.Data.Status.Sources) != 1 {
+		t.Fatalf("新建来源结果不符: %s", recorder.Body.String())
+	}
+
+	update, _ := json.Marshal(map[string]any{
+		"source_id":    created.Data.Source.SourceID,
+		"display_name": "库存查询（维护中）",
+		"upstream_url": "http://10.0.0.8:8000/mcp",
+		"dynamic_auth": false,
+		"tools":        []string{"get_inventory"},
+	})
+	request = httptest.NewRequest(http.MethodPost, "/api/source/save", strings.NewReader(string(update)))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("更新普通表单来源失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	var updated struct {
+		Data struct {
+			Created bool `json:"created"`
+			Status  struct {
+				Sources []struct {
+					DisplayName string `json:"display_name"`
+				} `json:"sources"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("更新响应不是 JSON: %v", err)
+	}
+	if updated.Data.Created || len(updated.Data.Status.Sources) != 1 || updated.Data.Status.Sources[0].DisplayName != "库存查询（维护中）" {
+		t.Fatalf("更新来源时不应删除或替换其他来源: %s", recorder.Body.String())
+	}
+}
+
+func TestSourceToolsWithTokenDiscoversOnlySupportedTools(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer synthetic-access-token" {
+			http.Error(w, "authorization mismatch", http.StatusUnauthorized)
+			return
+		}
+		var request struct {
+			ID     int64  `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if request.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case "initialize":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"synthetic","version":"1"}}}`, request.ID)
+		case "tools/list":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[{"name":"get_inventory","title":"读取库存"},{"name":"lookup_order","description":"查询订单"}]}}`, request.ID)
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer upstream.Close()
+
+	server := newTestServer(t)
+	body, _ := json.Marshal(map[string]any{
+		"display_name": "库存查询",
+		"upstream_url": upstream.URL,
+		"bearer_token": "synthetic-access-token",
+		"dynamic_auth": false,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/source/tools", strings.NewReader(string(body)))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("读取工具列表失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		OK   bool `json:"ok"`
+		Data []struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("工具列表响应不是 JSON: %v", err)
+	}
+	if !payload.OK || len(payload.Data) != 2 || payload.Data[0].Name != "get_inventory" || payload.Data[1].Name != "lookup_order" {
+		t.Fatalf("工具列表结果不符: %s", recorder.Body.String())
+	}
+	if got := len(server.Agent.Status().Sources); got != 0 {
+		t.Fatalf("读取工具列表不得持久化草稿，实际 %d 个来源", got)
 	}
 }
 

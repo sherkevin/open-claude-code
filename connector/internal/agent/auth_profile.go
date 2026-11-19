@@ -78,7 +78,7 @@ func normalizeTools(tools []string) ([]string, error) {
 		if item == "" {
 			continue
 		}
-		if len(item) > 128 || strings.ContainsAny(item, "\r\n, ") {
+		if len(item) > 128 || strings.ContainsAny(item, "\r\n,* \t") {
 			return nil, fmt.Errorf("工具名称格式无效: %s", item)
 		}
 		if !seen[item] {
@@ -167,13 +167,16 @@ func cloneHeaders(input map[string]string) map[string]string {
 func (a *Agent) authStatusLocked() []SourceAuth {
 	items := make([]SourceAuth, 0, len(a.config.Sources))
 	for _, source := range a.config.Sources {
-		_, configured := a.profiles[source.SourceID]
+		profile, hasProfile := a.profiles[source.SourceID]
 		allowed := append([]string(nil), source.ToolAllowlist...)
 		sort.Strings(allowed)
 		items = append(items, SourceAuth{
 			SourceID:     source.SourceID,
-			Configured:   configured,
+			Configured:   hasProfile && len(allowed) > 0,
 			AllowedTools: allowed,
+			AppID:        profile.AppID,
+			Channel:      profile.Channel,
+			UserID:       profile.UserID,
 		})
 	}
 	return items

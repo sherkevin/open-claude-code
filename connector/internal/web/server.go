@@ -86,10 +86,12 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/status", s.guard(s.handleStatus))
-	mux.HandleFunc("/api/bind", s.guard(s.handleBind))
-	mux.HandleFunc("/api/import", s.guard(s.handleImport))
-	mux.HandleFunc("/api/auth-profile", s.guard(s.handleAuthProfile))
-	mux.HandleFunc("/api/diagnose", s.guard(s.handleDiagnose))
+	mux.HandleFunc("/api/bind", s.guard(postOnly(s.handleBind)))
+	mux.HandleFunc("/api/import", s.guard(postOnly(s.handleImport)))
+	mux.HandleFunc("/api/source/save", s.guard(postOnly(s.handleSourceSave)))
+	mux.HandleFunc("/api/source/tools", s.guard(postOnly(s.handleSourceTools)))
+	mux.HandleFunc("/api/auth-profile", s.guard(postOnly(s.handleAuthProfile)))
+	mux.HandleFunc("/api/diagnose", s.guard(postOnly(s.handleDiagnose)))
 	mux.HandleFunc("/api/connect", s.guard(postOnly(s.handleConnect)))
 	mux.HandleFunc("/api/pause", s.guard(postOnly(s.handlePause)))
 	mux.HandleFunc("/api/disconnect", s.guard(postOnly(s.handleDisconnect)))
@@ -190,6 +192,34 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": report})
+}
+
+func (s *Server) handleSourceSave(w http.ResponseWriter, r *http.Request) {
+	var body agent.SourceInput
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	result, err := s.Agent.SaveSource(body)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": result})
+}
+
+func (s *Server) handleSourceTools(w http.ResponseWriter, r *http.Request) {
+	var body agent.SourceInput
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	tools, err := s.Agent.DiscoverSourceTools(ctx, body)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": tools})
 }
 
 func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {

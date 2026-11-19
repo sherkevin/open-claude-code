@@ -122,6 +122,9 @@ type SourceAuth struct {
 	SourceID     string   `json:"source_id"`
 	Configured   bool     `json:"configured"`
 	AllowedTools []string `json:"allowed_tools"`
+	AppID        string   `json:"app_id,omitempty"`
+	Channel      string   `json:"channel,omitempty"`
+	UserID       string   `json:"user_id,omitempty"`
 }
 
 // New 载入本机状态并返回连接器主体。
