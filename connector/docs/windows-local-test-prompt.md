@@ -17,7 +17,7 @@
 Windows 测试包：
 
 ```text
-kaiwu-connector-1.3.2-windows-amd64-setup.exe
+kaiwu-connector-1.3.3-windows-amd64-setup.exe
 ```
 
 当前版本的已知边界：
@@ -100,7 +100,7 @@ Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumb
 把交付包放到例如 `C:\Users\<你的用户名>\Downloads\`，然后执行：
 
 ```powershell
-$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.3.2-windows-amd64-setup.exe"
+$Package = Join-Path $env:USERPROFILE "Downloads\kaiwu-connector-1.3.3-windows-amd64-setup.exe"
 Get-FileHash -Algorithm SHA256 $Package |
   Format-List |
   Tee-Object (Join-Path $Evidence "package-hash.txt")

@@ -97,6 +97,62 @@ func TestPostRequiresToken(t *testing.T) {
 	}
 }
 
+func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
+	server := &Server{Token: "test-token", Addr: loopbackHost}
+	paths := []string{
+		"/api/bind",
+		"/api/import",
+		"/api/auth-profile",
+		"/api/diagnose",
+		"/api/connect",
+		"/api/pause",
+		"/api/disconnect",
+		"/api/revoke",
+	}
+	for _, path := range paths {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			for _, token := range []string{"", server.Token} {
+				request := httptest.NewRequest(method, path, nil)
+				request.Host = loopbackHost
+				if token != "" {
+					request.Header.Set("X-Connector-Token", token)
+				}
+				recorder := httptest.NewRecorder()
+				server.Handler().ServeHTTP(recorder, request)
+				if recorder.Code != http.StatusMethodNotAllowed {
+					t.Fatalf("%s %s 必须返回 405，实际 %d", method, path, recorder.Code)
+				}
+				if allow := recorder.Header().Get("Allow"); allow != http.MethodPost {
+					t.Fatalf("%s %s 的 Allow 应为 POST，实际 %q", method, path, allow)
+				}
+			}
+		}
+	}
+}
+
+func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
+	server := &Server{Token: "test-token", Addr: loopbackHost}
+	paths := []string{
+		"/api/bind",
+		"/api/import",
+		"/api/auth-profile",
+		"/api/diagnose",
+		"/api/connect",
+		"/api/pause",
+		"/api/disconnect",
+		"/api/revoke",
+	}
+	for _, path := range paths {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+		request.Host = loopbackHost
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("POST %s 缺少令牌必须返回 403，实际 %d", path, recorder.Code)
+		}
+	}
+}
+
 func TestImportWithToken(t *testing.T) {
 	server := newTestServer(t)
 	body := `{"config":"{\"mcpServers\":{\"库存\":{\"type\":\"http\",\"url\":\"http://10.0.0.8:8000/mcp\"}}}"}`

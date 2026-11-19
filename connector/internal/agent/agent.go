@@ -983,8 +983,10 @@ func (a *Agent) Pause(ctx context.Context) Status {
 
 // Disconnect 停止通道并回到待配置状态。
 func (a *Agent) Disconnect(ctx context.Context) Status {
-	a.Pause(ctx)
-	a.state.Transition(state.Configuring, "通道已断开")
+	status := a.Pause(ctx)
+	if status.State == state.Paused {
+		a.state.Transition(state.Configuring, "通道已断开")
+	}
 	return a.Status()
 }
 

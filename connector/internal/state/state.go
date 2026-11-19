@@ -49,7 +49,7 @@ var allowed = map[State][]State{
 	Ready:            {DegradedUpstream, DegradedRelay, Connecting, Paused, Draining, Revoked},
 	DegradedUpstream: {Ready, Connecting, DegradedRelay, Paused, Draining, Revoked},
 	DegradedRelay:    {Ready, Connecting, DegradedUpstream, Paused, Draining, Revoked},
-	Paused:           {Connecting, Unpaired, Revoked, Draining},
+	Paused:           {Configuring, Connecting, Unpaired, Revoked, Draining},
 	Draining:         {Configuring, Connecting, Revoked},
 	Revoked:          {},
 }

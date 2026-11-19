@@ -4,7 +4,7 @@
 
 面向客户现场的实施与运维文档见 [`docs/交付与运维说明.md`](docs/交付与运维说明.md)。本文件面向开发和构建。
 
-> 当前 `1.3.2` 是企业统一入口候选版本。一个 Windows 连接器对应一个专属原版 frps 实例和一组云端 visitor 路由；开物侧使用云端管理员一次性签发的企业集成凭据 K 和标准 MCP JSON。安装包预配置我方已验证的公网控制面和 MCP Edge；客户本机仍需通过一次性接入码绑定企业并完成内部业务配置。
+> 当前 `1.3.3` 是企业统一入口候选版本。一个 Windows 连接器对应一个专属原版 frps 实例和一组云端 visitor 路由；开物侧使用云端管理员一次性签发的企业集成凭据 K 和标准 MCP JSON。安装包预配置我方已验证的公网控制面和 MCP Edge；客户本机仍需通过一次性接入码绑定企业并完成内部业务配置。
 
 ## 架构
 
@@ -68,7 +68,7 @@ bash scripts/build.sh
 ```bash
 cd connector
 go test ./...
-bash scripts/build.sh            # 版本默认 1.3.2，可用 VERSION=... 覆盖
+bash scripts/build.sh            # 版本默认 1.3.3，可用 VERSION=... 覆盖
 ```
 
 产物在 `dist/`：

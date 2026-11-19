@@ -90,10 +90,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/import", s.guard(s.handleImport))
 	mux.HandleFunc("/api/auth-profile", s.guard(s.handleAuthProfile))
 	mux.HandleFunc("/api/diagnose", s.guard(s.handleDiagnose))
-	mux.HandleFunc("/api/connect", s.guard(s.handleConnect))
-	mux.HandleFunc("/api/pause", s.guard(s.handlePause))
-	mux.HandleFunc("/api/disconnect", s.guard(s.handleDisconnect))
-	mux.HandleFunc("/api/revoke", s.guard(s.handleRevoke))
+	mux.HandleFunc("/api/connect", s.guard(postOnly(s.handleConnect)))
+	mux.HandleFunc("/api/pause", s.guard(postOnly(s.handlePause)))
+	mux.HandleFunc("/api/disconnect", s.guard(postOnly(s.handleDisconnect)))
+	mux.HandleFunc("/api/revoke", s.guard(postOnly(s.handleRevoke)))
 	mux.HandleFunc("/api/export", s.guard(s.handleExport))
 	return mux
 }
@@ -151,6 +151,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET 请求")
 		return
 	}
@@ -273,6 +274,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET 请求")
 		return
 	}
@@ -289,6 +291,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 func decode(w http.ResponseWriter, r *http.Request, target any) error {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST 请求")
 		return errors.New("method")
 	}
@@ -310,6 +313,17 @@ func decode(w http.ResponseWriter, r *http.Request, target any) error {
 		return err
 	}
 	return nil
+}
+
+func postOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST 请求")
+			return
+		}
+		next(w, r)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

@@ -21,6 +21,16 @@ func TestRejectsIllegalTransition(t *testing.T) {
 	}
 }
 
+func TestPausedCanReturnToConfiguringOnDisconnect(t *testing.T) {
+	machine := NewMachine(Ready)
+	if !machine.Transition(Paused, "暂停") {
+		t.Fatalf("READY 应能进入 PAUSED，当前 %s", machine.Current())
+	}
+	if !machine.Transition(Configuring, "断开连接") {
+		t.Fatalf("PAUSED 应能返回 CONFIGURING，当前 %s", machine.Current())
+	}
+}
+
 func TestRevokedIsTerminal(t *testing.T) {
 	machine := NewMachine(Unpaired)
 	machine.Transition(Revoked, "撤销")
