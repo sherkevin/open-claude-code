@@ -1,0 +1,108 @@
+{
+  "version": "1.3.7",
+  "worker": "connector",
+  "ready": true,
+  "completed_at": "2026-11-19T15:58:49+08:00",
+  "review_source": "docs/evidence/huawi-diagnostics-20261119/CONNECTOR_REVIEW_02.md",
+  "changed_files": [
+    "connector/cmd/connector/main.go",
+    "connector/internal/agent/agent.go",
+    "connector/internal/agent/auth_profile.go",
+    "connector/internal/agent/diagnostics.go",
+    "connector/internal/agent/diagnostics_integration_test.go",
+    "connector/internal/agent/review_regression_test.go",
+    "connector/internal/agent/source.go",
+    "connector/internal/authproxy/server.go",
+    "connector/internal/authproxy/server_test.go",
+    "connector/internal/cloud/client.go",
+    "connector/internal/diag/diag.go",
+    "connector/internal/diagnostics/catalog.go",
+    "connector/internal/diagnostics/diagnostics.go",
+    "connector/internal/diagnostics/platform.go",
+    "connector/internal/diagnostics/queue_test.go",
+    "connector/internal/diagnostics/supervisor_review_test.go",
+    "connector/internal/web/page.go",
+    "connector/internal/web/server.go",
+    "connector/internal/web/server_test.go",
+    "connector/scripts/build.sh"
+  ],
+  "tests": {
+    "go_test_all": {
+      "command": "go test ./... -count=1",
+      "status": "passed"
+    },
+    "go_vet": {
+      "command": "go vet ./...",
+      "status": "passed"
+    },
+    "go_race": {
+      "command": "go test -race ./internal/diagnostics ./internal/authproxy ./internal/agent ./internal/web -count=1",
+      "status": "passed"
+    },
+    "page_script_syntax": {
+      "command": "extract page script from page.go and run node --check",
+      "status": "passed"
+    },
+    "page_script_runtime": {
+      "command": "extract formatTime from page.go and execute with Node",
+      "status": "passed",
+      "sample_output": "2026/11/19 GMT+8 15:57:00"
+    },
+    "diff_check": {
+      "command": "git diff --check -- connector docs/evidence/huawi-diagnostics-20261119",
+      "status": "passed"
+    }
+  },
+  "review_02_fixes": {
+    "tunnel_reconnect_deadlock": "completed",
+    "diagnostics_initialization_visibility": "completed",
+    "rpc_error_code_contract": "completed",
+    "first_source_scope_sanitization": "completed",
+    "mcp_response_completion": "completed",
+    "sse_tail_flush_order": "completed",
+    "device_view_origin_isolation": "completed",
+    "frontend_time_format_runtime": "completed"
+  },
+  "known_limits": [
+    "未执行 Windows 构建、Windows 现场运行或图形界面验收，由总控负责。",
+    "未执行真实腾讯云设备接口端到端联调，依赖服务端工程师按 required_server_contract 完成并部署。",
+    "页面已通过 Go 接口测试、JavaScript 语法检查和日志时间格式运行验证，本阶段未执行真实浏览器验收。"
+  ],
+  "not_performed": [
+    "commit",
+    "build",
+    "package",
+    "deploy",
+    "Windows or Shervin operations"
+  ],
+  "required_server_contract": {
+    "event_upload": {
+      "method": "POST",
+      "path": "/v1/connectors/{id}/events",
+      "auth": "device Bearer plus Ed25519 request signature",
+      "body": "{\"events\":[Event,...]}",
+      "success": "200 {\"accepted\":N} only after durable persistence",
+      "idempotency": "duplicate event_id retries are accepted idempotently; a rejected batch must not be partially persisted"
+    },
+    "platform_events": {
+      "method": "GET",
+      "path": "/v1/connectors/{id}/platform-events?limit=200",
+      "auth": "device Bearer plus Ed25519 request signature",
+      "body": "{\"events\":[EventView,...]}",
+      "event_view": "Event plus fixed-catalog message",
+      "device_scope": "derive tenant and connector from device identity; return only the authenticated connector",
+      "strict_body": "do not add top-level tenant_id, connector_id, received_at or origin to the device response; origin is assigned by the server and exposed only in the admin view"
+    },
+    "platform_event_codes": [
+      "platform_request_succeeded",
+      "platform_request_failed"
+    ],
+    "validation": [
+      "validate schema_version, event_id, occurred_at, levels, components and catalog event codes",
+      "accept rpc_error_code only as a canonical decimal string from -32700 through -32000",
+      "validate that tool_name belongs to the approved set for its source",
+      "never accept or persist free-form details, headers, bodies, arguments, results, URLs or environment values"
+    ],
+    "retention": "server enforces 14-day retention and connector/global event limits"
+  }
+}

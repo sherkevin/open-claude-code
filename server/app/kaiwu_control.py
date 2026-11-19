@@ -34,11 +34,34 @@ from urllib.parse import urlsplit
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import Settings
 from .db import Database, dump, now, uid
 from .kaiwu_bridge import BridgeError, build_bridge_material, derive_secret
+from .kaiwu_diagnostics import (
+    CATALOG,
+    CONNECTOR_ID_RE,
+    DEFAULT_ADMIN_EVENTS,
+    DEFAULT_DEVICE_EVENTS,
+    LEVELS,
+    MAX_BATCH_BYTES,
+    MAX_BATCH_EVENTS,
+    OPS_PAGE,
+    SOURCE_ID_RE,
+    TRACE_ID_RE,
+    EventBatch,
+    insert_rows,
+    maybe_prune,
+    normalize_event,
+    ops_page_headers,
+    parse_rfc3339,
+    query_admin_events,
+    query_connector_events,
+    source_grants,
+    validate_filter,
+)
 from .security import AppError
 
 
@@ -254,6 +277,15 @@ def _sanitize_last_error(value: str) -> str:
     for pattern, replacement in patterns:
         value = re.sub(pattern, replacement, value)
     return value[:1000]
+
+
+def _optional_time(value: str | None, name: str):
+    if not value:
+        return None
+    try:
+        return parse_rfc3339(value)
+    except ValueError:
+        raise AppError(422, "DIAGNOSTICS_FILTER_INVALID", f"诊断筛选条件无效：{name}") from None
 
 
 def _json_object(value: str) -> dict:
@@ -1295,5 +1327,108 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                 detail={},
             )
         return {"connector_id": connector_id, "revoked": True, "trace_id": trace_id}
+
+    @router.post("/v1/connectors/{connector_id}/events")
+    async def upload_events(
+        connector_id: str,
+        data: EventBatch,
+        request: Request,
+        device_ctx=Depends(device),
+        service_obj=Depends(service),
+    ):
+        connector = device_ctx["connector"]
+        if connector["id"] != connector_id:
+            raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
+        raw = await request.body()
+        if len(raw) > MAX_BATCH_BYTES:
+            raise AppError(413, "DIAGNOSTICS_BATCH_TOO_LARGE", "诊断批次正文超过 256 KiB")
+        if not data.events:
+            raise AppError(422, "DIAGNOSTICS_BATCH_INVALID", "诊断批次不能为空")
+        if len(data.events) > MAX_BATCH_EVENTS:
+            raise AppError(422, "DIAGNOSTICS_BATCH_INVALID", "单个诊断批次最多 100 条事件")
+        # Every event is validated against the fixed catalog and this device's
+        # own source/tool grants before the single write transaction starts.
+        grants = source_grants(service_obj.db, connector_id)
+        rows = [normalize_event(event, grants) for event in data.events]
+        accepted = insert_rows(
+            service_obj.db,
+            connector["tenant_id"],
+            connector_id,
+            rows,
+            origin="connector",
+        )
+        maybe_prune(service_obj.db)
+        return {"accepted": accepted}
+
+    @router.get("/v1/connectors/{connector_id}/platform-events")
+    def platform_events(
+        connector_id: str,
+        limit: int = DEFAULT_DEVICE_EVENTS,
+        device_ctx=Depends(device),
+        service_obj=Depends(service),
+    ):
+        connector = device_ctx["connector"]
+        if connector["id"] != connector_id:
+            raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
+        # Scope comes only from the authenticated connector and the path; the
+        # unsigned limit query can narrow the page size but never widen scope.
+        events = query_connector_events(
+            service_obj.db,
+            connector_id,
+            limit=limit,
+            edge_only=True,
+        )
+        return {"events": events}
+
+    @router.get("/v1/diagnostics/events")
+    def admin_events(
+        limit: int = DEFAULT_ADMIN_EVENTS,
+        cursor: str | None = None,
+        connector_id: str | None = None,
+        source_id: str | None = None,
+        level: str | None = None,
+        trace_id: str | None = None,
+        event_code: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        del admin_ctx
+        validate_filter("connector_id", connector_id, CONNECTOR_ID_RE)
+        validate_filter("source_id", source_id, SOURCE_ID_RE)
+        validate_filter("trace_id", trace_id, TRACE_ID_RE)
+        if level and level not in LEVELS:
+            raise AppError(422, "DIAGNOSTICS_FILTER_INVALID", "诊断筛选条件无效：level")
+        if event_code and event_code not in CATALOG:
+            raise AppError(422, "DIAGNOSTICS_FILTER_INVALID", "诊断筛选条件无效：event_code")
+        cursor_id = None
+        if cursor:
+            if not cursor.isdigit():
+                raise AppError(422, "DIAGNOSTICS_FILTER_INVALID", "诊断筛选条件无效：cursor")
+            cursor_id = int(cursor)
+        since_value = _optional_time(since, "since")
+        until_value = _optional_time(until, "until")
+        if since_value and until_value and since_value > until_value:
+            raise AppError(422, "DIAGNOSTICS_FILTER_INVALID", "诊断筛选条件无效：时间范围")
+        events, next_cursor = query_admin_events(
+            service_obj.db,
+            limit=limit,
+            cursor=cursor_id,
+            connector_id=connector_id,
+            source_id=source_id,
+            level=level,
+            trace_id=trace_id,
+            event_code=event_code,
+            since=since_value,
+            until=until_value,
+        )
+        return {"events": events, "next_cursor": next_cursor}
+
+    @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
+    def ops():
+        # Deliberately unauthenticated and data-free: the shell contains no
+        # events, and the administrator token is only entered into page memory.
+        return HTMLResponse(OPS_PAGE, headers=ops_page_headers())
 
     return router

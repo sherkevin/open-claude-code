@@ -93,7 +93,7 @@ func Run(ctx context.Context, source config.Source, opts Options) Report {
 			return report
 		}
 	} else {
-		report.Checks = append(report.Checks, Check{Name: "tls", Label: "证书校验", Status: StatusSkip, Detail: "来源使用明文 HTTP，按客户已批准的内网范围执行"})
+		report.Checks = append(report.Checks, Check{Name: "tls", Label: "证书校验", Status: StatusSkip, Detail: "来源使用明文 HTTP，按您已批准的内网范围执行"})
 	}
 
 	client := &mcp.Client{

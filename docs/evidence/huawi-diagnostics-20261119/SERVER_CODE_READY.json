@@ -1,0 +1,67 @@
+{
+  "schema": "kaiwu-server-code-ready/v1",
+  "status": "ready_for_supervisor_review",
+  "generated_at": "2026-11-19T08:06:35.376973+00:00",
+  "baseline": "6e44dbb",
+  "changed_files": [
+    "server/app/kaiwu_diagnostics.py",
+    "server/app/db.py",
+    "server/app/kaiwu_control.py",
+    "server/app/kaiwu_edge.py",
+    "server/app/main.py",
+    "server/tests/test_kaiwu_diagnostics.py",
+    "docs/evidence/huawi-diagnostics-20261119/SERVER_CHECKPOINT.md",
+    "docs/evidence/huawi-diagnostics-20261119/SERVER_CODE_READY.json"
+  ],
+  "review_fixes": {
+    "origin_provenance": "done: origin is server-derived connector/edge, device platform-events only origin=edge, admin shows origin, device EventView unchanged",
+    "edge_prune": "done: record_platform_event inserts then calls throttled maybe_prune",
+    "rpc_error_code": "done: strict numeric string -32700..-32000; positive, -32999, TOOL_ERROR, TIMEOUT and empty rejected",
+    "sse_inspector": "done: blank-line event frames, multi data lines joined with newline; HTTP200 unknown/EOF/read interruption explicit failure; notifications/initialized empty ACK allowed",
+    "source_scope": "done: strict cross-device source/tool ownership preserved",
+    "ops_js_runtime": "done: Ops has no Intl.DateTimeFormat mixing; Node test executes real script and verifies date conversion/auth/table"
+  },
+  "tests": {
+    "command": "TMPDIR=/media/data3/dengkw/tmp PYTHONPATH=/media/data3/dengkw/scratch/tmp/rootfs-archive-20261112/open-claude-pylib python3.10 -m pytest -q tests/test_kaiwu_control.py tests/test_kaiwu_enterprise.py tests/test_kaiwu_bridge.py tests/test_kaiwu_diagnostics.py -p no:cacheprovider --basetemp=/media/data3/dengkw/tmp/pytest-final3-kaiwu",
+    "result": "25 passed, 1 warning",
+    "warning": "existing StarletteDeprecationWarning about httpx testclient",
+    "coverage": [
+      "upload positive/negative and batch atomicity",
+      "cross tenant/device scope and credential-plane isolation",
+      "idempotent event_id",
+      "invalid/over-limit fields and body size",
+      "admin cursor/filter isolation",
+      "14-day and per-connector/global retention",
+      "origin separation connector vs edge",
+      "upstream canary not persisted",
+      "Edge trace header override/forward/response",
+      "HTTP200 JSON-RPC error, isError, 401, timeout",
+      "SSE result, multi-line data error, progress-only, EOF no result, read interruption",
+      "notification empty ACK vs real call empty ACK",
+      "ops shell CSP/no-store/referrer/no XSS sink",
+      "real Node execution of ops JavaScript date conversion",
+      "intermediate database migration adds origin after SCHEMA without indexing a missing column"
+    ]
+  },
+  "migration": {
+    "type": "additive",
+    "detail": "Database startup creates kaiwu_diagnostic_events and indexes; existing databases get origin column added with default connector if missing",
+    "data_backup_required": false
+  },
+  "rollback": {
+    "detail": "Stop using the new routes/page; keep the table for non-destructive rollback. To fully remove, back up SQLite then drop kaiwu_diagnostic_events and its indexes."
+  },
+  "untested": [
+    "real Tencent Cloud SQLite at 1,000,000-row scale",
+    "real public Edge plus Windows connector end-to-end",
+    "Windows package build",
+    "deployment"
+  ],
+  "constraints_respected": {
+    "commit": false,
+    "build": false,
+    "deploy": false,
+    "windows": false,
+    "other_engineer_files_modified": false
+  }
+}

@@ -307,6 +307,46 @@ CREATE TABLE IF NOT EXISTS kaiwu_edge_routes(
     UNIQUE(visitor_port)
 );
 CREATE INDEX IF NOT EXISTS kaiwu_edge_routes_source ON kaiwu_edge_routes(source_id);
+-- Customer diagnostics: privacy-bounded operational events. There is no
+-- free-text column; message text is derived from the fixed catalog at read
+-- time and never stored from the wire. Identity columns are always taken from
+-- the authenticated connector, never from the event body.
+CREATE TABLE IF NOT EXISTS kaiwu_diagnostic_events(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id TEXT NOT NULL,
+    connector_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    level TEXT NOT NULL,
+    component TEXT NOT NULL,
+    event_code TEXT NOT NULL,
+    message_code TEXT NOT NULL,
+    operation_id TEXT,
+    trace_id TEXT,
+    source_id TEXT,
+    tool_name TEXT,
+    http_status INTEGER,
+    rpc_error_code TEXT,
+    duration_ms INTEGER,
+    attempt INTEGER,
+    origin TEXT NOT NULL DEFAULT 'connector' CHECK(origin IN ('connector','edge')),
+    received_at TEXT NOT NULL,
+    UNIQUE(tenant_id,connector_id,event_id)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_connector_time
+    ON kaiwu_diagnostic_events(connector_id,received_at,id);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_tenant_time
+    ON kaiwu_diagnostic_events(tenant_id,received_at,id);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_time
+    ON kaiwu_diagnostic_events(occurred_at,id);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_source
+    ON kaiwu_diagnostic_events(connector_id,source_id,received_at);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_trace
+    ON kaiwu_diagnostic_events(trace_id,received_at);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_level
+    ON kaiwu_diagnostic_events(level,received_at);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_code
+    ON kaiwu_diagnostic_events(event_code,received_at);
 """
 
 
@@ -336,6 +376,21 @@ class Database:
         # migrated schema separately.  executescript() commits a pending
         # transaction before it runs, so COMMIT before every script.
         self.conn.execute("BEGIN IMMEDIATE")
+        diagnostic_columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(kaiwu_diagnostic_events)")
+        }
+        if "origin" not in diagnostic_columns:
+            self.conn.execute(
+                "ALTER TABLE kaiwu_diagnostic_events "
+                "ADD COLUMN origin TEXT NOT NULL DEFAULT 'connector'"
+            )
+        # Create the origin index only after the additive migration above, so
+        # an intermediate database that predates the column still upgrades.
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_origin "
+            "ON kaiwu_diagnostic_events(origin,connector_id,received_at)"
+        )
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(runs)")}
         if "execution_meta" not in columns:
             self.conn.execute("ALTER TABLE runs ADD COLUMN execution_meta TEXT")

@@ -109,6 +109,10 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
+// HTTPStatusCode exposes only the bounded status for privacy-safe diagnostics
+// classification; it does not expose the response body or customer payload.
+func (e *APIError) HTTPStatusCode() int { return e.Status }
+
 // Client 是云端控制面客户端。
 type Client struct {
 	BaseURL     string
@@ -175,6 +179,30 @@ func (c *Client) RegisterSource(ctx context.Context, source SourceRegistration) 
 // Heartbeat 上报运行状态。
 func (c *Client) Heartbeat(ctx context.Context, connectorID string, beat Heartbeat) error {
 	return c.do(ctx, http.MethodPost, "/v1/connectors/"+url.PathEscape(connectorID)+"/heartbeat", beat, nil)
+}
+
+// UploadDiagnosticEvents sends one already-redacted batch through the same
+// device Bearer and Ed25519 request signature used by the rest of the control
+// plane. The concrete event type lives in diagnostics to avoid a package cycle.
+func (c *Client) UploadDiagnosticEvents(ctx context.Context, connectorID string, events any) error {
+	body := map[string]any{"events": events}
+	return c.do(ctx, http.MethodPost, "/v1/connectors/"+url.PathEscape(connectorID)+"/events", body, nil)
+}
+
+// PlatformDiagnosticEvents returns only edge/platform events scoped to the
+// authenticated connector. Query parameters do not establish authorization.
+func (c *Client) PlatformDiagnosticEvents(ctx context.Context, connectorID string, limit int) ([]map[string]any, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	path := "/v1/connectors/" + url.PathEscape(connectorID) + "/platform-events?limit=" + url.QueryEscape(fmt.Sprint(limit))
+	var result struct {
+		Events []map[string]any `json:"events"`
+	}
+	if err := c.doStrict(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Events, nil
 }
 
 // Drain 请求进入排空状态。
@@ -276,7 +304,9 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 		}
 		if apiErr.Code == "" {
 			apiErr.Code = fmt.Sprintf("HTTP_%d", resp.StatusCode)
-			apiErr.Message = strings.TrimSpace(string(payload))
+			// Never carry an arbitrary proxy/HTML response body into logs or UI.
+			// Known structured API errors were parsed above.
+			apiErr.Message = "云端请求失败"
 		}
 		return apiErr
 	}

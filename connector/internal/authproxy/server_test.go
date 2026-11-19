@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -266,6 +267,196 @@ func TestProxyRejectsRedirectWithoutFollowing(t *testing.T) {
 	}
 }
 
+func TestProxyReportsTraceAndDetectsToolIsError(t *testing.T) {
+	profile := huaweiauth.Profile{
+		AppID: "app", Channel: "channel", UserID: "user",
+		HMACKey: "0123456789abcdef0123456789abcdef",
+	}
+	var upstreamTrace atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamTrace.Store(r.Header.Get("X-Kaiwu-Trace-ID"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"synthetic failure"}],"isError":true}}`))
+	}))
+	defer upstream.Close()
+
+	observations := make(chan Observation, 1)
+	proxy, baseURL := startTestProxy(t, Options{
+		SourceID:      "src_trace",
+		UpstreamURL:   upstream.URL,
+		Signing:       &profile,
+		ToolAllowlist: []string{"manual_search"},
+		OnMCPCall:     func(observation Observation) { observations <- observation },
+	})
+	defer proxy.Close(testContext(t))
+
+	traceID := "kwtr_11111111111111111111111111111111"
+	status, _, body := postMCPWithHeaders(t, baseURL, "", "tools/call", map[string]any{
+		"name": "manual_search", "arguments": map[string]any{"q": "synthetic"},
+	}, map[string]string{"X-Kaiwu-Trace-ID": traceID})
+	if status != http.StatusOK || !strings.Contains(body, `"isError":true`) {
+		t.Fatalf("proxy must preserve the upstream tool result: status=%d body=%s", status, body)
+	}
+	if got, _ := upstreamTrace.Load().(string); got != "" {
+		t.Fatalf("diagnostic trace header must not reach the customer MCP: %q", got)
+	}
+	select {
+	case observation := <-observations:
+		if observation.TraceID != traceID || !observation.Platform || observation.SourceID != "src_trace" ||
+			observation.ToolName != "manual_search" || !observation.Failed || observation.HTTPStatus != http.StatusOK {
+			t.Fatalf("unexpected diagnostic observation: %+v", observation)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("authproxy did not report trace metadata")
+	}
+}
+
+func TestProxyReportsBoundedRPCErrorCode(t *testing.T) {
+	profile := huaweiauth.Profile{
+		AppID: "app", Channel: "channel", UserID: "user",
+		HMACKey: "0123456789abcdef0123456789abcdef",
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"SYNTHETIC_SECRET_CANARY"}}`))
+	}))
+	defer upstream.Close()
+
+	observations := make(chan Observation, 1)
+	proxy, baseURL := startTestProxy(t, Options{
+		SourceID:      "src_rpc_error",
+		UpstreamURL:   upstream.URL,
+		Signing:       &profile,
+		ToolAllowlist: []string{"manual_search"},
+		OnMCPCall:     func(observation Observation) { observations <- observation },
+	})
+	defer proxy.Close(testContext(t))
+	status, _, _ := postMCPWithHeaders(t, baseURL, "", "tools/call", map[string]any{
+		"name": "manual_search", "arguments": map[string]any{},
+	}, map[string]string{"X-Kaiwu-Trace-ID": "kwtr_22222222222222222222222222222222"})
+	if status != http.StatusOK {
+		t.Fatalf("unexpected proxy status: %d", status)
+	}
+	select {
+	case observation := <-observations:
+		if !observation.Failed || observation.RPCErrorCode != "-32603" {
+			t.Fatalf("unexpected RPC classification: %+v", observation)
+		}
+		if strings.Contains(observation.RPCErrorCode, "SYNTHETIC") {
+			t.Fatal("free-form upstream error text reached the diagnostic metadata")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("authproxy did not report the RPC error")
+	}
+}
+
+func TestProxyMarksHTTP200WithoutResultAsFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	observations := make(chan Observation, 1)
+	proxy, baseURL := startTestProxy(t, Options{
+		SourceID:    "src_missing_result",
+		UpstreamURL: upstream.URL,
+		OnMCPCall:   func(observation Observation) { observations <- observation },
+	})
+	defer proxy.Close(testContext(t))
+	status, _, body := postMCPWithHeaders(t, baseURL, "", "ping", map[string]any{},
+		map[string]string{"X-Kaiwu-Trace-ID": "kwtr_33333333333333333333333333333333"})
+	if status != http.StatusOK || !strings.Contains(body, `{}`) {
+		t.Fatalf("response forwarding changed: status=%d body=%s", status, body)
+	}
+	select {
+	case observation := <-observations:
+		if !observation.Failed {
+			t.Fatalf("HTTP 200 without a JSON-RPC result was reported as success: %+v", observation)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("authproxy did not report the missing result")
+	}
+}
+
+func TestInspectMCPResponseRequiresMatchingResult(t *testing.T) {
+	requestID := json.RawMessage(`1`)
+	missing := inspectMCPResponse(requestID, []byte(`{"jsonrpc":"2.0","id":1}`)).finalize("tools/call")
+	if !missing.failed {
+		t.Fatal("a response without result or error must fail")
+	}
+	valid := inspectMCPResponse(requestID, []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)).finalize("ping")
+	if valid.failed || !valid.responded {
+		t.Fatalf("valid ping response was rejected: %+v", valid)
+	}
+	otherID := inspectMCPResponse(requestID, []byte(`{"jsonrpc":"2.0","id":2,"result":{}}`)).finalize("ping")
+	if !otherID.failed || otherID.responded {
+		t.Fatalf("unrelated response satisfied the request: %+v", otherID)
+	}
+	progress := inspectMCPResponse(requestID, []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{}}`))
+	if progress.failed || progress.responded {
+		t.Fatalf("progress notification is not a response: %+v", progress)
+	}
+	if !progress.finalize("tools/call").failed {
+		t.Fatal("a stream ending with only progress notifications must fail")
+	}
+	notificationACK := inspectMCPResponse(nil, nil).finalize("notifications/initialized")
+	if notificationACK.failed {
+		t.Fatalf("empty notification ACK must succeed: %+v", notificationACK)
+	}
+	if got := safeRPCErrorCode("TOOL_ERROR"); got != "" {
+		t.Fatalf("enum text must not enter rpc_error_code: %q", got)
+	}
+	if got := safeRPCErrorCode(json.Number("-32999")); got != "" {
+		t.Fatalf("out-of-range RPC code was accepted: %q", got)
+	}
+	if got := safeRPCErrorCode(json.Number("-32500")); got != "-32500" {
+		t.Fatalf("valid in-range RPC code was rejected: %q", got)
+	}
+}
+
+func TestStreamSSEFlushesTailOutcomeBeforeReturn(t *testing.T) {
+	writer := httptest.NewRecorder()
+	outcome, err := (&Server{}).streamSSE(
+		strings.NewReader(`data: {"jsonrpc":"2.0","id":1,"error":{"code":-32603}}`),
+		writer,
+		writer,
+		"tools/call",
+		json.RawMessage(`1`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.failed || outcome.rpcErrorCode != "-32603" {
+		t.Fatalf("the final event without a blank line was not inspected: %+v", outcome)
+	}
+}
+
+func TestStreamSSEIgnoresProgressUntilMatchingResponse(t *testing.T) {
+	progressThenResult := strings.NewReader(
+		"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n" +
+			"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}",
+	)
+	writer := httptest.NewRecorder()
+	outcome, err := (&Server{}).streamSSE(progressThenResult, writer, writer, "tools/call", json.RawMessage(`1`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.failed || !outcome.responded {
+		t.Fatalf("progress notification prevented matching result detection: %+v", outcome)
+	}
+
+	onlyProgress := strings.NewReader("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n")
+	writer = httptest.NewRecorder()
+	outcome, err = (&Server{}).streamSSE(onlyProgress, writer, writer, "tools/call", json.RawMessage(`1`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.failed {
+		t.Fatalf("SSE without the matching response was reported as success: %+v", outcome)
+	}
+}
+
 func startTestProxy(t *testing.T, options Options) (*Server, string) {
 	t.Helper()
 	proxy, err := New(options)
@@ -283,6 +474,10 @@ func startTestProxy(t *testing.T, options Options) (*Server, string) {
 }
 
 func postMCP(t *testing.T, endpoint, session, method string, params any) (int, string, string) {
+	return postMCPWithHeaders(t, endpoint, session, method, params, nil)
+}
+
+func postMCPWithHeaders(t *testing.T, endpoint, session, method string, params any, extra map[string]string) (int, string, string) {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": method, "params": params,
@@ -305,6 +500,9 @@ func postMCP(t *testing.T, endpoint, session, method string, params any) (int, s
 	request.Header.Set("sign", "forged-signature")
 	if session != "" {
 		request.Header.Set("Mcp-Session-Id", session)
+	}
+	for name, value := range extra {
+		request.Header.Set(name, value)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 	"github.com/sherkevin/open-claude-code/connector/internal/mcp"
 	"github.com/sherkevin/open-claude-code/connector/internal/state"
@@ -56,7 +57,21 @@ type preparedSource struct {
 
 // SaveSource creates or updates exactly one source. Unlike the advanced
 // whole-import path, it never replaces other sources or their secrets.
-func (a *Agent) SaveSource(input SourceInput) (SourceSaveResult, error) {
+func (a *Agent) SaveSource(input SourceInput) (result SourceSaveResult, err error) {
+	started := time.Now()
+	operationID := diagnostics.NewOperationID()
+	defer func() {
+		code := "source_saved"
+		if err != nil {
+			code = "source_save_failed"
+		}
+		a.recordDiagnostic(diagnostics.Record{
+			EventCode:   code,
+			OperationID: operationID,
+			SourceID:    input.SourceID,
+			DurationMS:  diagnosticDuration(started),
+		})
+	}()
 	a.mu.Lock()
 	switch a.state.Current() {
 	case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:
@@ -124,14 +139,32 @@ func (a *Agent) SaveSource(input SourceInput) (SourceSaveResult, error) {
 		a.state.Transition(state.Configuring, "已保存 MCP 服务配置")
 		status = a.Status()
 	}
+	a.syncDiagnosticApprovals()
 	return SourceSaveResult{Created: prepared.created, Source: prepared.source, Status: status}, nil
 }
 
 // SetSourceEnabled changes only whether one source participates in diagnosis,
 // registration and tunnel startup. Secrets, auth profiles and other sources are
 // left untouched.
-func (a *Agent) SetSourceEnabled(sourceID string, enabled bool) (SourceSaveResult, error) {
+func (a *Agent) SetSourceEnabled(sourceID string, enabled bool) (result SourceSaveResult, err error) {
 	sourceID = strings.TrimSpace(sourceID)
+	started := time.Now()
+	operationID := diagnostics.NewOperationID()
+	defer func() {
+		code := "source_enabled"
+		if !enabled {
+			code = "source_disabled"
+		}
+		if err != nil {
+			code = "source_toggle_failed"
+		}
+		a.recordDiagnostic(diagnostics.Record{
+			EventCode:   code,
+			OperationID: operationID,
+			SourceID:    sourceID,
+			DurationMS:  diagnosticDuration(started),
+		})
+	}()
 	if sourceID == "" {
 		return SourceSaveResult{}, errors.New("请选择 MCP 服务")
 	}
@@ -175,15 +208,30 @@ func (a *Agent) SetSourceEnabled(sourceID string, enabled bool) (SourceSaveResul
 		return SourceSaveResult{}, err
 	}
 	a.config = nextConfig
-	result := SourceSaveResult{Source: nextConfig.Sources[index], Status: a.statusLocked()}
+	result = SourceSaveResult{Source: nextConfig.Sources[index], Status: a.statusLocked()}
 	a.mu.Unlock()
+	a.syncDiagnosticApprovals()
 	return result, nil
 }
 
 // DiscoverSourceTools validates the current form values and performs the same
 // MCP initialize + tools/list calls used by diagnosis. It does not persist the
 // draft or call any business tool.
-func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) ([]ToolSummary, error) {
+func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (toolsResult []ToolSummary, err error) {
+	started := time.Now()
+	operationID := diagnostics.NewOperationID()
+	defer func() {
+		code := "source_tools_loaded"
+		if err != nil {
+			code = "source_tools_failed"
+		}
+		a.recordDiagnostic(diagnostics.Record{
+			EventCode:   code,
+			OperationID: operationID,
+			SourceID:    input.SourceID,
+			DurationMS:  diagnosticDuration(started),
+		})
+	}()
 	a.mu.RLock()
 	prepared, err := a.prepareSourceLocked(input)
 	a.mu.RUnlock()

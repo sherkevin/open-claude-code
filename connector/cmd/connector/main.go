@@ -87,6 +87,9 @@ func serve(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	defer instance.Close()
+	instance.StartDiagnostics()
+	instance.RecordStartup()
 	fmt.Printf("开物内网连接器 %s\n", version.String())
 	fmt.Printf("本机界面: http://%s/\n", displayAddr(*listen))
 	fmt.Printf("数据目录: %s\n", opts.DataDir)

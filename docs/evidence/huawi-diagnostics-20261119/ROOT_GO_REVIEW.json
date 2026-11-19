@@ -1,0 +1,17 @@
+{
+  "at": "2026-11-19T08:00:47.002453+00:00",
+  "command": [
+    "/media/data3/dengkw/toolchains/go1.27.4/bin/go",
+    "test",
+    "./internal/diagnostics",
+    "./internal/agent",
+    "./internal/authproxy",
+    "./internal/web",
+    "-run",
+    "TestSupervisorReview|TestDiagnostic|TestAgentDiagnostic|TestHeartbeatPayload|TestReconnect|TestConnectAgain|Test.*Observation|Test.*SSE|Test.*Logs",
+    "-count=1",
+    "-timeout=60s"
+  ],
+  "exit_code": 0,
+  "log": "ROOT_GO_REVIEW.log"
+}

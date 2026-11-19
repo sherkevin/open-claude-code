@@ -7,7 +7,10 @@ never sees or adds the customer's internal bearer or HMAC material.
 """
 from __future__ import annotations
 
+import asyncio
 import hmac
+import json
+import logging
 import secrets
 import threading
 import time
@@ -21,6 +24,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import Settings
 from .db import Database
+from .kaiwu_diagnostics import (
+    TOOL_NAME_RE,
+    JsonRpcStreamInspector,
+    inspect_jsonrpc,
+    is_notification_request,
+    jsonrpc_tool_name,
+    new_trace_id,
+    record_platform_event,
+)
 from .security import AppError, token_hash
 
 
@@ -29,12 +41,17 @@ MAX_EDGE_RESPONSE_BYTES = 8 << 20
 MAX_EDGE_SESSIONS = 2048
 SOURCE_ID_LENGTH = len("src_") + 32
 
+log = logging.getLogger(__name__)
 
-def _error(status: int, code: str, message: str) -> JSONResponse:
+
+def _error(status: int, code: str, message: str, trace_id: str = "") -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if trace_id:
+        headers["X-Kaiwu-Trace-ID"] = trace_id
     return JSONResponse(
         status_code=status,
         content={"error": {"code": code, "message": message}},
-        headers={"Cache-Control": "no-store"},
+        headers=headers,
     )
 
 
@@ -198,6 +215,40 @@ async def _read_bounded(response: httpx.Response, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+def _record_platform(
+    service_obj,
+    integration: dict,
+    source: dict,
+    *,
+    trace_id: str,
+    body: bytes,
+    success: bool,
+    http_status: int,
+    rpc_error_code: str,
+    duration_ms: int,
+) -> None:
+    """Best-effort platform outcome; diagnostics must never break MCP."""
+    try:
+        approved = set(json.loads(source["allowed_tools"]))
+        tool = jsonrpc_tool_name(body)
+        if tool not in approved or not TOOL_NAME_RE.fullmatch(tool):
+            tool = ""
+        record_platform_event(
+            service_obj.db,
+            tenant_id=integration["tenant_id"],
+            connector_id=integration["connector_id"],
+            source_id=source["source_id"],
+            tool_name=tool,
+            trace_id=trace_id,
+            success=success,
+            http_status=http_status,
+            rpc_error_code=rpc_error_code,
+            duration_ms=duration_ms,
+        )
+    except Exception as exc:  # noqa: BLE001 - logging must not fail the request
+        log.warning("platform diagnostics write failed (%s)", type(exc).__name__)
+
+
 def create_kaiwu_edge_router(service_getter: Callable, settings: Settings) -> APIRouter:
     prefix = settings.kaiwu_edge_mount_path.rstrip("/")
     router = APIRouter(prefix=prefix, tags=["kaiwu-edge"])
@@ -212,126 +263,252 @@ def create_kaiwu_edge_router(service_getter: Callable, settings: Settings) -> AP
         request: Request,
         service_obj=Depends(service),
     ):
+        # Edge owns the trace id and always overwrites any external value.
+        trace_id = new_trace_id()
+        started = time.monotonic()
+
+        def elapsed_ms() -> int:
+            return max(0, int((time.monotonic() - started) * 1000))
+
         if request.method != "POST":
             return JSONResponse(
                 status_code=405,
                 content={"error": {"code": "METHOD_NOT_ALLOWED", "message": "当前 MCP 来源只接受 POST"}},
-                headers={"Allow": "POST", "Cache-Control": "no-store"},
+                headers={
+                    "Allow": "POST",
+                    "Cache-Control": "no-store",
+                    "X-Kaiwu-Trace-ID": trace_id,
+                },
             )
         if not _valid_source_id(source_id):
-            return _error(404, "SOURCE_NOT_FOUND", "来源路径不存在")
+            return _error(404, "SOURCE_NOT_FOUND", "来源路径不存在", trace_id)
         try:
             integration, source, _, _ = _authenticated_integration(
                 service_obj.db, request, source_id
             )
-            if source["visitor_host"] != settings.kaiwu_edge_visitor_host:
-                return _error(503, "SOURCE_UNAVAILABLE", "来源的中继路由未通过本机策略校验")
-            incoming_session = request.headers.get("mcp-session-id", "").strip()
+        except AppError as exc:
+            return _error(exc.status, exc.code, exc.message, trace_id)
+
+        def fail(
+            status: int,
+            code: str,
+            message: str,
+            *,
+            body: bytes = b"",
+            http_status: int | None = None,
+            rpc_error_code: str = "",
+        ) -> JSONResponse:
+            _record_platform(
+                service_obj,
+                integration,
+                source,
+                trace_id=trace_id,
+                body=body,
+                success=False,
+                http_status=status if http_status is None else http_status,
+                rpc_error_code=rpc_error_code,
+                duration_ms=elapsed_ms(),
+            )
+            return _error(status, code, message, trace_id)
+
+        if source["visitor_host"] != settings.kaiwu_edge_visitor_host:
+            return fail(503, "SOURCE_UNAVAILABLE", "来源的中继路由未通过本机策略校验")
+        incoming_session = request.headers.get("mcp-session-id", "").strip()
+        try:
             upstream_session = sessions.resolve(
                 incoming_session,
                 integration["id"],
                 integration["connector_id"],
                 source_id,
             )
-            body = await request.body()
-            if len(body) > MAX_EDGE_REQUEST_BYTES:
-                return _error(413, "EDGE_REQUEST_TOO_LARGE", "MCP 请求超过大小限制")
-            if not body:
-                return _error(400, "MCP_INVALID", "MCP 请求不能为空")
-            content_type = request.headers.get("content-type", "")
-            if "application/json" not in content_type.lower():
-                return _error(415, "CONTENT_TYPE_INVALID", "只支持 application/json")
+        except AppError as exc:
+            return _error(exc.status, exc.code, exc.message, trace_id)
 
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-                "User-Agent": "kaiwu-mcp-edge/1",
-            }
-            protocol = request.headers.get("mcp-protocol-version", "").strip()
-            if _protocol_header(protocol):
-                headers["MCP-Protocol-Version"] = protocol
-            if upstream_session:
-                headers["Mcp-Session-Id"] = upstream_session
+        body = await request.body()
+        if len(body) > MAX_EDGE_REQUEST_BYTES:
+            return _error(413, "EDGE_REQUEST_TOO_LARGE", "MCP 请求超过大小限制", trace_id)
+        if not body:
+            return _error(400, "MCP_INVALID", "MCP 请求不能为空", trace_id)
+        content_type = request.headers.get("content-type", "")
+        if "application/json" not in content_type.lower():
+            return _error(415, "CONTENT_TYPE_INVALID", "只支持 application/json", trace_id)
 
-            target = f"http://{source['visitor_host']}:{int(source['visitor_port'])}/mcp"
-            timeout = httpx.Timeout(
-                settings.kaiwu_edge_request_timeout_seconds,
-                connect=min(10.0, settings.kaiwu_edge_request_timeout_seconds),
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": "kaiwu-mcp-edge/1",
+            # The request to the connector's authproxy carries this exact id;
+            # the authproxy records it and must not forward it to the customer
+            # MCP server.
+            "X-Kaiwu-Trace-ID": trace_id,
+        }
+        protocol = request.headers.get("mcp-protocol-version", "").strip()
+        if _protocol_header(protocol):
+            headers["MCP-Protocol-Version"] = protocol
+        if upstream_session:
+            headers["Mcp-Session-Id"] = upstream_session
+
+        target = f"http://{source['visitor_host']}:{int(source['visitor_port'])}/mcp"
+        timeout = httpx.Timeout(
+            settings.kaiwu_edge_request_timeout_seconds,
+            connect=min(10.0, settings.kaiwu_edge_request_timeout_seconds),
+        )
+        client = httpx.AsyncClient(
+            timeout=timeout,
+            trust_env=False,
+            follow_redirects=False,
+        )
+        try:
+            outgoing = client.build_request("POST", target, content=body, headers=headers)
+            upstream = await client.send(outgoing, stream=True)
+        except httpx.TimeoutException:
+            await client.aclose()
+            return fail(504, "UPSTREAM_TIMEOUT", "来源响应超时", body=body)
+        except httpx.RequestError:
+            await client.aclose()
+            return fail(503, "SOURCE_UNAVAILABLE", "来源暂不可用", body=body)
+
+        if 300 <= upstream.status_code < 400:
+            status = upstream.status_code
+            await upstream.aclose()
+            await client.aclose()
+            return fail(
+                502,
+                "UPSTREAM_REDIRECT_DENIED",
+                "来源返回了不允许的重定向",
+                body=body,
+                http_status=status,
             )
-            client = httpx.AsyncClient(
-                timeout=timeout,
-                trust_env=False,
-                follow_redirects=False,
-            )
-            try:
-                outgoing = client.build_request("POST", target, content=body, headers=headers)
-                upstream = await client.send(outgoing, stream=True)
-            except httpx.TimeoutException:
-                await client.aclose()
-                return _error(504, "UPSTREAM_TIMEOUT", "来源响应超时")
-            except httpx.RequestError:
-                await client.aclose()
-                return _error(503, "SOURCE_UNAVAILABLE", "来源暂不可用")
 
-            if 300 <= upstream.status_code < 400:
-                await upstream.aclose()
-                await client.aclose()
-                return _error(502, "UPSTREAM_REDIRECT_DENIED", "来源返回了不允许的重定向")
+        upstream_id = upstream.headers.get("mcp-session-id", "").strip()
+        edge_session = sessions.bind(
+            incoming_session,
+            integration["id"],
+            integration["connector_id"],
+            source_id,
+            upstream_id,
+        )
+        upstream_type = upstream.headers.get("content-type", "application/json")
+        response_headers = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Accel-Buffering": "no",
+            "X-Kaiwu-Trace-ID": trace_id,
+        }
+        if edge_session:
+            response_headers["Mcp-Session-Id"] = edge_session
 
-            upstream_id = upstream.headers.get("mcp-session-id", "").strip()
-            edge_session = sessions.bind(
-                incoming_session,
-                integration["id"],
-                integration["connector_id"],
-                source_id,
-                upstream_id,
-            )
-            upstream_type = upstream.headers.get("content-type", "application/json")
-            response_headers = {
-                "Cache-Control": "no-store",
-                "X-Content-Type-Options": "nosniff",
-                "X-Accel-Buffering": "no",
-            }
-            if edge_session:
-                response_headers["Mcp-Session-Id"] = edge_session
+        if "text/event-stream" in upstream_type.lower():
+            inspector = JsonRpcStreamInspector()
 
-            if "text/event-stream" in upstream_type.lower():
-                async def stream():
-                    checked_at = 0.0
-                    try:
-                        async for chunk in upstream.aiter_raw():
-                            now_value = time.monotonic()
-                            if now_value - checked_at >= 1.0:
-                                checked_at = now_value
-                                if not _integration_still_active(service_obj.db, integration["id"]):
-                                    return
-                            if chunk:
-                                yield chunk
-                    finally:
-                        await upstream.aclose()
-                        await client.aclose()
-
-                response_headers["Content-Type"] = upstream_type
-                return StreamingResponse(
-                    stream(),
-                    status_code=upstream.status_code,
-                    headers=response_headers,
+            async def record(done: bool | None, code: str) -> None:
+                # Only an inspected JSON-RPC result/error is a business outcome;
+                # a bare transport completion is not called tool success.
+                if done is None:
+                    return
+                await asyncio.to_thread(
+                    _record_platform,
+                    service_obj,
+                    integration,
+                    source,
+                    trace_id=trace_id,
+                    body=body,
+                    success=done,
+                    http_status=upstream.status_code,
+                    rpc_error_code=code,
+                    duration_ms=elapsed_ms(),
                 )
 
-            try:
-                payload = await _read_bounded(upstream, MAX_EDGE_RESPONSE_BYTES)
-            except AppError as exc:
-                return _error(exc.status, exc.code, exc.message)
-            finally:
-                await upstream.aclose()
-                await client.aclose()
+            async def stream():
+                checked_at = 0.0
+                recorded = False
+                try:
+                    async for chunk in upstream.aiter_raw():
+                        inspector.feed(chunk)
+                        now_value = time.monotonic()
+                        if now_value - checked_at >= 1.0:
+                            checked_at = now_value
+                            if not _integration_still_active(service_obj.db, integration["id"]):
+                                if not recorded:
+                                    recorded = True
+                                    await record(False, "")
+                                return
+                        if chunk:
+                            yield chunk
+                    inspector.finish()
+                    if not recorded:
+                        recorded = True
+                        outcome, code = inspector.outcome()
+                        if upstream.status_code >= 300:
+                            outcome, code = False, ""
+                        elif outcome is None:
+                            # A stream that only carried progress or ended
+                            # without a JSON-RPC result is not a tool success.
+                            outcome = True if is_notification_request(body) else False
+                        await record(outcome, code)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - transport failure only
+                    if not recorded:
+                        recorded = True
+                        await record(False, "")
+                finally:
+                    await upstream.aclose()
+                    await client.aclose()
+
             response_headers["Content-Type"] = upstream_type
-            return Response(
-                content=payload,
+            return StreamingResponse(
+                stream(),
                 status_code=upstream.status_code,
                 headers=response_headers,
             )
+
+        try:
+            payload = await _read_bounded(upstream, MAX_EDGE_RESPONSE_BYTES)
         except AppError as exc:
-            return _error(exc.status, exc.code, exc.message)
+            return fail(
+                exc.status,
+                exc.code,
+                exc.message,
+                body=body,
+                http_status=upstream.status_code,
+            )
+        except Exception:  # noqa: BLE001 - upstream read interruption
+            return fail(
+                502,
+                "UPSTREAM_READ_FAILED",
+                "来源响应读取失败",
+                body=body,
+                http_status=upstream.status_code,
+            )
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+        response_headers["Content-Type"] = upstream_type
+        outcome, code = inspect_jsonrpc(payload)
+        if upstream.status_code >= 300 or outcome is False:
+            success = False
+        elif outcome is True:
+            success = True
+        else:
+            # An empty ACK is a success only for a JSON-RPC notification;
+            # an empty/missing result for a real call is an explicit failure.
+            success = is_notification_request(body)
+        _record_platform(
+            service_obj,
+            integration,
+            source,
+            trace_id=trace_id,
+            body=body,
+            success=success,
+            http_status=upstream.status_code,
+            rpc_error_code=code if outcome is False else "",
+            duration_ms=elapsed_ms(),
+        )
+        return Response(
+            content=payload,
+            status_code=upstream.status_code,
+            headers=response_headers,
+        )
 
     return router

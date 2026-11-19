@@ -11,13 +11,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/agent"
+	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 )
 
@@ -98,6 +101,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/disconnect", s.guard(postOnly(s.handleDisconnect)))
 	mux.HandleFunc("/api/revoke", s.guard(postOnly(s.handleRevoke)))
 	mux.HandleFunc("/api/export", s.guard(s.handleExport))
+	mux.HandleFunc("/api/logs", s.guard(s.handleLogs))
+	mux.HandleFunc("/api/logs/download", s.guard(s.handleLogsDownload))
+	mux.HandleFunc("/api/platform-logs", s.guard(s.handlePlatformLogs))
+	mux.HandleFunc("/api/diagnostics/settings", s.guard(postOnly(s.handleDiagnosticsSettings)))
 	return mux
 }
 
@@ -338,6 +345,190 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	w.Write(raw)
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	query, ok := localLogQuery(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"data": map[string]any{
+			"events": s.Agent.DiagnosticLogs(query),
+			"stats":  s.Agent.DiagnosticStats(),
+		},
+	})
+}
+
+func (s *Server) handlePlatformLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET 请求")
+		return
+	}
+	level, ok := localLevel(w, r)
+	if !ok {
+		return
+	}
+	limit, ok := localLimit(w, r, 200)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	events, errorCode := s.Agent.PlatformDiagnosticLogs(ctx, limit)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"data": map[string]any{
+			"events":     filterPlatformLevel(events, level),
+			"available":  errorCode == "",
+			"error_code": errorCode,
+			"stats":      s.Agent.DiagnosticStats(),
+		},
+	})
+}
+
+func (s *Server) handleDiagnosticsSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Paused *bool `json:"paused"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	if body.Paused == nil {
+		writeError(w, http.StatusBadRequest, "BODY_INVALID", "必须明确指定暂停或恢复诊断上报")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":   true,
+		"data": s.Agent.SetDiagnosticsPaused(*body.Paused),
+	})
+}
+
+func (s *Server) handleLogsDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET 请求")
+		return
+	}
+	level, ok := localLevel(w, r)
+	if !ok {
+		return
+	}
+	connectorEvents := filterConnectorLevel(s.Agent.DiagnosticLogs(diagnostics.Query{Limit: diagnostics.DefaultMaxLogEvents}), level)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	platformEvents, platformError := s.Agent.PlatformDiagnosticLogs(ctx, 200)
+	platformEvents = filterPlatformLevel(platformEvents, level)
+	payload := map[string]any{
+		"generated_at":        time.Now().UTC().Format(time.RFC3339),
+		"connector_events":    connectorEvents,
+		"platform_events":     platformEvents,
+		"platform_available":  platformError == "",
+		"platform_error_code": platformError,
+		"diagnostics":         s.Agent.DiagnosticStats(),
+	}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "EXPORT_FAILED", "生成脱敏日志失败")
+		return
+	}
+	filename := fmt.Sprintf("kaiwu-diagnostics-%s.json", time.Now().Format("20060102-150405"))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func localLogQuery(w http.ResponseWriter, r *http.Request) (diagnostics.Query, bool) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET 请求")
+		return diagnostics.Query{}, false
+	}
+	level, ok := localLevel(w, r)
+	if !ok {
+		return diagnostics.Query{}, false
+	}
+	limit, ok := localLimit(w, r, 200)
+	if !ok {
+		return diagnostics.Query{}, false
+	}
+	component := diagnostics.Component(strings.TrimSpace(r.URL.Query().Get("component")))
+	if component != "" {
+		valid := false
+		for _, allowed := range diagnostics.SortedComponents() {
+			if string(component) == allowed {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			writeError(w, http.StatusBadRequest, "FILTER_INVALID", "日志组件筛选无效")
+			return diagnostics.Query{}, false
+		}
+	}
+	return diagnostics.Query{
+		Level:     level,
+		Component: component,
+		SourceID:  strings.TrimSpace(r.URL.Query().Get("source_id")),
+		TraceID:   strings.TrimSpace(r.URL.Query().Get("trace_id")),
+		Limit:     limit,
+	}, true
+}
+
+func localLevel(w http.ResponseWriter, r *http.Request) (diagnostics.Level, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("level"))
+	switch diagnostics.Level(raw) {
+	case "":
+		return "", true
+	case diagnostics.LevelInfo, diagnostics.LevelWarn, diagnostics.LevelError:
+		return diagnostics.Level(raw), true
+	default:
+		writeError(w, http.StatusBadRequest, "FILTER_INVALID", "日志级别筛选无效")
+		return "", false
+	}
+}
+
+func localLimit(w http.ResponseWriter, r *http.Request, fallback int) (int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if raw == "" {
+		return fallback, true
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 || value > 1000 {
+		writeError(w, http.StatusBadRequest, "FILTER_INVALID", "日志数量必须在 1 到 1000 之间")
+		return 0, false
+	}
+	return value, true
+}
+
+func filterConnectorLevel(events []diagnostics.View, level diagnostics.Level) []diagnostics.View {
+	if level == "" {
+		return events
+	}
+	out := make([]diagnostics.View, 0, len(events))
+	for _, event := range events {
+		if event.Level == level {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func filterPlatformLevel(events []diagnostics.PlatformView, level diagnostics.Level) []diagnostics.PlatformView {
+	if level == "" {
+		return events
+	}
+	out := make([]diagnostics.PlatformView, 0, len(events))
+	for _, event := range events {
+		if event.Level == level {
+			out = append(out, event)
+		}
+	}
+	return out
 }
 
 func decode(w http.ResponseWriter, r *http.Request, target any) error {

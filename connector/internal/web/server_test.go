@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/agent"
 )
@@ -56,14 +58,16 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 		t.Fatal("页面内容不完整")
 	}
 	for _, expected := range []string{
-		"安装后填写本机 MCP 参数即可接入",
+		"安装后填写您当前服务器的 MCP 参数即可接入",
 		"保存并连接",
 		"读取工具列表",
 		"停用此来源",
 		"启用此来源",
 		"停用不会删除旧配置",
-		"企业集成凭据 K",
+		"企业接入配置",
 		"不包含 Authorization，也不是可以直接导入开物平台的完整 MCP JSON",
+		"运行日志",
+		"开物调用日志",
 	} {
 		if !strings.Contains(recorder.Body.String(), expected) {
 			t.Fatalf("页面缺少普通接入流程或交付边界文案: %s", expected)
@@ -123,6 +127,7 @@ func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 		"/api/pause",
 		"/api/disconnect",
 		"/api/revoke",
+		"/api/diagnostics/settings",
 	}
 	for _, path := range paths {
 		for _, method := range []string{http.MethodGet, http.MethodHead} {
@@ -159,6 +164,7 @@ func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
 		"/api/pause",
 		"/api/disconnect",
 		"/api/revoke",
+		"/api/diagnostics/settings",
 	}
 	for _, path := range paths {
 		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
@@ -463,5 +469,156 @@ func TestAuthProfileEndpointDoesNotReturnSecrets(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "0123456789abcdef") || strings.Contains(recorder.Body.String(), "customer-secret") {
 		t.Fatal("接口响应泄漏秘密")
+	}
+}
+
+func TestLocalLogsSettingsAndDownloadAreRedacted(t *testing.T) {
+	server := newTestServer(t)
+	const bearer = "SYNTHETIC_BEARER_CANARY"
+	if _, err := server.Agent.SaveSource(agent.SourceInput{
+		DisplayName: "合成库存",
+		UpstreamURL: "http://10.19.20.21/private-mcp",
+		BearerToken: bearer,
+		Tools:       []string{"get_inventory"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/logs?level=info&limit=200", nil)
+	request.Host = loopbackHost
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("连接器日志读取失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "MCP 服务配置已保存") {
+		t.Fatalf("连接器日志缺少成功事件: %s", body)
+	}
+	for _, marker := range []string{bearer, "10.19.20.21", "private-mcp"} {
+		if strings.Contains(body, marker) {
+			t.Fatalf("连接器日志泄漏标记 %q: %s", marker, body)
+		}
+	}
+
+	pausedBody := strings.NewReader(`{"paused":true}`)
+	request = httptest.NewRequest(http.MethodPost, "/api/diagnostics/settings", pausedBody)
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"paused":true`) {
+		t.Fatalf("暂停诊断上报失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/logs/download?level=info", nil)
+	request.Host = loopbackHost
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("下载脱敏日志失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if disposition := recorder.Header().Get("Content-Disposition"); !strings.Contains(disposition, "attachment") {
+		t.Fatalf("下载响应缺少 attachment: %q", disposition)
+	}
+	download := recorder.Body.String()
+	if !strings.Contains(download, "connector_events") || !strings.Contains(download, "diagnostics") {
+		t.Fatalf("下载内容缺少双日志结构: %s", download)
+	}
+	if strings.Contains(download, bearer) || strings.Contains(download, "10.19.20.21") {
+		t.Fatal("下载脱敏日志泄漏凭据或内部地址")
+	}
+}
+
+func TestPlatformLogsStayBehindLocalDeviceCredential(t *testing.T) {
+	const (
+		connectorID  = "conn_33333333333333333333333333333333"
+		deviceSecret = "SYNTHETIC_DEVICE_SECRET_CANARY"
+	)
+	authorization := make(chan string, 1)
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/v1/enrollments/redeem":
+			_, _ = fmt.Fprintf(w, `{"connector_id":%q,"tenant_id":"tenant-one","tenant_name":"测试企业","device_token":%q,"relay":{}}`, connectorID, deviceSecret)
+		case r.URL.Path == "/v1/connectors/"+connectorID+"/platform-events":
+			authorization <- r.Header.Get("Authorization")
+			_, _ = fmt.Fprintf(w, `{"events":[{"schema_version":1,"event_id":"evt_44444444444444444444444444444444","occurred_at":%q,"level":"error","component":"platform","event_code":"platform_request_failed","message_code":"platform_request_failed","trace_id":"kwtr_55555555555555555555555555555555","http_status":502,"message":"<img src=x onerror=alert(1)>"}]}`, time.Now().UTC().Format(time.RFC3339Nano))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer control.Close()
+
+	instance, err := agent.New(agent.Options{
+		DataDir:   t.TempDir(),
+		CloudBase: control.URL,
+		EdgeBase:  "https://mcp.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(instance.Close)
+	if _, err := instance.Bind(context.Background(), "synthetic-code"); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(instance, loopbackHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/platform-logs?limit=200", nil)
+	request.Host = loopbackHost
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("开物调用日志读取失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	select {
+	case got := <-authorization:
+		if got != "Bearer "+deviceSecret {
+			t.Fatalf("后端没有使用设备身份查询: %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("平台日志接口没有被调用")
+	}
+	if !strings.Contains(body, "开物平台调用已到达但未成功") || !strings.Contains(body, `"available":true`) {
+		t.Fatalf("平台日志未按固定目录展示: %s", body)
+	}
+	for _, marker := range []string{deviceSecret, "<img", "onerror", "tenant-one"} {
+		if strings.Contains(body, marker) {
+			t.Fatalf("浏览器响应泄漏或透传了不允许的值 %q: %s", marker, body)
+		}
+	}
+}
+
+func TestLocalLogEndpointsRejectForeignOriginAndWrongMethods(t *testing.T) {
+	server := newTestServer(t)
+	for _, path := range []string{"/api/logs", "/api/platform-logs", "/api/logs/download"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Host = loopbackHost
+		request.Header.Set("Origin", "https://evil.example.com")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s 外部 Origin 必须拒绝，实际 %d", path, recorder.Code)
+		}
+
+		request = httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+		request.Host = loopbackHost
+		request.Header.Set("X-Connector-Token", server.Token)
+		recorder = httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s 非 GET 必须返回 405，实际 %d", path, recorder.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/diagnostics/settings", nil)
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("诊断设置非 POST 必须返回 405，实际 %d", recorder.Code)
 	}
 }

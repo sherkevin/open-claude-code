@@ -10,6 +10,7 @@ import (
 
 	"github.com/sherkevin/open-claude-code/connector/internal/authproxy"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 	"github.com/sherkevin/open-claude-code/connector/internal/state"
 	"github.com/sherkevin/open-claude-code/connector/internal/version"
@@ -17,8 +18,22 @@ import (
 
 // SetAuthProfile stores the local-only dynamic authentication profile and the
 // exact tools this source may call. The HMAC key is never returned by Status.
-func (a *Agent) SetAuthProfile(sourceID string, profile huaweiauth.Profile, tools []string) (Status, error) {
+func (a *Agent) SetAuthProfile(sourceID string, profile huaweiauth.Profile, tools []string) (status Status, err error) {
 	sourceID = strings.TrimSpace(sourceID)
+	started := time.Now()
+	operationID := diagnostics.NewOperationID()
+	defer func() {
+		code := "auth_profile_saved"
+		if err != nil {
+			code = "auth_profile_failed"
+		}
+		a.recordDiagnostic(diagnostics.Record{
+			EventCode:   code,
+			OperationID: operationID,
+			SourceID:    sourceID,
+			DurationMS:  diagnosticDuration(started),
+		})
+	}()
 	if sourceID == "" {
 		return a.Status(), errors.New("请选择来源")
 	}
@@ -65,8 +80,9 @@ func (a *Agent) SetAuthProfile(sourceID string, profile huaweiauth.Profile, tool
 		a.mu.Unlock()
 		return a.Status(), err
 	}
-	status := a.statusLocked()
+	status = a.statusLocked()
 	a.mu.Unlock()
+	a.syncDiagnosticApprovals()
 	return status, nil
 }
 
@@ -112,6 +128,7 @@ func (a *Agent) startAuthProxies() error {
 			UpstreamURL:   source.UpstreamURL,
 			Headers:       cloneHeaders(secrets[source.SourceID]),
 			ToolAllowlist: append([]string(nil), source.ToolAllowlist...),
+			OnMCPCall:     a.reportAuthProxyCall,
 		}
 		if profile, ok := profiles[source.SourceID]; ok {
 			copy := profile
@@ -198,6 +215,7 @@ func (a *Agent) statusLocked() Status {
 		Version:         version.String(),
 		EdgeBase:        a.edgeBase(),
 		AuthProfiles:    a.authStatusLocked(),
+		Diagnostics:     a.DiagnosticStats(),
 		UpdatedAt:       time.Now().UTC(),
 	}
 	if a.supervisor != nil {
