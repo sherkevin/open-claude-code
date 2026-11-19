@@ -194,6 +194,87 @@ func TestSaveSourceCanRemoveOnlyCurrentDynamicProfile(t *testing.T) {
 	}
 }
 
+func TestSourceEnablementPreservesConfigSecretsAndProfiles(t *testing.T) {
+	dir := t.TempDir()
+	instance, err := New(Options{DataDir: dir, CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := instance.SaveSource(SourceInput{
+		DisplayName: "旧合成来源", UpstreamURL: "http://127.0.0.1:18765/mcp", BearerToken: "legacy-token",
+		DynamicAuth: true, AppID: "MCP", Channel: "legacy-channel", UserID: "legacy-user", HMACKey: "legacy-hmac",
+		Tools: []string{"lookup_order"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := instance.SaveSource(SourceInput{
+		DisplayName: "文件库存来源", UpstreamURL: "http://127.0.0.1:28765/mcp", BearerToken: "current-token",
+		DynamicAuth: true, AppID: "MCP", Channel: "current-channel", UserID: "current-user", HMACKey: "current-hmac",
+		Tools: []string{"get_inventory"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.SetSourceEnabled(legacy.Source.SourceID, false); err != nil {
+		t.Fatalf("停用旧来源失败: %v", err)
+	}
+	if _, err := instance.SaveSource(SourceInput{
+		SourceID: legacy.Source.SourceID, DisplayName: "旧合成来源（维护）", UpstreamURL: legacy.Source.UpstreamURL,
+		DynamicAuth: true, AppID: "MCP", Channel: "legacy-channel", UserID: "legacy-user",
+		Tools: []string{"lookup_order"},
+	}); err != nil {
+		t.Fatalf("更新已停用来源失败: %v", err)
+	}
+
+	assertPreserved := func(t *testing.T, candidate *Agent) {
+		t.Helper()
+		candidate.mu.RLock()
+		defer candidate.mu.RUnlock()
+		if len(candidate.config.Sources) != 2 {
+			t.Fatalf("停用或编辑来源不得删除配置: %+v", candidate.config.Sources)
+		}
+		var sawLegacy, sawCurrent bool
+		for _, source := range candidate.config.Sources {
+			switch source.SourceID {
+			case legacy.Source.SourceID:
+				sawLegacy = true
+				if !source.Disabled {
+					t.Fatal("编辑已停用来源后必须继续保持停用")
+				}
+			case current.Source.SourceID:
+				sawCurrent = true
+				if source.Disabled {
+					t.Fatal("停用旧来源不得影响当前来源")
+				}
+			}
+		}
+		if !sawLegacy || !sawCurrent {
+			t.Fatalf("来源编号丢失: %+v", candidate.config.Sources)
+		}
+		if got := candidate.secrets[legacy.Source.SourceID]["Authorization"]; got != "Bearer legacy-token" {
+			t.Fatalf("停用或编辑不得删除旧来源访问令牌: %q", got)
+		}
+		if got := candidate.secrets[current.Source.SourceID]["Authorization"]; got != "Bearer current-token" {
+			t.Fatalf("停用旧来源不得影响当前来源访问令牌: %q", got)
+		}
+		if got := candidate.profiles[legacy.Source.SourceID].HMACKey; got != "legacy-hmac" {
+			t.Fatalf("停用或编辑不得删除旧来源动态签名配置: %q", got)
+		}
+		if got := candidate.profiles[current.Source.SourceID].HMACKey; got != "current-hmac" {
+			t.Fatalf("停用旧来源不得影响当前来源动态签名配置: %q", got)
+		}
+	}
+
+	assertPreserved(t, instance)
+	reloaded, err := New(Options{DataDir: dir, CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreserved(t, reloaded)
+}
+
 func TestDiscoverSourceToolsOnlyInitializesAndListsTools(t *testing.T) {
 	var mu sync.Mutex
 	var methods []string

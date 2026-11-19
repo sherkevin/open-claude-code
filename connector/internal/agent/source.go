@@ -127,6 +127,59 @@ func (a *Agent) SaveSource(input SourceInput) (SourceSaveResult, error) {
 	return SourceSaveResult{Created: prepared.created, Source: prepared.source, Status: status}, nil
 }
 
+// SetSourceEnabled changes only whether one source participates in diagnosis,
+// registration and tunnel startup. Secrets, auth profiles and other sources are
+// left untouched.
+func (a *Agent) SetSourceEnabled(sourceID string, enabled bool) (SourceSaveResult, error) {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return SourceSaveResult{}, errors.New("请选择 MCP 服务")
+	}
+
+	a.mu.Lock()
+	switch a.state.Current() {
+	case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:
+		a.mu.Unlock()
+		return SourceSaveResult{}, errors.New("请先暂停连接，再启用或停用 MCP 服务")
+	}
+
+	index := -1
+	for i := range a.config.Sources {
+		if a.config.Sources[i].SourceID == sourceID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		a.mu.Unlock()
+		return SourceSaveResult{}, errors.New("要操作的 MCP 服务不存在，请刷新页面后重试")
+	}
+	if enabled {
+		allowed, err := normalizeTools(a.config.Sources[index].ToolAllowlist)
+		if err != nil {
+			a.mu.Unlock()
+			return SourceSaveResult{}, err
+		}
+		if len(allowed) == 0 {
+			a.mu.Unlock()
+			return SourceSaveResult{}, errors.New("该来源尚未设置允许工具，不能启用")
+		}
+	}
+
+	nextConfig := a.config
+	nextConfig.Revision++
+	nextConfig.Sources = append([]config.Source(nil), a.config.Sources...)
+	nextConfig.Sources[index].Disabled = !enabled
+	if err := a.store.WriteJSON(fileConfig, nextConfig); err != nil {
+		a.mu.Unlock()
+		return SourceSaveResult{}, err
+	}
+	a.config = nextConfig
+	result := SourceSaveResult{Source: nextConfig.Sources[index], Status: a.statusLocked()}
+	a.mu.Unlock()
+	return result, nil
+}
+
 // DiscoverSourceTools validates the current form values and performs the same
 // MCP initialize + tools/list calls used by diagnosis. It does not persist the
 // draft or call any business tool.
@@ -261,6 +314,7 @@ func (a *Agent) prepareSourceLocked(input SourceInput) (preparedSource, error) {
 	source.SchemaVersion = config.CurrentSchemaVersion
 	source.Transport = config.TransportStreamableHTTP
 	source.Limits = existing.Limits
+	source.Disabled = existing.Disabled
 	allowedTools, err := normalizeTools(input.Tools)
 	if err != nil {
 		return preparedSource{}, err
@@ -375,4 +429,23 @@ func cloneProfiles(input map[string]huaweiauth.Profile) map[string]huaweiauth.Pr
 		out[sourceID] = profile
 	}
 	return out
+}
+
+func enabledSources(sources []config.Source) []config.Source {
+	out := make([]config.Source, 0, len(sources))
+	for _, source := range sources {
+		if !source.Disabled {
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
+func hasEnabledSource(sources []config.Source) bool {
+	for _, source := range sources {
+		if !source.Disabled {
+			return true
+		}
+	}
+	return false
 }

@@ -90,6 +90,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/import", s.guard(postOnly(s.handleImport)))
 	mux.HandleFunc("/api/source/save", s.guard(postOnly(s.handleSourceSave)))
 	mux.HandleFunc("/api/source/tools", s.guard(postOnly(s.handleSourceTools)))
+	mux.HandleFunc("/api/source/enabled", s.guard(postOnly(s.handleSourceEnabled)))
 	mux.HandleFunc("/api/auth-profile", s.guard(postOnly(s.handleAuthProfile)))
 	mux.HandleFunc("/api/diagnose", s.guard(postOnly(s.handleDiagnose)))
 	mux.HandleFunc("/api/connect", s.guard(postOnly(s.handleConnect)))
@@ -220,6 +221,26 @@ func (s *Server) handleSourceTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": tools})
+}
+
+func (s *Server) handleSourceEnabled(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SourceID string `json:"source_id"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	if body.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "BODY_INVALID", "必须明确指定启用或停用")
+		return
+	}
+	result, err := s.Agent.SetSourceEnabled(body.SourceID, *body.Enabled)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": result})
 }
 
 func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {

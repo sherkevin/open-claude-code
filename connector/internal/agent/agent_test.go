@@ -798,3 +798,158 @@ func TestRecoverTunnelRequiresRunningFrpcProxies(t *testing.T) {
 		stopHeartbeat()
 	}
 }
+
+func TestDisabledSourceDoesNotBlockEnabledSource(t *testing.T) {
+	upstream := fakeMCPToolServer(t, `[{"name":"get_inventory","description":"读取库存"}]`)
+	defer upstream.Close()
+	instance, err := New(Options{DataDir: t.TempDir(), CloudBase: "http://127.0.0.1:1", EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := instance.SaveSource(SourceInput{
+		DisplayName: "旧合成来源", UpstreamURL: "http://127.0.0.1:1/mcp", Tools: []string{"lookup_order"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := instance.SaveSource(SourceInput{
+		DisplayName: "文件库存来源", UpstreamURL: upstream.URL, Tools: []string{"get_inventory"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.SetSourceEnabled(legacy.Source.SourceID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	reports, err := instance.Diagnose(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("停用旧来源后诊断不应被阻断: %v", err)
+	}
+	if len(reports) != 1 || reports[0].SourceID != current.Source.SourceID || !reports[0].OK {
+		t.Fatalf("诊断必须只覆盖启用的当前来源: %+v", reports)
+	}
+
+	if err := instance.startAuthProxies(); err != nil {
+		t.Fatalf("启动启用来源代理失败: %v", err)
+	}
+	defer instance.stopAuthProxies()
+	instance.mu.RLock()
+	proxyIDs := make([]string, 0, len(instance.proxies))
+	for sourceID := range instance.proxies {
+		proxyIDs = append(proxyIDs, sourceID)
+	}
+	instance.mu.RUnlock()
+	if len(proxyIDs) != 1 || proxyIDs[0] != current.Source.SourceID {
+		t.Fatalf("只能为启用的当前来源启动本机代理: %v", proxyIDs)
+	}
+
+	registrations := make(chan cloud.SourceRegistration, 2)
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sources" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var registration cloud.SourceRegistration
+		if err := json.NewDecoder(r.Body).Decode(&registration); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		registrations <- registration
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer controlPlane.Close()
+	client, err := cloud.NewWithSigner(controlPlane.URL, "device-token", instance.deviceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.cloud = client
+	if err := instance.registerSources(context.Background()); err != nil {
+		t.Fatalf("云端来源登记不应被停用来源阻断: %v", err)
+	}
+	if got := len(registrations); got != 1 {
+		t.Fatalf("只能登记启用的当前来源，实际 %d 条", got)
+	}
+	registration := <-registrations
+	if registration.SourceID != current.Source.SourceID {
+		t.Fatalf("登记了错误来源: %+v", registration)
+	}
+
+	desired := cloud.DesiredState{
+		Revision: 1,
+		Relay: cloud.Relay{
+			Address: "relay.example.com", Port: 7443, User: "tenant", Token: "relay-token", Protocol: "websocket",
+		},
+		Sources: []cloud.DesiredSource{
+			{SourceID: legacy.Source.SourceID, STCPSecret: "legacy-stcp"},
+			{SourceID: current.Source.SourceID, STCPSecret: "current-stcp", AllowUsers: []string{"kaiwu"}},
+		},
+	}
+	generated, err := instance.buildFrpcConfig(desired)
+	if err != nil {
+		t.Fatalf("生成专属 FRP 配置失败: %v", err)
+	}
+	if len(generated.Proxies) != 1 || generated.Proxies[0].Name != current.Source.SourceID {
+		t.Fatalf("FRP 只能包含启用的当前来源: %+v", generated.Proxies)
+	}
+}
+
+func TestConnectRejectsWhenAllSourcesDisabled(t *testing.T) {
+	server := fakeCloud(t)
+	defer server.Close()
+	instance, err := New(Options{DataDir: t.TempDir(), CloudBase: server.URL, EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Bind(context.Background(), "code-1"); err != nil {
+		t.Fatal(err)
+	}
+	source, err := instance.SaveSource(SourceInput{
+		DisplayName: "已停用来源", UpstreamURL: "http://127.0.0.1:1/mcp", Tools: []string{"get_inventory"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.SetSourceEnabled(source.Source.SourceID, false); err != nil {
+		t.Fatal(err)
+	}
+	status, err := instance.Connect(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "至少启用一个") {
+		t.Fatalf("全部来源停用时必须拒绝连接: status=%+v err=%v", status, err)
+	}
+	if status.State == state.Ready {
+		t.Fatal("全部来源停用时绝不能显示已连接")
+	}
+}
+
+func TestConnectFailsWhenEnabledSourceCannotBeRegistered(t *testing.T) {
+	server := fakeCloud(t)
+	defer server.Close()
+	instance, err := New(Options{DataDir: t.TempDir(), CloudBase: server.URL, EdgeBase: "https://mcp.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Bind(context.Background(), "code-1"); err != nil {
+		t.Fatal(err)
+	}
+	instance.config.Sources = []config.Source{{
+		SchemaVersion: 1,
+		SourceID:      "mcp",
+		DisplayName:   "不可达来源",
+		Transport:     config.TransportStreamableHTTP,
+		UpstreamURL:   "http://127.0.0.1:1/mcp",
+		Auth:          config.Auth{Mode: config.AuthModeNone, CredentialLocation: config.CredentialLocationLocal},
+		ToolAllowlist: []string{"get_inventory"},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	status, err := instance.Connect(ctx)
+	if err == nil {
+		t.Fatalf("启用来源失败时不能返回连接成功: %+v", status)
+	}
+	if status.State == state.Ready {
+		t.Fatal("启用来源失败时绝不能显示已连接")
+	}
+}

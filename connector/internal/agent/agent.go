@@ -189,14 +189,14 @@ func New(opts Options) (*Agent, error) {
 		agent.profiles = map[string]huaweiauth.Profile{}
 	}
 	// 未绑定但已经导入来源时，重启后应回到“待配置”，而不是退回“尚未绑定”。
-	if !tombstoned && agent.identity.DeviceToken == "" && len(agent.config.Sources) > 0 && saved.State != state.Revoked {
+	if !tombstoned && agent.identity.DeviceToken == "" && hasEnabledSource(agent.config.Sources) && saved.State != state.Revoked {
 		agent.state.Transition(state.Configuring, "已载入来源配置")
 	}
 	if tombstoned {
 		agent.identity = cloud.Identity{}
 		agent.state.Transition(state.Revoked, "本机撤销墓碑已生效")
 	}
-	if agent.identity.DeviceToken != "" && len(agent.config.Sources) > 0 {
+	if agent.identity.DeviceToken != "" && hasEnabledSource(agent.config.Sources) {
 		switch saved.State {
 		case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:
 			agent.autoConnect = true
@@ -561,12 +561,16 @@ func assignSourceIDs(sources []config.Source, secrets map[string]map[string]stri
 		used[nextID] = true
 		sources[index].SourceID = nextID
 		if previous, ok := existingByID[nextID]; ok &&
-			len(sources[index].ToolAllowlist) == 0 &&
 			previous.UpstreamURL == sources[index].UpstreamURL &&
 			previous.Transport == sources[index].Transport {
-			// Re-importing the same MCP endpoint must not silently revoke the
-			// administrator-approved tool allowlist.
-			sources[index].ToolAllowlist = append([]string(nil), previous.ToolAllowlist...)
+			if len(sources[index].ToolAllowlist) == 0 {
+				// Re-importing the same MCP endpoint must not silently revoke the
+				// administrator-approved tool allowlist.
+				sources[index].ToolAllowlist = append([]string(nil), previous.ToolAllowlist...)
+			}
+			// Enablement is local maintenance state. Re-importing the endpoint
+			// must not accidentally reconnect a source the operator disabled.
+			sources[index].Disabled = previous.Disabled
 		}
 		if headers := secrets[oldID]; len(headers) > 0 {
 			assignedSecrets[nextID] = headers
@@ -614,6 +618,7 @@ func isOpaqueSourceID(value string) bool {
 
 // Diagnose 对指定来源执行分层诊断；sourceID 为空表示全部来源。
 func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) ([]diag.Report, error) {
+	sourceID = strings.TrimSpace(sourceID)
 	a.mu.RLock()
 	sources := append([]config.Source(nil), a.config.Sources...)
 	secrets := map[string]map[string]string{}
@@ -621,13 +626,19 @@ func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) ([]diag.Re
 		secrets[key] = value
 	}
 	a.mu.RUnlock()
+	if sourceID == "" {
+		sources = enabledSources(sources)
+	}
 	if len(sources) == 0 {
-		return nil, errors.New("还没有导入来源")
+		return nil, errors.New("还没有启用的来源")
 	}
 	var reports []diag.Report
 	for _, source := range sources {
 		if sourceID != "" && source.SourceID != sourceID {
 			continue
+		}
+		if source.Disabled {
+			return nil, fmt.Errorf("来源 %s 已停用，请先启用后再诊断", source.DisplayName)
 		}
 		a.mu.RLock()
 		profile, hasProfile := a.profiles[source.SourceID]
@@ -671,7 +682,7 @@ func containsTool(tools []string, wanted string) bool {
 // Customer URLs, credentials and local proxy targets remain local.
 func (a *Agent) registerSources(ctx context.Context) error {
 	a.mu.RLock()
-	sources := append([]config.Source(nil), a.config.Sources...)
+	sources := enabledSources(a.config.Sources)
 	proxies := make(map[string]*authproxy.Server, len(a.proxies))
 	for sourceID, proxy := range a.proxies {
 		proxies[sourceID] = proxy
@@ -679,6 +690,9 @@ func (a *Agent) registerSources(ctx context.Context) error {
 	a.mu.RUnlock()
 	if a.cloud == nil {
 		return errors.New("请先绑定企业")
+	}
+	if len(sources) == 0 {
+		return errors.New("没有启用的 MCP 服务，请至少启用一个来源")
 	}
 	for _, source := range sources {
 		allowedTools, err := normalizeTools(source.ToolAllowlist)
@@ -812,10 +826,10 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 		return a.Status(), errors.New("请先绑定企业")
 	}
 	a.mu.RLock()
-	sourceCount := len(a.config.Sources)
+	hasSources := hasEnabledSource(a.config.Sources)
 	a.mu.RUnlock()
-	if sourceCount == 0 {
-		return a.Status(), errors.New("请先导入 MCP 配置")
+	if !hasSources {
+		return a.Status(), errors.New("请至少启用一个 MCP 服务后再连接")
 	}
 	if current := a.state.Current(); current != state.Connecting {
 		if !state.CanTransition(current, state.Connecting) {
@@ -951,15 +965,25 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	reports, diagErr := a.Diagnose(ctx, "", "")
-	if diagErr == nil && !allOK(reports) {
+	if diagErr != nil {
+		a.state.Transition(state.DegradedUpstream, "内网来源检查失败: "+diagErr.Error())
+		a.startHeartbeat()
+		return a.Status(), fmt.Errorf("内网来源检查失败: %w", diagErr)
+	}
+	if !allOK(reports) {
 		a.state.Transition(state.DegradedUpstream, "内网来源检查未通过")
 	} else if !tunnelConnected {
 		a.state.Transition(state.DegradedRelay, tunnelDetail)
 	} else {
 		a.state.Transition(state.Ready, "通道已建立")
+		a.startHeartbeat()
+		return a.Status(), nil
 	}
 	a.startHeartbeat()
-	return a.Status(), nil
+	if a.state.Current() == state.DegradedUpstream {
+		return a.Status(), errors.New("内网来源检查未通过")
+	}
+	return a.Status(), fmt.Errorf("公网隧道尚未就绪: %s", tunnelDetail)
 }
 
 // Pause 立即停止访问，不等待在途请求。
@@ -1029,7 +1053,7 @@ func (a *Agent) Revoke(ctx context.Context) (Status, error) {
 // Export 生成平台可导入的 MCP 配置。
 func (a *Agent) Export() ([]byte, error) {
 	a.mu.RLock()
-	sources := append([]config.Source(nil), a.config.Sources...)
+	sources := enabledSources(a.config.Sources)
 	edgeBase := a.edgeBase()
 	a.mu.RUnlock()
 	return config.BuildPlatformConfig(sources, edgeBase, "")
@@ -1079,6 +1103,9 @@ func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error)
 		source, ok := localByID[item.SourceID]
 		if !ok {
 			return generated, fmt.Errorf("云端引用了本机未导入的来源 %s", item.SourceID)
+		}
+		if source.Disabled {
+			continue
 		}
 		proxy := proxies[source.SourceID]
 		if proxy == nil {

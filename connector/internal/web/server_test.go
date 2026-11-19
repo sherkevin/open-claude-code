@@ -59,6 +59,9 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 		"安装后填写本机 MCP 参数即可接入",
 		"保存并连接",
 		"读取工具列表",
+		"停用此来源",
+		"启用此来源",
+		"停用不会删除旧配置",
 		"企业集成凭据 K",
 		"不包含 Authorization，也不是可以直接导入开物平台的完整 MCP JSON",
 	} {
@@ -113,6 +116,7 @@ func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 		"/api/import",
 		"/api/source/save",
 		"/api/source/tools",
+		"/api/source/enabled",
 		"/api/auth-profile",
 		"/api/diagnose",
 		"/api/connect",
@@ -148,6 +152,7 @@ func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
 		"/api/import",
 		"/api/source/save",
 		"/api/source/tools",
+		"/api/source/enabled",
 		"/api/auth-profile",
 		"/api/diagnose",
 		"/api/connect",
@@ -264,6 +269,55 @@ func TestSourceSaveWithTokenCreatesAndUpdatesOneSource(t *testing.T) {
 	}
 	if updated.Data.Created || len(updated.Data.Status.Sources) != 1 || updated.Data.Status.Sources[0].DisplayName != "库存查询（维护中）" {
 		t.Fatalf("更新来源时不应删除或替换其他来源: %s", recorder.Body.String())
+	}
+}
+
+func TestSourceEnabledEndpointTogglesWithoutDeletingSource(t *testing.T) {
+	server := newTestServer(t)
+	result, err := server.Agent.SaveSource(agent.SourceInput{
+		DisplayName: "旧合成来源", UpstreamURL: "http://127.0.0.1:18765/mcp", Tools: []string{"lookup_order"},
+	})
+	if err != nil {
+		t.Fatalf("准备来源失败: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"source_id": result.Source.SourceID, "enabled": false})
+	request := httptest.NewRequest(http.MethodPost, "/api/source/enabled", strings.NewReader(string(body)))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("停用来源失败: %d %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Source struct {
+				SourceID string `json:"source_id"`
+				Disabled bool   `json:"disabled"`
+			} `json:"source"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("停用响应不是 JSON: %v", err)
+	}
+	if !payload.OK || payload.Data.Source.SourceID != result.Source.SourceID || !payload.Data.Source.Disabled {
+		t.Fatalf("停用响应不符: %s", recorder.Body.String())
+	}
+	status := server.Agent.Status()
+	if len(status.Sources) != 1 || !status.Sources[0].Disabled {
+		t.Fatalf("停用必须保留来源并标记状态: %+v", status.Sources)
+	}
+
+	missing, _ := json.Marshal(map[string]any{"source_id": result.Source.SourceID})
+	request = httptest.NewRequest(http.MethodPost, "/api/source/enabled", strings.NewReader(string(missing)))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder = httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "明确指定") {
+		t.Fatalf("缺少 enabled 时必须拒绝：%d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

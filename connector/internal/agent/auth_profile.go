@@ -94,7 +94,7 @@ func (a *Agent) startAuthProxies() error {
 	a.stopAuthProxies()
 
 	a.mu.RLock()
-	sourceList := append([]config.Source(nil), a.config.Sources...)
+	sourceList := enabledSources(a.config.Sources)
 	secrets := make(map[string]map[string]string, len(a.secrets))
 	for sourceID, headers := range a.secrets {
 		secrets[sourceID] = cloneHeaders(headers)

@@ -54,6 +54,9 @@ type Source struct {
 	ToolAllowlist   []string `json:"tool_allowlist,omitempty"`
 	HeaderNames     []string `json:"header_names,omitempty"`
 	Limits          Limits   `json:"limits,omitempty"`
+	// Disabled 为 false 时来源参与诊断、登记和隧道启动。旧配置没有该字段，
+	// 因而仍按启用处理；停用只改变连接范围，不删除来源、秘密或认证配置。
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // Connector 是本机持久化的连接器配置。

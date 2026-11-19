@@ -38,6 +38,31 @@ func TestParseMCPMergedConfig(t *testing.T) {
 	}
 }
 
+func TestLegacySourceConfigWithoutDisabledFieldRemainsEnabled(t *testing.T) {
+	var connector Connector
+	raw := []byte(`{
+	  "schema_version": 1,
+	  "sources": [{
+	    "schema_version": 1,
+	    "source_id": "src_00112233445566778899aabbccddeeff",
+	    "display_name": "旧来源",
+	    "transport": "streamable_http",
+	    "upstream_url": "http://127.0.0.1:18765/mcp",
+	    "auth": {"mode": "none", "credential_location": "local_vault"},
+	    "tool_allowlist": ["lookup_order"]
+	  }]
+	}`)
+	if err := json.Unmarshal(raw, &connector); err != nil {
+		t.Fatalf("旧配置兼容解析失败: %v", err)
+	}
+	if len(connector.Sources) != 1 {
+		t.Fatalf("旧配置来源数量不符: %+v", connector.Sources)
+	}
+	if connector.Sources[0].Disabled {
+		t.Fatal("旧配置没有 disabled 字段时必须默认启用")
+	}
+}
+
 func TestParseRejectsStdioWithoutConditional(t *testing.T) {
 	raw := []byte(`{"mcpServers":{"本地工具":{"command":"node","args":["server.js"]}}}`)
 	report, err := ParseHostConfig(raw, ImportOptions{})

@@ -77,9 +77,10 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
 
 <section class="card">
   <h2>配置内部 MCP 服务</h2>
-  <p class="section-hint">首次安装请选择“新增 MCP 服务”。修改已有服务时，访问令牌和 HMAC 密钥留空表示保留本机已保存的值。</p>
+  <p class="section-hint">首次安装请选择“新增 MCP 服务”。升级后如保留旧服务，请先选中旧服务并点击“停用此来源”，再配置当前服务；停用不会删除旧配置、访问令牌或 HMAC 密钥。</p>
   <div class="form-grid">
     <label class="field span-2"><span>当前配置对象</span><select id="sourceSelect"><option value="">＋ 新增 MCP 服务</option></select></label>
+    <div class="row span-2"><button id="toggleSourceBtn" type="button" disabled>停用此来源</button><span class="subtle" id="sourceEnabledHint">新增服务保存后默认启用；已有来源可选择后停用。</span></div>
     <label class="field"><span>服务名称</span><input id="displayName" maxlength="80" placeholder="例如：库存查询" autocomplete="off"></label>
     <label class="field"><span>MCP HTTP 地址</span><input id="upstreamURL" placeholder="http://127.0.0.1:28765/mcp" autocomplete="off"></label>
     <label class="field span-2"><span>访问令牌 <em>可选；已有令牌留空保持原值</em></span><input id="bearerToken" type="password" placeholder="填写客户 MCP 要求的 Bearer Token；页面不会再次显示已保存的令牌" autocomplete="new-password"></label>
@@ -262,6 +263,7 @@ function renderStatus(status){
     ? "本机已经绑定企业，不需要重复使用接入码。"
     : (status.cloud_configured ? "一次性接入码由开物管理员签发，只能使用一次。" : "当前安装包未配置云端控制面，不能绑定企业。");
   renderSourceOptions(status);
+  syncSourceEnabledControl();
   renderStageSummary();
 }
 
@@ -276,7 +278,7 @@ function renderSourceOptions(status){
   (status.sources || []).forEach(source=>{
     const option = document.createElement("option");
     option.value = source.source_id;
-    option.textContent = source.display_name || source.source_id;
+    option.textContent = (source.display_name || source.source_id) + (source.disabled ? "（已停用，不参与连接）" : "");
     select.appendChild(option);
   });
   if(previous && (status.sources || []).some(source=>source.source_id === previous)){
@@ -336,6 +338,24 @@ function payloadFromForm(){
     tools: selectedTools()
   };
 }
+function selectedSource(){
+  return sourceByID($("sourceSelect").value);
+}
+function syncSourceEnabledControl(){
+  const source = selectedSource();
+  const button = $("toggleSourceBtn");
+  const hint = $("sourceEnabledHint");
+  button.disabled = !source || busy;
+  if(!source){
+    button.textContent = "停用此来源";
+    hint.textContent = "新增服务保存后默认启用；已有来源可选择后停用。";
+    return;
+  }
+  button.textContent = source.disabled ? "启用此来源" : "停用此来源";
+  hint.textContent = source.disabled
+    ? "当前已停用：不会参与本机诊断、云端来源登记或公网隧道启动。"
+    : "当前已启用：会参与本机诊断、云端来源登记和公网隧道启动。";
+}
 function validateForm(payload, requireTools){
   if(!payload.display_name){ return "请填写服务名称。"; }
   if(!/^https?:\/\//i.test(payload.upstream_url)){ return "MCP HTTP 地址必须以 http:// 或 https:// 开头。"; }
@@ -367,6 +387,7 @@ function applySourceSelection(){
     syncDynamicAuthFields();
     formDirty = false;
     renderStageSummary();
+    syncSourceEnabledControl();
     return;
   }
   const source = sourceByID(sourceID);
@@ -388,6 +409,7 @@ function applySourceSelection(){
   syncDynamicAuthFields();
   formDirty = false;
   renderStageSummary();
+  syncSourceEnabledControl();
 }
 
 async function refresh(initial){
@@ -398,7 +420,7 @@ async function refresh(initial){
     $("statePill").textContent = "本机服务未就绪";
     $("statePill").className = "pill err";
     setMessage("无法读取本机连接器状态：" + error.message, "err");
-    ["bindBtn","saveConnectBtn","readToolsBtn","diagnoseBtn"].forEach(id=>$(id).disabled=true);
+    ["bindBtn","saveConnectBtn","readToolsBtn","diagnoseBtn","toggleSourceBtn"].forEach(id=>$(id).disabled=true);
   }
 }
 
@@ -410,6 +432,30 @@ $("dynamicAuth").onchange = ()=>{
   $(id).addEventListener("input", ()=>{ formDirty = true; });
 });
 $("sourceSelect").onchange = applySourceSelection;
+
+$("toggleSourceBtn").onclick = async ()=>{
+  const source = selectedSource();
+  if(!source){ return; }
+  const enabling = !!source.disabled;
+  const button = $("toggleSourceBtn");
+  button.disabled = true;
+  busy = true;
+  try{
+    const statusBefore = currentStatus || {};
+    if(["READY","CONNECTING","DEGRADED_UPSTREAM","DEGRADED_RELAY"].includes(statusBefore.state)){
+      await api("/api/pause", {});
+    }
+    await api("/api/source/enabled", {source_id: source.source_id, enabled: enabling});
+    setMessage(enabling
+      ? "来源已启用。请确认地址、访问令牌、动态签名和允许工具后点击“保存并连接”。"
+      : "来源已停用，不会参与本机诊断、云端来源登记或公网隧道启动；原配置和秘密仍保留。", "ok");
+  }catch(error){
+    setMessage("启用或停用来源失败：" + error.message, "err");
+  }finally{
+    busy = false;
+    await refresh(false);
+  }
+};
 
 $("readToolsBtn").onclick = async ()=>{
   const button = $("readToolsBtn");
