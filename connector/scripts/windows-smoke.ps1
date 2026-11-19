@@ -16,6 +16,8 @@ $LogPath = Join-Path $env:TEMP "kaiwu-connector-windows-smoke.log"
 $StateBackupRoot = Join-Path $env:ProgramData "Kaiwu\ConnectorSmokeBackups"
 $UninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
 $StateBackup = $null
+$ExpectedVersion = $null
+$SupportedEnvironmentNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")
 
 $PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
 $Installer = Join-Path $PackageRoot "install.ps1"
@@ -855,7 +857,7 @@ function New-TestStateBackup {
     $uninstallRegistry = Get-UninstallRegistrySnapshot
     $uninstallRegistryFingerprint = Get-UninstallRegistryFingerprint -Snapshot $uninstallRegistry
     $environment = [ordered]@{}
-    foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")) {
+    foreach ($name in $SupportedEnvironmentNames) {
         $environment[$name] = [Environment]::GetEnvironmentVariable($name, "Machine")
     }
     $state = [ordered]@{
@@ -964,8 +966,23 @@ function Restore-OriginalState {
         Remove-Item -LiteralPath $DataDir -Recurse -Force -Confirm:$false
     }
 
-    foreach ($property in $state.environment.PSObject.Properties) {
-        [Environment]::SetEnvironmentVariable($property.Name, $property.Value, "Machine")
+    $environmentState = $state.environment
+    foreach ($name in $SupportedEnvironmentNames) {
+        $restoreValue = $null
+        if ($environmentState -is [System.Collections.IDictionary]) {
+            foreach ($key in $environmentState.Keys) {
+                if ([string]::Equals([string]$key, $name, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $restoreValue = $environmentState[$key]
+                    break
+                }
+            }
+        } elseif ($null -ne $environmentState) {
+            $property = $environmentState.PSObject.Properties[$name]
+            if ($null -ne $property) {
+                $restoreValue = $property.Value
+            }
+        }
+        [Environment]::SetEnvironmentVariable($name, $restoreValue, "Machine")
     }
 
     if ($null -ne $state.service) {
@@ -1109,6 +1126,7 @@ try {
         "uninstall.ps1",
         "windows-smoke.ps1",
         "SHA256SUMS",
+        "版本信息.txt",
         "bin\kaiwu-connector.exe",
         "bin\frpc.exe",
         "docs\交付与运维说明.md"
@@ -1125,12 +1143,22 @@ try {
     }
     Add-Step -Name "verify_package_files" -Status "passed" -Detail "$($required.Count) files"
 
+    $versionInfo = Get-Content -LiteralPath (Join-Path $PackageRoot "版本信息.txt") -Raw -Encoding UTF8
+    $versionInfoMatch = [regex]::Match($versionInfo, '(?m)^开物内网连接器\s+([0-9]+\.[0-9]+\.[0-9]+)\s*$')
+    if (-not $versionInfoMatch.Success) {
+        throw "版本信息.txt 缺少有效版本号"
+    }
+    $ExpectedVersion = $versionInfoMatch.Groups[1].Value
+
     $versionOutput = (& (Join-Path $PackageRoot "bin\kaiwu-connector.exe") version 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($versionOutput)) {
         throw "kaiwu-connector.exe version 执行失败: $versionOutput"
     }
-    if ($versionOutput -notmatch '1\.3\.5') { throw "候选包版本不是 1.3.5: $versionOutput" }
-    Add-Step -Name "binary_version" -Status "passed" -Detail $versionOutput
+    $binaryVersionMatch = [regex]::Match($versionOutput, '^([0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)')
+    if (-not $binaryVersionMatch.Success -or $binaryVersionMatch.Groups[1].Value -ne $ExpectedVersion) {
+        throw "候选包版本不是 $ExpectedVersion`: $versionOutput"
+    }
+    Add-Step -Name "binary_version" -Status "passed" -Detail "$versionOutput; metadata=$ExpectedVersion"
 
     $frpcPath = Join-Path $PackageRoot "bin\frpc.exe"
     $frpcVersion = (& $frpcPath -v 2>&1 | Out-String).Trim()
@@ -1178,7 +1206,8 @@ try {
     if ($installStateJson.version -isnot [string]) {
         throw "安装状态 version 字段不是字符串"
     }
-    if ($installStateJson.version -notmatch '^开物内网连接器 1\.3\.4$') {
+    $expectedInstallVersion = "开物内网连接器 $ExpectedVersion"
+    if ($installStateJson.version -ne $expectedInstallVersion) {
         throw "安装状态版本不正确: $($installStateJson.version)"
     }
     Add-Step -Name "install_state" -Status "passed" -Detail $installStateJson.version
