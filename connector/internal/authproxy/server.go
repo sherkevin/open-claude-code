@@ -100,12 +100,9 @@ func New(opts Options) (*Server, error) {
 	if strings.TrimSpace(opts.SourceID) == "" {
 		return nil, errors.New("来源编号不能为空")
 	}
-	upstream, err := url.Parse(opts.UpstreamURL)
-	if err != nil || upstream.Host == "" || (upstream.Scheme != "http" && upstream.Scheme != "https") {
-		return nil, errors.New("上游 MCP 地址无效")
-	}
-	if upstream.User != nil || upstream.RawQuery != "" || upstream.Fragment != "" {
-		return nil, errors.New("上游 MCP 地址不能包含凭据、查询串或片段")
+	upstream, err := parseUpstream(opts.UpstreamURL)
+	if err != nil {
+		return nil, err
 	}
 	if opts.MaxRequestSize <= 0 {
 		opts.MaxRequestSize = defaultMaxRequestBytes
@@ -149,8 +146,21 @@ func New(opts Options) (*Server, error) {
 	}, nil
 }
 
+func parseUpstream(raw string) (*url.URL, error) {
+	upstream, err := url.Parse(raw)
+	if err != nil || upstream.Host == "" || (upstream.Scheme != "http" && upstream.Scheme != "https") {
+		return nil, errors.New("上游 MCP 地址无效")
+	}
+	if upstream.User != nil || upstream.RawQuery != "" || upstream.Fragment != "" {
+		return nil, errors.New("上游 MCP 地址不能包含凭据、查询串或片段")
+	}
+	return upstream, nil
+}
+
 // Start binds the proxy to an ephemeral loopback port.
 func (s *Server) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listener != nil {
 		return nil
 	}
@@ -172,8 +182,34 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// UpdateUpstream changes only this source's target. The loopback listener and
+// the FRP localPort bound to it stay unchanged; old MCP sessions are discarded.
+func (s *Server) UpdateUpstream(raw string) error {
+	upstream, err := parseUpstream(raw)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.upstream = upstream
+	s.sessions = map[string]session{}
+	s.mu.Unlock()
+	return nil
+}
+
+// UpstreamURL returns the currently selected upstream MCP endpoint.
+func (s *Server) UpstreamURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.upstream == nil {
+		return ""
+	}
+	return s.upstream.String()
+}
+
 // Endpoint returns the loopback host and port used by frpc.
 func (s *Server) Endpoint() (string, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listener == nil {
 		return "", 0, errors.New("来源代理尚未启动")
 	}
@@ -186,15 +222,17 @@ func (s *Server) Endpoint() (string, int, error) {
 
 // Close stops the proxy without affecting other sources.
 func (s *Server) Close(ctx context.Context) error {
+	s.mu.Lock()
 	if s.httpServer == nil {
+		s.mu.Unlock()
 		return nil
 	}
-	s.mu.Lock()
+	httpServer := s.httpServer
 	s.sessions = map[string]session{}
-	s.mu.Unlock()
-	err := s.httpServer.Shutdown(ctx)
 	s.listener = nil
 	s.httpServer = nil
+	s.mu.Unlock()
+	err := httpServer.Shutdown(ctx)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -264,7 +302,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outgoing, err := http.NewRequestWithContext(r.Context(), http.MethodPost, s.upstream.String(), bytes.NewReader(raw))
+	upstream := s.currentUpstream()
+	if upstream == nil {
+		markFailed(&observation, http.StatusServiceUnavailable)
+		writeProxyError(w, http.StatusServiceUnavailable, "UPSTREAM_NOT_CONFIGURED", "来源代理尚未配置上游地址")
+		return
+	}
+	outgoing, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstream.String(), bytes.NewReader(raw))
 	if err != nil {
 		markFailed(&observation, http.StatusBadGateway)
 		writeProxyError(w, http.StatusBadGateway, "UPSTREAM_REQUEST_FAILED", "无法构造上游请求")
@@ -375,6 +419,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) currentUpstream() *url.URL {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upstream
+}
+
 func (s *Server) report(observation Observation) {
 	if s.opts.OnMCPCall == nil {
 		return
@@ -413,9 +463,9 @@ func (s *Server) policy(envelope rpcEnvelope) (string, error) {
 		if !s.allowed[params.Name] {
 			return "", errors.New("工具不在当前已批准列表内")
 		}
-		if s.opts.Signing == nil {
-			return "", errors.New("请先导入本机动态认证配置")
-		}
+		// Signing is optional. Sources using no authentication or a fixed
+		// Authorization header must still be callable through the local proxy.
+		// Dynamic-auth sources carry Signing and add their signed headers below.
 		return params.Name, nil
 	default:
 		return "", errors.New("MCP 方法未获准")

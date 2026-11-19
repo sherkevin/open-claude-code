@@ -415,6 +415,23 @@ func TestInspectMCPResponseRequiresMatchingResult(t *testing.T) {
 	}
 }
 
+func TestPolicyAllowsApprovedToolWithoutDynamicSigning(t *testing.T) {
+	server := &Server{allowed: map[string]bool{"kaiwu_demo_ping": true}}
+	name, err := server.policy(rpcEnvelope{
+		Method: "tools/call",
+		Params: json.RawMessage(`{"name":"kaiwu_demo_ping","arguments":{"nonce":"n-1"}}`),
+	})
+	if err != nil || name != "kaiwu_demo_ping" {
+		t.Fatalf("source without dynamic signing must be callable: name=%q err=%v", name, err)
+	}
+	if _, err := server.policy(rpcEnvelope{
+		Method: "tools/call",
+		Params: json.RawMessage(`{"name":"not_approved"}`),
+	}); err == nil {
+		t.Fatal("unapproved tool must still be rejected")
+	}
+}
+
 func TestStreamSSEFlushesTailOutcomeBeforeReturn(t *testing.T) {
 	writer := httptest.NewRecorder()
 	outcome, err := (&Server{}).streamSSE(

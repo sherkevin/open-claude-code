@@ -21,6 +21,7 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("创建连接器失败: %v", err)
 	}
+	t.Cleanup(instance.Close)
 	server, err := New(instance, loopbackHost)
 	if err != nil {
 		t.Fatalf("创建界面失败: %v", err)
@@ -34,6 +35,7 @@ func newUnconfiguredTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("创建连接器失败: %v", err)
 	}
+	t.Cleanup(instance.Close)
 	server, err := New(instance, loopbackHost)
 	if err != nil {
 		t.Fatalf("创建界面失败: %v", err)
@@ -68,6 +70,13 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 		"不包含 Authorization，也不是可以直接导入开物平台的完整 MCP JSON",
 		"运行日志",
 		"开物调用日志",
+		"内置测试服务（示例数据）",
+		"运行连接测试",
+		"随安装自动启动，使用固定示例数据检查这台服务器到开物平台的连接，不读取您的业务系统",
+		"开物技术支持完成测试服务接入后，可在开物对话中使用",
+		"运行连接测试成功只代表链路已通过",
+		"地址预览不包含内置示例服务",
+		"不是华微真实业务数据",
 	} {
 		if !strings.Contains(recorder.Body.String(), expected) {
 			t.Fatalf("页面缺少普通接入流程或交付边界文案: %s", expected)
@@ -121,6 +130,8 @@ func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 		"/api/source/save",
 		"/api/source/tools",
 		"/api/source/enabled",
+		"/api/builtin-demo/enabled",
+		"/api/self-test",
 		"/api/auth-profile",
 		"/api/diagnose",
 		"/api/connect",
@@ -158,6 +169,8 @@ func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
 		"/api/source/save",
 		"/api/source/tools",
 		"/api/source/enabled",
+		"/api/builtin-demo/enabled",
+		"/api/self-test",
 		"/api/auth-profile",
 		"/api/diagnose",
 		"/api/connect",
@@ -620,5 +633,58 @@ func TestLocalLogEndpointsRejectForeignOriginAndWrongMethods(t *testing.T) {
 	server.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("诊断设置非 POST 必须返回 405，实际 %d", recorder.Code)
+	}
+}
+
+func TestSelfTestRunsLocalBuiltinMCPWithoutBinding(t *testing.T) {
+	server := newTestServer(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/self-test", strings.NewReader("{}"))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("self-test status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			OK     bool   `json:"ok"`
+			Source string `json:"source_id"`
+			Stages []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"stages"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK || response.Data.OK || response.Data.Source == "" {
+		t.Fatalf("unbound self-test must return a layered non-green result: %s", recorder.Body.String())
+	}
+	statuses := map[string]string{}
+	for _, stage := range response.Data.Stages {
+		statuses[stage.ID] = stage.Status
+	}
+	if statuses["local_mcp"] != "passed" || statuses["enterprise_binding"] != "skipped" ||
+		statuses["tunnel"] != "skipped" {
+		t.Fatalf("unexpected layered result: %s", recorder.Body.String())
+	}
+}
+
+func TestBuiltinDemoToggleIsIndependent(t *testing.T) {
+	server := newTestServer(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/builtin-demo/enabled", strings.NewReader(`{"enabled":false}`))
+	request.Host = loopbackHost
+	request.Header.Set("X-Connector-Token", server.Token)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("toggle status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	status := server.Agent.Status()
+	if status.BuiltinDemo.Enabled || status.BuiltinDemo.Running {
+		t.Fatalf("built-in demo did not stop independently: %+v", status.BuiltinDemo)
 	}
 }

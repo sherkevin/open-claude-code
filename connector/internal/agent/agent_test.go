@@ -497,7 +497,7 @@ func TestRevokeIsLocalFirstAndTombstoneSurvivesCloudFailure(t *testing.T) {
 func TestConnectRegistersMetadataOnlyAndHonorsDraining(t *testing.T) {
 	upstream := fakeMCPToolServer(t, `[{"name":"query_orders","description":"查询合成销售订单","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"}}}}]`)
 	defer upstream.Close()
-	var registered map[string]any
+	var registrations []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -505,7 +505,9 @@ func TestConnectRegistersMetadataOnlyAndHonorsDraining(t *testing.T) {
 			_, _ = w.Write([]byte(`{"connector_id":"conn_drain","tenant_id":"tenant_1","tenant_name":"合成企业","device_token":"device-token","device_key_id":"key_1","relay":{"address":"relay.example.com","port":7443,"user":"conn_drain","token":"relay-token"}}`))
 		case r.URL.Path == "/v1/sources":
 			raw, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(raw, &registered)
+			var item map[string]any
+			_ = json.Unmarshal(raw, &item)
+			registrations = append(registrations, item)
 			_, _ = w.Write([]byte(`{"revision":2}`))
 		case r.URL.Path == "/v1/connectors/conn_drain/desired-state":
 			_, _ = w.Write([]byte(`{"revision":2,"sources":[],"revoked":false,"draining":true}`))
@@ -538,10 +540,18 @@ func TestConnectRegistersMetadataOnlyAndHonorsDraining(t *testing.T) {
 	if status.State != "PAUSED" {
 		t.Fatalf("排空后状态应为 PAUSED: %s", status.State)
 	}
+	sourceID := instance.config.Sources[0].SourceID
+	var registered map[string]any
+	for _, item := range registrations {
+		if item["source_id"] == sourceID {
+			registered = item
+			break
+		}
+	}
 	if registered == nil {
 		t.Fatal("来源登记未被调用")
 	}
-	if registered["source_id"] != instance.config.Sources[0].SourceID {
+	if registered["source_id"] != sourceID {
 		t.Fatalf("来源编号不符: %+v", registered)
 	}
 	info := mcp.ServerInfo{ProtocolVersion: "2025-06-18"}

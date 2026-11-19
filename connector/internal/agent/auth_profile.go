@@ -107,10 +107,15 @@ func normalizeTools(tools []string) ([]string, error) {
 }
 
 func (a *Agent) startAuthProxies() error {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if a.isClosed() {
+		return errAgentClosed
+	}
 	a.stopAuthProxies()
 
 	a.mu.RLock()
-	sourceList := enabledSources(a.config.Sources)
+	sourceList := a.runtimeSourcesLocked()
 	secrets := make(map[string]map[string]string, len(a.secrets))
 	for sourceID, headers := range a.secrets {
 		secrets[sourceID] = cloneHeaders(headers)
@@ -122,7 +127,12 @@ func (a *Agent) startAuthProxies() error {
 	a.mu.RUnlock()
 
 	created := map[string]*authproxy.Server{}
+	failures := make([]string, 0)
 	for _, source := range sourceList {
+		if a.isClosed() {
+			closeProxies(created)
+			return errAgentClosed
+		}
 		options := authproxy.Options{
 			SourceID:      source.SourceID,
 			UpstreamURL:   source.UpstreamURL,
@@ -136,22 +146,141 @@ func (a *Agent) startAuthProxies() error {
 		}
 		proxy, err := authproxy.New(options)
 		if err != nil {
-			closeProxies(created)
-			return fmt.Errorf("来源 %s: %w", source.DisplayName, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", source.DisplayName, err))
+			continue
 		}
 		if err := proxy.Start(); err != nil {
-			closeProxies(created)
-			return fmt.Errorf("来源 %s: %w", source.DisplayName, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", source.DisplayName, err))
+			continue
 		}
 		created[source.SourceID] = proxy
 	}
 	if len(created) == 0 {
+		if len(failures) > 0 {
+			return fmt.Errorf("没有可启动的来源代理: %s", strings.Join(failures, "；"))
+		}
 		return errors.New("没有可启动的来源代理")
 	}
 	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		closeProxies(created)
+		return errAgentClosed
+	}
 	a.proxies = created
 	a.mu.Unlock()
 	return nil
+}
+
+// startAuthProxiesForDemo touches only the bundled demo proxy. If that listener
+// already exists it updates only its upstream target; customer proxies and
+// tunnel local ports remain untouched.
+func (a *Agent) startAuthProxiesForDemo() (map[string]*authproxy.Server, error) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	if a.isClosed() {
+		return nil, errAgentClosed
+	}
+	a.mu.RLock()
+	demoID := a.demoState.SourceID
+	var demoSource config.Source
+	foundDemo := false
+	for _, source := range a.runtimeSourcesLocked() {
+		if source.SourceID == demoID {
+			demoSource = source
+			foundDemo = true
+			break
+		}
+	}
+	secrets := make(map[string]map[string]string, len(a.secrets))
+	for sourceID, headers := range a.secrets {
+		secrets[sourceID] = cloneHeaders(headers)
+	}
+	profiles := make(map[string]huaweiauth.Profile, len(a.profiles))
+	for sourceID, profile := range a.profiles {
+		profiles[sourceID] = profile
+	}
+	existing := a.proxies[demoID]
+	a.mu.RUnlock()
+	if !foundDemo {
+		return nil, errors.New("内置测试来源尚未启用")
+	}
+
+	if existing != nil {
+		if _, _, err := existing.Endpoint(); err != nil {
+			return nil, fmt.Errorf("内置测试来源代理监听不可用: %w", err)
+		}
+		if existing.UpstreamURL() != demoSource.UpstreamURL {
+			if err := existing.UpdateUpstream(demoSource.UpstreamURL); err != nil {
+				return nil, fmt.Errorf("更新内置测试来源代理上游失败: %w", err)
+			}
+		}
+		return nil, nil
+	}
+
+	profile, hasProfile := profiles[demoID]
+	proxy, err := newSourceAuthProxy(demoSource, secrets[demoID], profile, hasProfile, a.reportAuthProxyCall)
+	if err != nil {
+		return nil, fmt.Errorf("内置测试来源代理未启动: %w", err)
+	}
+	if err := proxy.Start(); err != nil {
+		return nil, fmt.Errorf("内置测试来源代理未启动: %w", err)
+	}
+	created := map[string]*authproxy.Server{demoID: proxy}
+
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		closeProxies(created)
+		return nil, errAgentClosed
+	}
+	if current := a.proxies[demoID]; current != nil {
+		a.mu.Unlock()
+		closeProxies(created)
+		if current.UpstreamURL() != demoSource.UpstreamURL {
+			if err := current.UpdateUpstream(demoSource.UpstreamURL); err != nil {
+				return nil, fmt.Errorf("更新内置测试来源代理上游失败: %w", err)
+			}
+		}
+		return nil, nil
+	}
+	merged := make(map[string]*authproxy.Server, len(a.proxies)+1)
+	for sourceID, proxy := range a.proxies {
+		merged[sourceID] = proxy
+	}
+	merged[demoID] = proxy
+	a.proxies = merged
+	a.mu.Unlock()
+	return created, nil
+}
+
+func newSourceAuthProxy(source config.Source, headers map[string]string, profile huaweiauth.Profile, hasProfile bool, observer func(authproxy.Observation)) (*authproxy.Server, error) {
+	options := authproxy.Options{
+		SourceID:      source.SourceID,
+		UpstreamURL:   source.UpstreamURL,
+		Headers:       cloneHeaders(headers),
+		ToolAllowlist: append([]string(nil), source.ToolAllowlist...),
+		OnMCPCall:     observer,
+	}
+	if hasProfile {
+		copy := profile
+		options.Signing = &copy
+	}
+	return authproxy.New(options)
+}
+
+func (a *Agent) stopNewAuthProxies(proxies map[string]*authproxy.Server) {
+	if len(proxies) == 0 {
+		return
+	}
+	a.mu.Lock()
+	for sourceID, proxy := range proxies {
+		if a.proxies[sourceID] == proxy {
+			delete(a.proxies, sourceID)
+		}
+	}
+	a.mu.Unlock()
+	closeProxies(proxies)
 }
 
 func (a *Agent) stopAuthProxies() {
@@ -184,6 +313,9 @@ func cloneHeaders(input map[string]string) map[string]string {
 func (a *Agent) authStatusLocked() []SourceAuth {
 	items := make([]SourceAuth, 0, len(a.config.Sources))
 	for _, source := range a.config.Sources {
+		if a.demoState.SourceID != "" && source.SourceID == a.demoState.SourceID {
+			continue
+		}
 		profile, hasProfile := a.profiles[source.SourceID]
 		allowed := append([]string(nil), source.ToolAllowlist...)
 		sort.Strings(allowed)
@@ -210,12 +342,13 @@ func (a *Agent) statusLocked() Status {
 		ConnectorID:     a.identity.ConnectorID,
 		TenantName:      a.identity.TenantName,
 		TenantID:        a.identity.TenantID,
-		Sources:         append([]config.Source(nil), a.config.Sources...),
+		Sources:         a.businessSourcesLocked(),
 		LastError:       a.lastError,
 		Version:         version.String(),
 		EdgeBase:        a.edgeBase(),
 		AuthProfiles:    a.authStatusLocked(),
 		Diagnostics:     a.DiagnosticStats(),
+		BuiltinDemo:     a.builtinDemoStatusLocked(),
 		UpdatedAt:       time.Now().UTC(),
 	}
 	if a.supervisor != nil {

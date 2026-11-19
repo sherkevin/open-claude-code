@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "reviewer": "sdk_windows_compatibility",
+  "scope": "Independent Linux Go regressions and Windows amd64 CGO-disabled cross-compile; no Windows execution or installer acceptance",
+  "started_at": "2026-11-19T10:43:54.788673+00:00",
+  "base_commit": "c55c6b3e1d22dd14e080cfaf2da1fc6ef89259a7",
+  "head_commit": "c55c6b3e1d22dd14e080cfaf2da1fc6ef89259a7",
+  "thread_status_before": {
+    "status": "completed",
+    "activeRunId": null,
+    "latestRunId": "run:thread:mcp%3A35201df6-4e4c-4291-8288-fb688503e0b6:ordinal:4",
+    "updatedAt": "2026-11-19T10:42:38.258Z"
+  },
+  "source_sha256": {
+    "connector/cmd/connector/main.go": "ebbb90a6a09e80b135cd5cf78d567bfc7d388d08c16e6ec28c1c20ff91ebf33a",
+    "connector/cmd/connector/service_windows.go": "0ed72aaa8d7602774835f7e1e07e66f572ae3ecdc2c25a9b874664f4d4fff01f",
+    "connector/go.mod": "cffd4d4b0355c2bacafc9adc24aca50da7a21c1d312e51fe3dd74aeebf38cc97",
+    "connector/go.sum": "6184efde48a3053a9ac99d80aa3709071979585108b182ef17463500fa0be91f",
+    "connector/internal/agent/agent.go": "b93086a802ce5d839ed2f9c36ee4e3a40e412594e89d1b26d5b82a027b850d00",
+    "connector/internal/agent/agent_test.go": "4eeeb233fe665179ef3711a638f86f978afa381d7f6f2d761c3bebe547a40504",
+    "connector/internal/agent/auth_profile.go": "b83b399415d5623f0cb424a7778f475916dc00d4bcfffb17ef0b9d14ef2836d3",
+    "connector/internal/agent/builtin_demo.go": "acdf3705fd049e76fc3821d4fd7c26a6c66b0054ecbb36c916bd19582cc81e00",
+    "connector/internal/agent/builtin_demo_test.go": "d86291ecf5bd99af9d73989cc4f1147ace9f22097bf252ca1d166d9a0c38ce8c",
+    "connector/internal/agent/review_round3_test.go": "cb64e82d8215ff23a906530e67a33acca61620bfd0b947f1155aaaecfb5daf56",
+    "connector/internal/agent/selftest.go": "8385b3866bc6d6857f43f1843b5c8e988f98119888f1365ea8f564dcf4ed31d6",
+    "connector/internal/agent/source.go": "21254a3b32d4161c6dc8d7b2036c3e136012c0609de77e5b3d2b1991f409f32b",
+    "connector/internal/authproxy/server.go": "9747714e87e562e546010ea6f2e6ddb17b95b092e2aaf5cb1b62b99e5d4c02af",
+    "connector/internal/authproxy/server_test.go": "7bf747767836fb9873a9dd008ad3216d55fb22ab1733480ef4cb101968164ced",
+    "connector/internal/authproxy/update_upstream_test.go": "8d3b50d6c22fe3910c09108e7817ed3f90cb6f037d6b47d6bf2f0f3a21fb1cae",
+    "connector/internal/cloud/client.go": "d49e37ab90cec3a5e808cecee67c344593f72251ad2904137573f831cee0d86f",
+    "connector/internal/cloud/selftest_test.go": "b5c7e646e89c2d86191c56d07f242416cb090b6f71836f1bbbb9e8ce167e8839",
+    "connector/internal/demomcp/server.go": "9273327556564916332220fd68ff609982d0561f79320ac72d7a5aab763dd8e1",
+    "connector/internal/demomcp/server_test.go": "2c7d384281ab311a18eb6eda0d5a64730e888c4d75e65e6e9e2d7fd50879e184",
+    "connector/internal/web/page.go": "d70a1a9b87c96369eaeada4b7cf017e4920873fd41fc67066939c70132359597",
+    "connector/internal/web/page_runtime_test.go": "8dcc55809c6f4d798da93ccd943201f2754716695be3d438839b6ecd8fe65104",
+    "connector/internal/web/server.go": "a9078fe7c8bd07b04caccf7bdabce1878dd86896cd75434af32e35526999a706",
+    "connector/internal/web/server_test.go": "c455ca9896f47994dd317fa4145e5c821b72bacde7bff1f3c75878d410ed84a8",
+    "connector/scripts/build.sh": "3141c96cae6df8b6db1808261fc71ad5bfee9c04a5cc33025851b8fb99e9afc9",
+    "connector/third_party/README.md": "f08bcf5992ddc30f3da53577df3f48b03ce54d00deededd9e209aab4c5056d37",
+    "connector/third_party/go-deps/github.com/google/jsonschema-go@v0.4.3/LICENSE": "2d56c53449691d85d9aea245eb8dac12713e9075d70d5557b82ae1e94805b357",
+    "connector/third_party/go-deps/github.com/segmentio/asm@v1.1.3/LICENSE": "e2a78de21d6d8ded2dff0f3189cd32e011630d785da127ebfbc8949012c0947b",
+    "connector/third_party/go-deps/github.com/segmentio/encoding@v0.5.4/LICENSE": "d6d71a1f7dc6539e371120cc7af6e3257e55ca79634d473211f217b8965b0f16",
+    "connector/third_party/go-deps/github.com/yosida95/uritemplate/v3@v3.0.2/LICENSE": "0761aadfb1921103752869ee942d4a71bdd54494697684d4b13dc17ad9781191",
+    "connector/third_party/go-deps/golang.org/x/oauth2@v0.35.0/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "connector/third_party/go-deps/golang.org/x/sync@v0.20.0/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "connector/third_party/go-deps/golang.org/x/sync@v0.20.0/PATENTS": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc",
+    "connector/third_party/go-deps/golang.org/x/sys@v0.41.0/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "connector/third_party/go-deps/golang.org/x/sys@v0.41.0/PATENTS": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc",
+    "connector/third_party/go-deps/golang.org/x/time@v0.15.0/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "connector/third_party/go-deps/golang.org/x/time@v0.15.0/PATENTS": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc",
+    "connector/third_party/mcp-go-sdk/LICENSE": "af679003d933f045393a6a029f43da113f9ae364eac651d9ae268392985580f5"
+  },
+  "deleted_sources": [],
+  "environment": {
+    "GOCACHE": "/media/data3/dengkw/cache/huawi-demo-138/go-build",
+    "GOMODCACHE": "/media/data3/dengkw/cache/huawi-demo-138/go-mod",
+    "GOTMPDIR": "/media/data3/dengkw/cache/huawi-demo-138/root-review/tmp",
+    "TMPDIR": "/media/data3/dengkw/cache/huawi-demo-138/root-review/tmp",
+    "TMP": "/media/data3/dengkw/cache/huawi-demo-138/root-review/tmp",
+    "TEMP": "/media/data3/dengkw/cache/huawi-demo-138/root-review/tmp",
+    "XDG_CONFIG_HOME": "/media/data3/dengkw/cache/huawi-demo-138/root-review/xdg-config",
+    "XDG_CACHE_HOME": "/media/data3/dengkw/cache/huawi-demo-138/root-review/xdg-cache",
+    "GOTOOLCHAIN": "local",
+    "GOENV": "off",
+    "GOWORK": "off",
+    "GOPROXY": "off",
+    "GOSUMDB": "off",
+    "GOFLAGS": "-mod=readonly"
+  },
+  "steps": [
+    {
+      "name": "toolchain_version",
+      "command": [
+        "/media/data3/dengkw/toolchains/go1.27.4/bin/go",
+        "version"
+      ],
+      "started_at": "2026-11-19T10:43:54.791406+00:00",
+      "duration_seconds": 0.008,
+      "exit_code": 0
+    },
+    {
+      "name": "changed_go_format",
+      "exit_code": 0,
+      "unformatted_files": []
+    },
+    {
+      "name": "build_script_syntax",
+      "command": [
+        "bash",
+        "-n",
+        "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/connector/scripts/build.sh"
+      ],
+      "started_at": "2026-11-19T10:43:54.826048+00:00",
+      "duration_seconds": 0.004,
+      "exit_code": 0
+    },
+    {
+      "name": "focused_race_regression",
+      "command": [
+        "/media/data3/dengkw/toolchains/go1.27.4/bin/go",
+        "test",
+        "-race",
+        "-count=1",
+        "-v",
+        "-timeout=120s",
+        "-run",
+        "Test.*(Builtin|Demo|Runtime|Close|Shutdown|Reuse|Upstream|InFlight|Frpc|FRP|Tunnel|SelfTest)",
+        "./internal/agent",
+        "./internal/authproxy",
+        "./internal/demomcp",
+        "./internal/cloud"
+      ],
+      "started_at": "2026-11-19T10:43:54.829947+00:00",
+      "duration_seconds": 12.148,
+      "exit_code": 0,
+      "environment_overrides": {
+        "GOOS": "linux",
+        "GOARCH": "amd64",
+        "CGO_ENABLED": "1"
+      }
+    },
+    {
+      "name": "windows_amd64_cross_compile",
+      "command": [
+        "/media/data3/dengkw/toolchains/go1.27.4/bin/go",
+        "build",
+        "-trimpath",
+        "-buildvcs=false",
+        "-ldflags",
+        "-X github.com/sherkevin/open-claude-code/connector/internal/version.Version=1.3.8",
+        "-o",
+        "/media/data3/dengkw/cache/huawi-demo-138/root-review/build/kaiwu-connector-1.3.8-windows-amd64.exe",
+        "./cmd/connector"
+      ],
+      "started_at": "2026-11-19T10:44:06.977690+00:00",
+      "duration_seconds": 2.722,
+      "exit_code": 0,
+      "environment_overrides": {
+        "GOOS": "windows",
+        "GOARCH": "amd64",
+        "CGO_ENABLED": "0"
+      }
+    },
+    {
+      "name": "windows_binary_build_metadata",
+      "command": [
+        "/media/data3/dengkw/toolchains/go1.27.4/bin/go",
+        "version",
+        "-m",
+        "/media/data3/dengkw/cache/huawi-demo-138/root-review/build/kaiwu-connector-1.3.8-windows-amd64.exe"
+      ],
+      "started_at": "2026-11-19T10:44:09.797871+00:00",
+      "duration_seconds": 0.065,
+      "exit_code": 0
+    }
+  ],
+  "static_review": "See FRP_0611_RELOAD_REVIEW.md and CONNECTOR_REPORT.md. Source gate does not constitute Windows Server 2019 runtime acceptance.",
+  "cross_compiled_binary": {
+    "path": "/media/data3/dengkw/cache/huawi-demo-138/root-review/build/kaiwu-connector-1.3.8-windows-amd64.exe",
+    "sha256": "4ba1aa512eb4a843f3eef17d20116f0093044462794dd216c3aec149595f79cd",
+    "size": 15750656,
+    "executed": false
+  },
+  "source_stable": true,
+  "source_sha256_after": {
+    "connector/cmd/connector/main.go": "ebbb90a6a09e80b135cd5cf78d567bfc7d388d08c16e6ec28c1c20ff91ebf33a",
+    "connector/cmd/connector/service_windows.go": "0ed72aaa8d7602774835f7e1e07e66f572ae3ecdc2c25a9b874664f4d4fff01f",
+    "connector/go.mod": "cffd4d4b0355c2bacafc9adc24aca50da7a21c1d312e51fe3dd74aeebf38cc97",
+    "connector/go.sum": "6184efde48a3053a9ac99d80aa3709071979585108b182ef17463500fa0be91f",
+    "connector/internal/agent/agent.go": "b93086a802ce5d839ed2f9c36ee4e3a40e412594e89d1b26d5b82a027b850d00",
+    "connector/internal/agent/agent_test.go": "4eeeb233fe665179ef3711a638f86f978afa381d7f6f2d761c3bebe547a40504",
+    "connector/internal/agent/auth_profile.go": "b83b399415d5623f0cb424a7778f475916dc00d4bcfffb17ef0b9d14ef2836d3",
+    "connector/internal/agent/builtin_demo.go": "acdf3705fd049e76fc3821d4fd7c26a6c66b0054ecbb36c916bd19582cc81e00",
+    "connector/internal/agent/builtin_demo_test.go": "d86291ecf5bd99af9d73989cc4f1147ace9f22097bf252ca1d166d9a0c38ce8c",
+    "connector/internal/agent/review_round3_test.go": "cb64e82d8215ff23a906530e67a33acca61620bfd0b947f1155aaaecfb5daf56",
+    "connector/internal/agent/selftest.go": "8385b3866bc6d6857f43f1843b5c8e988f98119888f1365ea8f564dcf4ed31d6",
+    "connector/internal/agent/source.go": "21254a3b32d4161c6dc8d7b2036c3e136012c0609de77e5b3d2b1991f409f32b",
+    "connector/internal/authproxy/server.go": "9747714e87e562e546010ea6f2e6ddb17b95b092e2aaf5cb1b62b99e5d4c02af",
+    "connector/internal/authproxy/server_test.go": "7bf747767836fb9873a9dd008ad3216d55fb22ab1733480ef4cb101968164ced",
+    "connector/internal/authproxy/update_upstream_test.go": "8d3b50d6c22fe3910c09108e7817ed3f90cb6f037d6b47d6bf2f0f3a21fb1cae",
+    "connector/internal/cloud/client.go": "d49e37ab90cec3a5e808cecee67c344593f72251ad2904137573f831cee0d86f",
+    "connector/internal/cloud/selftest_test.go": "b5c7e646e89c2d86191c56d07f242416cb090b6f71836f1bbbb9e8ce167e8839",
+    "connector/internal/demomcp/server.go": "9273327556564916332220fd68ff609982d0561f79320ac72d7a5aab763dd8e1",
+    "connector/internal/demomcp/server_test.go": "2c7d384281ab311a18eb6eda0d5a64730e888c4d75e65e6e9e2d7fd50879e184",
+    "connector/internal/web/page.go": "d70a1a9b87c96369eaeada4b7cf017e4920873fd41fc67066939c70132359597",
+    "connector/internal/web/page_runtime_test.go": "8dcc55809c6f4d798da93ccd943201f2754716695be3d438839b6ecd8fe65104",
+    "connector/internal/web/server.go": "a9078fe7c8bd07b04caccf7bdabce1878dd86896cd75434af32e35526999a706",
+    "connector/internal/web/server_test.go": "c455ca9896f47994dd317fa4145e5c821b72bacde7bff1f3c75878d410ed84a8",
+    "connector/scripts/build.sh": "3141c96cae6df8b6db1808261fc71ad5bfee9c04a5cc33025851b8fb99e9afc9",
+    "connector/third_party/README.md": "f08bcf5992ddc30f3da53577df3f48b03ce54d00deededd9e209aab4c5056d37",
+    "connector/third_party/go-deps/github.com/google/jsonschema-go@v0.4.3/LICENSE": "2d56c53449691d85d9aea245eb8dac12713e9075d70d5557b82ae1e94805b357",
+    "connector/third_party/go-deps/github.com/segmentio/asm@v1.1.3/LICENSE": "e2a78de21d6d8ded2dff0f3189cd32e011630d785da127ebfbc8949012c0947b",
+    "connector/third_party/go-deps/github.com/segmentio/encoding@v0.5.4/LICENSE": "d6d71a1f7dc6539e371120cc7af6e3257e55ca79634d473211f217b8965b0f16",
+    "connector/third_party/go-deps/github.com/yosida95/uritemplate/v3@v3.0.2/LICENSE": "0761aadfb1921103752869ee942d4a71bdd54494697684d4b13dc17ad9781191",
+    "connector/third_party/go-deps/golang.org/x/oauth2@v0.35.0/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "connector/third_party/go-deps/golang.org/x/sync@v0.20.0/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "connector/third_party/go-deps/golang.org/x/sync@v0.20.0/PATENTS": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc",
+    "connector/third_party/go-deps/golang.org/x/sys@v0.41.0/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "connector/third_party/go-deps/golang.org/x/sys@v0.41.0/PATENTS": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc",
+    "connector/third_party/go-deps/golang.org/x/time@v0.15.0/LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+    "connector/third_party/go-deps/golang.org/x/time@v0.15.0/PATENTS": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc",
+    "connector/third_party/mcp-go-sdk/LICENSE": "af679003d933f045393a6a029f43da113f9ae364eac651d9ae268392985580f5"
+  },
+  "source_changed_during_review": [],
+  "thread_status_after": {
+    "status": "completed",
+    "activeRunId": null,
+    "latestRunId": "run:thread:mcp%3A35201df6-4e4c-4291-8288-fb688503e0b6:ordinal:4",
+    "updatedAt": "2026-11-19T10:42:38.258Z"
+  },
+  "engineer_idle_after": true,
+  "exit_code": 0,
+  "finished_at": "2026-11-19T10:44:11.405690+00:00",
+  "log_sha256": "903d0ae63299f022c5e36cc91efcc50f9d3105a03c3d98a17ff05c53362f2674",
+  "log_path": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/docs/evidence/huawi-builtin-demo-20261119/ROOT_GO_REVIEW.log"
+}

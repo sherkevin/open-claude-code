@@ -94,6 +94,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/source/save", s.guard(postOnly(s.handleSourceSave)))
 	mux.HandleFunc("/api/source/tools", s.guard(postOnly(s.handleSourceTools)))
 	mux.HandleFunc("/api/source/enabled", s.guard(postOnly(s.handleSourceEnabled)))
+	mux.HandleFunc("/api/builtin-demo/enabled", s.guard(postOnly(s.handleBuiltinDemoEnabled)))
+	mux.HandleFunc("/api/self-test", s.guard(postOnly(s.handleSelfTest)))
 	mux.HandleFunc("/api/auth-profile", s.guard(postOnly(s.handleAuthProfile)))
 	mux.HandleFunc("/api/diagnose", s.guard(postOnly(s.handleDiagnose)))
 	mux.HandleFunc("/api/connect", s.guard(postOnly(s.handleConnect)))
@@ -247,6 +249,32 @@ func (s *Server) handleSourceEnabled(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": result})
+}
+
+func (s *Server) handleBuiltinDemoEnabled(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	if body.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "BODY_INVALID", "必须明确指定启用或停用")
+		return
+	}
+	status, err := s.Agent.SetBuiltinDemoEnabled(*body.Enabled)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": status})
+}
+
+func (s *Server) handleSelfTest(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+	result := s.Agent.SelfTest(ctx)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": result})
 }
 

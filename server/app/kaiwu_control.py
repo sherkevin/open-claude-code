@@ -23,7 +23,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
+import logging
 import re
 import secrets
 import time
@@ -31,10 +33,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 from urllib.parse import urlsplit
 
+import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import Settings
@@ -55,6 +58,7 @@ from .kaiwu_diagnostics import (
     insert_rows,
     maybe_prune,
     normalize_event,
+    new_trace_id,
     ops_page_headers,
     parse_rfc3339,
     query_admin_events,
@@ -77,6 +81,7 @@ HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 INTEGRATION_ID_RE = re.compile(r"^int_[0-9a-f]{32}$")
 CONNECTOR_ID_RE = re.compile(r"^conn_[0-9a-f]{32}$")
 INTEGRATION_TTL_MAX = 365 * 24 * 60 * 60
+log = logging.getLogger(__name__)
 
 
 class StrictModel(BaseModel):
@@ -228,6 +233,55 @@ class IntegrationCreateRequest(StrictModel):
 
 class IntegrationRotateRequest(StrictModel):
     ttl_seconds: int | None = Field(default=None, ge=60, le=INTEGRATION_TTL_MAX)
+
+
+class SelfTestRequest(StrictModel):
+    source_id: str = Field(min_length=36, max_length=36)
+    nonce: str = Field(min_length=1, max_length=128)
+
+    @field_validator("source_id")
+    @classmethod
+    def valid_source_id(cls, value: str) -> str:
+        if not SOURCE_ID_RE.fullmatch(value):
+            raise ValueError("source_id must be an opaque src_ identifier")
+        return value
+
+    @field_validator("nonce")
+    @classmethod
+    def valid_nonce(cls, value: str) -> str:
+        if not value or value.strip() != value or any(ord(char) < 33 or ord(char) > 126 for char in value):
+            raise ValueError("nonce must be visible ASCII text without whitespace")
+        return value
+
+
+BUILTIN_DEMO_SOURCE_NAME = "开物内置测试服务（示例数据）"
+BUILTIN_DEMO_SOURCE_ID_NAMESPACE = "kaiwu_builtin_demo_v1"
+BUILTIN_DEMO_TOOLS = frozenset({
+    "kaiwu_demo_inventory_query",
+    "kaiwu_demo_order_summary",
+    "kaiwu_demo_ping",
+})
+BUILTIN_DEMO_TOOL = "kaiwu_demo_ping"
+BUILTIN_DEMO_MARKER = "KAIWU_BUILTIN_DEMO_V1"
+SELF_TEST_INTEGRATION_CREATED_BY_PREFIX = "device-self-test:"
+SELF_TEST_CLEANUP_ACTION = "integration.self_test_cleanup"
+MCP_PROTOCOL_VERSION = "2025-06-18"
+MAX_SELF_TEST_RESPONSE_BYTES = 1_000_000
+SELF_TEST_CLOCK_SKEW_SECONDS = 300
+SELF_TEST_STAGES = (
+    "edge_connect",
+    "mcp_initialize",
+    "tools_list",
+    "tools_call",
+    "probe_validation",
+)
+
+
+def _builtin_demo_source_id(connector_id: str) -> str:
+    digest = hashlib.sha256(
+        (BUILTIN_DEMO_SOURCE_ID_NAMESPACE + ":" + connector_id).encode("utf-8")
+    ).hexdigest()
+    return "src_" + digest[:32]
 
 
 def _base64url(raw: bytes) -> str:
@@ -389,7 +443,7 @@ def _edge_public_base(settings: Settings) -> str:
     parsed = urlsplit(raw)
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise AppError(503, "EDGE_NOT_CONFIGURED", "云端 Edge 公网地址格式无效")
-    host = (parsed.hostname or "").lower()
+    host = (parsed.hostname or "").lower().rstrip(".")
     local_http = parsed.scheme == "http" and host in {"127.0.0.1", "localhost", "::1", "testserver"}
     if parsed.scheme != "https" and not local_http:
         raise AppError(503, "EDGE_NOT_CONFIGURED", "云端 Edge 必须使用 HTTPS")
@@ -399,6 +453,61 @@ def _edge_public_base(settings: Settings) -> str:
             503,
             "EDGE_NOT_CONFIGURED",
             f"云端 Edge 公网路径必须与挂载路径 {expected_path} 一致",
+        )
+    return raw
+
+
+def _self_test_edge_base(settings: Settings) -> str:
+    """Return a public HTTPS Edge base, never the local test exception."""
+    raw = settings.kaiwu_edge_public_base.rstrip("/")
+    if not raw:
+        raise AppError(
+            503,
+            "SELF_TEST_EDGE_HTTPS_REQUIRED",
+            "内置测试自检需要受信配置的公网 HTTPS Edge 地址",
+        )
+    try:
+        parsed = urlsplit(raw)
+        parsed_port = parsed.port
+    except ValueError:
+        raise AppError(
+            503,
+            "SELF_TEST_EDGE_HTTPS_REQUIRED",
+            "内置测试自检的受信 Edge 地址格式无效",
+        ) from None
+    del parsed_port
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme != "https"
+        or not host
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or host in {"localhost", "testserver"}
+        or host.endswith(".localhost")
+    ):
+        raise AppError(
+            503,
+            "SELF_TEST_EDGE_HTTPS_REQUIRED",
+            "内置测试自检必须使用受信配置的公网 HTTPS Edge 地址",
+        )
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        raise AppError(
+            503,
+            "SELF_TEST_EDGE_HTTPS_REQUIRED",
+            "内置测试自检不能使用本机或内网 Edge 地址冒充公网 HTTPS",
+        )
+    expected_path = settings.kaiwu_edge_mount_path.rstrip("/")
+    if parsed.path.rstrip("/") != expected_path:
+        raise AppError(
+            503,
+            "SELF_TEST_EDGE_HTTPS_REQUIRED",
+            f"内置测试自检的 Edge 路径必须与挂载路径 {expected_path} 一致",
         )
     return raw
 
@@ -482,6 +591,392 @@ def _revoke_connector_integrations(db: Database, connector_id: str, actor_type: 
 def _release_connector_routes(db: Database, connector_id: str) -> None:
     """Release visitor ports once a connector can never be resumed."""
     db.execute("DELETE FROM kaiwu_edge_routes WHERE connector_id=?", (connector_id,))
+
+
+class _SelfTestFailure(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+def _stage_status(stages: list[dict], stage_id: str, status: str, message: str) -> None:
+    stages.append({"id": stage_id, "status": status, "message": message})
+
+
+def _finish_self_test_stages(stages: list[dict], current: str, failed_message: str) -> None:
+    _stage_status(stages, current, "failed", failed_message)
+    passed_or_failed = {item["id"] for item in stages}
+    for stage_id in SELF_TEST_STAGES:
+        if stage_id not in passed_or_failed:
+            _stage_status(stages, stage_id, "skipped", "前序步骤未通过，本步骤未执行")
+
+
+async def _read_self_test_response(response: httpx.Response) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in response.aiter_bytes():
+        size += len(chunk)
+        if size > MAX_SELF_TEST_RESPONSE_BYTES:
+            raise _SelfTestFailure(502, "云端 Edge 返回结果超过自检大小限制")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _jsonrpc_documents(raw: bytes, content_type: str) -> list:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _SelfTestFailure(502, "云端 Edge 返回了无法解析的字符编码") from None
+    if "text/event-stream" not in content_type.lower():
+        try:
+            value = json.loads(text)
+        except ValueError:
+            raise _SelfTestFailure(502, "云端 Edge 未返回有效 JSON-RPC 结果") from None
+        return value if isinstance(value, list) else [value]
+
+    documents = []
+    blocks = re.split(r"\r\n\r\n|\n\n|\r\r", text)
+    for block in blocks:
+        data_lines = []
+        for line in re.split(r"\r\n|\r|\n", block):
+            if line.startswith("data:"):
+                data_lines.append(line[5:][1:] if line[5:].startswith(" ") else line[5:])
+        if not data_lines:
+            continue
+        payload = "\n".join(data_lines).strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            documents.append(json.loads(payload))
+        except ValueError:
+            raise _SelfTestFailure(502, "云端 Edge 返回了无效的 SSE JSON-RPC 结果") from None
+    return documents
+
+
+def _jsonrpc_result(raw: bytes, content_type: str, request_id: int) -> dict:
+    for document in _jsonrpc_documents(raw, content_type):
+        if not isinstance(document, dict) or document.get("id") != request_id:
+            continue
+        error = document.get("error")
+        if error is not None:
+            code = error.get("code") if isinstance(error, dict) else ""
+            suffix = f"（JSON-RPC {code}）" if isinstance(code, int) and not isinstance(code, bool) else ""
+            raise _SelfTestFailure(502, f"内置测试 MCP 返回错误{suffix}")
+        result = document.get("result")
+        if not isinstance(result, dict):
+            raise _SelfTestFailure(502, "内置测试 MCP 未返回可读取的 JSON-RPC 结果")
+        return result
+    raise _SelfTestFailure(502, "云端 Edge 未返回与请求匹配的 JSON-RPC 结果")
+
+
+async def _post_self_test(
+    client: httpx.AsyncClient,
+    edge_url: str,
+    token: str,
+    body: dict,
+    trace_id: str,
+    session_id: str = "",
+) -> tuple[int, str, str, bytes, str]:
+    encoded = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "Mcp-Protocol-Version": MCP_PROTOCOL_VERSION,
+        "X-Kaiwu-Trace-ID": trace_id,
+    }
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    try:
+        async with client.stream("POST", edge_url, content=encoded, headers=headers) as response:
+            observed_trace = response.headers.get("x-kaiwu-trace-id", "").strip()
+            if TRACE_ID_RE.fullmatch(observed_trace):
+                trace_id = observed_trace
+            raw = await _read_self_test_response(response)
+            return (
+                response.status_code,
+                trace_id,
+                response.headers.get("content-type", ""),
+                raw,
+                response.headers.get("mcp-session-id", "").strip(),
+            )
+    except _SelfTestFailure:
+        raise
+    except httpx.TimeoutException:
+        raise _SelfTestFailure(504, "云端 Edge 请求超时，请检查公网 Edge 和隧道状态") from None
+    except httpx.RequestError:
+        raise _SelfTestFailure(503, "无法连接受信配置的公网 Edge，请检查地址、证书和网络") from None
+
+
+def _require_edge_status(status: int) -> None:
+    if 200 <= status < 300:
+        return
+    if status in {401, 403}:
+        raise _SelfTestFailure(502, "云端 Edge 拒绝了临时测试凭据，请确认自检接口已部署")
+    if status == 404:
+        raise _SelfTestFailure(502, "云端 Edge 未找到固定测试来源路径，请先完成来源登记和部署")
+    if status == 503:
+        raise _SelfTestFailure(503, "云端 Edge 或来源隧道暂时不可用")
+    if status == 504:
+        raise _SelfTestFailure(504, "云端 Edge 等待内置测试服务超时")
+    raise _SelfTestFailure(502, f"云端 Edge 返回 HTTP {status}，自检未通过")
+
+
+def _probe_payload(result: dict) -> dict:
+    if result.get("isError") is True:
+        raise _SelfTestFailure(502, "内置测试 MCP 返回了工具错误")
+    structured = result.get("structuredContent", result.get("structured_content"))
+    if isinstance(structured, dict) and ("demo" in structured or "marker" in structured):
+        return structured
+    if "marker" in result or "demo" in result:
+        return result
+    content = result.get("content")
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    raise _SelfTestFailure(502, "内置测试 MCP 返回了无法核验的工具结果")
+
+
+def _validate_probe(result: dict, nonce: str) -> dict:
+    payload = _probe_payload(result)
+    if payload.get("demo") is not True:
+        raise _SelfTestFailure(502, "内置测试 MCP 未返回 demo=true")
+    if payload.get("marker") != BUILTIN_DEMO_MARKER:
+        raise _SelfTestFailure(502, "内置测试 MCP 的固定标记不匹配")
+    if payload.get("nonce") != nonce:
+        raise _SelfTestFailure(502, "内置测试 MCP 未原样回显本次 nonce")
+    server_time_raw = payload.get("server_time_utc")
+    try:
+        server_time = parse_rfc3339(server_time_raw)
+    except (TypeError, ValueError):
+        raise _SelfTestFailure(502, "内置测试 MCP 未返回有效的当前 UTC 时间") from None
+    if abs((datetime.now(timezone.utc) - server_time).total_seconds()) > SELF_TEST_CLOCK_SKEW_SECONDS:
+        raise _SelfTestFailure(502, "内置测试 MCP 返回的 UTC 时间与当前时间相差过大")
+    instance_id = payload.get("instance_id")
+    if (
+        not isinstance(instance_id, str)
+        or not 1 <= len(instance_id) <= 128
+        or instance_id.strip() != instance_id
+        or any(ord(char) < 33 or ord(char) > 126 for char in instance_id)
+    ):
+        raise _SelfTestFailure(502, "内置测试 MCP 返回的进程启动标识无效")
+    return {
+        "demo": True,
+        "marker": BUILTIN_DEMO_MARKER,
+        "nonce": nonce,
+        "server_time_utc": server_time.isoformat(),
+        "instance_id": instance_id,
+    }
+
+
+async def _execute_self_test(
+    settings: Settings,
+    edge_base: str,
+    source_id: str,
+    nonce: str,
+    token: str,
+    trace_id: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> tuple[int, str, list[dict], dict]:
+    stages: list[dict] = []
+    current = "edge_connect"
+    edge_url = f"{edge_base}/sources/{source_id}/mcp"
+    timeout = httpx.Timeout(
+        settings.kaiwu_edge_request_timeout_seconds,
+        connect=min(10.0, settings.kaiwu_edge_request_timeout_seconds),
+    )
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            transport=transport,
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
+            status, trace_id, content_type, raw, session_id = await _post_self_test(
+                client,
+                edge_url,
+                token,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "kaiwu-self-test", "version": "1.3.8"},
+                    },
+                },
+                trace_id,
+            )
+            _require_edge_status(status)
+            _stage_status(stages, "edge_connect", "passed", "已通过受信公网 HTTPS Edge 建立 MCP 请求")
+
+            current = "mcp_initialize"
+            initialize_result = _jsonrpc_result(raw, content_type, 1)
+            if not isinstance(initialize_result.get("protocolVersion"), str):
+                raise _SelfTestFailure(502, "内置测试 MCP 的初始化结果缺少协议版本")
+            status, trace_id, _, _, notification_session = await _post_self_test(
+                client,
+                edge_url,
+                token,
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                trace_id,
+                session_id,
+            )
+            _require_edge_status(status)
+            if notification_session:
+                session_id = notification_session
+            _stage_status(stages, "mcp_initialize", "passed", "MCP initialize 和 initialized 通知已完成")
+
+            current = "tools_list"
+            status, trace_id, content_type, raw, listed_session = await _post_self_test(
+                client,
+                edge_url,
+                token,
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+                trace_id,
+                session_id,
+            )
+            _require_edge_status(status)
+            if listed_session:
+                session_id = listed_session
+            listed = _jsonrpc_result(raw, content_type, 2).get("tools")
+            names = [
+                item.get("name")
+                for item in listed
+                if isinstance(item, dict)
+            ] if isinstance(listed, list) else []
+            if BUILTIN_DEMO_TOOL not in names:
+                raise _SelfTestFailure(502, f"工具目录没有已批准的内置测试工具 {BUILTIN_DEMO_TOOL}")
+            _stage_status(stages, "tools_list", "passed", f"工具目录已返回 {BUILTIN_DEMO_TOOL}")
+
+            current = "tools_call"
+            status, trace_id, content_type, raw, called_session = await _post_self_test(
+                client,
+                edge_url,
+                token,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": BUILTIN_DEMO_TOOL, "arguments": {"nonce": nonce}},
+                },
+                trace_id,
+                session_id,
+            )
+            _require_edge_status(status)
+            if called_session:
+                session_id = called_session
+            called_result = _jsonrpc_result(raw, content_type, 3)
+            _stage_status(stages, "tools_call", "passed", f"已执行固定工具 {BUILTIN_DEMO_TOOL}")
+
+            current = "probe_validation"
+            probe = _validate_probe(called_result, nonce)
+            _stage_status(stages, "probe_validation", "passed", "nonce、固定标记、UTC 时间和实例标识均校验通过")
+            return 200, trace_id, stages, probe
+    except _SelfTestFailure as exc:
+        _finish_self_test_stages(stages, current, exc.message)
+        return exc.status_code, trace_id, stages, {}
+    except Exception:  # noqa: BLE001 - never expose internal/transient details
+        _finish_self_test_stages(stages, current, "自检过程中发生未预期错误")
+        return 502, trace_id, stages, {}
+
+
+def _create_self_test_integration(
+    db: Database,
+    connector: dict,
+    source_id: str,
+    request_timeout_seconds: float,
+) -> tuple[str, str]:
+    token = _new_integration_token()
+    integration_id = "int_" + uid()
+    timestamp = now()
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(seconds=max(60, int(request_timeout_seconds) + 5))
+    ).isoformat()
+    with db.transaction():
+        db.execute(
+            "INSERT INTO kaiwu_integrations"
+            "(id,tenant_id,connector_id,display_name,token_hash,token_prefix,expires_at,"
+            "revision,rotated_at,revoked_at,created_by,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,1,NULL,NULL,?,?,?)",
+            (
+                integration_id,
+                connector["tenant_id"],
+                connector["id"],
+                BUILTIN_DEMO_SOURCE_NAME,
+                _hash_secret(token),
+                "self-test",
+                expires_at,
+                SELF_TEST_INTEGRATION_CREATED_BY_PREFIX + connector["device_key_id"],
+                timestamp,
+                timestamp,
+            ),
+        )
+        db.execute(
+            "INSERT INTO kaiwu_integration_sources"
+            "(integration_id,connector_id,source_id) VALUES(?,?,?)",
+            (integration_id, connector["id"], source_id),
+        )
+    return integration_id, token
+
+
+def _revoke_self_test_integration(db: Database, integration_id: str) -> bool:
+    row = db.one(
+        "SELECT created_by FROM kaiwu_integrations WHERE id=?",
+        (integration_id,),
+    )
+    if row and not str(row["created_by"]).startswith(SELF_TEST_INTEGRATION_CREATED_BY_PREFIX):
+        raise RuntimeError("refusing to delete a non-self-test integration")
+    with db.transaction():
+        db.execute(
+            "DELETE FROM kaiwu_integration_sources WHERE integration_id=?",
+            (integration_id,),
+        )
+        db.execute("DELETE FROM kaiwu_integrations WHERE id=?", (integration_id,))
+    return db.one("SELECT 1 FROM kaiwu_integrations WHERE id=?", (integration_id,)) is None
+
+
+def _record_self_test_cleanup(
+    db: Database,
+    connector: dict,
+    source_id: str,
+    trace_id: str,
+    cleanup_succeeded: bool,
+) -> None:
+    """Record only cleanup outcome in the existing control audit."""
+    try:
+        _audit(
+            db,
+            tenant_id=connector["tenant_id"],
+            connector_id=connector["id"],
+            source_id=source_id,
+            actor_type="device",
+            actor_id=connector["device_key_id"],
+            action=SELF_TEST_CLEANUP_ACTION,
+            outcome="allow" if cleanup_succeeded else "deny",
+            trace_id=trace_id,
+            detail={
+                "result": "succeeded" if cleanup_succeeded else "failed",
+                "tool_name": BUILTIN_DEMO_TOOL,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not mask cleanup
+        log.warning("self-test cleanup diagnostics write failed (%s)", type(exc).__name__)
 
 
 def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
@@ -1234,6 +1729,108 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             ),
         )
         return {"ok": True, "received_at": now()}
+
+    @router.post("/v1/connectors/{connector_id}/self-test")
+    async def self_test(
+        connector_id: str,
+        data: SelfTestRequest,
+        device_ctx=Depends(device),
+        service_obj=Depends(service),
+    ):
+        connector = device_ctx["connector"]
+        if connector["id"] != connector_id:
+            raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
+        expected_source_id = _builtin_demo_source_id(connector_id)
+        if data.source_id != expected_source_id:
+            raise AppError(
+                403,
+                "SELF_TEST_SOURCE_DENIED",
+                "内置测试来源编号与当前连接器不匹配",
+            )
+        settings: Settings = device_ctx["settings"]
+        source = service_obj.db.one(
+            "SELECT * FROM kaiwu_sources "
+            "WHERE connector_id=? AND source_id=?",
+            (connector_id, data.source_id),
+        )
+        if (
+            not source
+            or source["tenant_id"] != connector["tenant_id"]
+            or source["connector_id"] != connector_id
+        ):
+            raise AppError(403, "SELF_TEST_SOURCE_DENIED", "该来源不属于当前企业和连接器")
+        try:
+            allowed_tools = json.loads(source["allowed_tools"])
+        except (TypeError, ValueError):
+            allowed_tools = []
+        if (
+            not isinstance(allowed_tools, list)
+            or not all(isinstance(tool, str) for tool in allowed_tools)
+            or len(allowed_tools) != len(BUILTIN_DEMO_TOOLS)
+            or set(allowed_tools) != BUILTIN_DEMO_TOOLS
+        ):
+            raise AppError(
+                403,
+                "SELF_TEST_SOURCE_DENIED",
+                "内置测试来源必须恰好批准三个固定的 kaiwu_demo_* 只读工具",
+            )
+        _integration_rows(service_obj.db, connector_id, [data.source_id])
+        edge_base = _self_test_edge_base(settings)
+        trace_id = new_trace_id()
+        integration_id, token = _create_self_test_integration(
+            service_obj.db,
+            connector,
+            data.source_id,
+            settings.kaiwu_edge_request_timeout_seconds,
+        )
+        cleanup_succeeded = False
+        try:
+            status, trace_id, stages, probe = await _execute_self_test(
+                settings,
+                edge_base,
+                data.source_id,
+                data.nonce,
+                token,
+                trace_id,
+            )
+        finally:
+            try:
+                cleanup_succeeded = _revoke_self_test_integration(
+                    service_obj.db,
+                    integration_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - cleanup result is reported below
+                log.warning(
+                    "self-test temporary credential cleanup failed (%s)",
+                    type(exc).__name__,
+                )
+            _record_self_test_cleanup(
+                service_obj.db,
+                connector,
+                data.source_id,
+                trace_id,
+                cleanup_succeeded,
+            )
+        if not cleanup_succeeded:
+            status = 500
+            probe = {}
+            _stage_status(stages, "cleanup", "failed", "临时测试凭据清理失败")
+        response = JSONResponse(
+            status_code=status,
+            content={
+                "data": {
+                    "ok": status == 200 and bool(probe),
+                    "trace_id": trace_id,
+                    "source_id": data.source_id,
+                    "stages": stages,
+                    "probe": probe,
+                }
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+        if TRACE_ID_RE.fullmatch(trace_id):
+            response.headers["X-Kaiwu-Trace-ID"] = trace_id
+        return response
 
     def transition(connector_id: str, action: str, admin_ctx, service_obj) -> dict:
         connector = service_obj.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))

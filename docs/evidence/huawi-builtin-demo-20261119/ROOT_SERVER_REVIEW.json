@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "exit_code": 0,
+  "started_at": "2026-11-19T10:11:43.592177+00:00",
+  "finished_at": "2026-11-19T10:12:43.824186+00:00",
+  "baseline_commit": "c55c6b3e1d22dd14e080cfaf2da1fc6ef89259a7",
+  "commit_created": false,
+  "reviewer": "root/release_pipeline_review",
+  "pytest_exit_code": 0,
+  "diff_check_exit_code": 0,
+  "syntax_check": "passed",
+  "elapsed_seconds": 60.16,
+  "actual_test_command": [
+    "python3.10",
+    "-m",
+    "pytest",
+    "-q",
+    "server/tests/test_kaiwu_self_test.py",
+    "server/tests/test_kaiwu_enterprise.py::test_edge_authentication_rotation_isolation_and_session_binding",
+    "server/tests/test_kaiwu_enterprise.py::test_edge_concurrent_integrations_do_not_cross_results",
+    "-p",
+    "no:cacheprovider",
+    "--basetemp=/media/data3/dengkw/tmp/pytest-root-server-review-demo138-final-20261119"
+  ],
+  "actual_tests": [
+    "server/tests/test_kaiwu_self_test.py",
+    "server/tests/test_kaiwu_enterprise.py::test_edge_authentication_rotation_isolation_and_session_binding",
+    "server/tests/test_kaiwu_enterprise.py::test_edge_concurrent_integrations_do_not_cross_results"
+  ],
+  "test_summary": [
+    "13 passed, 1 warning in 57.66s"
+  ],
+  "source_sha256": {
+    "server/app/kaiwu_control.py": "cf0c415d98b4405eee2e50695a5650cacf95a9f4837aed2a7cb8a1f4e7fb3d0a",
+    "server/app/kaiwu_edge.py": "9f36296dc25083398abb39ae85ab98f01f15eccfbb4361f2615c463337697ad3",
+    "server/tests/test_kaiwu_self_test.py": "5e13bcff8811853ac17f3d638d9901a734f0c84a7271a5cc6d0c906a47b2b8ef"
+  },
+  "source_unchanged_during_tests": true,
+  "repair_scope": {
+    "server/app/kaiwu_control.py": "Only _self_test_edge_base hostname normalization: add rstrip(dot).",
+    "server/tests/test_kaiwu_self_test.py": "Only add https://localhost. and https://x.localhost. to existing loopback rejection parametrization."
+  },
+  "review_checks": {
+    "source_id": "Recomputed from authenticated connector; exact source tenant and connector scope; exactly three builtin tool names.",
+    "temporary_key": "Server-only random token; stored self-test marker; actual Edge permits only ping calls with nonce; finally deletes its own temporary integration and mapping.",
+    "ordinary_keys": "Existing real Edge authentication, rotation, session isolation and concurrent lookup_order regressions included.",
+    "https": "Configured HTTPS only, no local exceptions; trailing-dot localhost variants rejected after this repair.",
+    "event_loop": "async self_test awaits _execute_self_test using httpx.AsyncClient; all four HTTP steps await async stream; no synchronous HTTP self-call.",
+    "cleanup_log": "Existing audit action integration.self_test_cleanup; failure-plus-successful-cleanup regression confirms no false diagnosis success."
+  },
+  "previous_independent_regression": {
+    "tests": [
+      "server/tests/test_kaiwu_control.py",
+      "server/tests/test_kaiwu_enterprise.py",
+      "server/tests/test_kaiwu_self_test.py"
+    ],
+    "summary": "21 passed, 1 warning in 75.90s",
+    "exit_code": 0,
+    "before_trailing_dot_repair": true
+  },
+  "windows_executed": false,
+  "cloud_deployed": false,
+  "real_public_tls_frp_verified": false,
+  "actual_kaiwu_chat_verified": false,
+  "evidence_log": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/docs/evidence/huawi-builtin-demo-20261119/ROOT_SERVER_REVIEW.log"
+}

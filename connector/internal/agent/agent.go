@@ -28,6 +28,7 @@ import (
 	"github.com/sherkevin/open-claude-code/connector/internal/authproxy"
 	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/demomcp"
 	"github.com/sherkevin/open-claude-code/connector/internal/devicekey"
 	"github.com/sherkevin/open-claude-code/connector/internal/diag"
 	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
@@ -68,20 +69,29 @@ type Options struct {
 
 // Agent 是连接器运行主体。
 type Agent struct {
-	opts      Options
-	store     *store.Store
-	state     *state.Machine
-	cloud     *cloud.Client
-	deviceKey *devicekey.Key
-	diagMgr   *diagnostics.Manager
+	opts          Options
+	store         *store.Store
+	state         *state.Machine
+	cloud         *cloud.Client
+	deviceKey     *devicekey.Key
+	diagMgr       *diagnostics.Manager
+	demoServer    *demomcp.Server
+	demoState     builtinDemoState
+	demoErrorCode string
 
-	mu        sync.RWMutex
-	connectMu sync.Mutex
-	identity  cloud.Identity
-	config    config.Connector
-	secrets   map[string]map[string]string
-	profiles  map[string]huaweiauth.Profile
-	lastError string
+	mu            sync.RWMutex
+	connectMu     sync.Mutex
+	lifecycleMu   sync.Mutex
+	runtimeOnce   sync.Once
+	closeOnce     sync.Once
+	runtimeCtx    context.Context
+	runtimeCancel context.CancelFunc
+	closed        bool
+	identity      cloud.Identity
+	config        config.Connector
+	secrets       map[string]map[string]string
+	profiles      map[string]huaweiauth.Profile
+	lastError     string
 
 	supervisor *supervisor.Supervisor
 	proxies    map[string]*authproxy.Server
@@ -90,6 +100,7 @@ type Agent struct {
 	frpcAdminPort     int
 	frpcAdminUser     string
 	frpcAdminPassword string
+	frpcUser          string
 	frpcProxyCount    int
 	stoppingTunnels   int
 	registeredSources map[string]map[string]bool
@@ -124,6 +135,7 @@ type Status struct {
 	EdgeBase        string            `json:"edge_base,omitempty"`
 	AuthProfiles    []SourceAuth      `json:"auth_profiles"`
 	Diagnostics     diagnostics.Stats `json:"diagnostics"`
+	BuiltinDemo     BuiltinDemoStatus `json:"builtin_demo"`
 	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
@@ -146,6 +158,7 @@ func New(opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	agent := &Agent{
 		opts:              opts,
 		store:             st,
@@ -153,8 +166,11 @@ func New(opts Options) (*Agent, error) {
 		secrets:           map[string]map[string]string{},
 		profiles:          map[string]huaweiauth.Profile{},
 		proxies:           map[string]*authproxy.Server{},
+		demoServer:        demomcp.New(),
 		config:            config.Connector{SchemaVersion: config.CurrentSchemaVersion},
 		registeredSources: map[string]map[string]bool{},
+		runtimeCtx:        runtimeCtx,
+		runtimeCancel:     runtimeCancel,
 	}
 	deviceKey, _, err := devicekey.LoadOrCreate(st.Path(fileDeviceKey))
 	if err != nil {
@@ -192,6 +208,12 @@ func New(opts Options) (*Agent, error) {
 	}
 	if err := st.ReadProtectedJSON(fileAuth, &agent.profiles); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
+	}
+	if err := st.ReadJSON(fileBuiltinDemo, &agent.demoState); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if agent.demoState.SourceID != "" && !isOpaqueSourceID(agent.demoState.SourceID) {
+		agent.demoState.SourceID = ""
 	}
 	if agent.secrets == nil {
 		agent.secrets = map[string]map[string]string{}
@@ -236,12 +258,109 @@ func New(opts Options) (*Agent, error) {
 	return agent, nil
 }
 
-// Close stops background diagnostics work and flushes the durable queue.
-func (a *Agent) Close() {
-	if a == nil || a.diagMgr == nil {
+// StartRuntime starts the shared serving lifecycle used by both CLI serve and
+// the Windows Service Control Manager path.
+func (a *Agent) StartRuntime() {
+	if a == nil {
 		return
 	}
-	a.diagMgr.Close()
+	if a.isClosed() {
+		return
+	}
+	a.runtimeOnce.Do(func() {
+		a.StartDiagnostics()
+		a.RecordStartup()
+		if err := a.StartBuiltinDemo(); err != nil {
+			a.recordDiagnostic(diagnostics.Record{EventCode: "operation_failed"})
+		}
+		if a.ShouldAutoConnect() {
+			go a.AutoConnect()
+		}
+	})
+}
+
+// Close stops background work and flushes the durable diagnostics queue.
+func (a *Agent) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), supervisorStopTimeout)
+	defer cancel()
+	a.CloseContext(ctx)
+}
+
+// CloseContext is the bounded shutdown used by the CLI and Windows SCM.
+func (a *Agent) CloseContext(ctx context.Context) {
+	if a == nil {
+		return
+	}
+	a.closeOnce.Do(func() {
+		a.lifecycleMu.Lock()
+		defer a.lifecycleMu.Unlock()
+		a.mu.Lock()
+		a.closed = true
+		if a.runtimeCancel != nil {
+			a.runtimeCancel()
+		}
+		s := a.supervisor
+		stopHeartbeat := a.heartbeat
+		a.supervisor = nil
+		a.heartbeat = nil
+		a.frpcAdminPort = 0
+		a.frpcAdminUser = ""
+		a.frpcAdminPassword = ""
+		a.frpcUser = ""
+		a.frpcProxyCount = 0
+		a.stoppingTunnels++
+		a.mu.Unlock()
+		if stopHeartbeat != nil {
+			stopHeartbeat()
+		}
+		if s != nil {
+			_ = s.Stop(ctx)
+		}
+		a.stopAuthProxies()
+		a.stopBuiltinDemoServer()
+		if a.diagMgr != nil {
+			a.recordDiagnostic(diagnostics.Record{EventCode: "connector_stopped"})
+			a.diagMgr.Close()
+		}
+		a.mu.Lock()
+		a.stoppingTunnels--
+		a.mu.Unlock()
+	})
+}
+
+var errAgentClosed = errors.New("连接器正在关闭，已取消本次操作")
+
+func (a *Agent) isClosed() bool {
+	if a == nil {
+		return true
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.closed
+}
+
+// beginRuntimeOperation ties a request or self-test to the connector's serving
+// lifecycle. Close cancels this context even when the caller used background.
+func (a *Agent) beginRuntimeOperation(parent context.Context) (context.Context, func(), error) {
+	if a == nil {
+		return nil, func() {}, errAgentClosed
+	}
+	a.mu.RLock()
+	closed := a.closed
+	runtimeCtx := a.runtimeCtx
+	a.mu.RUnlock()
+	if closed || runtimeCtx == nil {
+		return nil, func() {}, errAgentClosed
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(runtimeCtx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}, nil
 }
 
 // reapStaleFrpc 清理上次进程异常退出后遗留的 frpc，避免新进程注册同名代理被拒绝。
@@ -409,14 +528,16 @@ func endpointConfigured(raw string) bool {
 }
 
 type frpcProxyStatus struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Err    string `json:"err"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	Err       string `json:"err"`
+	LocalAddr string `json:"local_addr"`
 }
 
-func queryFrpcTunnel(port int, user, password string, expected int) (bool, string) {
-	if port <= 0 || expected <= 0 {
-		return false, "frpc 尚未配置可检查的来源代理"
+func queryFrpcStatus(port int, user, password string) (map[string][]frpcProxyStatus, string, bool) {
+	if port <= 0 {
+		return nil, "frpc 状态接口不可用", false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
 	defer cancel()
@@ -427,24 +548,35 @@ func queryFrpcTunnel(port int, user, password string, expected int) (bool, strin
 		nil,
 	)
 	if err != nil {
-		return false, "frpc 状态接口不可用"
+		return nil, "frpc 状态接口不可用", false
 	}
 	request.SetBasicAuth(user, password)
 	response, err := (&http.Client{Timeout: time.Second}).Do(request)
 	if err != nil {
-		return false, "frpc 尚未完成中继登录"
+		return nil, "frpc 尚未完成中继登录", false
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return false, "frpc 状态接口返回异常"
+		return nil, "frpc 状态接口返回异常", false
 	}
 	payload, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
 	if err != nil || len(payload) > 1<<20 {
-		return false, "frpc 状态响应无效"
+		return nil, "frpc 状态响应无效", false
 	}
 	var groups map[string][]frpcProxyStatus
 	if err := json.Unmarshal(payload, &groups); err != nil {
-		return false, "frpc 状态响应不是有效 JSON"
+		return nil, "frpc 状态响应不是有效 JSON", false
+	}
+	return groups, "", true
+}
+
+func queryFrpcTunnel(port int, user, password string, expected int) (bool, string) {
+	if expected <= 0 {
+		return false, "frpc 尚未配置可检查的来源代理"
+	}
+	groups, detail, ok := queryFrpcStatus(port, user, password)
+	if !ok {
+		return false, detail
 	}
 	running := 0
 	for _, statuses := range groups {
@@ -460,6 +592,65 @@ func queryFrpcTunnel(port int, user, password string, expected int) (bool, strin
 		return false, fmt.Sprintf("来源代理尚未全部运行（%d/%d）", running, expected)
 	}
 	return true, fmt.Sprintf("%d 个来源代理已运行", running)
+}
+
+func queryFrpcProxyStatus(port int, user, password, proxyName string) (frpcProxyStatus, bool, string) {
+	if strings.TrimSpace(proxyName) == "" {
+		return frpcProxyStatus{}, false, "示例路由名称为空"
+	}
+	groups, detail, ok := queryFrpcStatus(port, user, password)
+	if !ok {
+		return frpcProxyStatus{}, false, detail
+	}
+	for _, item := range groups["stcp"] {
+		if item.Name != proxyName {
+			continue
+		}
+		if item.Status != "running" || item.Err != "" {
+			return item, false, "示例 STCP 路由尚未运行"
+		}
+		return item, true, "示例 STCP 路由已运行"
+	}
+	return frpcProxyStatus{}, false, "示例 STCP 路由尚未创建"
+}
+
+// queryFrpcDemoRoute checks only the exact bundled-demo route. Customer
+// route errors are intentionally ignored so a demo-only self-test is not
+// coupled to the health of unrelated business sources.
+func queryFrpcDemoRoute(port int, user, password, demoID, commonUser, expectedLocalAddr string) (bool, string) {
+	item, ok, detail := queryFrpcProxyStatus(port, user, password, frpcProxyName(demoID, commonUser))
+	if !ok {
+		return false, detail
+	}
+	if item.LocalAddr != expectedLocalAddr {
+		return false, "示例 STCP 路由本机地址或端口不一致"
+	}
+	return true, "示例 STCP 路由已运行"
+}
+
+// queryConnectTunnel keeps ordinary Connect on the existing all-route health
+// check, while demo-only Connect checks the exact bundled route and ignores
+// unrelated customer route failures.
+func queryConnectTunnel(port int, generated frpc.Config, demoOnly bool, demoID string) (bool, string) {
+	if !demoOnly {
+		return queryFrpcTunnel(port, generated.AdminUser, generated.AdminPassword, len(generated.Proxies))
+	}
+	for _, proxy := range generated.Proxies {
+		if proxy.Name != demoID {
+			continue
+		}
+		expectedLocalAddr := net.JoinHostPort(proxy.LocalIP, strconv.Itoa(proxy.LocalPort))
+		return queryFrpcDemoRoute(port, generated.AdminUser, generated.AdminPassword, demoID, generated.User, expectedLocalAddr)
+	}
+	return false, "内置示例代理未进入当前通道配置"
+}
+
+func frpcProxyName(sourceID, commonUser string) string {
+	commonUser = strings.TrimSpace(commonUser)
+	if commonUser == "" {
+		return sourceID
+	}
+	return commonUser + "." + sourceID
 }
 
 // CloudReadyForTrial reports whether this build has a real control-plane and
@@ -503,6 +694,15 @@ func (a *Agent) Status() Status {
 	return status
 }
 
+// statusSnapshot returns the stored status without probing FRP. Demo-only
+// failure paths use it so a customer proxy error cannot be reclassified as a
+// new failure caused by the demo test itself.
+func (a *Agent) statusSnapshot() Status {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.statusLocked()
+}
+
 // Bind 用一次性接入码兑换设备身份。
 func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
 	started := time.Now()
@@ -533,11 +733,19 @@ func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
 		a.recordDiagnostic(diagnostics.Record{EventCode: "enrollment_failed", OperationID: operationID, DurationMS: diagnosticDuration(started)})
 		return a.Status(), errors.New("云端未返回有效的设备身份")
 	}
+	if err := a.validateBuiltinDemoIdentity(identity.ConnectorID); err != nil {
+		a.recordDiagnostic(diagnostics.Record{EventCode: "enrollment_failed", OperationID: operationID, DurationMS: diagnosticDuration(started)})
+		return a.Status(), err
+	}
 	a.mu.Lock()
 	a.identity = identity
 	a.registeredSources = map[string]map[string]bool{}
 	a.mu.Unlock()
 	if err := a.store.WriteProtectedJSON(fileIdentity, identity); err != nil {
+		a.recordDiagnostic(diagnostics.Record{EventCode: "enrollment_failed", OperationID: operationID, DurationMS: diagnosticDuration(started)})
+		return a.Status(), err
+	}
+	if err := a.migrateBuiltinDemoForIdentity(identity.ConnectorID); err != nil {
 		a.recordDiagnostic(diagnostics.Record{EventCode: "enrollment_failed", OperationID: operationID, DurationMS: diagnosticDuration(started)})
 		return a.Status(), err
 	}
@@ -616,6 +824,15 @@ func (a *Agent) ImportConfig(ctx context.Context, raw []byte) (config.ImportRepo
 	a.syncDiagnosticApprovals()
 	if a.state.Current() == state.Unpaired || a.state.Current() == state.Configuring {
 		a.state.Transition(state.Configuring, "已导入来源配置")
+	}
+	a.mu.RLock()
+	demoDisabled := a.demoState.Disabled
+	a.mu.RUnlock()
+	if !demoDisabled {
+		// Import replaces business sources but the bundled test source remains
+		// independent. A conflict is surfaced in BuiltinDemo without blocking
+		// the customer's successfully validated import.
+		_ = a.StartBuiltinDemo()
 	}
 	a.recordDiagnostic(diagnostics.Record{
 		EventCode:   "config_imported",
@@ -764,9 +981,6 @@ func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) (reports [
 		profile, hasProfile := a.profiles[source.SourceID]
 		a.mu.RUnlock()
 		if probe != "" {
-			if !hasProfile {
-				return nil, errors.New("试调用前请先导入本机动态认证配置")
-			}
 			if !containsTool(source.ToolAllowlist, probe) {
 				return nil, errors.New("试调用工具不在当前已批准列表内")
 			}
@@ -803,6 +1017,12 @@ func containsTool(tools []string, wanted string) bool {
 func (a *Agent) registerSources(ctx context.Context) error {
 	a.mu.RLock()
 	sources := enabledSources(a.config.Sources)
+	a.mu.RUnlock()
+	return a.registerSourcesFor(ctx, sources)
+}
+
+func (a *Agent) registerSourcesFor(ctx context.Context, sources []config.Source) error {
+	a.mu.RLock()
 	proxies := make(map[string]*authproxy.Server, len(a.proxies))
 	for sourceID, proxy := range a.proxies {
 		proxies[sourceID] = proxy
@@ -939,9 +1159,18 @@ func digestString(value string) string {
 }
 
 // Connect 拉取期望状态、生成通道配置并启动 frpc。
-func (a *Agent) Connect(ctx context.Context) (status Status, err error) {
+func (a *Agent) Connect(ctx context.Context) (Status, error) {
+	return a.connect(ctx, false)
+}
+
+func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err error) {
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
+	ctx, release, operationErr := a.beginRuntimeOperation(ctx)
+	if operationErr != nil {
+		return a.statusSnapshot(), operationErr
+	}
+	defer release()
 
 	started := time.Now()
 	operationID := diagnostics.NewOperationID()
@@ -965,30 +1194,79 @@ func (a *Agent) Connect(ctx context.Context) (status Status, err error) {
 	}
 	a.mu.RLock()
 	hasSources := hasEnabledSource(a.config.Sources)
+	demoID := a.demoState.SourceID
+	demoSourceIndex := a.builtinDemoSourceIndexLocked()
+	demoRunning := a.builtinDemoRuntimeReadyLocked()
 	a.mu.RUnlock()
+	if demoOnly {
+		hasSources = demoSourceIndex >= 0 && demoID != "" && demoRunning
+	}
 	if !hasSources {
+		if demoOnly {
+			return a.Status(), errors.New("内置测试服务尚未启动，请先在页面中启用内置测试服务")
+		}
 		return a.Status(), errors.New("请至少启用一个 MCP 服务后再连接")
 	}
-	if current := a.state.Current(); current != state.Connecting {
+	if current := a.state.Current(); !demoOnly && current != state.Connecting {
 		if !state.CanTransition(current, state.Connecting) {
 			a.state.Transition(state.Configuring, "回到待配置")
 		}
 		a.state.Transition(state.Connecting, "开始建立通道")
 	}
 
-	if err := a.startAuthProxies(); err != nil {
-		a.state.Transition(state.DegradedRelay, "启动本机认证代理失败: "+err.Error())
+	var demoCreatedProxies map[string]*authproxy.Server
+	if demoOnly {
+		demoCreatedProxies, err = a.startAuthProxiesForDemo()
+	} else {
+		err = a.startAuthProxies()
+	}
+	if err != nil {
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, "启动本机认证代理失败: "+err.Error())
+		}
 		return a.Status(), err
 	}
-	if err := a.registerSources(ctx); err != nil {
+	if demoOnly {
+		reused, reuseErr := a.reuseRunningDemoTunnel(ctx)
+		if reused {
+			if reuseErr != nil {
+				a.stopNewAuthProxies(demoCreatedProxies)
+				return a.statusSnapshot(), reuseErr
+			}
+			return a.statusSnapshot(), nil
+		}
+	}
+	cleanupProxies := func() {
+		if demoOnly {
+			a.stopNewAuthProxies(demoCreatedProxies)
+			return
+		}
 		a.stopAuthProxies()
-		a.state.Transition(state.DegradedRelay, err.Error())
-		return a.Status(), err
+	}
+	registrationErr := error(nil)
+	if demoOnly {
+		source, sourceErr := a.builtinDemoSource()
+		if sourceErr != nil {
+			registrationErr = sourceErr
+		} else {
+			registrationErr = a.registerSourcesFor(ctx, []config.Source{source})
+		}
+	} else {
+		registrationErr = a.registerSources(ctx)
+	}
+	if registrationErr != nil {
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, registrationErr.Error())
+		}
+		return a.Status(), registrationErr
 	}
 	desired, err := a.cloud.DesiredState(ctx, a.identity.ConnectorID)
 	if err != nil {
-		a.stopAuthProxies()
-		a.state.Transition(state.DegradedRelay, "获取云端状态失败: "+err.Error())
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, "获取云端状态失败: "+err.Error())
+		}
 		return a.Status(), err
 	}
 	if desired.Revoked {
@@ -1002,28 +1280,53 @@ func (a *Agent) Connect(ctx context.Context) (status Status, err error) {
 	}
 	secretsState, err := a.cloud.TransportSecrets(ctx, a.identity.ConnectorID)
 	if err != nil {
-		a.stopAuthProxies()
-		a.state.Transition(state.DegradedRelay, "获取通道密钥失败")
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, "获取通道密钥失败")
+		}
 		return a.Status(), fmt.Errorf("获取通道密钥失败: %w", err)
 	}
 	desired = mergeSecrets(desired, secretsState)
 
 	generated, err := a.buildFrpcConfig(desired)
 	if err != nil {
-		a.stopAuthProxies()
-		a.state.Transition(state.DegradedRelay, "通道配置无效: "+err.Error())
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, "通道配置无效: "+err.Error())
+		}
 		return a.Status(), err
+	}
+	if demoOnly {
+		demoApproved := false
+		for _, proxy := range generated.Proxies {
+			if proxy.Name == demoID {
+				demoApproved = true
+				break
+			}
+		}
+		if !demoApproved {
+			cleanupProxies()
+			return a.Status(), errors.New("云端尚未批准内置测试来源，请先由开物管理员完成来源登记和授权")
+		}
+	}
+	if a.isClosed() {
+		cleanupProxies()
+		return a.statusSnapshot(), errAgentClosed
 	}
 	adminPort, err := freeLoopbackPort()
 	if err != nil {
-		a.stopAuthProxies()
-		a.state.Transition(state.DegradedRelay, "分配 frpc 本机管理端口失败")
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, "分配 frpc 本机管理端口失败")
+		}
 		return a.Status(), err
 	}
 	adminPassword, err := randomHex(24)
 	if err != nil {
-		a.stopAuthProxies()
-		a.state.Transition(state.DegradedRelay, "生成 frpc 本机管理凭据失败")
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, "生成 frpc 本机管理凭据失败")
+		}
 		return a.Status(), err
 	}
 	generated.AdminPort = adminPort
@@ -1032,24 +1335,35 @@ func (a *Agent) Connect(ctx context.Context) (status Status, err error) {
 	configPath := a.store.Path(fileFrpc)
 	frpcEnvironment, err := generated.WriteEnvFile(configPath)
 	if err != nil {
-		a.stopAuthProxies()
-		a.state.Transition(state.DegradedRelay, "写入通道配置失败: "+err.Error())
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, "写入通道配置失败: "+err.Error())
+		}
 		return a.Status(), err
 	}
 
 	binary := a.frpcBinary()
 	if _, err := os.Stat(binary); err != nil {
-		a.stopAuthProxies()
-		a.state.Transition(state.DegradedRelay, "找不到 frpc 程序")
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, "找不到 frpc 程序")
+		}
 		return a.Status(), fmt.Errorf("找不到 frpc 程序: %s", binary)
 	}
 
+	a.lifecycleMu.Lock()
+	if a.isClosed() {
+		a.lifecycleMu.Unlock()
+		cleanupProxies()
+		return a.statusSnapshot(), errAgentClosed
+	}
 	a.mu.Lock()
 	previousSupervisor := a.supervisor
 	a.stoppingTunnels++
 	a.frpcAdminPort = adminPort
 	a.frpcAdminUser = generated.AdminUser
 	a.frpcAdminPassword = adminPassword
+	a.frpcUser = generated.User
 	a.frpcProxyCount = len(generated.Proxies)
 	s := supervisor.New(binary, configPath)
 	s.PIDFile = a.store.Path("frpc.pid")
@@ -1068,14 +1382,16 @@ func (a *Agent) Connect(ctx context.Context) (status Status, err error) {
 		stopHeartbeat()
 	}
 	if err := s.Start(ctx); err != nil {
-		a.stopAuthProxies()
+		a.lifecycleMu.Unlock()
+		cleanupProxies()
 		a.state.Transition(state.DegradedRelay, err.Error())
 		return a.Status(), err
 	}
+	a.lifecycleMu.Unlock()
 
 	time.Sleep(800 * time.Millisecond)
 	if !s.Running() {
-		a.stopAuthProxies()
+		cleanupProxies()
 		a.state.Transition(state.DegradedRelay, "通道未启动: "+s.LastError())
 		return a.Status(), errors.New("通道未启动")
 	}
@@ -1088,18 +1404,17 @@ func (a *Agent) Connect(ctx context.Context) (status Status, err error) {
 	tunnelDetail := "frpc 尚未完成中继登录"
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		tunnelConnected, tunnelDetail = queryFrpcTunnel(
-			adminPort,
-			generated.AdminUser,
-			adminPassword,
-			len(generated.Proxies),
-		)
+		tunnelConnected, tunnelDetail = queryConnectTunnel(adminPort, generated, demoOnly, demoID)
 		if tunnelConnected {
 			break
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	reports, diagErr := a.Diagnose(ctx, "", "")
+	diagnoseSourceID := ""
+	if demoOnly {
+		diagnoseSourceID = demoID
+	}
+	reports, diagErr := a.Diagnose(ctx, diagnoseSourceID, "")
 	if diagErr != nil {
 		a.state.Transition(state.DegradedUpstream, "内网来源检查失败: "+diagErr.Error())
 		a.startHeartbeat()
@@ -1110,6 +1425,11 @@ func (a *Agent) Connect(ctx context.Context) (status Status, err error) {
 	} else if !tunnelConnected {
 		a.state.Transition(state.DegradedRelay, tunnelDetail)
 	} else {
+		if demoOnly && a.state.Current() != state.Ready && !state.CanTransition(a.state.Current(), state.Ready) {
+			if state.CanTransition(a.state.Current(), state.Connecting) {
+				a.state.Transition(state.Connecting, "开始建立通道")
+			}
+		}
 		a.state.Transition(state.Ready, "通道已建立")
 		a.startHeartbeat()
 		return a.Status(), nil
@@ -1119,6 +1439,52 @@ func (a *Agent) Connect(ctx context.Context) (status Status, err error) {
 		return a.Status(), errors.New("内网来源检查未通过")
 	}
 	return a.Status(), fmt.Errorf("公网隧道尚未就绪: %s", tunnelDetail)
+}
+
+const demoRouteReconnectMessage = "测试通道尚未就绪，请在方便时重新连接"
+
+// reuseRunningDemoTunnel never rewrites FRP configuration or replaces the
+// running supervisor. It accepts only the exact demo STCP route and local
+// listener that belong to this connector process.
+func (a *Agent) reuseRunningDemoTunnel(ctx context.Context) (bool, error) {
+	a.mu.RLock()
+	s := a.supervisor
+	demoID := a.demoState.SourceID
+	demoServer := a.demoServer
+	demoProxy := a.proxies[demoID]
+	adminPort := a.frpcAdminPort
+	adminUser := a.frpcAdminUser
+	adminPassword := a.frpcAdminPassword
+	commonUser := a.frpcUser
+	a.mu.RUnlock()
+	if s == nil || !s.Running() {
+		return false, nil
+	}
+	if demoID == "" || demoServer == nil || demoProxy == nil {
+		return true, errors.New(demoRouteReconnectMessage)
+	}
+	host, port, err := demoProxy.Endpoint()
+	if err != nil {
+		return true, errors.New(demoRouteReconnectMessage)
+	}
+	demoEndpoint := demoServer.Endpoint()
+	if demoEndpoint == "" || demoProxy.UpstreamURL() != demoEndpoint {
+		return true, errors.New(demoRouteReconnectMessage)
+	}
+	expectedLocalAddr := net.JoinHostPort(host, strconv.Itoa(port))
+	proxyName := frpcProxyName(demoID, commonUser)
+	item, ok, _ := queryFrpcProxyStatus(adminPort, adminUser, adminPassword, proxyName)
+	if !ok || item.LocalAddr != expectedLocalAddr {
+		return true, errors.New(demoRouteReconnectMessage)
+	}
+	reports, err := a.Diagnose(ctx, demoID, "")
+	if err != nil {
+		return true, fmt.Errorf("内置测试来源诊断未通过: %w", err)
+	}
+	if !allOK(reports) {
+		return true, errors.New("内置测试来源诊断未通过")
+	}
+	return true, nil
 }
 
 // Pause 立即停止访问，不等待在途请求。
@@ -1131,6 +1497,7 @@ func (a *Agent) Pause(ctx context.Context) Status {
 	a.frpcAdminPort = 0
 	a.frpcAdminUser = ""
 	a.frpcAdminPassword = ""
+	a.frpcUser = ""
 	a.frpcProxyCount = 0
 	a.mu.Unlock()
 	if stopHeartbeat != nil {
@@ -1198,9 +1565,17 @@ func (a *Agent) Revoke(ctx context.Context) (Status, error) {
 func (a *Agent) Export() ([]byte, error) {
 	a.mu.RLock()
 	sources := enabledSources(a.config.Sources)
+	demoID := a.demoState.SourceID
 	edgeBase := a.edgeBase()
 	a.mu.RUnlock()
-	return config.BuildPlatformConfig(sources, edgeBase, "")
+	business := make([]config.Source, 0, len(sources))
+	for _, source := range sources {
+		if demoID != "" && source.SourceID == demoID {
+			continue
+		}
+		business = append(business, source)
+	}
+	return config.BuildPlatformConfig(business, edgeBase, "")
 }
 
 func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error) {
@@ -1210,6 +1585,7 @@ func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error)
 	for sourceID, proxy := range a.proxies {
 		proxies[sourceID] = proxy
 	}
+	demoID := a.demoState.SourceID
 	a.mu.RUnlock()
 
 	relay := desired.Relay
@@ -1246,6 +1622,9 @@ func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error)
 	for _, item := range desired.Sources {
 		source, ok := localByID[item.SourceID]
 		if !ok {
+			if item.SourceID != demoID {
+				continue
+			}
 			return generated, fmt.Errorf("云端引用了本机未导入的来源 %s", item.SourceID)
 		}
 		if source.Disabled {
@@ -1253,6 +1632,9 @@ func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error)
 		}
 		proxy := proxies[source.SourceID]
 		if proxy == nil {
+			if source.SourceID != demoID {
+				continue
+			}
 			return generated, fmt.Errorf("来源 %s 缺少本机认证代理", source.DisplayName)
 		}
 		host, port, err := proxy.Endpoint()
@@ -1291,8 +1673,12 @@ func (a *Agent) frpcBinary() string {
 }
 
 func (a *Agent) startHeartbeat() {
-	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
+	if a.closed || a.runtimeCtx == nil {
+		a.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(a.runtimeCtx)
 	previous := a.heartbeat
 	a.heartbeat = cancel
 	a.mu.Unlock()

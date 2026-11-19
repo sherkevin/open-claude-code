@@ -87,6 +87,33 @@ type SourceRegistration struct {
 	Transport           string   `json:"transport"`
 }
 
+// SelfTestStage is one bounded result returned by the cloud end-to-end probe.
+type SelfTestStage struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// SelfTestProbe is the fixed kaiwu_demo_ping result. It contains no customer
+// business data or machine identity.
+type SelfTestProbe struct {
+	Demo          bool   `json:"demo"`
+	Marker        string `json:"marker"`
+	Nonce         string `json:"nonce"`
+	ServerTimeUTC string `json:"server_time_utc"`
+	InstanceID    string `json:"instance_id"`
+}
+
+// SelfTestResult is the control-plane response envelope payload.
+type SelfTestResult struct {
+	OK         bool            `json:"ok"`
+	TraceID    string          `json:"trace_id"`
+	SourceID   string          `json:"source_id"`
+	Stages     []SelfTestStage `json:"stages"`
+	Probe      SelfTestProbe   `json:"probe"`
+	HTTPStatus int             `json:"-"`
+}
+
 // RequestSigner signs the exact control-plane request.
 type RequestSigner interface {
 	KeyID() string
@@ -205,6 +232,31 @@ func (c *Client) PlatformDiagnosticEvents(ctx context.Context, connectorID strin
 	return result.Events, nil
 }
 
+// SelfTest asks the control plane to perform the fixed demo probe through the
+// public Edge and the connector's FRP route. Local data is never sent besides
+// the opaque source ID and a short nonce.
+func (c *Client) SelfTest(ctx context.Context, connectorID, sourceID, nonce string) (SelfTestResult, error) {
+	path := "/v1/connectors/" + url.PathEscape(connectorID) + "/self-test"
+	status, payload, err := c.rawRequest(ctx, http.MethodPost, path, map[string]string{
+		"source_id": sourceID,
+		"nonce":     nonce,
+	})
+	if err != nil {
+		return SelfTestResult{}, err
+	}
+	var envelope struct {
+		Data SelfTestResult `json:"data"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if decodeErr := decoder.Decode(&envelope); decodeErr == nil {
+		result := envelope.Data
+		result.HTTPStatus = status
+		return result, nil
+	}
+	return SelfTestResult{HTTPStatus: status}, apiErrorFromResponse(status, payload)
+}
+
 // Drain 请求进入排空状态。
 func (c *Client) Drain(ctx context.Context, connectorID string) error {
 	return c.do(ctx, http.MethodPost, "/v1/connectors/"+url.PathEscape(connectorID)+"/drain", map[string]any{}, nil)
@@ -229,11 +281,30 @@ func (c *Client) doStrict(ctx context.Context, method, path string, body any, ou
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body any, out any, strict bool) error {
+	status, payload, err := c.rawRequest(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return apiErrorFromResponse(status, payload)
+	}
+	if out == nil || len(payload) == 0 {
+		return nil
+	}
+	if strict {
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		decoder.DisallowUnknownFields()
+		return decoder.Decode(out)
+	}
+	return json.Unmarshal(payload, out)
+}
+
+func (c *Client) rawRequest(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	var rawBody []byte
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return 0, nil, err
 		}
 		rawBody = raw
 	}
@@ -244,7 +315,7 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 	target := c.BaseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
@@ -256,11 +327,11 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 	if c.Signer != nil && c.DeviceToken != "" {
 		targetURL, parseErr := url.Parse(target)
 		if parseErr != nil {
-			return parseErr
+			return 0, nil, parseErr
 		}
 		timestamp, nonce, signature, signErr := c.Signer.SignRequest(method, targetURL.EscapedPath(), rawBody)
 		if signErr != nil {
-			return signErr
+			return 0, nil, signErr
 		}
 		req.Header.Set("X-Kaiwu-Device-Key", c.Signer.KeyID())
 		req.Header.Set("X-Kaiwu-Timestamp", timestamp)
@@ -276,47 +347,40 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		apiErr := &APIError{Status: resp.StatusCode}
-		var wrapper struct {
-			Error APIError `json:"error"`
+	return resp.StatusCode, payload, nil
+}
+
+func apiErrorFromResponse(status int, payload []byte) error {
+	apiErr := &APIError{Status: status}
+	var wrapper struct {
+		Error APIError `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &wrapper); err == nil && wrapper.Error.Code != "" {
+		apiErr.Code = wrapper.Error.Code
+		apiErr.Message = wrapper.Error.Message
+		apiErr.TraceID = wrapper.Error.TraceID
+		apiErr.Retryable = wrapper.Error.Retryable
+	} else {
+		var flat APIError
+		if err := json.Unmarshal(payload, &flat); err == nil && flat.Code != "" {
+			apiErr.Code = flat.Code
+			apiErr.Message = flat.Message
+			apiErr.TraceID = flat.TraceID
+			apiErr.Retryable = flat.Retryable
 		}
-		if err := json.Unmarshal(payload, &wrapper); err == nil && wrapper.Error.Code != "" {
-			apiErr.Code = wrapper.Error.Code
-			apiErr.Message = wrapper.Error.Message
-			apiErr.TraceID = wrapper.Error.TraceID
-			apiErr.Retryable = wrapper.Error.Retryable
-		} else {
-			var flat APIError
-			if err := json.Unmarshal(payload, &flat); err == nil && flat.Code != "" {
-				apiErr.Code = flat.Code
-				apiErr.Message = flat.Message
-				apiErr.TraceID = flat.TraceID
-				apiErr.Retryable = flat.Retryable
-			}
-		}
-		if apiErr.Code == "" {
-			apiErr.Code = fmt.Sprintf("HTTP_%d", resp.StatusCode)
-			// Never carry an arbitrary proxy/HTML response body into logs or UI.
-			// Known structured API errors were parsed above.
-			apiErr.Message = "云端请求失败"
-		}
-		return apiErr
 	}
-	if out == nil || len(payload) == 0 {
-		return nil
+	if apiErr.Code == "" {
+		apiErr.Code = fmt.Sprintf("HTTP_%d", status)
+		// Never carry an arbitrary proxy/HTML response body into logs or UI.
+		// Known structured API errors were parsed above.
+		apiErr.Message = "云端请求失败"
 	}
-	if strict {
-		decoder := json.NewDecoder(bytes.NewReader(payload))
-		decoder.DisallowUnknownFields()
-		return decoder.Decode(out)
-	}
-	return json.Unmarshal(payload, out)
+	return apiErr
 }

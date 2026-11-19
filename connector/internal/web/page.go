@@ -24,6 +24,9 @@ main{max-width:920px;margin:0 auto;padding:20px}
 .stage.ready{border-color:#b8e1ca;background:#f4fbf7}.stage.ready small{color:var(--ok)}
 .stage.warn{border-color:#ead39f;background:#fffaf0}.stage.warn small{color:var(--warn)}
 .stage.error{border-color:#efc3bf;background:#fff7f6}.stage.error small{color:var(--err)}
+.self-test-stages{grid-template-columns:repeat(4,minmax(0,1fr))}
+.self-test-answer{border:1px solid #d8e2fa;border-radius:10px;background:#f8faff;padding:12px;margin-top:12px;font-size:12.5px}
+.self-test-answer b{display:block;margin-bottom:4px}.self-test-list{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 .row.end{justify-content:flex-end}.grow{flex:1 1 220px}
 .pill{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;background:var(--brand-soft);color:var(--brand);white-space:nowrap}
@@ -94,6 +97,38 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
     <div class="stage" id="localStage"><b>内网 MCP 可访问</b><small id="localState">尚未检测</small><p id="localDetail">保存配置后会检查地址、协议和工具目录。</p></div>
     <div class="stage" id="tunnelStage"><b>公网隧道已连接</b><small id="tunnelState">尚未连接</small><p id="tunnelDetail">需要完成企业绑定后建立。</p></div>
     <div class="stage" id="platformStage"><b>开物平台接入</b><small id="platformState">等待管理员配置</small><p id="platformDetail">企业接入配置和来源路由由开物管理员配置。</p></div>
+  </div>
+</section>
+
+<section class="card" id="builtinDemoPanel">
+  <div class="row" style="justify-content:space-between;align-items:flex-start">
+    <div>
+      <h2>内置测试服务（示例数据）</h2>
+      <p class="section-hint">随安装自动启动，使用固定示例数据检查这台服务器到开物平台的连接，不读取您的业务系统</p>
+    </div>
+    <span class="pill" id="builtinDemoPill">读取中…</span>
+  </div>
+  <div class="row">
+    <button class="primary" id="selfTestBtn" type="button">运行连接测试</button>
+    <button id="demoToggleBtn" type="button" disabled>停用内置测试服务</button>
+    <span class="subtle" id="selfTestSummary">尚未运行连接测试。</span>
+  </div>
+  <div class="stage-grid self-test-stages" style="margin-top:14px">
+    <div class="stage" id="selfLocalStage"><b>本机示例 MCP</b><small id="selfLocalState">尚未检测</small><p id="selfLocalDetail">检查本机测试服务运行状态和固定示例数据。</p></div>
+    <div class="stage" id="selfBindingStage"><b>企业绑定</b><small id="selfBindingState">尚未检测</small><p id="selfBindingDetail">未绑定时只执行本机阶段。</p></div>
+    <div class="stage" id="selfTunnelStage"><b>公网隧道</b><small id="selfTunnelState">尚未检测</small><p id="selfTunnelDetail">绑定后使用独立示例来源建立路由。</p></div>
+    <div class="stage" id="selfEdgeStage"><b>开物平台连接</b><small id="selfEdgeState">尚未检测</small><p id="selfEdgeDetail">由开物平台通过公网连接回到这台服务器。</p></div>
+  </div>
+  <div id="selfTestCloudWrap" class="hidden">
+    <b style="font-size:13px">公网自检分层明细</b>
+    <ul class="self-test-list" id="selfTestCloudStages"></ul>
+  </div>
+  <div class="self-test-answer">
+    <b>测试问题（完成测试服务接入后使用）</b>
+    <div id="selfTestQuestion">请用内置测试服务查询订单数和 KAIWU-DEMO-001 的库存。</div>
+    <p class="subtle" id="selfTestExpected">固定正确答案：示例订单数 12；KAIWU-DEMO-001 示例库存 128。以上均为示例数据，不是华微真实业务数据。</p>
+    <div class="row"><button id="copyTestQuestionBtn" type="button">复制测试问题</button><span class="subtle" id="selfTestTrace">尚无链路追踪编号</span></div>
+    <p class="subtle" id="selfTestAccessHint">开物技术支持完成测试服务接入后，可在开物对话中使用。运行连接测试成功只代表链路已通过；地址预览不包含内置示例服务，也不代表已经可以直接提问。</p>
   </div>
 </section>
 
@@ -255,6 +290,89 @@ function setStage(prefix, state, detail, kind){
   box.className = "stage" + (kind ? " " + kind : "");
   $(prefix + "State").textContent = state;
   $(prefix + "Detail").textContent = detail || "";
+}
+function selfTestKind(status){
+  if(status === "passed"){ return "ready"; }
+  if(status === "failed"){ return "error"; }
+  if(status === "skipped"){ return "warn"; }
+  return "";
+}
+function selfTestLabel(status){
+  if(status === "passed"){ return "通过"; }
+  if(status === "failed"){ return "失败"; }
+  if(status === "skipped"){ return "未执行"; }
+  return "等待";
+}
+function setSelfTestStage(prefix, stage, fallback){
+  const value = stage || {status:"skipped", message:fallback || "本阶段未执行。"};
+  setStage(prefix, selfTestLabel(value.status), value.message, selfTestKind(value.status));
+}
+function renderBuiltinDemo(status){
+  const demo = (status && status.builtin_demo) || {};
+  const pill = $("builtinDemoPill");
+  const toggle = $("demoToggleBtn");
+  const run = $("selfTestBtn");
+  toggle.disabled = busy;
+  run.disabled = busy || !demo.enabled || !!demo.error_code;
+  if(!demo.enabled){
+    pill.textContent = "已关闭";
+    pill.className = "pill warn";
+    toggle.textContent = "启用内置测试服务";
+    setStage("selfLocal", "已关闭", "用户已关闭内置测试服务；业务 MCP 和企业隧道不受影响。", "warn");
+    return;
+  }
+  if(demo.error_code){
+    const conflict = demo.error_code === "BUILTIN_SOURCE_CONFLICT";
+    pill.textContent = conflict ? "来源冲突" : "启动异常";
+    pill.className = "pill err";
+    toggle.textContent = "停用内置测试服务";
+    setStage("selfLocal", conflict ? "来源冲突" : "启动异常", conflict
+      ? "内置测试来源的固定编号已被其他 MCP 来源占用；客户来源没有被修改，请调整来源配置后重试。"
+      : "内置测试服务没有正常运行，请查看诊断日志或联系开物技术支持。", "error");
+    return;
+  }
+  if(demo.running){
+    pill.textContent = "运行中";
+    pill.className = "pill ok";
+    toggle.textContent = "停用内置测试服务";
+    setStage("selfLocal", "运行中", "固定只读工具：" + ((demo.tools || []).join("、") || "正在加载"), "ready");
+    return;
+  }
+  pill.textContent = "启动异常";
+  pill.className = "pill err";
+  toggle.textContent = "停用内置测试服务";
+  setStage("selfLocal", "启动异常", "内置测试服务没有运行，请查看诊断日志或联系开物技术支持。", "error");
+}
+function renderSelfTest(result){
+  const stages = (result && result.stages) || [];
+  const byID = {};
+  stages.forEach(item=>{ byID[item.id] = item; });
+  setSelfTestStage("selfLocal", byID.local_mcp, "本机示例服务未执行。");
+  setSelfTestStage("selfBinding", byID.enterprise_binding, "企业绑定阶段未执行。");
+  setSelfTestStage("selfTunnel", byID.tunnel, "公网隧道阶段未执行。");
+  const localIDs = new Set(["local_mcp", "enterprise_binding", "tunnel"]);
+  const cloudStages = stages.filter(item=>!localIDs.has(item.id));
+  let edgeStage = byID.edge_connect;
+  if(!edgeStage && cloudStages.length){
+    const failed = cloudStages.find(item=>item.status === "failed");
+    edgeStage = failed || cloudStages[cloudStages.length - 1];
+  }
+  setSelfTestStage("selfEdge", edgeStage, "开物平台连接阶段未执行。");
+  const list = $("selfTestCloudStages");
+  list.replaceChildren();
+  cloudStages.forEach(item=>{
+    const li = document.createElement("li");
+    li.textContent = selfTestLabel(item.status) + " · " + item.id + " · " + item.message;
+    list.appendChild(li);
+  });
+  $("selfTestCloudWrap").classList.toggle("hidden", cloudStages.length === 0);
+  $("selfTestTrace").textContent = result && result.trace_id
+    ? "链路追踪编号 " + result.trace_id
+    : "尚无链路追踪编号";
+  $("selfTestSummary").textContent = result
+    ? (result.ok ? "连接测试通过，仅代表链路已通过；完成测试服务接入后，可在开物对话中使用。" : "连接测试未全部通过，请按上方分层结果处理。")
+    : "尚未运行连接测试。";
+  $("selfTestSummary").className = "subtle";
 }
 function stateClass(value){
   if(value === "READY") return "ok";
@@ -488,6 +606,7 @@ function renderStatus(status){
   $("edgeEndpoint").textContent = status.edge_configured ? (status.edge_base || "已配置") : "未配置";
   $("statusReason").textContent = status.last_error || status.reason || "";
   renderDiagnosticSummary(status.diagnostics);
+  renderBuiltinDemo(status);
   $("bindBtn").disabled = !!status.bound || !status.cloud_configured || busy;
   $("bindHint").textContent = status.bound
     ? "当前服务器已经绑定企业，不需要重复使用接入码。"
@@ -500,18 +619,19 @@ function renderStatus(status){
 function renderSourceOptions(status){
   const select = $("sourceSelect");
   const previous = select.value;
+  const demoID = status.builtin_demo && status.builtin_demo.source_id;
   select.innerHTML = "";
   const create = document.createElement("option");
   create.value = "";
   create.textContent = "＋ 新增 MCP 服务";
   select.appendChild(create);
-  (status.sources || []).forEach(source=>{
+  (status.sources || []).filter(source=>source.source_id !== demoID).forEach(source=>{
     const option = document.createElement("option");
     option.value = source.source_id;
     option.textContent = (source.display_name || source.source_id) + (source.disabled ? "（已停用，不参与连接）" : "");
     select.appendChild(option);
   });
-  if(previous && (status.sources || []).some(source=>source.source_id === previous)){
+  if(previous && previous !== demoID && (status.sources || []).some(source=>source.source_id === previous)){
     select.value = previous;
   }else if(!formDirty){
     select.value = "";
@@ -650,7 +770,7 @@ async function refresh(initial){
     $("statePill").textContent = "当前服务器服务未就绪";
     $("statePill").className = "pill err";
     setMessage("无法读取当前服务器连接器状态：" + error.message, "err");
-    ["bindBtn","saveConnectBtn","readToolsBtn","diagnoseBtn","toggleSourceBtn"].forEach(id=>$(id).disabled=true);
+    ["bindBtn","saveConnectBtn","readToolsBtn","diagnoseBtn","toggleSourceBtn","selfTestBtn","demoToggleBtn"].forEach(id=>$(id).disabled=true);
   }
 }
 
@@ -869,6 +989,47 @@ $("exportBtn").onclick = async ()=>{
     $("exportOut").classList.remove("hidden");
   }catch(error){ setMessage("Edge 地址预览失败：" + error.message, "err"); }
 };
+
+$("demoToggleBtn").onclick = async ()=>{
+  const demo = (currentStatus && currentStatus.builtin_demo) || {};
+  const enabled = !demo.enabled;
+  $("demoToggleBtn").disabled = true;
+  busy = true;
+  try{
+    await api("/api/builtin-demo/enabled", {enabled:enabled});
+    setMessage(enabled
+      ? "内置测试服务已启用，可运行连接测试；不会修改业务 MCP。"
+      : "内置测试服务已关闭并保存选择；业务 MCP 和现有企业隧道不会被停用。", "ok");
+  }catch(error){
+    setMessage("切换内置测试服务失败：" + error.message, "err");
+  }finally{
+    busy = false;
+    await refresh(false);
+  }
+};
+
+$("selfTestBtn").onclick = async ()=>{
+  const button = $("selfTestBtn");
+  button.disabled = true;
+  busy = true;
+  $("selfTestSummary").textContent = "正在检查本机测试服务、企业绑定、公网连接和开物平台连接…";
+  try{
+    const result = await api("/api/self-test", {});
+    renderSelfTest(result);
+    if(result.ok){
+      setMessage("连接测试通过，仅代表链路已通过。开物技术支持完成测试服务接入后，可在开物对话中使用；地址预览不包含内置示例服务。", "ok");
+    }else{
+      setMessage("连接测试未全部通过，请按内置测试服务的分层结果定位问题。", "warn");
+    }
+  }catch(error){
+    setMessage("运行连接测试失败：" + error.message, "err");
+  }finally{
+    busy = false;
+    await refresh(false);
+  }
+};
+
+$("copyTestQuestionBtn").onclick = ()=>copyText($("selfTestQuestion").textContent);
 
 $("connectorLogTab").onclick = ()=>switchLogTab("connector");
 $("platformLogTab").onclick = ()=>switchLogTab("platform");

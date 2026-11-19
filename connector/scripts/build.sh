@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # 构建开物内网连接器的交付包。
 #
-# 依赖：Go 1.22+、frpc 二进制（packaging/bin/ 下）、zip。
+# 依赖：Go 1.25+、frpc 二进制（packaging/bin/ 下）、zip。
 # 产物：dist/kaiwu-connector-<版本>-linux-amd64.tar.gz
 #       dist/kaiwu-connector-<版本>-windows-amd64.zip
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.3.7}"
+VERSION="${VERSION:-1.3.8}"
 COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 # Bind package metadata and ZIP timestamps to the source commit unless the
 # release operator supplies an explicit epoch. Rebuilding the same commit then
@@ -91,8 +91,8 @@ verify_frpc_hash "$FRPC_LINUX" "$FRPC_LINUX_SHA256"
 verify_frpc_hash "$FRPC_WINDOWS" "$FRPC_WINDOWS_SHA256"
 
 rm -rf "$DIST"
-mkdir -p "$DIST/linux/bin" "$DIST/linux/docs" "$DIST/linux/systemd" "$DIST/linux/config" "$DIST/linux/compliance" \
-         "$DIST/windows/bin" "$DIST/windows/docs" "$DIST/windows/config" "$DIST/windows/compliance"
+mkdir -p "$DIST/linux/bin" "$DIST/linux/docs" "$DIST/linux/systemd" "$DIST/linux/config" "$DIST/linux/compliance/go-deps" \
+         "$DIST/windows/bin" "$DIST/windows/docs" "$DIST/windows/config" "$DIST/windows/compliance/go-deps"
 
 export CGO_ENABLED=0
 export GOFLAGS=-trimpath
@@ -152,6 +152,8 @@ for target in linux windows; do
   cp "$ROOT/third_party/frp/NOTICE.txt" "$DIST/$target/compliance/frp-NOTICE.txt"
   cp "$ROOT/third_party/frp/OFFICIAL_ARCHIVE_CHECKSUMS.txt" "$DIST/$target/compliance/frp-OFFICIAL_ARCHIVE_CHECKSUMS.txt"
   cp "$ROOT/third_party/frp/OFFICIAL_BINARY_SHA256.txt" "$DIST/$target/compliance/frp-OFFICIAL_BINARY_SHA256.txt"
+  cp "$ROOT/third_party/mcp-go-sdk/LICENSE" "$DIST/$target/compliance/mcp-go-sdk-LICENSE.txt"
+  cp -a "$ROOT/third_party/go-deps/." "$DIST/$target/compliance/go-deps/"
   cp "$GO_LICENSE" "$DIST/$target/compliance/go-LICENSE.txt"
   cp "$GO_PATENTS" "$DIST/$target/compliance/go-PATENTS.txt"
   cp "$BUILD_LOG" "$DIST/$target/compliance/BUILD_LOG.txt"

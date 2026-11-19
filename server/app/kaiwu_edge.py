@@ -24,6 +24,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import Settings
 from .db import Database
+from .kaiwu_control import (
+    BUILTIN_DEMO_TOOL,
+    SELF_TEST_INTEGRATION_CREATED_BY_PREFIX,
+)
 from .kaiwu_diagnostics import (
     TOOL_NAME_RE,
     JsonRpcStreamInspector,
@@ -150,6 +154,51 @@ def _valid_source_id(value: str) -> bool:
 
 def _protocol_header(value: str) -> bool:
     return bool(value) and len(value) <= 32 and all(char.isdigit() or char == "-" for char in value)
+
+
+def _is_self_test_integration(integration: dict) -> bool:
+    return str(integration.get("created_by") or "").startswith(
+        SELF_TEST_INTEGRATION_CREATED_BY_PREFIX
+    )
+
+
+def _self_test_request_denial(body: bytes) -> tuple[int, str, str] | None:
+    """Return a denial for any request outside the temporary K's fixed scope."""
+    try:
+        value = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return 400, "MCP_INVALID", "内置测试自检请求不是有效 JSON"
+    documents = value if isinstance(value, list) else [value]
+    if not documents:
+        return 400, "MCP_INVALID", "内置测试自检请求不能为空"
+    for document in documents:
+        if not isinstance(document, dict) or document.get("jsonrpc") != "2.0":
+            return 400, "MCP_INVALID", "内置测试自检请求不是有效 JSON-RPC"
+        method = document.get("method")
+        if not isinstance(method, str):
+            return 400, "MCP_INVALID", "内置测试自检请求缺少有效方法"
+        if method in {"initialize", "notifications/initialized", "tools/list"}:
+            continue
+        if method != "tools/call":
+            return 403, "SELF_TEST_TOOL_DENIED", "临时测试凭据只允许初始化、发现和固定测试工具"
+        params = document.get("params")
+        if (
+            not isinstance(params, dict)
+            or set(params) != {"name", "arguments"}
+            or params.get("name") != BUILTIN_DEMO_TOOL
+        ):
+            return 403, "SELF_TEST_TOOL_DENIED", "临时测试凭据只允许调用 kaiwu_demo_ping"
+        arguments = params.get("arguments")
+        if not isinstance(arguments, dict) or set(arguments) != {"nonce"}:
+            return 403, "SELF_TEST_TOOL_DENIED", "临时测试凭据只允许 nonce 参数"
+        nonce = arguments.get("nonce")
+        if (
+            not isinstance(nonce, str)
+            or not 1 <= len(nonce) <= 128
+            or any(ord(char) < 33 or ord(char) > 126 for char in nonce)
+        ):
+            return 403, "SELF_TEST_TOOL_DENIED", "临时测试凭据的 nonce 参数无效"
+    return None
 
 
 def _authenticated_integration(
@@ -332,6 +381,11 @@ def create_kaiwu_edge_router(service_getter: Callable, settings: Settings) -> AP
         content_type = request.headers.get("content-type", "")
         if "application/json" not in content_type.lower():
             return _error(415, "CONTENT_TYPE_INVALID", "只支持 application/json", trace_id)
+        if _is_self_test_integration(integration):
+            denied = _self_test_request_denial(body)
+            if denied:
+                status, code, message = denied
+                return fail(status, code, message, body=body)
 
         headers = {
             "Content-Type": "application/json",

@@ -187,6 +187,10 @@ func (a *Agent) SetSourceEnabled(sourceID string, enabled bool) (result SourceSa
 		a.mu.Unlock()
 		return SourceSaveResult{}, errors.New("要操作的 MCP 服务不存在，请刷新页面后重试")
 	}
+	if a.demoState.SourceID != "" && sourceID == a.demoState.SourceID {
+		a.mu.Unlock()
+		return SourceSaveResult{}, errors.New("内置测试服务使用独立开关，不能按业务来源停用或启用")
+	}
 	if enabled {
 		allowed, err := normalizeTools(a.config.Sources[index].ToolAllowlist)
 		if err != nil {
@@ -293,6 +297,9 @@ func (a *Agent) prepareSourceLocked(input SourceInput) (preparedSource, error) {
 	index := -1
 	var existing config.Source
 	if sourceID := strings.TrimSpace(input.SourceID); sourceID != "" {
+		if a.demoState.SourceID != "" && sourceID == a.demoState.SourceID {
+			return preparedSource{}, errors.New("内置测试服务使用独立开关，不能在业务 MCP 表单中编辑")
+		}
 		for i := range a.config.Sources {
 			if a.config.Sources[i].SourceID == sourceID {
 				index = i

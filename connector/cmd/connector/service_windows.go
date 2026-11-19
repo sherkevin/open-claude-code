@@ -55,10 +55,12 @@ func (s *connectorService) Execute(args []string, requests <-chan svc.ChangeRequ
 		log.Printf("service configuration failed: %v", err)
 		return false, 1
 	}
+	defer instance.Close()
 
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
 		log.Printf("service listen failed on %s: %v", server.Addr, err)
+		instance.Close()
 		return false, 1
 	}
 	go func() {
@@ -67,9 +69,7 @@ func (s *connectorService) Execute(args []string, requests <-chan svc.ChangeRequ
 		}
 	}()
 
-	if instance.ShouldAutoConnect() {
-		go instance.AutoConnect()
-	}
+	instance.StartRuntime()
 
 	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	for request := range requests {
@@ -80,6 +80,7 @@ func (s *connectorService) Execute(args []string, requests <-chan svc.ChangeRequ
 			changes <- svc.Status{State: svc.StopPending}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = server.Shutdown(ctx)
+			instance.CloseContext(ctx)
 			cancel()
 			return false, 0
 		}
