@@ -95,6 +95,22 @@ Function .onInit
   InitPluginsDir
 FunctionEnd
 
+Function RemoveLegacyX86Install
+  ; Older candidate installers could be launched through 32-bit PowerShell and
+  ; leave a second copy under Program Files (x86). Delete that copy only when
+  ; it contains a known Kaiwu product file; never broad-delete an unrelated
+  ; directory that happens to use the same path. ProgramData is preserved.
+  ${If} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\kaiwu-connector.exe"
+  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\uninstall.exe"
+  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\install.ps1"
+  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\版本信息.txt"
+    DetailPrint "清理旧候选版误装的 32 位程序目录..."
+    RMDir /r "$PROGRAMFILES32\Kaiwu\Connector"
+  ${EndIf}
+  ; This removes the parent only when it is empty.
+  RMDir "$PROGRAMFILES32\Kaiwu"
+FunctionEnd
+
 Section "安装" SecInstall
   SetShellVarContext all
   SetOutPath "$PLUGINSDIR\payload"
@@ -138,8 +154,7 @@ Section "安装" SecInstall
   ; Early x64 probes were accidentally installed through 32-bit PowerShell.
   ; Remove only that known stale product directory after the native install
   ; succeeds; customer configuration remains under ProgramData.
-  RMDir /r "$PROGRAMFILES32\Kaiwu\Connector"
-  RMDir "$PROGRAMFILES32\Kaiwu"
+  Call RemoveLegacyX86Install
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "DisplayName" "开物内网连接器"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "Publisher" "Kaiwu"
@@ -185,10 +200,20 @@ Section "Uninstall"
   Delete "$DESKTOP\开物内网连接器配置.lnk"
   RMDir /r "$SMPROGRAMS\开物内网连接器"
   RMDir /r "$INSTDIR"
-  RMDir /r "$PROGRAMFILES32\Kaiwu\Connector"
-  RMDir "$PROGRAMFILES32\Kaiwu"
+  Call un.RemoveLegacyX86Install
   SetRegView 32
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
   SetRegView 64
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
 SectionEnd
+
+Function un.RemoveLegacyX86Install
+  ; Match the install-time cleanup behavior without touching customer data.
+  ${If} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\kaiwu-connector.exe"
+  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\uninstall.exe"
+  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\install.ps1"
+  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\版本信息.txt"
+    RMDir /r "$PROGRAMFILES32\Kaiwu\Connector"
+  ${EndIf}
+  RMDir "$PROGRAMFILES32\Kaiwu"
+FunctionEnd

@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.3.1}"
+VERSION="${VERSION:-1.3.2}"
 COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 # Bind package metadata and ZIP timestamps to the source commit unless the
 # release operator supplies an explicit epoch. Rebuilding the same commit then
@@ -121,6 +121,19 @@ cp "$ROOT/packaging/windows/"*.ps1 "$DIST/windows/"
 cp "$ROOT/scripts/windows-smoke.ps1" "$DIST/windows/"
 cp "$ROOT/packaging/config/connector.env.example" "$DIST/linux/config/"
 cp "$ROOT/packaging/config/connector.env.example" "$DIST/windows/config/"
+
+# Customer packages must never ship with the old empty public endpoint
+# template. Keep the check close to the copy so a future template regression
+# fails the build instead of producing a package that cannot reach the edge.
+ENV_TEMPLATE="$ROOT/packaging/config/connector.env.example"
+CLOUD_BASE_VALUE="$(sed -n 's/^KAIWU_CLOUD_BASE=//p' "$ENV_TEMPLATE" | tail -n 1)"
+EDGE_BASE_VALUE="$(sed -n 's/^KAIWU_EDGE_BASE=//p' "$ENV_TEMPLATE" | tail -n 1)"
+for value in "$CLOUD_BASE_VALUE" "$EDGE_BASE_VALUE"; do
+  if [[ ! "$value" =~ ^https://[^[:space:]]+$ ]]; then
+    echo "公共端点模板必须预配置 HTTPS 地址: $ENV_TEMPLATE" >&2
+    exit 1
+  fi
+done
 cp "$ROOT/docs/"*.md "$DIST/linux/docs/"
 cp "$ROOT/docs/"*.md "$DIST/windows/docs/"
 cp "$ROOT/README.md" "$DIST/linux/docs/"

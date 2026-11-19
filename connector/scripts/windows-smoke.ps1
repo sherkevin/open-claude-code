@@ -1129,7 +1129,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($versionOutput)) {
         throw "kaiwu-connector.exe version 执行失败: $versionOutput"
     }
-    if ($versionOutput -notmatch '1\.3\.1') { throw "候选包版本不是 1.3.1: $versionOutput" }
+    if ($versionOutput -notmatch '1\.3\.2') { throw "候选包版本不是 1.3.2: $versionOutput" }
     Add-Step -Name "binary_version" -Status "passed" -Detail $versionOutput
 
     $frpcPath = Join-Path $PackageRoot "bin\frpc.exe"

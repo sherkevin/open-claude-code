@@ -4,7 +4,7 @@
 
 面向客户现场的实施与运维文档见 [`docs/交付与运维说明.md`](docs/交付与运维说明.md)。本文件面向开发和构建。
 
-> 当前 `1.3.1` 是企业统一入口候选版本。一个 Windows 连接器对应一个专属原版 frps 实例和一组云端 visitor 路由；开物侧使用云端管理员一次性签发的企业集成凭据 K 和标准 MCP JSON。安装包仍默认失败关闭，只有显式配置控制面、Edge 和中继后才启用绑定与连接。
+> 当前 `1.3.2` 是企业统一入口候选版本。一个 Windows 连接器对应一个专属原版 frps 实例和一组云端 visitor 路由；开物侧使用云端管理员一次性签发的企业集成凭据 K 和标准 MCP JSON。安装包预配置我方已验证的公网控制面和 MCP Edge；客户本机仍需通过一次性接入码绑定企业并完成内部业务配置。
 
 ## 架构
 
@@ -68,7 +68,7 @@ bash scripts/build.sh
 ```bash
 cd connector
 go test ./...
-bash scripts/build.sh            # 版本默认 1.3.1，可用 VERSION=... 覆盖
+bash scripts/build.sh            # 版本默认 1.3.2，可用 VERSION=... 覆盖
 ```
 
 产物在 `dist/`：
@@ -92,7 +92,7 @@ go run ./cmd/connector serve --data-dir /tmp/kaiwu-connector --listen 127.0.0.1:
 | --- | --- | --- |
 | `--data-dir` | `KAIWU_CONNECTOR_DATA` | Linux `/var/lib/kaiwu-connector`；Windows `%ProgramData%\Kaiwu\Connector` |
 | `--listen` | — | `127.0.0.1:17872` |
-| `--cloud` | `KAIWU_CLOUD_BASE` | 无（正式环境 `https://flintw.com/projects/kaiwu/api`，以交付提供为准） |
+| `--cloud` | `KAIWU_CLOUD_BASE` | 无（当前预配置 `https://flintw.com/api/kaiwu`，以交付提供为准） |
 | `--edge` | `KAIWU_EDGE_BASE` | 无（正式环境 `https://flintw.com/projects/kaiwu/mcp`，以交付提供为准） |
 | `--frpc` | — | 与主程序同目录，或 `<数据目录>/bin/frpc` |
 
