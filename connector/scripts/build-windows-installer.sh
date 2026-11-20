@@ -64,9 +64,12 @@ if ! command -v "$windows_x86_cc" >/dev/null 2>&1; then
   echo "缺少 32 位 Windows MinGW 编译器。请安装 i686-w64-mingw32-gcc 或通过 WINDOWS_X86_CC 指定。" >&2
   exit 1
 fi
+# MinGW otherwise derives the DLL's preferred base from the temporary output
+# path. The loader can still relocate the image at runtime using ASLR.
 "$windows_x86_cc" -std=c11 -Os -Wall -Wextra -Werror -shared -static-libgcc \
-  -Wl,--no-insert-timestamp -o "$plugin_dir/KaiwuJournal.dll" \
+  -Wl,--no-insert-timestamp,--disable-auto-image-base -o "$plugin_dir/KaiwuJournal.dll" \
   "$ROOT/packaging/windows/attempt-journal.c" -ladvapi32 -lbcrypt -lshell32 -lntdll
+touch -d "@$SOURCE_DATE_EPOCH" "$plugin_dir/KaiwuJournal.dll"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 export SOURCE_DATE_EPOCH NSIS_SHARE_DIR
