@@ -157,7 +157,7 @@ Section "安装" SecInstall
     ${If} "$3" == "result=PRECHECK_FAILED"
       StrCpy $4 "安装前检查失败，未开始更改已有安装。"
     ${ElseIf} "$3" == "result=FAILED_RESTORED"
-      StrCpy $4 "安装失败，已核验恢复安装前的程序和配置。"
+      StrCpy $4 "安装失败，已核验恢复安装前的程序和配置。请在开物中验证业务连接。"
     ${ElseIf} "$3" == "result=FAILED_RECOVERY_UNCONFIRMED"
       StrCpy $4 "安装失败，未能确认恢复安装前的状态。请不要按已恢复处理，保留日志并联系技术支持。"
     ${ElseIf} "$3" == "result=FAILED_NO_PRIOR_CLEANED"

@@ -413,6 +413,7 @@ func TestCloseCancelsInFlightAutoConnectBeforeResourcesStart(t *testing.T) {
 	instance.mu.Lock()
 	instance.identity = cloud.Identity{ConnectorID: "connector-test-1", DeviceToken: "device-token"}
 	instance.cloud = client
+	instance.startupConnectPending = true
 	instance.mu.Unlock()
 	if err := instance.StartBuiltinDemo(); err != nil {
 		t.Fatal(err)

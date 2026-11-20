@@ -17,7 +17,8 @@ powershell.exe -NoProfile -NonInteractive -File .\installer-fault-injection.ps1
 [CmdletBinding()]
 param(
   [string]$InstallerPath = (Join-Path (Split-Path -Parent $PSScriptRoot) "packaging\windows\install.ps1"),
-  [string]$OutputPath = (Join-Path ([System.IO.Path]::GetTempPath()) "installer-fault-injection-result.json")
+  [string]$OutputPath = (Join-Path ([System.IO.Path]::GetTempPath()) "installer-fault-injection-result.json"),
+  [switch]$UpgradeOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -124,7 +125,7 @@ function New-TestCase {
   )
   $caseRoot = Join-Path $script:Root $Name
   $source = Join-Path $caseRoot "source"
-  $programFiles = Join-Path $caseRoot "ProgramFiles"
+  $programFiles = Join-Path $caseRoot "Program Files"
   $programData = Join-Path $caseRoot "ProgramData"
   $temp = Join-Path $caseRoot "Temp"
   $installDir = Join-Path $programFiles "Kaiwu\Connector"
@@ -213,6 +214,15 @@ function New-TestCase {
 
 function Reset-MockState {
   $global:MockService = $null
+  $global:MockProcesses = @{}
+  $global:Terminations = @()
+  $global:StopHook = $null
+  $global:StartHook = $null
+  $global:WriteInstallStateFault = $false
+  $global:TerminationDenied = $false
+  $global:HoldServiceProcess = $false
+  $global:HoldFrpcProcess = $false
+  $global:MockMaintenanceRegistration = [ordered]@{}
   $global:StopCalls = @()
   $global:StartServiceCalls = 0
   $global:DeleteCalls = 0
@@ -250,17 +260,105 @@ function Set-MockService {
       [pscustomobject]@{ type = 1; delay_ms = 60000 }
     )
   }
+  if ($BinaryPath -eq (Join-Path $env:ProgramFiles "Kaiwu\Connector\kaiwu-connector.exe")) {
+    $BinaryPath = Get-FixtureServiceCommand
+  }
   $global:MockService = [pscustomobject]@{
     Name = "KaiwuConnector"
     DisplayName = "Kaiwu Intranet Connector"
     PathName = $BinaryPath
+    StartName = "LocalSystem"
+    ProcessId = 0
     StartMode = "Auto"
     DelayedAutoStart = $false
     State = $State
     Status = $State
     DependentServices = @($Dependents | ForEach-Object { [pscustomobject]@{ Name = $_ } })
   }
+  if ($State -eq "Running") { Set-FixtureServiceProcess }
 }
+
+function Get-FixtureServiceCommand {
+  return ('"{0}" serve --data-dir "{1}" --listen 127.0.0.1:17872' -f
+    (Join-Path $env:ProgramFiles "Kaiwu\Connector\kaiwu-connector.exe"),
+    (Join-Path $env:ProgramData "Kaiwu\Connector"))
+}
+function New-FixtureProcess {
+  param([uint32]$Id, [uint32]$Parent, [string]$Image, [string]$CommandLine = "")
+  $created = [DateTime]::SpecifyKind(([datetime]"2026-11-20T06:36:59.540641").AddMilliseconds($Id), "Utc")
+  return [pscustomobject]@{
+    ProcessId = $Id; ParentProcessId = $Parent; Name = (Split-Path -Leaf $Image)
+    ExecutablePath = $Image; CreationDate = $created; CommandLine = $CommandLine
+    Exited = $false; Terminated = $false; Denied = $false
+  }
+}
+
+function Set-FixtureServiceProcess {
+  $global:MockService.ProcessId = 38888
+  $image = Join-Path $env:ProgramFiles "Kaiwu\Connector\kaiwu-connector.exe"
+  $global:MockProcesses[38888] = New-FixtureProcess 38888 0 $image $global:MockService.PathName
+}
+
+function Add-FixtureFrpc {
+  param($Case, [switch]$Visitor)
+  $image = if ($Visitor) { Join-Path $Case.Root "visitor\frpc.exe" } else { Join-Path $Case.InstallDir "frpc.exe" }
+  $config = if ($Visitor) { Join-Path $Case.Root "visitor\frpc.toml" } else { Join-Path $Case.DataDir "frpc.toml" }
+  $id = if ($Visitor) { 35092 } else { 36512 }
+  $parent = if ($Visitor) { 123 } else { $global:MockService.ProcessId }
+  $row = New-FixtureProcess $id $parent $image ('"{0}" -c "{1}"' -f $image, $config)
+  if (-not $Visitor) {
+    $row.CreationDate = $global:MockProcesses[[int]$parent].CreationDate.AddSeconds(1)
+  }
+  $global:MockProcesses[$id] = $row
+  return $row
+}
+
+function Invoke-SyntheticServiceState {
+  param([string]$State)
+  $global:MockService.State = $State
+  $global:MockService.Status = $State
+  if ($State -eq "Running") {
+    Set-FixtureServiceProcess
+  } else {
+    $old = [int]$global:MockService.ProcessId
+    $global:MockService.ProcessId = 0
+    if ($old -ne 0 -and -not $global:HoldServiceProcess) {
+      $global:MockProcesses[$old].Exited = $true
+    }
+    if ($null -ne $global:StopHook) { & $global:StopHook }
+  }
+}
+
+function global:Open-KaiwuProcess {
+  param($Row, [switch]$CanTerminate)
+  $target = $global:MockProcesses[[int]$Row.ProcessId]
+  if ($target.Denied) { throw "synthetic process access denied" }
+  if ($target.CreationDate -ne $Row.CreationDate) { throw "synthetic process identity changed" }
+  $handle = [pscustomobject]@{ Target = $target; CanTerminate = [bool]$CanTerminate }
+  $handle | Add-Member ScriptMethod WaitForExit {
+    param($Milliseconds)
+    return [bool]$this.Target.Exited
+  }
+  $handle | Add-Member ScriptMethod Terminate {
+    if (-not $this.CanTerminate) { throw "synthetic process handle cannot terminate" }
+    if ($global:TerminationDenied) { throw "synthetic terminate access denied" }
+    $this.Target.Terminated = $true
+    $global:Terminations += $this.Target.ProcessId
+    if (-not $global:HoldFrpcProcess) { $this.Target.Exited = $true }
+  }
+  $handle | Add-Member ScriptMethod Dispose {}
+  return $handle
+}
+
+function global:Get-KaiwuMaintenanceRegistration {
+  return $global:MockMaintenanceRegistration
+}
+
+function global:Restore-KaiwuMaintenanceRegistration {
+  param($Values)
+  $global:MockMaintenanceRegistration = $Values
+}
+
 
 function global:Test-SamePath {
   param([string]$Left, [string]$Right)
@@ -358,7 +456,14 @@ function global:Get-Service {
 function global:Get-CimInstance {
   [CmdletBinding()]
   param([string]$ClassName, [string]$Filter)
-  return $global:MockService
+  if ($ClassName -eq "Win32_Process") {
+    foreach ($process in $global:MockProcesses.Values) {
+      if (-not $process.Exited) { $process.PSObject.Copy() }
+    }
+    return
+  }
+  if ($ClassName -ne "Win32_Service") { throw "unexpected CIM class $ClassName" }
+  if ($null -ne $global:MockService) { return $global:MockService.PSObject.Copy() }
 }
 
 function global:Get-KaiwuServiceMetadata {
@@ -410,6 +515,8 @@ function global:New-Service {
     Name = $Name
     DisplayName = $DisplayName
     PathName = $BinaryPathName
+    StartName = "LocalSystem"
+    ProcessId = 0
     StartMode = $(if ($StartupType -eq "Automatic") { "Auto" } else { $StartupType })
     DelayedAutoStart = $false
     State = "Stopped"
@@ -439,8 +546,8 @@ function global:Start-Service {
   if ($global:AddDependentOnStart) {
     $global:MockService.DependentServices = @([pscustomobject]@{ Name = "KaiwuDependent" })
   }
-  $global:MockService.State = "Running"
-  $global:MockService.Status = "Running"
+  Invoke-SyntheticServiceState "Running"
+  if ($null -ne $global:StartHook) { & $global:StartHook }
   if ($global:RemoveTargetOnStart) {
     $target = Join-Path $global:Case.InstallDir "frpc.exe"
     if (Test-Path -LiteralPath $target -PathType Leaf) {
@@ -466,8 +573,7 @@ function global:Stop-Service {
   if ($null -eq $global:MockService -or $global:MockService.Name -ne $Name) {
     throw "test mock: service not found: $Name"
   }
-  $global:MockService.State = "Stopped"
-  $global:MockService.Status = "Stopped"
+  Invoke-SyntheticServiceState "Stopped"
 }
 
 function global:Invoke-WebRequest {
@@ -488,6 +594,8 @@ function global:sc.exe {
   param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Arguments)
   $action = if ($Arguments.Count -gt 0) { [string]$Arguments[0] } else { "" }
   switch ($action) {
+    "stop" { Stop-Service -Name ([string]$Arguments[1]) }
+    "start" { Start-Service -Name ([string]$Arguments[1]) }
     "delete" {
       $global:DeleteCalls++
       if ($global:DeleteExitCode -ne 0) {
@@ -557,6 +665,23 @@ function global:Copy-Item {
   }
 }
 
+function global:Set-Content {
+  [CmdletBinding(DefaultParameterSetName = "Path")]
+  param(
+    [Parameter(Mandatory, ParameterSetName = "Path", Position = 0)][string]$Path,
+    [Parameter(Mandatory, ParameterSetName = "Literal")][string]$LiteralPath,
+    [Parameter(ValueFromPipeline, Position = 1)]$Value,
+    [string]$Encoding
+  )
+  process {
+    $target = if ($LiteralPath) { $LiteralPath } else { $Path }
+    if ($global:WriteInstallStateFault -and (Split-Path -Leaf $target) -eq "install-state.json") {
+      throw "synthetic late write sharing violation"
+    }
+    Microsoft.PowerShell.Management\Set-Content -LiteralPath $target -Value $Value -Encoding $Encoding
+  }
+}
+
 function Assert-PlatformDoubles {
   $names = @(
     "Get-Service",
@@ -574,6 +699,10 @@ function Assert-PlatformDoubles {
     "Get-Acl",
     "Set-Acl",
     "Copy-Item",
+    "Set-Content",
+    "Open-KaiwuProcess",
+    "Get-KaiwuMaintenanceRegistration",
+    "Restore-KaiwuMaintenanceRegistration",
     "Get-KaiwuMachineEnvironmentVariable",
     "Set-KaiwuMachineEnvironmentVariable"
   )
@@ -636,7 +765,7 @@ function Run-CaseB {
   Assert-True ((Get-Sha256 (Join-Path $case.InstallDir "frpc.exe")) -eq $oldFrpc) "B: old frpc was not restored"
   Assert-RestoredServiceMetadata
   $events = $global:ServiceMetadataEvents -join ","
-  Assert-True ($events -eq "read,write:Disabled,read,mode:Automatic,start,read") "B: wrong metadata/activation order: $events"
+  Assert-True ($events -eq "read,mode:Disabled,write:Disabled,read,mode:Automatic,start,read") "B: wrong metadata/activation order: $events"
   Add-CaseResult "B" "passed" "source frpc disappeared during copy after backup" ([ordered]@{
     result = $run.ResultCode
     service_status = $global:MockService.Status
@@ -702,7 +831,7 @@ function New-GeneratedRestoreFixture {
   Reset-MockState
   $global:Case = $case
   $binary = Join-Path $case.InstallDir "kaiwu-connector.exe"
-  $oldCommand = "`"$binary`" serve"
+  $oldCommand = Get-FixtureServiceCommand
   Set-MockService $oldCommand "Running"
   $global:MockService.DelayedAutoStart = $true
   $sourceKaiwu = Join-Path $case.Source "bin\kaiwu-connector.exe"
@@ -824,7 +953,7 @@ function Run-CaseG {
   $global:Case = $case
   Set-MockService (Join-Path $case.InstallDir "kaiwu-connector.exe") "Running" @("KaiwuDependent")
   $run = Invoke-Installer $case
-  Assert-True ($run.ResultCode -eq "FAILED_RECOVERY_UNCONFIRMED") "G: expected FAILED_RECOVERY_UNCONFIRMED, got $($run.ResultCode)"
+  Assert-True ($run.ResultCode -eq "PRECHECK_FAILED") "G: expected FAILED_RECOVERY_UNCONFIRMED, got $($run.ResultCode)"
   Assert-True ($global:StopCalls.Count -eq 0) "G: Stop-Service was called despite a dependent service"
   Assert-True ($global:DeleteCalls -eq 0) "G: sc delete was called despite a dependent service"
   Assert-True ($run.OldInstallChanged -eq "false" -and $global:StartServiceCalls -eq 0 -and
@@ -841,7 +970,7 @@ function Run-CaseH {
   $snapshot = Get-Content -LiteralPath (Join-Path $fixture.Backup "service.json") -Raw -Encoding UTF8 | ConvertFrom-Json
   Assert-True ($snapshot.scm_metadata.sid_type -eq 1 -and $snapshot.scm_metadata.reset_seconds -eq 86400 -and
     ($snapshot.scm_metadata.actions.delay_ms -join ",") -eq "5000,15000,60000") "H: service metadata not saved in backup"
-  Set-MockService "replacement-command" "Running"
+  Set-MockService (Get-FixtureServiceCommand) "Running"
   $global:MockServiceMetadata.sid_type = 3
   $global:MockServiceMetadata.actions = @()
   $global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] = "https://new.example.invalid"
@@ -854,7 +983,7 @@ function Run-CaseH {
     $global:MockService.StartMode -eq "Auto" -and $global:MockService.DelayedAutoStart) "H: restored registration or state differs"
   Assert-RestoredServiceMetadata
   $events = $global:ServiceMetadataEvents -join ","
-  Assert-True ($events -eq "write:Disabled,read,mode:Delayed,start,read") "H: wrong metadata/activation order: $events"
+  Assert-True ($events -eq "mode:Disabled,write:Disabled,read,mode:Delayed,start,read") "H: wrong metadata/activation order: $events"
   Assert-True ((Get-Sha256 $config) -eq $fixture.OldConfigHash -and
     $global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] -eq "https://old.example.invalid") "H: prior business configuration was not restored"
   Add-CaseResult "H" "passed" "generated restoration from an intact backup" ([ordered]@{
@@ -876,7 +1005,7 @@ function Run-CaseI {
   $global:ServiceMetadataFault = "capture"
   $run = Invoke-Installer $case
   Assert-True ($run.ResultCode -eq "PRECHECK_FAILED" -and $run.Stage -eq "backup_prepare" -and
-    $run.Error -ceq "synthetic service metadata read failure") "I: wrong precheck failure: $($run.Error)"
+    $run.Error.EndsWith("synthetic service metadata read failure")) "I: wrong precheck failure: $($run.Error)"
   Assert-True ($run.OldInstallChanged -eq "false" -and $global:MockService.Status -eq "Running" -and
     $global:StopCalls.Count -eq 0 -and $global:DeleteCalls -eq 0 -and $global:StartServiceCalls -eq 0 -and
     $global:NewServiceCalls -eq 0 -and (Get-Sha256 $config) -eq $hash) "I: old service or files changed after failed capture"
@@ -896,7 +1025,7 @@ function Run-CaseJ {
   Assert-True ([object]::ReferenceEquals($original, $global:MockService)) "J: original registration was replaced"
   Assert-True ($global:MockService.Status -eq "Running" -and $global:StopCalls.Count -eq 1 -and
     $global:DeleteCalls -eq 1 -and $global:NewServiceCalls -eq 0 -and $global:StartServiceCalls -eq 1 -and
-    $events -eq "read,read,start,read") "J: original service was retried or reconfigured: $events"
+    $events -eq "read,mode:Disabled,mode:Automatic,start") "J: original service was retried or reconfigured: $events"
   $stoppedCase = New-TestCase "J-stopped" -Existing
   Set-CaseEnvironment $stoppedCase
   Reset-MockState
@@ -904,10 +1033,10 @@ function Run-CaseJ {
   $stoppedOriginal = $global:MockService
   $global:DeleteExitCode = 5
   $stoppedRun = Invoke-Installer $stoppedCase
-  Assert-True ($stoppedRun.ResultCode -eq "FAILED_RECOVERY_UNCONFIRMED" -and $stoppedRun.OldInstallChanged -eq "false" -and
+  Assert-True ($stoppedRun.ResultCode -eq "FAILED_RESTORED" -and $stoppedRun.OldInstallChanged -eq "true" -and
     [object]::ReferenceEquals($stoppedOriginal, $global:MockService) -and $global:MockService.Status -eq "Stopped" -and
     $global:DeleteCalls -eq 1 -and $global:StopCalls.Count -eq 0 -and $global:StartServiceCalls -eq 0 -and
-    $global:NewServiceCalls -eq 0 -and ($global:ServiceMetadataEvents -join ",") -eq "read") "J: unchanged stopped service was touched"
+    $global:NewServiceCalls -eq 0 -and ($global:ServiceMetadataEvents -join ",") -eq "read,mode:Disabled,mode:Automatic") "J: stopped service startup was not restored"
   Add-CaseResult "J" "passed" "delete rejected with original service running or already stopped" @{
     resumed_result = $run.ResultCode
     resumed_metadata_events = $events
@@ -943,8 +1072,8 @@ function Run-RecoveryFaults {
     write = "synthetic service metadata write failure"
     readback = "synthetic service metadata read failure"
     mismatch = "恢复未确认：服务故障动作读回不匹配"
-    stable = "恢复后稳定目标缺失: frpc.exe"
-    dependent = "恢复后稳定目标缺失: frpc.exe"
+    stable = "恢复目标摘要不匹配: frpc.exe"
+    dependent = "恢复目标摘要不匹配: frpc.exe"
   }
   $checks = [ordered]@{}
   foreach ($fault in $faults.Keys) {
@@ -1000,6 +1129,288 @@ function Run-RecoveryFaults {
   Add-CaseResult $Id "passed" "failed metadata write/readback and post-start verification" $checks
 }
 
+function New-UpgradeFixture {
+  param([string]$Name, [switch]$Fresh, [switch]$Paused)
+  $case = New-TestCase $Name -Existing:(-not $Fresh)
+  Set-CaseEnvironment $case
+  Reset-MockState
+  $global:Case = $case
+  $sources = [ordered]@{
+    "config/connector.env.example" = "KAIWU_CLOUD_BASE=https://preset-cloud.invalid`nKAIWU_EDGE_BASE=https://preset-edge.invalid"
+    "uninstall.ps1" = "# candidate uninstaller"
+    "windows-smoke.ps1" = "# candidate health entry"
+  }
+  $checksums = Join-Path $case.Source "SHA256SUMS"
+  $lines = @(Get-Content -LiteralPath $checksums | Where-Object { $_ -notmatch '  config/connector.env.example$' })
+  foreach ($name in $sources.Keys) {
+    $file = Join-Path $case.Source $name
+    [IO.File]::WriteAllText($file, $sources[$name])
+    $lines += ((Get-Sha256 $file) + "  " + $name)
+  }
+  [IO.File]::WriteAllLines($checksums, $lines)
+  if ($Fresh) { return $case }
+
+  Set-MockService (Get-FixtureServiceCommand)
+  $global:MockMachineEnvironment = @{
+    KAIWU_CLOUD_BASE = "https://customer-cloud.invalid"
+    KAIWU_EDGE_BASE = "https://customer-edge.invalid"
+  }
+  $global:MockMaintenanceRegistration = [ordered]@{
+    DisplayVersion = [ordered]@{ kind = "String"; value = "1.3.6" }
+  }
+  $data = [ordered]@{
+    "state.json" = $(if ($Paused) { '{"phase":"PAUSED"}' } else { '{"phase":"READY"}' })
+    "identity.json" = "old identity"; "device_key.json" = "old device key"
+    "secrets.json" = "old secrets"; "auth_profiles.json" = "old profiles"
+    "install-state.json" = "old install state"; "frpc.toml" = "port = 19001"
+  }
+  foreach ($name in $data.Keys) { [IO.File]::WriteAllText((Join-Path $case.DataDir $name), $data[$name]) }
+  $files = @("install.ps1", "uninstall.ps1", "windows-smoke.ps1", "open-config.cmd", "uninstall.exe", "docs/readme.md", "compliance/LICENSE")
+  foreach ($name in $files) {
+    $path = Join-Path $case.InstallDir $name
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+    [IO.File]::WriteAllText($path, "old $name")
+  }
+  return $case
+}
+
+function Assert-CustomerEndpoints {
+  Assert-True ($global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] -ceq "https://customer-cloud.invalid" -and
+    $global:MockMachineEnvironment["KAIWU_EDGE_BASE"] -ceq "https://customer-edge.invalid") "customer machine endpoints were overwritten"
+}
+
+function Assert-MaintenanceFiles {
+  param($Case)
+  foreach ($name in @("install.ps1", "uninstall.ps1", "windows-smoke.ps1", "open-config.cmd", "uninstall.exe", "docs/readme.md", "compliance/LICENSE")) {
+    Assert-True ([IO.File]::ReadAllText((Join-Path $Case.InstallDir $name)) -ceq "old $name") "old maintenance file was not restored: $name"
+  }
+  Assert-True ([IO.File]::ReadAllText((Join-Path $Case.DataDir "install-state.json")) -ceq "old install state") "old install-state not restored"
+}
+
+function Run-UpgradeCase {
+  param([string]$Id)
+  $case = New-UpgradeFixture $Id -Fresh:($Id -eq "first") -Paused:($Id -eq "paused")
+  $checks = [ordered]@{}
+  switch ($Id) {
+    "active" {
+      $child = Add-FixtureFrpc $case
+      $visitor = Add-FixtureFrpc $case -Visitor
+      [IO.File]::WriteAllText((Join-Path $case.DataDir "frpc.pid"), [string]$child.ProcessId)
+      $global:StopHook = {
+        [IO.File]::WriteAllText((Join-Path $global:Case.DataDir "frpc.toml"), "port = 19002")
+      }
+      $global:CopyBeforeHook = {
+        param($source, $target)
+        if ((Split-Path -Leaf $source) -eq "frpc.exe" -and -not $global:MockProcesses[36512].Exited) {
+          throw "synthetic overwrite or backup while old frpc still holds its image"
+        }
+      }
+      $run = Invoke-Installer $case
+      Assert-True ($run.ResultCode -eq "INSTALLED") "active upgrade: $($run.Error)"
+      Assert-True ($child.Terminated -and $child.Exited -and -not $visitor.Exited -and $global:Terminations.Count -eq 1) "old child/visitor identity or exit mismatch"
+      $backup = Find-BackupDirectory $case
+      Assert-True ([IO.File]::ReadAllText((Join-Path $backup.FullName "frpc.toml")) -ceq "port = 19002") "backup did not capture stopped writer state"
+      Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.DataDir "frpc.pid"))) "stale PID still visible to next service"
+      Assert-CustomerEndpoints
+      $checks = @{ result = $run.ResultCode; terminated_pids = $global:Terminations; visitor_alive = -not $visitor.Exited; snapshot = "port after stop" }
+    }
+    "paused" {
+      $run = Invoke-Installer $case
+      Assert-True ($run.ResultCode -eq "INSTALLED") "paused upgrade: $($run.Error)"
+      Assert-CustomerEndpoints
+      Assert-True ([IO.File]::ReadAllText((Join-Path $case.DataDir "state.json")) -match 'PAUSED') "paused data changed within the installer"
+      Assert-True ($global:Terminations.Count -eq 0 -and $global:MockService.Status -eq "Running") "paused service state changed"
+      $checks = @{ result = $run.ResultCode; state = "PAUSED"; service = $global:MockService.Status }
+    }
+    "startup" {
+      foreach ($pair in @("Manual/Running", "Auto/Stopped", "Disabled/Stopped", "Disabled/Running")) {
+        $case = New-UpgradeFixture ("startup-" + $pair.Replace("/", "-"))
+        $mode, $state = $pair -split "/"
+        $global:MockService.StartMode = $mode
+        $global:MockService.DelayedAutoStart = $pair -eq "Auto/Stopped"
+        $marker = Join-Path $case.DataDir "frpc.pid"
+        if ($state -eq "Stopped") {
+          Invoke-SyntheticServiceState "Stopped"
+          [IO.File]::WriteAllText($marker, "36512")
+        }
+        $run = Invoke-Installer $case
+        Assert-True ($run.ResultCode -eq "INSTALLED" -and $global:MockService.StartMode -eq $mode -and
+          $global:MockService.Status -eq $state -and $global:MockService.DelayedAutoStart -eq ($pair -eq "Auto/Stopped")) "startup mode or runtime status lost: $pair, $($run.Error)"
+        Assert-True ($global:HttpCalls -eq [int]($state -eq "Running")) "unexpected HTTP verification: $pair"
+        Assert-True (-not (Test-Path -LiteralPath $marker)) "stopped replacement kept a stale runtime PID: $pair"
+        $checks[$pair] = @{ result = $run.ResultCode; starts = $global:StartServiceCalls; http_checks = $global:HttpCalls }
+      }
+    }
+    "first" {
+      $run = Invoke-Installer $case
+      Assert-True ($run.ResultCode -eq "INSTALLED" -and $global:MockService.StartMode -eq "Auto" -and
+        $global:MockService.Status -eq "Running") "first install did not start automatically: $($run.Error)"
+      Assert-True ($global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] -ceq "https://preset-cloud.invalid" -and
+        $global:MockMachineEnvironment["KAIWU_EDGE_BASE"] -ceq "https://preset-edge.invalid") "first install did not use presets"
+      $checks = @{ result = $run.ResultCode; service = $global:MockService.Status; endpoints = "presets" }
+    }
+    "ambiguous" {
+      foreach ($fault in @("wrong-parent", "wrong-config", "denied-handle", "missing-image", "stale-pid", "same-service-name")) {
+        $case = New-UpgradeFixture "ambiguous-$fault"
+        $child = Add-FixtureFrpc $case
+        switch ($fault) {
+          "wrong-parent" { $child.ParentProcessId = 412 }
+          "wrong-config" { $child.CommandLine = '"frpc.exe" -c "C:\stranger.toml"' }
+          "denied-handle" { $child.Denied = $true }
+          "missing-image" { $child.ExecutablePath = $null }
+          "stale-pid" {
+            $visitor = Add-FixtureFrpc $case -Visitor
+            [IO.File]::WriteAllText((Join-Path $case.DataDir "frpc.pid"), [string]$visitor.ProcessId)
+          }
+          "same-service-name" { $global:MockService.PathName = 'C:\unrelated.exe' }
+        }
+        $run = Invoke-Installer $case
+        Assert-True ($run.ResultCode -eq "PRECHECK_FAILED" -and $global:StopCalls.Count -eq 0 -and
+          $global:DeleteCalls -eq 0 -and $global:Terminations.Count -eq 0 -and $global:MockService.StartMode -eq "Auto" -and
+          $global:MockService.Status -eq "Running" -and $null -eq (Find-BackupDirectory $case)) "unsafe takeover: $fault, $($run.Error)"
+        Assert-MaintenanceFiles $case
+        Assert-CustomerEndpoints
+        $checks[$fault] = @{ result = $run.ResultCode; error = $run.Error }
+      }
+    }
+    "handoff" {
+      foreach ($fault in @("pid-reused", "terminate-denied", "no-exit", "service-no-exit", "backup-copy")) {
+        $case = New-UpgradeFixture "handoff-$fault"
+        $global:MockService.DelayedAutoStart = $true
+        $child = Add-FixtureFrpc $case
+        [IO.File]::WriteAllText((Join-Path $case.DataDir "frpc.pid"), [string]$child.ProcessId)
+        switch ($fault) {
+          "pid-reused" {
+            $global:StopHook = {
+              $original = $global:MockProcesses[36512]
+              $reused = $original.PSObject.Copy()
+              $reused.CreationDate = $original.CreationDate.AddSeconds(3)
+              $global:MockProcesses[36512] = $reused
+            }
+          }
+          "terminate-denied" { $global:TerminationDenied = $true }
+          "no-exit" { $global:HoldFrpcProcess = $true }
+          "service-no-exit" { $global:HoldServiceProcess = $true }
+          "backup-copy" {
+            $global:CopyBeforeHook = {
+              param($source, $dest)
+              if ($dest -match '[\\/]backups[\\/]' -and (Split-Path -Leaf $source) -eq "identity.json") { throw "synthetic backup failure" }
+            }
+          }
+        }
+        $run = Invoke-Installer $case
+        $canRestart = $fault -ne "service-no-exit"
+        $expectedResult = if ($canRestart) { "FAILED_RESTORED" } else { "FAILED_RECOVERY_UNCONFIRMED" }
+        $expectedStatus = if ($canRestart) { "Running" } else { "Stopped" }
+        Assert-True ($run.ResultCode -eq $expectedResult -and $global:DeleteCalls -eq 0 -and
+          $global:NewServiceCalls -eq 0 -and $global:StartServiceCalls -eq [int]$canRestart -and
+          $global:MockService.DelayedAutoStart -eq $canRestart -and $global:MockService.Status -eq $expectedStatus) "original service not safely handled: $fault, $($run.Error)"
+        Assert-True ($global:Terminations.Count -eq [int]($fault -in @("no-exit","backup-copy"))) "wrong target termination count for $fault"
+        Assert-True ((Test-Path -LiteralPath (Join-Path $case.DataDir "frpc.pid")) -ne $canRestart) "wrong runtime PID marker handling for $fault"
+        Assert-MaintenanceFiles $case
+        Assert-CustomerEndpoints
+        $checks[$fault] = @{ result = $run.ResultCode; error = $run.Error; terminated_pids = @($global:Terminations) }
+      }
+    }
+    "late-retry" {
+      $global:MockService.StartMode = "Manual"
+      $statePath = Join-Path $case.DataDir "install-state.json"
+      $global:WriteInstallStateFault = $true
+      $global:CopyBeforeHook = {
+        param($source, $target)
+        if (Test-SamePath $target $statePath) { throw "read-locked unchanged state was unnecessarily overwritten by rollback" }
+      }.GetNewClosure()
+      $global:StartHook = {
+        $data = $global:Case.DataDir
+        $binary = Join-Path $global:Case.InstallDir "kaiwu-connector.exe"
+        if ([IO.File]::ReadAllText($binary) -ceq "old-kaiwu-binary") {
+          Assert-True ([IO.File]::ReadAllText((Join-Path $data "frpc.toml")) -ceq "port = 19001") "old tunnel config differed before automatic recovery startup"
+          [IO.File]::WriteAllText((Join-Path $data "frpc.toml"), "port = 19999")
+          [IO.File]::WriteAllText((Join-Path $data "state.json"), '{"phase":"READY"}')
+        } else {
+          $null = Add-FixtureFrpc $global:Case
+          [IO.File]::WriteAllText((Join-Path $data "frpc.toml"), "port = 19888")
+          [IO.File]::WriteAllText((Join-Path $data "builtin_demo.json"), '{"candidate":true}')
+          [IO.File]::WriteAllText((Join-Path $data "diagnostics.json"), '{"candidate":true}')
+        }
+      }
+      $run = Invoke-Installer $case
+      Assert-True ($run.ResultCode -eq "FAILED_RESTORED" -and $run.FailureStage -eq "final_verification" -and
+        $global:MockService.Status -eq "Running" -and $global:MockService.StartMode -eq "Manual") "late rollback failed: $($run.Error)"
+      Assert-True ($global:Terminations.Count -eq 1) "rollback did not stop the candidate tunnel"
+      Assert-MaintenanceFiles $case
+      Assert-CustomerEndpoints
+      Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.DataDir "builtin_demo.json")) -and
+        -not (Test-Path -LiteralPath (Join-Path $case.DataDir "diagnostics.json"))) "candidate runtime files remain after rollback"
+      Assert-True ([IO.File]::ReadAllText((Join-Path $case.DataDir "frpc.toml")) -ceq "port = 19999") "restored legacy service did not re-generate frpc.toml"
+      $global:WriteInstallStateFault = $false
+      $global:StartHook = $null
+      $global:CopyBeforeHook = $null
+      $retry = Invoke-Installer $case
+      Assert-True ($retry.ResultCode -eq "INSTALLED" -and $global:MockService.StartMode -eq "Manual") "retry failed: $($retry.Error)"
+      Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $case.DataDir "backups") -Directory).Count -eq 2) "retry reused an existing backup directory"
+      Assert-CustomerEndpoints
+      $checks = @{ result = $run.ResultCode; retry = $retry.ResultCode; late_stage = $run.FailureStage; service = "Manual/Running" }
+    }
+    { $_ -in @("manual", "backup-reject", "prestart-bytes", "stable-after-start") } {
+      $run = Invoke-Installer $case
+      Assert-True ($run.ResultCode -eq "INSTALLED") "fixture upgrade failed: $($run.Error)"
+      $backup = Find-BackupDirectory $case
+      $restorePath = Join-Path $backup.FullName "restore.ps1"
+      $frpc = Join-Path $case.DataDir "frpc.toml"
+      $identity = Join-Path $case.DataDir "identity.json"
+      $global:MockMaintenanceRegistration = [ordered]@{
+        DisplayVersion = [ordered]@{ kind = "String"; value = "1.3.10" }
+      }
+      [IO.File]::WriteAllText((Join-Path $case.InstallDir "uninstall.exe"), "candidate wrapper")
+      $global:MockMachineEnvironment["KAIWU_EDGE_BASE"] = "https://candidate.invalid"
+      [IO.File]::WriteAllText($frpc, "port = 18888")
+      $global:StartServiceCalls = 0
+      if ($Id -eq "manual") {
+        $visitor = Add-FixtureFrpc $case -Visitor
+        $child = Add-FixtureFrpc $case
+        $global:StartHook = {
+          [IO.File]::WriteAllText($frpc, "port = 19999")
+        }.GetNewClosure()
+        $restore = Invoke-GeneratedRestore $restorePath
+        Assert-True (-not $restore.Failed -and $child.Exited -and -not $visitor.Exited -and
+          $global:MockService.Status -eq "Running") "manual recovery failed: $($restore.Error)"
+        Assert-True ($global:MockMaintenanceRegistration.DisplayVersion.value -ceq "1.3.6") "maintenance registry version not restored"
+        Assert-MaintenanceFiles $case
+        Assert-CustomerEndpoints
+        Assert-True ([IO.File]::ReadAllText($frpc) -ceq "port = 19999") "restored runtime config did not change"
+        $checks = @{ service = $global:MockService.Status; maintenance_version = "1.3.6"; visitor_alive = -not $visitor.Exited }
+      } elseif ($Id -eq "backup-reject") {
+        $global:StopCalls = @()
+        $global:DeleteCalls = 0
+        [IO.File]::AppendAllText((Join-Path $backup.FullName "frpc.toml"), "tampered")
+        $restore = Invoke-GeneratedRestore $restorePath
+        Assert-True ($restore.Failed -and $restore.Error -match "备份文件摘要不匹配" -and
+          $global:StopCalls.Count -eq 0 -and $global:DeleteCalls -eq 0 -and
+          $global:StartServiceCalls -eq 0 -and $global:MockService.Status -eq "Running") "corrupt backup was not rejected before touching current service: $($restore.Error)"
+        $checks = @{ stopped = $global:StopCalls.Count; started = $global:StartServiceCalls; error = $restore.Error }
+      } elseif ($Id -eq "prestart-bytes") {
+        $global:CopyAfterHook = {
+          param($source, $target)
+          if (Test-SamePath $target $frpc) { [IO.File]::AppendAllText($frpc, "tampered-before-start") }
+        }.GetNewClosure()
+        $restore = Invoke-GeneratedRestore $restorePath
+        Assert-True ($restore.Failed -and $global:StartServiceCalls -eq 0 -and $null -eq $global:MockService) "pre-start assertion failed to reject changed frpc.toml: $($restore.Error)"
+        $checks = @{ started = $global:StartServiceCalls; error = $restore.Error }
+      } else {
+        $global:StartHook = {
+          [IO.File]::AppendAllText($identity, "tampered-after-start")
+        }.GetNewClosure()
+        $restore = Invoke-GeneratedRestore $restorePath
+        Assert-True ($restore.Failed -and $restore.Error -match "identity.json" -and $global:StartServiceCalls -eq 1 -and
+          $global:MockService.Status -eq "Stopped" -and $global:MockService.StartMode -eq "Disabled") "post-start stable tampering was not contained: $($restore.Error)"
+        $checks = @{ error = $restore.Error; service = $global:MockService.Status; startup = $global:MockService.StartMode }
+      }
+    }
+  }
+  Add-CaseResult $Id "passed" "installer upgrade transaction fault injection" $checks
+}
+
 if ($env:OS -ne "Windows_NT") {
   $script:Results.error = "not_run: this fault-injection test requires Windows PowerShell 5.1"
   Finish-Test 2
@@ -1024,6 +1435,7 @@ try {
   Assert-PlatformDoubles
   $script:Results.runtime.platform_doubles_verified = $true
 
+  if (-not $UpgradeOnly) {
   Invoke-Case "A" { Run-CaseA }
   Invoke-Case "B" { Run-CaseB }
   Invoke-Case "C" { Run-CaseC }
@@ -1038,7 +1450,19 @@ try {
   Invoke-Case "K" { Run-CaseK }
   Invoke-Case "L" { Run-RecoveryFaults "L" }
   Invoke-Case "M" { Run-RecoveryFaults "M" -Generated }
-  if (($script:Results.cases.id -join ",") -ceq "A,B,C,D1,D2,E,F,G,H,I,J,K,L,M" -and
+  }
+  Invoke-Case "active" { Run-UpgradeCase active }
+  Invoke-Case "paused" { Run-UpgradeCase paused }
+  Invoke-Case "startup" { Run-UpgradeCase startup }
+  Invoke-Case "first" { Run-UpgradeCase first }
+  Invoke-Case "ambiguous" { Run-UpgradeCase ambiguous }
+  Invoke-Case "handoff" { Run-UpgradeCase handoff }
+  Invoke-Case "late-retry" { Run-UpgradeCase late-retry }
+  Invoke-Case "manual" { Run-UpgradeCase manual }
+  Invoke-Case "backup-reject" { Run-UpgradeCase backup-reject }
+  Invoke-Case "prestart-bytes" { Run-UpgradeCase prestart-bytes }
+  Invoke-Case "stable-after-start" { Run-UpgradeCase stable-after-start }
+  if ($script:Results.cases.Count -eq $(if ($UpgradeOnly) { 11 } else { 14 + 11 }) -and
       @($script:Results.cases | Where-Object { $_.status -ne "passed" }).Count -eq 0) {
     $script:Results.status = "passed"
   } else {

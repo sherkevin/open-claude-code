@@ -53,6 +53,7 @@ const (
 	fileRevoked   = "revoked.json"
 
 	supervisorStopTimeout = 5 * time.Second
+	startupConnectTimeout = 90 * time.Second
 )
 
 // Options 是连接器启动参数。
@@ -105,13 +106,10 @@ type Agent struct {
 	stoppingTunnels   int
 	registeredSources map[string]map[string]bool
 
-	persistMu   sync.Mutex
-	autoConnect bool
-}
-
-// persistedState 记录上一次稳定状态，供服务重启后判断是否需要自动恢复通道。
-type persistedState struct {
-	State state.State `json:"state"`
+	// mu guards the startup worker and cancellation of the active attempt.
+	startupConnectPending bool
+	tunnelRevision        uint64
+	connectCancel         context.CancelFunc
 }
 
 // Status 是给本机界面和心跳使用的快照。
@@ -177,27 +175,15 @@ func New(opts Options) (*Agent, error) {
 		return nil, err
 	}
 	agent.deviceKey = deviceKey
-	agent.state.SetObserver(func(from, to state.State, reason string) {
-		agent.mu.Lock()
-		if to == state.Ready || to == state.Connecting {
-			agent.lastError = ""
-		}
-		if reason != "" && (to == state.DegradedUpstream || to == state.DegradedRelay) {
-			agent.lastError = reason
-		}
-		agent.mu.Unlock()
-		agent.persistState(to)
-	})
-
-	// 先读上一次稳定状态，再载入身份；载入身份会触发一次状态迁移并写回文件。
+	// Restore the user's choice without rewriting the file during startup.
 	var saved persistedState
 	if err := st.ReadJSON(fileState, &saved); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	tombstoned := st.Exists(fileRevoked)
-	if !tombstoned {
-		if err := st.ReadProtectedJSON(fileIdentity, &agent.identity); err == nil && agent.identity.DeviceToken != "" {
-			agent.state.Transition(state.Configuring, "已载入设备身份")
+	revoked := st.Exists(fileRevoked) || saved.State == state.Revoked
+	if !revoked {
+		if err := st.ReadProtectedJSON(fileIdentity, &agent.identity); err != nil {
+			agent.identity = cloud.Identity{}
 		}
 	}
 	if err := st.ReadJSON(fileConfig, &agent.config); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -221,20 +207,34 @@ func New(opts Options) (*Agent, error) {
 	if agent.profiles == nil {
 		agent.profiles = map[string]huaweiauth.Profile{}
 	}
-	// 未绑定但已经导入来源时，重启后应回到“待配置”，而不是退回“尚未绑定”。
-	if !tombstoned && agent.identity.DeviceToken == "" && hasEnabledSource(agent.config.Sources) && saved.State != state.Revoked {
-		agent.state.Transition(state.Configuring, "已载入来源配置")
-	}
-	if tombstoned {
-		agent.identity = cloud.Identity{}
-		agent.state.Transition(state.Revoked, "本机撤销墓碑已生效")
-	}
-	if agent.identity.DeviceToken != "" && hasEnabledSource(agent.config.Sources) {
-		switch saved.State {
-		case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:
-			agent.autoConnect = true
+	bound := agent.identity.DeviceToken != ""
+	configured := bound || hasEnabledSource(agent.businessSourcesLocked())
+	intent := saved.tunnelIntent()
+	switch {
+	case revoked:
+		agent.state.Transition(state.Revoked, "已载入撤销记录")
+	case configured:
+		agent.state.Transition(state.Configuring, "已载入本机配置")
+		if intent == tunnelPaused {
+			agent.state.Transition(state.Paused, "已载入本机暂停选择")
 		}
+		startupSources := agent.config.Sources
+		if saved.Intent == "" {
+			// An older demo-only self-test could also write READY.
+			startupSources = agent.businessSourcesLocked()
+		}
+		agent.startupConnectPending = bound && intent == tunnelConnected && hasEnabledSource(startupSources)
 	}
+	agent.state.SetObserver(func(from, to state.State, reason string) {
+		agent.mu.Lock()
+		if to == state.Ready || to == state.Connecting {
+			agent.lastError = ""
+		}
+		if reason != "" && (to == state.DegradedUpstream || to == state.DegradedRelay) {
+			agent.lastError = reason
+		}
+		agent.mu.Unlock()
+	})
 	if agent.identity.DeviceToken != "" {
 		client, err := cloud.NewWithSigner(agent.cloudBase(), agent.identity.DeviceToken, agent.deviceKey)
 		if err != nil {
@@ -396,25 +396,9 @@ func processLooksLikeFrpc(pid int) bool {
 	}
 }
 
-// ShouldAutoConnect 表示上次退出时通道处于工作状态，服务启动后应自动恢复。
-func (a *Agent) ShouldAutoConnect() bool {
-	return a.autoConnect
-}
-
-// AutoConnect 在服务启动后按上次状态恢复通道。
-func (a *Agent) AutoConnect() {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	_, _ = a.Connect(ctx)
-}
-
 // recoverTunnel 在 frpc 被守护进程重新拉起后，确认内网来源健康再恢复就绪状态。
 // 只跟着 frpc 的启动事件走，避免把仍在失败的代理误报为可用。
 func (a *Agent) recoverTunnel() {
-	time.Sleep(1500 * time.Millisecond)
-	if a.state.Current() != state.DegradedRelay {
-		return
-	}
 	a.mu.RLock()
 	s := a.supervisor
 	adminPort := a.frpcAdminPort
@@ -422,7 +406,8 @@ func (a *Agent) recoverTunnel() {
 	adminPassword := a.frpcAdminPassword
 	proxyCount := a.frpcProxyCount
 	a.mu.RUnlock()
-	if s == nil || !s.Running() {
+	time.Sleep(1500 * time.Millisecond)
+	if a.state.Current() != state.DegradedRelay || s == nil || !s.Running() {
 		return
 	}
 	if detail := strings.ToLower(s.LastError()); strings.Contains(detail, "error") || strings.Contains(detail, "failed") {
@@ -439,10 +424,18 @@ func (a *Agent) recoverTunnel() {
 	if err != nil || !allOK(reports) {
 		return
 	}
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	a.mu.RLock()
+	sameTunnel := !a.closed && a.supervisor == s && a.frpcAdminPort == adminPort
+	a.mu.RUnlock()
+	if !sameTunnel || a.state.Current() != state.DegradedRelay || !s.Running() {
+		return
+	}
 	if a.state.Transition(state.Ready, "通道已恢复") {
 		a.recordDiagnostic(diagnostics.Record{EventCode: "frp_recovered"})
 		a.recordDiagnostic(diagnostics.Record{EventCode: "connection_succeeded"})
-		a.startHeartbeat()
+		a.startHeartbeat(s)
 	}
 }
 
@@ -478,18 +471,6 @@ func stopSupervisor(s *supervisor.Supervisor) error {
 	ctx, cancel := context.WithTimeout(context.Background(), supervisorStopTimeout)
 	defer cancel()
 	return s.Stop(ctx)
-}
-
-// persistState 记录稳定状态，供下次启动判断是否需要自动恢复通道。
-func (a *Agent) persistState(to state.State) {
-	switch to {
-	case state.Ready, state.Paused, state.Configuring, state.DegradedUpstream, state.DegradedRelay, state.Revoked:
-	default:
-		return
-	}
-	a.persistMu.Lock()
-	defer a.persistMu.Unlock()
-	_ = a.store.WriteJSON(fileState, persistedState{State: to})
 }
 
 func (a *Agent) cloudBase() string {
@@ -672,6 +653,7 @@ func (a *Agent) cloudConfigured() bool {
 func (a *Agent) Status() Status {
 	a.mu.RLock()
 	status := a.statusLocked()
+	s := a.supervisor
 	adminPort := a.frpcAdminPort
 	adminUser := a.frpcAdminUser
 	adminPassword := a.frpcAdminPassword
@@ -681,16 +663,24 @@ func (a *Agent) Status() Status {
 		return status
 	}
 	connected, detail := queryFrpcTunnel(adminPort, adminUser, adminPassword, proxyCount)
+	a.mu.RLock()
+	sameTunnel := a.supervisor == s && a.frpcAdminPort == adminPort
+	a.mu.RUnlock()
+	if !sameTunnel {
+		return a.statusSnapshot()
+	}
 	if connected && a.state.Current() == state.DegradedRelay {
 		a.state.Transition(state.Ready, "中继代理已进入运行状态")
 	} else if !connected && a.state.Current() == state.Ready {
 		a.state.Transition(state.DegradedRelay, detail)
 	}
 	a.mu.RLock()
+	defer a.mu.RUnlock()
 	status = a.statusLocked()
-	a.mu.RUnlock()
-	status.TunnelConnected = connected
-	status.TunnelDetail = detail
+	if a.supervisor == s && a.frpcAdminPort == adminPort && status.FrpcRunning {
+		status.TunnelConnected = connected
+		status.TunnelDetail = detail
+	}
 	return status
 }
 
@@ -1163,15 +1153,11 @@ func (a *Agent) Connect(ctx context.Context) (Status, error) {
 	return a.connect(ctx, false)
 }
 
-func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err error) {
-	a.connectMu.Lock()
-	defer a.connectMu.Unlock()
-	ctx, release, operationErr := a.beginRuntimeOperation(ctx)
-	if operationErr != nil {
-		return a.statusSnapshot(), operationErr
-	}
-	defer release()
+func (a *Agent) connect(ctx context.Context, demoOnly bool) (Status, error) {
+	return a.runConnect(ctx, demoOnly, false)
+}
 
+func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (status Status, err error) {
 	started := time.Now()
 	operationID := diagnostics.NewOperationID()
 	a.recordDiagnostic(diagnostics.Record{EventCode: "connection_started", OperationID: operationID})
@@ -1189,15 +1175,23 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 	if !a.CloudReadyForTrial() {
 		return a.Status(), errors.New("本机环境未配置云端中继，当前诊断试用包不能建立连接")
 	}
-	if a.cloud == nil || a.identity.DeviceToken == "" {
-		return a.Status(), errors.New("请先绑定企业")
+	if a.state.Current() == state.Revoked {
+		return a.statusSnapshot(), errors.New("连接器已被撤销")
+	}
+	if demoOnly && a.state.Current() == state.Paused {
+		return a.statusSnapshot(), errors.New("通道已暂停，恢复连接后可验证公网")
 	}
 	a.mu.RLock()
-	hasSources := hasEnabledSource(a.config.Sources)
+	client := a.cloud
+	identity := a.identity
+	hasSources := len(a.runtimeSourcesLocked()) > 0
 	demoID := a.demoState.SourceID
 	demoSourceIndex := a.builtinDemoSourceIndexLocked()
 	demoRunning := a.builtinDemoRuntimeReadyLocked()
 	a.mu.RUnlock()
+	if client == nil || identity.DeviceToken == "" {
+		return a.statusSnapshot(), errors.New("请先绑定企业")
+	}
 	if demoOnly {
 		hasSources = demoSourceIndex >= 0 && demoID != "" && demoRunning
 	}
@@ -1206,6 +1200,11 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 			return a.Status(), errors.New("内置测试服务尚未启动，请先在页面中启用内置测试服务")
 		}
 		return a.Status(), errors.New("请至少启用一个 MCP 服务后再连接")
+	}
+	if !demoOnly && !automatic {
+		if err := a.saveTunnelChoice(tunnelConnected, state.Connecting); err != nil {
+			return a.statusSnapshot(), err
+		}
 	}
 	if current := a.state.Current(); !demoOnly && current != state.Connecting {
 		if !state.CanTransition(current, state.Connecting) {
@@ -1255,14 +1254,20 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 		registrationErr = a.registerSources(ctx)
 	}
 	if registrationErr != nil {
+		if cloudRevokedDevice(registrationErr) {
+			return a.revokeFromCloud(ctx, identity.ConnectorID)
+		}
 		cleanupProxies()
 		if !demoOnly {
 			a.state.Transition(state.DegradedRelay, registrationErr.Error())
 		}
 		return a.Status(), registrationErr
 	}
-	desired, err := a.cloud.DesiredState(ctx, a.identity.ConnectorID)
+	desired, err := client.DesiredState(ctx, identity.ConnectorID)
 	if err != nil {
+		if cloudRevokedDevice(err) {
+			return a.revokeFromCloud(ctx, identity.ConnectorID)
+		}
 		cleanupProxies()
 		if !demoOnly {
 			a.state.Transition(state.DegradedRelay, "获取云端状态失败: "+err.Error())
@@ -1270,21 +1275,27 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 		return a.Status(), err
 	}
 	if desired.Revoked {
-		a.stopAuthProxies()
-		a.state.Transition(state.Revoked, "云端已撤销该连接器")
-		return a.Status(), errors.New("连接器已被撤销")
+		return a.revokeFromCloud(ctx, identity.ConnectorID)
 	}
 	if desired.Draining {
-		status = a.Pause(ctx)
-		return status, errors.New("云端已将该连接器排空，新的平台调用将被拒绝")
+		return a.drainTunnel(ctx)
 	}
-	secretsState, err := a.cloud.TransportSecrets(ctx, a.identity.ConnectorID)
+	secretsState, err := client.TransportSecrets(ctx, identity.ConnectorID)
 	if err != nil {
+		if cloudRevokedDevice(err) {
+			return a.revokeFromCloud(ctx, identity.ConnectorID)
+		}
 		cleanupProxies()
 		if !demoOnly {
 			a.state.Transition(state.DegradedRelay, "获取通道密钥失败")
 		}
 		return a.Status(), fmt.Errorf("获取通道密钥失败: %w", err)
+	}
+	if secretsState.Revoked {
+		return a.revokeFromCloud(ctx, identity.ConnectorID)
+	}
+	if secretsState.Draining {
+		return a.drainTunnel(ctx)
 	}
 	desired = mergeSecrets(desired, secretsState)
 
@@ -1309,9 +1320,9 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 			return a.Status(), errors.New("云端尚未批准内置测试来源，请先由开物管理员完成来源登记和授权")
 		}
 	}
-	if a.isClosed() {
+	if err := ctx.Err(); err != nil {
 		cleanupProxies()
-		return a.statusSnapshot(), errAgentClosed
+		return a.statusSnapshot(), err
 	}
 	adminPort, err := freeLoopbackPort()
 	if err != nil {
@@ -1352,6 +1363,11 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 	}
 
 	a.lifecycleMu.Lock()
+	if err := ctx.Err(); err != nil {
+		a.lifecycleMu.Unlock()
+		cleanupProxies()
+		return a.statusSnapshot(), err
+	}
 	if a.isClosed() {
 		a.lifecycleMu.Unlock()
 		cleanupProxies()
@@ -1388,18 +1404,28 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 		return a.Status(), err
 	}
 	a.lifecycleMu.Unlock()
+	defer func() {
+		if ctx.Err() != nil {
+			if err == nil {
+				err = ctx.Err()
+			}
+			stopCtx, cancel := context.WithTimeout(context.Background(), supervisorStopTimeout)
+			defer cancel()
+			err = errors.Join(err, a.stopTunnel(stopCtx))
+			status = a.statusSnapshot()
+		}
+	}()
 
-	time.Sleep(800 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		return a.statusSnapshot(), ctx.Err()
+	case <-time.After(800 * time.Millisecond):
+	}
 	if !s.Running() {
 		cleanupProxies()
 		a.state.Transition(state.DegradedRelay, "通道未启动: "+s.LastError())
 		return a.Status(), errors.New("通道未启动")
 	}
-	if a.state.Current() == state.Paused {
-		_ = stopSupervisor(s)
-		return a.Status(), errors.New("连接已取消")
-	}
-
 	tunnelConnected := false
 	tunnelDetail := "frpc 尚未完成中继登录"
 	deadline := time.Now().Add(2 * time.Second)
@@ -1408,16 +1434,23 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 		if tunnelConnected {
 			break
 		}
-		time.Sleep(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return a.statusSnapshot(), ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 	diagnoseSourceID := ""
 	if demoOnly {
 		diagnoseSourceID = demoID
 	}
 	reports, diagErr := a.Diagnose(ctx, diagnoseSourceID, "")
+	if err := ctx.Err(); err != nil {
+		return a.statusSnapshot(), err
+	}
 	if diagErr != nil {
 		a.state.Transition(state.DegradedUpstream, "内网来源检查失败: "+diagErr.Error())
-		a.startHeartbeat()
+		a.startHeartbeat(s)
 		return a.Status(), fmt.Errorf("内网来源检查失败: %w", diagErr)
 	}
 	if !allOK(reports) {
@@ -1431,10 +1464,10 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (status Status, err 
 			}
 		}
 		a.state.Transition(state.Ready, "通道已建立")
-		a.startHeartbeat()
+		a.startHeartbeat(s)
 		return a.Status(), nil
 	}
-	a.startHeartbeat()
+	a.startHeartbeat(s)
 	if a.state.Current() == state.DegradedUpstream {
 		return a.Status(), errors.New("内网来源检查未通过")
 	}
@@ -1487,54 +1520,38 @@ func (a *Agent) reuseRunningDemoTunnel(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// Pause 立即停止访问，不等待在途请求。
-func (a *Agent) Pause(ctx context.Context) Status {
-	a.mu.Lock()
-	s := a.supervisor
-	stopHeartbeat := a.heartbeat
-	a.heartbeat = nil
-	a.stoppingTunnels++
-	a.frpcAdminPort = 0
-	a.frpcAdminUser = ""
-	a.frpcAdminPassword = ""
-	a.frpcUser = ""
-	a.frpcProxyCount = 0
-	a.mu.Unlock()
-	if stopHeartbeat != nil {
-		stopHeartbeat()
-	}
-	if s != nil {
-		_ = s.Stop(ctx)
-	}
-	a.stopAuthProxies()
-	a.mu.Lock()
-	a.stoppingTunnels--
-	a.mu.Unlock()
-	a.state.Transition(state.Paused, "本机暂停")
-	a.recordDiagnostic(diagnostics.Record{EventCode: "connection_paused"})
-	return a.Status()
-}
-
-// Disconnect 停止通道并回到待配置状态。
-func (a *Agent) Disconnect(ctx context.Context) Status {
-	status := a.Pause(ctx)
-	if status.State == state.Paused {
-		a.state.Transition(state.Configuring, "通道已断开")
-	}
-	a.recordDiagnostic(diagnostics.Record{EventCode: "connection_disconnected"})
-	return a.Status()
-}
-
 // Revoke 撤销本机设备。
 func (a *Agent) Revoke(ctx context.Context) (Status, error) {
+	unlock, err := a.beginTunnelChoice()
+	if err != nil {
+		return a.statusSnapshot(), err
+	}
+
 	a.mu.RLock()
 	client := a.cloud
 	connectorID := a.identity.ConnectorID
 	a.mu.RUnlock()
+	localErr := a.revokeLocally(ctx, connectorID, "设备已撤销")
+	unlock()
+	if client != nil && connectorID != "" {
+		if err := client.Revoke(ctx, connectorID); err != nil {
+			return a.statusSnapshot(), errors.Join(localErr, fmt.Errorf("本机已撤销，云端通知未完成: %w", err))
+		}
+	}
+	return a.statusSnapshot(), localErr
+}
 
-	// Local revocation is authoritative. A control-plane outage must never
-	// leave the device identity usable or allow a later reconnection.
-	a.Pause(ctx)
+// revokeLocally is shared by explicit and cloud revocation. connectMu is held.
+func (a *Agent) revokeLocally(ctx context.Context, connectorID, reason string) error {
+	tombstoneErr := a.store.WriteJSON(fileRevoked, map[string]string{
+		"connector_id": connectorID,
+		"revoked_at":   time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if tombstoneErr != nil {
+		tombstoneErr = fmt.Errorf("无法保存设备撤销记录: %w", tombstoneErr)
+	}
+	saveErr := a.saveTunnelChoice(tunnelDisconnected, state.Revoked)
+	stopErr := a.stopTunnel(ctx)
 	a.clearDiagnosticsOwner()
 	a.mu.Lock()
 	a.identity = cloud.Identity{}
@@ -1542,23 +1559,17 @@ func (a *Agent) Revoke(ctx context.Context) (Status, error) {
 	a.secrets = map[string]map[string]string{}
 	a.profiles = map[string]huaweiauth.Profile{}
 	a.registeredSources = map[string]map[string]bool{}
+	a.startupConnectPending = false
 	a.mu.Unlock()
-	_ = a.store.Remove(fileIdentity)
-	_ = a.store.Remove(fileSecrets)
-	_ = a.store.Remove(fileAuth)
-	_ = a.store.Remove(fileFrpc)
-	_ = a.store.WriteJSON(fileRevoked, map[string]string{
-		"connector_id": connectorID,
-		"revoked_at":   time.Now().UTC().Format(time.RFC3339Nano),
-	})
-	a.state.Transition(state.Revoked, "设备已撤销")
+	removeErr := errors.Join(
+		a.store.Remove(fileIdentity),
+		a.store.Remove(fileSecrets),
+		a.store.Remove(fileAuth),
+		a.store.Remove(fileFrpc),
+	)
+	a.state.Transition(state.Revoked, reason)
 	a.recordDiagnostic(diagnostics.Record{EventCode: "connection_revoked"})
-	if client != nil && connectorID != "" {
-		if err := client.Revoke(ctx, connectorID); err != nil {
-			return a.Status(), fmt.Errorf("本机已撤销，云端通知未完成: %w", err)
-		}
-	}
-	return a.Status(), nil
+	return errors.Join(tombstoneErr, saveErr, stopErr, removeErr)
 }
 
 // Export 生成平台可导入的 MCP 配置。
@@ -1672,9 +1683,9 @@ func (a *Agent) frpcBinary() string {
 	return filepath.Join(a.opts.DataDir, "bin", frpcBinaryName())
 }
 
-func (a *Agent) startHeartbeat() {
+func (a *Agent) startHeartbeat(s *supervisor.Supervisor) {
 	a.mu.Lock()
-	if a.closed || a.runtimeCtx == nil {
+	if a.closed || a.runtimeCtx == nil || a.supervisor != s || a.frpcAdminPort == 0 {
 		a.mu.Unlock()
 		return
 	}

@@ -537,8 +537,8 @@ func TestConnectRegistersMetadataOnlyAndHonorsDraining(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "排空") {
 		t.Fatalf("云端排空必须阻止建立新通道: %v", err)
 	}
-	if status.State != "PAUSED" {
-		t.Fatalf("排空后状态应为 PAUSED: %s", status.State)
+	if status.State != state.Draining {
+		t.Fatalf("排空后状态应为 DRAINING: %s", status.State)
 	}
 	sourceID := instance.config.Sources[0].SourceID
 	var registered map[string]any

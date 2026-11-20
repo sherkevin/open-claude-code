@@ -338,13 +338,23 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": s.Agent.Pause(ctx)})
+	status, err := s.Agent.Pause(ctx)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": status})
 }
 
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": s.Agent.Disconnect(ctx)})
+	status, err := s.Agent.Disconnect(ctx)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": status})
 }
 
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {

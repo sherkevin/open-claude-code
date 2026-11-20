@@ -14,7 +14,10 @@ func TestDisconnectFromReadyReturnsToConfiguring(t *testing.T) {
 	}
 	instance.state = state.NewMachine(state.Ready)
 
-	status := instance.Disconnect(context.Background())
+	status, err := instance.Disconnect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if status.State != state.Configuring {
 		t.Fatalf("断开后应回到 CONFIGURING，实际 %s", status.State)
 	}
@@ -26,7 +29,10 @@ func TestDisconnectLeavesUnpairedConnectorUnpaired(t *testing.T) {
 		t.Fatalf("创建连接器失败: %v", err)
 	}
 
-	status := instance.Disconnect(context.Background())
+	status, err := instance.Disconnect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if status.State != state.Unpaired {
 		t.Fatalf("未绑定连接器断开后仍应为 UNPAIRED，实际 %s", status.State)
 	}

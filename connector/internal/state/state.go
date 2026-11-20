@@ -44,13 +44,13 @@ func (s State) Label() string {
 // allowed 是允许的状态迁移表。
 var allowed = map[State][]State{
 	Unpaired:         {Configuring, Revoked},
-	Configuring:      {Connecting, Unpaired, Revoked, Paused},
+	Configuring:      {Connecting, Unpaired, Revoked, Paused, Draining},
 	Connecting:       {Ready, DegradedUpstream, DegradedRelay, Configuring, Paused, Draining, Revoked},
 	Ready:            {DegradedUpstream, DegradedRelay, Connecting, Paused, Draining, Revoked},
 	DegradedUpstream: {Ready, Connecting, DegradedRelay, Paused, Draining, Revoked},
 	DegradedRelay:    {Ready, Connecting, DegradedUpstream, Paused, Draining, Revoked},
 	Paused:           {Configuring, Connecting, Unpaired, Revoked, Draining},
-	Draining:         {Configuring, Connecting, Revoked},
+	Draining:         {Configuring, Connecting, Paused, Revoked},
 	Revoked:          {},
 }
 

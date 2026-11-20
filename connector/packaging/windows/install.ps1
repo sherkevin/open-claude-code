@@ -29,14 +29,17 @@ $InstallDir = Join-Path $env:ProgramFiles "Kaiwu\Connector"
 $DataDir = Join-Path $env:ProgramData "Kaiwu\Connector"
 $ServiceName = "KaiwuConnector"
 $Listen = "127.0.0.1:17872"
+$MaintenanceRegistryNames = @(
+  "DisplayName", "DisplayVersion", "Publisher", "InstallLocation", "DisplayIcon", "UninstallString",
+  "QuietUninstallString", "Comments", "NoModify", "NoRepair", "EstimatedSize"
+)
 if ([string]::IsNullOrWhiteSpace($ResultPath)) {
   $ResultPath = Join-Path $env:TEMP "KaiwuConnector-install-result.txt"
 }
 
 $Stage = "startup"
 $FailureStage = $null
-$OriginalServiceStopAttempted = $false
-$OriginalServiceDeleteAccepted = $false
+$OriginalHandoff = @{ startup_changed = $false; stop_attempted = $false; delete_accepted = $false }
 $ReplacementServiceCreated = $false
 $OldInstallChanged = $false
 $InstallMutationStarted = $false
@@ -119,6 +122,7 @@ function Assert-CriticalFiles {
 
 $Stage = "source_precheck"
 try {
+  if (-not [Environment]::Is64BitProcess) { throw "请使用 64 位 Windows PowerShell" }
   $ChecksumFile = Join-Path $Source "SHA256SUMS"
   if (-not (Test-Path -LiteralPath $ChecksumFile -PathType Leaf)) {
     throw "安装包缺少 SHA256SUMS，拒绝安装"
@@ -249,44 +253,476 @@ function Assert-ServiceStoppable {
   }
 }
 
-function Stop-TargetService {
-  param([string]$Name = $ServiceName, [switch]$Original)
-  $service = Get-Service -Name $Name -ErrorAction Stop
-  Assert-ServiceStoppable $service
-  if ($service.Status -eq "Stopped") { return }
-  if ($Original) {
-    $script:OriginalServiceStopAttempted = $true
-    $script:OldInstallChanged = $true
-  }
-  Stop-Service -Name $Name -ErrorAction Stop
-  Wait-ServiceStopped -Name $Name
-}
-
-function Stop-AndDeleteService {
-  param([switch]$Original)
-  $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-  if ($Original -and -not $script:HadExistingService) {
-    if ($null -ne $record) { throw "替换前出现未备份的同名服务" }
-    return
-  }
-  $expectedPath = if ($Original) { $script:ServiceSnapshot.binary_path } else { $script:BinPath }
-  if ($null -eq $record -or [string]$record.PathName -ne [string]$expectedPath) {
-    throw "无法确认待删除的同名服务"
-  }
-  Stop-TargetService -Original:$Original
-  & sc.exe delete $ServiceName | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "删除服务 $ServiceName 失败：sc.exe 退出码为 $LASTEXITCODE"
-  }
-  if ($Original) {
-    $script:OriginalServiceDeleteAccepted = $true
-    $script:OldInstallChanged = $true
-  }
-  Wait-ServiceAbsent
-}
-
 # 同一份服务恢复逻辑同时用于自动回滚和生成的独立恢复脚本。
 $ServiceRecoveryFunctions = @'
+function Get-KaiwuServiceRecord {
+  Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+}
+
+function Get-KaiwuProductCommand {
+  $binary = Join-Path $InstallDir "kaiwu-connector.exe"
+  return ('"{0}" serve --data-dir "{1}" --listen {2}' -f $binary, $DataDir, $Listen)
+}
+
+function Get-KaiwuProcessRows {
+  Get-CimInstance Win32_Process -Filter "Name='kaiwu-connector.exe' OR Name='frpc.exe'" -ErrorAction Stop
+}
+
+function Get-KaiwuRelevantProcesses {
+  param([uint32]$ServicePid = 0)
+  $config = [regex]::Escape((Join-Path $DataDir "frpc.toml"))
+  $configArgument = '(?:^|\s)-c\s+(?:"' + $config + '"|' + $config + ')(?=\s|$)'
+  foreach ($row in @(Get-KaiwuProcessRows)) {
+    $id = [uint32]$row.ProcessId
+    if ($id -eq 0 -or [string]::IsNullOrWhiteSpace($row.ExecutablePath)) {
+      throw "无法读取同名进程的映像或进程号 ($id)，拒绝交接"
+    }
+    if ($row.Name -eq "frpc.exe" -and [string]::IsNullOrWhiteSpace($row.CommandLine)) {
+      throw "无法读取同名隧道进程的命令行 ($id)，拒绝交接"
+    }
+    $path = Join-Path $InstallDir $row.Name
+    if ($row.ExecutablePath -ne $path) {
+      if (($ServicePid -ne 0 -and ($id -eq $ServicePid -or $row.ParentProcessId -eq $ServicePid)) -or
+          ($row.Name -eq "frpc.exe" -and $row.CommandLine -match $configArgument)) {
+        throw "发现使用本产品服务或配置但映像路径不同的进程 ($id)"
+      }
+      continue
+    }
+    if ($row.CreationDate -isnot [datetime]) { throw "无法读取产品进程创建时间 ($id)" }
+    if ($row.Name -eq "frpc.exe") {
+      # 两代守护器均以 exec.CommandContext(binary, "-c", config) 启动，只有一个配置参数。
+      $image = [regex]::Escape($path)
+      $imageArg = if ($path -match '\s') { '"' + $image + '"' } else { '(?:"' + $image + '"|' + $image + ')' }
+      $configArg = if ((Join-Path $DataDir "frpc.toml") -match '\s') {
+        '"' + $config + '"'
+      } else {
+        '(?:"' + $config + '"|' + $config + ')'
+      }
+      $command = '^' + $imageArg + '\s+-c\s+' + $configArg + '\s*$'
+      if ($row.CommandLine -notmatch $command) { throw "无法核验隧道进程的完整配置参数 ($id)" }
+    }
+    $row
+  }
+}
+
+if (-not (Get-Command Open-KaiwuProcess -CommandType Function -ErrorAction SilentlyContinue)) {
+function Open-KaiwuProcess {
+  param($Row, [switch]$CanTerminate)
+  if (-not ('Kaiwu.Installer.ProcessHandle' -as [type])) {
+    Add-Type -ErrorAction Stop -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace Kaiwu.Installer {
+    public sealed class ProcessHandle : IDisposable {
+        private const uint QueryLimitedInformation = 0x1000;
+        private const uint Synchronize = 0x00100000;
+        private const uint TerminateAccess = 0x0001;
+        private const uint WaitObject = 0;
+        private const uint WaitTimeout = 258;
+        private readonly SafeProcessHandle handle;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern SafeProcessHandle OpenProcess(uint access, bool inherit, uint pid);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetProcessTimes(SafeProcessHandle handle, out long creation,
+            out long exit, out long kernel, out long user);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+        private static extern bool QueryFullProcessImageNameW(SafeProcessHandle handle, int flags,
+            StringBuilder path, ref int length);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateProcess(SafeProcessHandle handle, uint exitCode);
+
+        public ProcessHandle(uint pid, bool canTerminate, string expectedPath, DateTime expectedCreationUtc) {
+            uint access = QueryLimitedInformation | Synchronize;
+            if (canTerminate) access |= TerminateAccess;
+            handle = OpenProcess(access, false, pid);
+            try {
+                if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                long creation, exit, kernel, user;
+                if (!GetProcessTimes(handle, out creation, out exit, out kernel, out user))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                int length = 32768;
+                var path = new StringBuilder(length);
+                if (!QueryFullProcessImageNameW(handle, 0, path, ref length))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                // CIM exposes creation time at microsecond precision. The handle uses 100 ns ticks.
+                long delta = DateTime.FromFileTimeUtc(creation).Ticks - expectedCreationUtc.Ticks;
+                if (delta <= -10 || delta >= 10 ||
+                    !String.Equals(path.ToString(), expectedPath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Process identity changed before its handle was opened.");
+            } catch {
+                handle.Dispose();
+                throw;
+            }
+        }
+
+        public bool WaitForExit(uint milliseconds) {
+            uint result = WaitForSingleObject(handle, milliseconds);
+            if (result == WaitObject) return true;
+            if (result == WaitTimeout) return false;
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        public void Terminate() {
+            if (!TerminateProcess(handle, 1)) {
+                int error = Marshal.GetLastWin32Error();
+                if (!WaitForExit(0)) throw new Win32Exception(error);
+            }
+        }
+
+        public void Dispose() { handle.Dispose(); }
+    }
+}
+"@
+  }
+  return [Kaiwu.Installer.ProcessHandle]::new(
+    [uint32]$Row.ProcessId, [bool]$CanTerminate, [string]$Row.ExecutablePath, $Row.CreationDate.ToUniversalTime()
+  )
+}
+}
+
+function Assert-KaiwuQuiescent {
+  param($PreviousRecord)
+  $current = Get-KaiwuServiceRecord
+  if ($null -eq $PreviousRecord) {
+    if ($null -ne $current) { throw "交接时发现未接管的同名服务" }
+  } elseif ($null -eq $current -or $current.PathName -ne $PreviousRecord.PathName -or
+      $current.State -ne "Stopped" -or [uint32]$current.ProcessId -ne 0 -or $current.StartMode -ne "Disabled") {
+    throw "服务注册或停止状态在交接时发生变化"
+  }
+  if (@(Get-KaiwuRelevantProcesses).Count -gt 0) {
+    throw "仍有产品进程存活或出现未捕获的进程，拒绝备份或写入"
+  }
+}
+
+function Assert-KaiwuPidMarker {
+  param($Children)
+  $marker = Join-Path $DataDir "frpc.pid"
+  if (-not (Test-Path -LiteralPath $marker)) { return }
+  $id = [uint32]0
+  $raw = Get-Content -LiteralPath $marker -Raw -ErrorAction Stop
+  if (-not [uint32]::TryParse(([string]$raw).Trim(), [ref]$id) -or $id -eq 0) { return }
+  $sameId = @(Get-KaiwuProcessRows | Where-Object { $_.ProcessId -eq $id })
+  if ($sameId.Count -eq 0) { return }
+  if ($sameId.Count -ne 1 -or @($Children | Where-Object {
+    $_.ProcessId -eq $id -and $_.CreationDate -eq $sameId[0].CreationDate -and
+      $_.ExecutablePath -eq $sameId[0].ExecutablePath
+  }).Count -ne 1) {
+    throw "隧道进程号记录与已核验的子进程不符 ($id)，拒绝接管"
+  }
+}
+
+function Move-KaiwuRuntimePidMarker {
+  # 任一版本启动时都会按 PID 和名称尝试清除旧 frpc；旧 PID 不能跨这次进程交接使用。
+  $marker = Join-Path $DataDir "frpc.pid"
+  if (Test-Path -LiteralPath $marker) {
+    $name = "frpc.pid.pre-handoff-" + [guid]::NewGuid().ToString("N")
+    Rename-Item -LiteralPath $marker -NewName $name -ErrorAction Stop
+  }
+}
+
+function Stop-KaiwuWriters {
+  param($Record, $Handoff)
+  if ($null -eq $Record) {
+    Assert-KaiwuQuiescent $null
+    Assert-KaiwuPidMarker @()
+    return
+  }
+  if ($Record.PathName -ne (Get-KaiwuProductCommand) -or $Record.StartName -ne "LocalSystem" -or $Record.State -notin @("Running", "Stopped") -or
+      $Record.StartMode -notin @("Auto", "Manual", "Disabled") -or
+      ($Record.State -eq "Running") -ne ([uint32]$Record.ProcessId -ne 0)) {
+    throw "无法确认是受支持的本产品服务注册或稳定运行状态"
+  }
+  Assert-ServiceStoppable (Get-Service -Name $ServiceName -ErrorAction Stop)
+  $servicePid = [uint32]$Record.ProcessId
+  $processes = @(Get-KaiwuRelevantProcesses $servicePid)
+  $parents = @($processes | Where-Object { $_.Name -eq "kaiwu-connector.exe" })
+  $children = @($processes | Where-Object { $_.Name -eq "frpc.exe" })
+  if ($servicePid -eq 0) {
+    if ($processes.Count -gt 0) { throw "服务已停止且仍有产品进程，无法核验进程归属" }
+  } else {
+    if ($parents.Count -ne 1 -or $parents[0].ProcessId -ne $servicePid) {
+      throw "无法核验服务控制管理器报告的连接器进程 ($servicePid)"
+    }
+    foreach ($child in $children) {
+      if ($child.ParentProcessId -ne $servicePid -or $child.CreationDate -lt $parents[0].CreationDate) {
+        throw "无法核验隧道进程的父进程或创建顺序 ($($child.ProcessId))"
+      }
+    }
+  }
+  Assert-KaiwuPidMarker $children
+
+  $serviceHandle = $null
+  $tunnels = @()
+  try {
+    if ($servicePid -ne 0) {
+      $serviceHandle = Open-KaiwuProcess $parents[0]
+      foreach ($child in $children) {
+        $tunnels += [pscustomobject]@{ Row = $child; Handle = (Open-KaiwuProcess $child -CanTerminate) }
+      }
+    }
+    $current = Get-KaiwuServiceRecord
+    if ($null -eq $current -or $current.PathName -ne $Record.PathName -or $current.State -ne $Record.State -or
+        $current.ProcessId -ne $Record.ProcessId -or $current.StartMode -ne $Record.StartMode -or
+        [bool]$current.DelayedAutoStart -ne [bool]$Record.DelayedAutoStart) {
+      throw "服务注册在捕获进程句柄时发生变化"
+    }
+    if ($Record.StartMode -ne "Disabled") {
+      $Handoff.startup_changed = $true
+      Set-Service -Name $ServiceName -StartupType Disabled -ErrorAction Stop
+    }
+    if ($servicePid -ne 0) {
+      $Handoff.stop_attempted = $true
+      & sc.exe stop $ServiceName | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "停止服务 $ServiceName 失败，退出码 $LASTEXITCODE" }
+      Wait-ServiceStopped
+      if (-not $serviceHandle.WaitForExit(10000)) { throw "服务进程仍未退出 ($servicePid)" }
+    }
+    $current = Get-KaiwuServiceRecord
+    if ($null -eq $current -or $current.PathName -ne $Record.PathName -or
+        $current.State -ne "Stopped" -or [uint32]$current.ProcessId -ne 0 -or $current.StartMode -ne "Disabled") {
+      throw "未确认原服务已停止并阻止重新启动"
+    }
+    foreach ($tunnel in $tunnels) {
+      if ($tunnel.Handle.WaitForExit(1000)) { continue }
+      $old = $tunnel.Row
+      $now = @(Get-KaiwuRelevantProcesses $servicePid | Where-Object { $_.ProcessId -eq $old.ProcessId })
+      if ($tunnel.Handle.WaitForExit(0)) { continue }
+      if ($now.Count -ne 1 -or $now[0].CreationDate -ne $old.CreationDate -or
+          $now[0].ParentProcessId -ne $old.ParentProcessId -or
+          $now[0].ExecutablePath -ne $old.ExecutablePath -or $now[0].CommandLine -cne $old.CommandLine) {
+        throw "停止服务后，隧道进程身份无法再次核验 ($($old.ProcessId))"
+      }
+      $tunnel.Handle.Terminate()
+      if (-not $tunnel.Handle.WaitForExit(10000)) { throw "隧道进程仍未退出 ($($old.ProcessId))" }
+      Write-Host "已确认旧隧道进程退出 (PID $($old.ProcessId))"
+    }
+    Assert-KaiwuQuiescent $Record
+  } finally {
+    foreach ($tunnel in $tunnels) { $tunnel.Handle.Dispose() }
+    if ($null -ne $serviceHandle) { $serviceHandle.Dispose() }
+  }
+}
+
+function Set-KaiwuStartupMode {
+  param([string]$Mode, [bool]$Delayed)
+  if ($Mode -eq "Auto" -and $Delayed) {
+    & sc.exe config $ServiceName start= delayed-auto | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "设置服务延迟启动失败" }
+    return
+  }
+  $startupType = if ($Mode -eq "Auto") { "Automatic" } else { $Mode }
+  Set-Service -Name $ServiceName -StartupType $startupType -ErrorAction Stop
+}
+
+function Start-KaiwuService {
+  param([string]$Mode)
+  Move-KaiwuRuntimePidMarker
+  if ($Mode -eq "Disabled") {
+    # SCM 允许正在运行的服务被改为禁用。重现这个组合需要临时允许手动启动。
+    Set-KaiwuStartupMode "Manual" $false
+  }
+  try {
+    & sc.exe start $ServiceName | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "启动服务 $ServiceName 失败，退出码 $LASTEXITCODE" }
+    Wait-ServiceRunning | Out-Null
+  } finally {
+    if ($Mode -eq "Disabled") { Set-KaiwuStartupMode "Disabled" $false }
+  }
+}
+
+function Restore-KaiwuHandoff {
+  param($Record, $Handoff)
+  if (-not ($Handoff.startup_changed -or $Handoff.stop_attempted)) { return }
+  $current = Get-KaiwuServiceRecord
+  if ($null -eq $current -or $current.PathName -ne $Record.PathName -or
+      $current.DisplayName -ne $Record.DisplayName) {
+    throw "无法核验原服务注册，未尝试启动"
+  }
+  if ($Handoff.stop_attempted -and $current.State -eq "Stop Pending") {
+    Wait-ServiceStopped
+    $current = Get-KaiwuServiceRecord
+  }
+  if ($null -eq $current -or $current.State -notin @("Running", "Stopped")) {
+    throw "无法核验交接中断后的服务状态"
+  }
+  $needsRestart = $Record.State -eq "Running" -and $current.State -eq "Stopped"
+  if ($needsRestart) {
+    # Do not enable a restart while the old connector or its stale PID marker can still interfere.
+    $connectorImage = Join-Path $InstallDir "kaiwu-connector.exe"
+    $blocking = @(Get-KaiwuProcessRows | Where-Object {
+      $_.Name -eq "kaiwu-connector.exe" -and
+        ($_.ProcessId -eq $Record.ProcessId -or $_.ExecutablePath -eq $connectorImage -or
+         [string]::IsNullOrWhiteSpace($_.ExecutablePath))
+    })
+    if ($blocking.Count -gt 0) { throw "原服务进程尚未确认退出，未重新启用服务" }
+    Move-KaiwuRuntimePidMarker
+  }
+  if ($Handoff.startup_changed) {
+    Set-KaiwuStartupMode $Record.StartMode ([bool]$Record.DelayedAutoStart)
+  }
+  if ($needsRestart) { Start-KaiwuService $Record.StartMode }
+  $current = Get-KaiwuServiceRecord
+  if ($null -eq $current -or $current.PathName -ne $Record.PathName -or $current.State -ne $Record.State -or
+      $current.StartMode -ne $Record.StartMode -or
+      ($Record.StartMode -eq "Auto" -and [bool]$current.DelayedAutoStart -ne [bool]$Record.DelayedAutoStart)) {
+    throw "交接中断后未能读回原服务运行状态和启动方式"
+  }
+}
+
+function Remove-KaiwuStoppedService {
+  param($Record, $Handoff)
+  Assert-KaiwuQuiescent $Record
+  # Even when the replacement remains stopped, a later start must not reuse the old PID.
+  Move-KaiwuRuntimePidMarker
+  if ($null -eq $Record) { return }
+  & sc.exe delete $ServiceName | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "删除服务 $ServiceName 失败，退出码 $LASTEXITCODE" }
+  $Handoff.delete_accepted = $true
+  Wait-ServiceAbsent
+  Assert-KaiwuQuiescent $null
+}
+
+function Enter-KaiwuInstallTransaction {
+  $mutex = [System.Threading.Mutex]::new($false, 'Global\KaiwuConnector.InstallTransaction')
+  try {
+    try {
+      if (-not $mutex.WaitOne(0)) { throw "已有开物安装或恢复任务正在运行" }
+    } catch [System.Threading.AbandonedMutexException] {
+      # 内核已把锁交给本次执行。服务与文件仍须通过正常交接检查。
+    }
+    return $mutex
+  } catch {
+    $mutex.Dispose()
+    throw
+  }
+}
+
+function Test-KaiwuBackupTarget {
+  param([string]$Category, [string]$Path)
+  if ($Category -eq "data") { return $Path -match '^[^/\\:]+$' -and $Path -notin @(".", "..") }
+  if ($Category -ne "program") { return $false }
+  return $Path -match '^(?:(?:docs|compliance)/)?[^/\\:]+$' -and $Path -notmatch '(?:^|/)\.{1,2}$'
+}
+
+function Assert-RestoredFiles {
+  param($Manifest, [switch]$AfterStart)
+  foreach ($entry in $Manifest.entries) {
+    if ($entry.category -notin @("program", "data")) { continue }
+    # The service can rewrite these at startup. All were checked byte-for-byte beforehand.
+    if ($AfterStart -and $entry.category -eq "data" -and
+        $entry.relative_path -in @("state.json", "frpc.toml", "diagnostics.json")) { continue }
+    $path = Get-BackupTargetPath $entry
+    if ($entry.absent -eq $true) {
+      if (Test-Path -LiteralPath $path) { throw "恢复目标应不存在: $($entry.relative_path)" }
+    } elseif (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+        (Get-FileSha256 $path) -ne [string]$entry.sha256) {
+      throw "恢复目标摘要不匹配: $($entry.relative_path)"
+    }
+  }
+}
+
+function Assert-KaiwuServiceBackupFiles {
+  param($Manifest)
+  foreach ($name in @("kaiwu-connector.exe", "frpc.exe")) {
+    $entries = @($Manifest.entries | Where-Object {
+      $_.category -eq "program" -and $_.relative_path -eq $name -and $_.absent -ne $true
+    })
+    if ($entries.Count -ne 1) { throw "恢复未确认：备份缺少旧服务程序 $name" }
+  }
+}
+
+function Restore-KaiwuFiles {
+  param($Manifest)
+  foreach ($entry in $Manifest.entries) {
+    if ($entry.category -notin @("program", "data")) { continue }
+    $target = Get-BackupTargetPath $entry
+    if ($entry.absent -eq $true) {
+      if (Test-Path -LiteralPath $target -PathType Leaf) {
+        Remove-Item -LiteralPath $target -Force -ErrorAction Stop
+      }
+      continue
+    }
+    # A late sharing failure may leave the old file untouched and still read-locked.
+    if ((Test-Path -LiteralPath $target -PathType Leaf) -and (Get-FileSha256 $target) -eq $entry.sha256) {
+      continue
+    }
+    $payload = Get-BackupPayloadPath ([string]$entry.backup_relative_path)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+    Copy-Item -LiteralPath $payload -Destination $target -Force
+  }
+}
+
+if (-not (Get-Command Get-KaiwuMaintenanceRegistration -CommandType Function -ErrorAction SilentlyContinue)) {
+  function Get-KaiwuMaintenanceRegistration {
+    $values = [ordered]@{}
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+      'Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector'
+    )
+    if ($null -eq $key) { return $values }
+    try {
+      foreach ($name in $MaintenanceRegistryNames) {
+        if ($name -in $key.GetValueNames()) {
+          $values[$name] = [ordered]@{
+            kind = [string]$key.GetValueKind($name)
+            value = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          }
+        }
+      }
+      return $values
+    } finally {
+      $key.Dispose()
+    }
+  }
+}
+
+if (-not (Get-Command Restore-KaiwuMaintenanceRegistration -CommandType Function -ErrorAction SilentlyContinue)) {
+  function Restore-KaiwuMaintenanceRegistration {
+    param($Values)
+    $path = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector'
+    $key = if (@($Values.PSObject.Properties).Count -gt 0) {
+      [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($path)
+    } else {
+      [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($path, $true)
+    }
+    if ($null -eq $key) { return }
+    try {
+      foreach ($name in $MaintenanceRegistryNames) {
+        $property = $Values.PSObject.Properties[$name]
+        if ($null -eq $property) {
+          $key.DeleteValue($name, $false)
+          if ($name -in $key.GetValueNames()) { throw "恢复卸载记录后仍存在字段: $name" }
+          continue
+        }
+        $entry = $property.Value
+        $kind = [Microsoft.Win32.RegistryValueKind]$entry.kind
+        $value = switch ($entry.kind) {
+          "DWord" { [int]$entry.value }
+          "QWord" { [long]$entry.value }
+          "MultiString" { ,([string[]]$entry.value) }
+          "Binary" { ,([byte[]]$entry.value) }
+          default { [string]$entry.value }
+        }
+        $key.SetValue($name, $value, $kind)
+        $readback = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($key.GetValueKind($name) -ne $kind -or
+            (ConvertTo-Json -InputObject $readback -Compress) -cne (ConvertTo-Json -InputObject $value -Compress)) {
+          throw "恢复卸载记录后读回不一致: $name"
+        }
+      }
+    } finally {
+      $key.Dispose()
+    }
+    # 保留该键中的任何非事务字段。
+  }
+}
+
 function Initialize-KaiwuServiceConfigurationApi {
   if ('Kaiwu.Installer.ServiceConfiguration' -as [type]) { return }
   Add-Type -ErrorAction Stop -TypeDefinition @"
@@ -491,6 +927,7 @@ function Assert-ServiceSnapshotValid {
     throw "恢复未确认：旧服务快照缺少安全标识符和故障动作元数据"
   }
   Assert-ServiceMetadataValid $Snapshot.scm_metadata
+  if ($Snapshot.binary_path -ne (Get-KaiwuProductCommand)) { throw "恢复未确认：服务程序及参数不属于本产品" }
 }
 
 function Assert-ServiceMetadataReadback {
@@ -515,35 +952,6 @@ function Assert-ServiceMetadataReadback {
   }
 }
 
-function Assert-RestoredStableFiles {
-  param($Manifest, $Snapshot)
-  # state.json 在服务启动后可合法变化。重建服务前已核验全量文件。
-  foreach ($entry in @($Manifest.entries)) {
-    if ($entry.category -notin @("program", "data")) { continue }
-    if ($entry.category -eq "data" -and $entry.relative_path -eq "state.json") { continue }
-    $targetPath = Get-BackupTargetPath $entry
-    if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-      throw "恢复后稳定目标缺失: $($entry.relative_path)"
-    }
-    if ((Get-FileSha256 $targetPath) -ne [string]$entry.sha256) {
-      throw "恢复后稳定目标摘要不匹配: $($entry.relative_path)"
-    }
-  }
-  if ($null -eq $Snapshot) { return }
-  foreach ($name in @("kaiwu-connector.exe", "frpc.exe")) {
-    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $name) -PathType Leaf)) {
-      throw "恢复后关键程序缺失: $name"
-    }
-  }
-  if (-not [string]::IsNullOrWhiteSpace([string]$Snapshot.version_line)) {
-    $versionPath = Join-Path $InstallDir "版本信息.txt"
-    $actualVersion = [string](Get-Content -LiteralPath $versionPath -Encoding UTF8 -TotalCount 1)
-    if ($actualVersion -ne [string]$Snapshot.version_line) {
-      throw "恢复未确认：旧版本信息不匹配"
-    }
-  }
-}
-
 function Assert-RestoredServiceRegistration {
   param($Snapshot)
   $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
@@ -556,34 +964,24 @@ function Assert-RestoredServiceRegistration {
 }
 
 function Restore-VerifiedService {
-  param($Manifest, $Snapshot, [switch]$ReuseExisting)
+  param($Manifest, $Snapshot)
   $created = $false
-  $startAttempted = $false
-  Assert-RestoredStableFiles $Manifest $Snapshot
+  Assert-KaiwuServiceBackupFiles $Manifest
+  Assert-RestoredFiles $Manifest
   try {
-    if (-not $ReuseExisting) {
-      # 保持禁用，直到服务控制管理器读回的配置与快照一致。
-      New-Service -Name $ServiceName -BinaryPathName ([string]$Snapshot.binary_path) -StartupType Disabled -DisplayName ([string]$Snapshot.display_name) -ErrorAction Stop | Out-Null
-      $created = $true
-      Set-KaiwuServiceMetadata $ServiceName $Snapshot.scm_metadata
-    }
+    New-Service -Name $ServiceName -BinaryPathName ([string]$Snapshot.binary_path) -StartupType Disabled -DisplayName ([string]$Snapshot.display_name) -ErrorAction Stop | Out-Null
+    $created = $true
+    Set-KaiwuServiceMetadata $ServiceName $Snapshot.scm_metadata
     Assert-ServiceMetadataReadback $Snapshot.scm_metadata
-    if ($created) {
-      if ($Snapshot.start_mode -eq "Auto" -and $Snapshot.delayed_auto_start) {
-        & sc.exe config $ServiceName start= delayed-auto | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "恢复未确认：设置旧服务延迟启动失败" }
-      } elseif ($Snapshot.start_mode -ne "Disabled") {
-        $startupType = if ($Snapshot.start_mode -eq "Auto") { "Automatic" } else { "Manual" }
-        Set-Service -Name $ServiceName -StartupType $startupType -ErrorAction Stop
-      }
+    if ($Snapshot.start_mode -ne "Disabled") {
+      Set-KaiwuStartupMode $Snapshot.start_mode $Snapshot.delayed_auto_start
     }
     Assert-RestoredServiceRegistration $Snapshot
     $service = Get-Service -Name $ServiceName -ErrorAction Stop
     if ($Snapshot.was_running -and $service.Status -eq "Stopped") {
-      $startAttempted = $true
-      Start-Service -Name $ServiceName -ErrorAction Stop
-      Wait-ServiceRunning | Out-Null
-      Assert-RestoredStableFiles $Manifest $Snapshot
+      Assert-RestoredFiles $Manifest
+      Start-KaiwuService $Snapshot.start_mode
+      Assert-RestoredFiles $Manifest -AfterStart
       Assert-RestoredServiceRegistration $Snapshot
       Assert-ServiceMetadataReadback $Snapshot.scm_metadata
     }
@@ -594,25 +992,11 @@ function Restore-VerifiedService {
     }
   } catch {
     $restoreError = $_
-    if ($created -or $startAttempted) {
+    if ($created) {
       try {
-        $service = Get-Service -Name $ServiceName -ErrorAction Stop
-        Assert-ServiceStoppable $service
-        $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-        if ($null -eq $record -or [string]$record.PathName -ne [string]$Snapshot.binary_path) {
-          throw "无法确认同名服务属于本次恢复"
-        }
-        # 禁用新建服务以拦住已排队的自动重启。原有注册则保留其启动配置。
-        if ($created -and $record.StartMode -ne "Disabled") {
-          Set-Service -Name $ServiceName -StartupType Disabled -ErrorAction Stop
-        }
-        Stop-TargetService
-        if ($created) {
-          $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-          if ($null -eq $record -or $record.StartMode -ne "Disabled") {
-            throw "无法核验未确认恢复的服务已禁用"
-          }
-        }
+        $record = Get-KaiwuServiceRecord
+        $handoff = @{}
+        Stop-KaiwuWriters $record $handoff
       } catch {
         throw "$($restoreError.Exception.Message)`n未能安全收尾：$($_.Exception.Message)"
       }
@@ -716,21 +1100,12 @@ function Get-BackupPayloadPath {
 }
 
 function Get-BackupTargetPath {
-  param([Parameter(Mandatory = $true)]$Entry)
-  $relativePath = [string]$Entry.relative_path
-  if (
-    [string]::IsNullOrWhiteSpace($relativePath) -or
-    [System.IO.Path]::IsPathRooted($relativePath) -or
-    $relativePath -match '[/\\]' -or
-    $relativePath -in @(".", "..")
-  ) {
-    throw "备份清单包含非法恢复目标"
-  }
-  switch ([string]$Entry.category) {
-    "program" { return (Join-Path $script:InstallDir $relativePath) }
-    "data" { return (Join-Path $script:DataDir $relativePath) }
-    default { throw "备份清单包含未知目标类别" }
-  }
+  param($Entry)
+  $category = [string]$Entry.category
+  $path = [string]$Entry.relative_path
+  if (-not (Test-KaiwuBackupTarget $category $path)) { throw "备份清单包含非法恢复目标" }
+  $root = if ($category -eq "program") { $InstallDir } else { $DataDir }
+  return (Join-Path $root ($path -replace '/', '\'))
 }
 
 function Assert-BackupIntact {
@@ -773,29 +1148,12 @@ function Assert-BackupIntact {
       $script:BackupAvailable = $false
       throw "恢复未确认：备份清单包含未知目标类别"
     }
-    if (
-      [string]::IsNullOrWhiteSpace($relativePath) -or
-      $relativePath -match '[/\\]' -or
-      $relativePath -in @(".", "..")
-    ) {
-      $script:BackupAvailable = $false
-      throw "恢复未确认：备份清单包含非法恢复目标"
-    }
-    if ($category -eq "program" -and $backupRelativePath -notmatch '^program/[^/]+$') {
-      $script:BackupAvailable = $false
-      throw "恢复未确认：程序备份路径不匹配"
-    }
-    if ($category -eq "data" -and $backupRelativePath -match '[/\\]') {
-      $script:BackupAvailable = $false
-      throw "恢复未确认：配置备份路径不匹配"
-    }
-    if ($category -eq "metadata" -and $backupRelativePath -match '[/\\]') {
-      $script:BackupAvailable = $false
-      throw "恢复未确认：备份元数据路径不匹配"
-    }
-    if ($expected -notmatch '^[0-9a-f]{64}$') {
-      $script:BackupAvailable = $false
-      throw "恢复未确认：备份文件摘要格式不正确"
+    if ($category -eq "metadata") {
+      if ($relativePath -notmatch '^[^/\\:]+$' -or $relativePath -in @(".", "..")) {
+        throw "恢复未确认：备份元数据目标无效"
+      }
+    } elseif (-not (Test-KaiwuBackupTarget $category $relativePath)) {
+      throw "恢复未确认：备份清单包含非法目标"
     }
     $key = $category + ":" + $relativePath
     if ($seen.ContainsKey($key)) {
@@ -803,6 +1161,16 @@ function Assert-BackupIntact {
       throw "恢复未确认：备份清单包含重复项"
     }
     $seen[$key] = $true
+    if ($entry.absent -eq $true) {
+      if ($category -eq "metadata" -or $backupRelativePath -or $expected) {
+        throw "恢复未确认：备份清单的缺失项无效"
+      }
+      continue
+    }
+    $expectedPath = if ($category -eq "program") { "program/" + $relativePath } else { $relativePath }
+    if ($backupRelativePath -cne $expectedPath -or $expected -notmatch '^[0-9a-fA-F]{64}$') {
+      throw "恢复未确认：备份文件路径或摘要无效"
+    }
     $payloadPath = Get-BackupPayloadPath $backupRelativePath
     if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) {
       $script:BackupAvailable = $false
@@ -815,20 +1183,6 @@ function Assert-BackupIntact {
   }
   $script:BackupAvailable = $true
   return $manifest
-}
-
-function Assert-RestoredFileDigests {
-  param([Parameter(Mandatory = $true)]$Manifest)
-  foreach ($entry in @($Manifest.entries)) {
-    if ($entry.category -notin @("program", "data")) { continue }
-    $targetPath = Get-BackupTargetPath $entry
-    if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-      throw "恢复后关键目标缺失"
-    }
-    if ((Get-FileSha256 $targetPath) -ne [string]$entry.sha256) {
-      throw "恢复后关键目标摘要不匹配"
-    }
-  }
 }
 
 function Get-BackupMetadataEntry {
@@ -904,23 +1258,28 @@ function Restore-EnvironmentFromMemory {
   }
 }
 
-$SensitiveFiles = @(
-  "identity.json",
-  "device_key.json",
-  "secrets.json",
-  "auth_profiles.json",
-  "config.json",
-  "frpc.toml",
-  "state.json",
-  "revoked.json"
+$BackupDataNames = @(
+  "identity.json", "device_key.json", "secrets.json", "auth_profiles.json", "config.json",
+  "frpc.toml", "state.json", "revoked.json", "install-state.json", "builtin_demo.json", "diagnostics.json"
 )
 $ManagedEnvNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")
-$ExistingSensitive = @($SensitiveFiles | ForEach-Object { Join-Path $DataDir $_ } | Where-Object { Test-Path -LiteralPath $_ })
-$ExistingProgramFiles = @(
-  @("kaiwu-connector.exe", "frpc.exe", "版本信息.txt") |
-    ForEach-Object { Join-Path $InstallDir $_ } |
-    Where-Object { Test-Path -LiteralPath $_ }
+$BackupProgramNames = @(
+  "kaiwu-connector.exe", "frpc.exe", "版本信息.txt", "install.ps1", "uninstall.ps1",
+  "windows-smoke.ps1", "open-config.cmd", "uninstall.exe"
 )
+$PayloadDocs = @(Get-ChildItem (Join-Path $Source "docs\*.md") -File -ErrorAction SilentlyContinue)
+$PayloadCompliance = @(Get-ChildItem (Join-Path $Source "compliance\*") -File -ErrorAction SilentlyContinue)
+$BackupProgramNames += @($PayloadDocs | ForEach-Object { "docs/" + $_.Name })
+$BackupProgramNames += @($PayloadCompliance | ForEach-Object { "compliance/" + $_.Name })
+
+try {
+  $Transaction = Enter-KaiwuInstallTransaction
+} catch {
+  Write-InstallResult "PRECHECK_FAILED"
+  throw
+}
+
+try {
 $EnvironmentBefore = @{}
 foreach ($name in $ManagedEnvNames) {
   $EnvironmentBefore[$name] = Get-KaiwuMachineEnvironmentVariable $name
@@ -930,8 +1289,14 @@ $Stage = "backup_prepare"
 try {
   $ExistingService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
   $HadExistingService = $null -ne $ExistingService
-  $NeedsBackup = $HadExistingService -or ($ExistingSensitive.Count -gt 0) -or ($ExistingProgramFiles.Count -gt 0)
+  $NeedsBackup = $HadExistingService -or
+    @($BackupDataNames | Where-Object { Test-Path -LiteralPath (Join-Path $DataDir $_) }).Count -gt 0 -or
+    @($BackupProgramNames | Where-Object { Test-Path -LiteralPath (Join-Path $InstallDir $_) }).Count -gt 0
   if ($HadExistingService) {
+    if ($ExistingService.PathName -ne (Get-KaiwuProductCommand) -or
+        $ExistingService.StartName -ne "LocalSystem") {
+      throw "原服务路径、参数或运行账户与标准产品安装不符"
+    }
     $VersionLine = $null
     $VersionFile = Join-Path $InstallDir "版本信息.txt"
     if (Test-Path -LiteralPath $VersionFile -PathType Leaf) {
@@ -949,27 +1314,49 @@ try {
     }
     Assert-ServiceSnapshotValid $ServiceSnapshot
   }
-  New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-  Set-PrivateDataAcl -Path $DataDir
+  $Stage = "quiesce"
+  Stop-KaiwuWriters $ExistingService $OriginalHandoff
+  $OldInstallChanged = $OriginalHandoff.startup_changed -or $OriginalHandoff.stop_attempted
+  $Stage = "backup_prepare"
+  if (-not (Test-Path -LiteralPath $DataDir -PathType Container)) {
+    New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+    Set-PrivateDataAcl -Path $DataDir
+  } elseif (-not $NeedsBackup) {
+    Set-PrivateDataAcl -Path $DataDir
+  }
 
   if ($NeedsBackup) {
-    $BackupDir = Join-Path $DataDir ("backups\" + (Get-Date -Format "yyyyMMdd-HHmmss") + "-pre-upgrade")
+    $BackupDir = Join-Path $DataDir ("backups\" + (Get-Date -Format "yyyyMMdd-HHmmss") + "-" + [guid]::NewGuid().ToString("N") + "-pre-upgrade")
     $BackupManifestPath = Join-Path $BackupDir "manifest\backup-manifest.json"
     New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $BackupDir "program") | Out-Null
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $BackupManifestPath) | Out-Null
 
+    # Protect the backup before copying any credentials. Do not rewrite the existing data tree ACL.
+    Set-PrivateDataAcl -Path $BackupDir
+    Assert-KaiwuQuiescent $ExistingService
     $BackupEntries = @()
-    foreach ($sourceFile in $ExistingSensitive) {
-      $name = Split-Path -Leaf $sourceFile
-      Copy-Item -LiteralPath $sourceFile -Destination $BackupDir -Force
-      $BackupEntries += New-BackupEntry "data" $name $name
+    foreach ($category in @("data", "program")) {
+      $names = if ($category -eq "data") { $BackupDataNames } else { $BackupProgramNames }
+      foreach ($name in $names) {
+        $sourceFile = Get-BackupTargetPath @{ category = $category; relative_path = $name }
+        if (-not (Test-Path -LiteralPath $sourceFile)) {
+          $BackupEntries += [ordered]@{ category = $category; relative_path = $name; absent = $true }
+          continue
+        }
+        if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "备份目标不是文件: $name" }
+        $relative = if ($category -eq "program") { "program/" + $name } else { $name }
+        $destination = Get-BackupPayloadPath $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+        Copy-Item -LiteralPath $sourceFile -Destination $destination -Force
+        $entry = New-BackupEntry $category $name $relative
+        if ((Get-FileSha256 $sourceFile) -ne $entry.sha256) { throw "复制备份时源文件变化: $name" }
+        $BackupEntries += $entry
+      }
     }
-    foreach ($programFile in $ExistingProgramFiles) {
-      $name = Split-Path -Leaf $programFile
-      Copy-Item -LiteralPath $programFile -Destination (Join-Path $BackupDir "program") -Force
-      $BackupEntries += New-BackupEntry "program" $name ("program/" + $name)
-    }
+    $maintenancePath = Join-Path $BackupDir "maintenance.json"
+    Write-Utf8Text $maintenancePath (Get-KaiwuMaintenanceRegistration | ConvertTo-Json -Depth 6)
+    $BackupEntries += New-BackupEntry "metadata" "maintenance.json" "maintenance.json"
     if ($HadExistingService) {
       $servicePath = Join-Path $BackupDir "service.json"
       Write-Utf8Text $servicePath ($ServiceSnapshot | ConvertTo-Json -Depth 6)
@@ -1000,6 +1387,7 @@ try {
 # 仅供本次安装前备份使用。由管理员在 PowerShell 中运行。
 #Requires -RunAsAdministrator
 $ErrorActionPreference = "Stop"
+if (-not [Environment]::Is64BitProcess) { throw "请使用 64 位 Windows PowerShell" }
 $ExpectedManifestSha256 = "__BACKUP_MANIFEST_SHA256__"
 $BackupDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ManifestPath = Join-Path (Join-Path $BackupDir "manifest") "backup-manifest.json"
@@ -1007,6 +1395,8 @@ $ServiceName = "KaiwuConnector"
 $InstallDir = Join-Path $env:ProgramFiles "Kaiwu\Connector"
 $DataDir = Join-Path $env:ProgramData "Kaiwu\Connector"
 $ManagedEnvNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")
+$Listen = "127.0.0.1:17872"
+$MaintenanceRegistryNames = @(__MAINTENANCE_REGISTRY_NAMES__)
 
 if (-not (Get-Command Get-KaiwuMachineEnvironmentVariable -CommandType Function -ErrorAction SilentlyContinue)) {
   function Get-KaiwuMachineEnvironmentVariable {
@@ -1043,18 +1433,11 @@ function Get-BackupPayloadPath {
 
 function Get-BackupTargetPath {
   param($Entry)
-  $relativePath = [string]$Entry.relative_path
-  if (
-    [string]::IsNullOrWhiteSpace($relativePath) -or
-    [System.IO.Path]::IsPathRooted($relativePath) -or
-    $relativePath -match '[/\\]' -or
-    $relativePath -in @(".", "..")
-  ) { throw "备份清单包含非法恢复目标" }
-  switch ([string]$Entry.category) {
-    "program" { return (Join-Path $InstallDir $relativePath) }
-    "data" { return (Join-Path $DataDir $relativePath) }
-    default { throw "备份元数据不能写入业务目录" }
-  }
+  $category = [string]$Entry.category
+  $path = [string]$Entry.relative_path
+  if (-not (Test-KaiwuBackupTarget $category $path)) { throw "备份清单包含非法恢复目标" }
+  $root = if ($category -eq "program") { $InstallDir } else { $DataDir }
+  return (Join-Path $root ($path -replace '/', '\'))
 }
 
 function Assert-BackupIntact {
@@ -1086,24 +1469,26 @@ function Assert-BackupIntact {
     if ($category -notin @("program", "data", "metadata")) {
       throw "恢复失败：备份清单包含未知类别"
     }
-    if (
-      [string]::IsNullOrWhiteSpace($relativePath) -or
-      [System.IO.Path]::IsPathRooted($relativePath) -or
-      $relativePath -match '[/\\]' -or
-      $relativePath -in @(".", "..")
-    ) { throw "恢复失败：备份清单包含非法目标" }
-    if ($category -eq "program" -and $backupRelativePath -notmatch '^program/[^/\\]+$') {
-      throw "恢复失败：程序备份路径不匹配"
-    }
-    if ($category -ne "program" -and $backupRelativePath -match '[/\\]') {
-      throw "恢复失败：业务或元数据备份路径不匹配"
-    }
-    if ($expected -notmatch '^[0-9a-fA-F]{64}$') {
-      throw "恢复失败：备份文件摘要格式不正确"
+    if ($category -eq "metadata") {
+      if ($relativePath -notmatch '^[^/\\:]+$' -or $relativePath -in @(".", "..")) {
+        throw "恢复失败：备份元数据目标无效"
+      }
+    } elseif (-not (Test-KaiwuBackupTarget $category $relativePath)) {
+      throw "恢复失败：备份清单包含非法目标"
     }
     $key = $category + ":" + $relativePath
     if ($seen.ContainsKey($key)) { throw "恢复失败：备份清单包含重复项" }
     $seen[$key] = $true
+    if ($entry.absent -eq $true) {
+      if ($category -eq "metadata" -or $backupRelativePath -or $expected) {
+        throw "恢复失败：备份清单的缺失项无效"
+      }
+      continue
+    }
+    $expectedPath = if ($category -eq "program") { "program/" + $relativePath } else { $relativePath }
+    if ($backupRelativePath -cne $expectedPath -or $expected -notmatch '^[0-9a-fA-F]{64}$') {
+      throw "恢复失败：备份文件路径或摘要无效"
+    }
     $payloadPath = Get-BackupPayloadPath $backupRelativePath
     if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) {
       throw "恢复失败：备份文件缺失"
@@ -1124,20 +1509,6 @@ function Get-MetadataEntry {
   if ($entries.Count -gt 1) { throw "恢复失败：元数据重复 ($RelativePath)" }
   if ($entries.Count -eq 0) { return $null }
   return $entries[0]
-}
-
-function Assert-RestoredFileDigests {
-  param($Manifest)
-  foreach ($entry in @($Manifest.entries)) {
-    if ($entry.category -notin @("program", "data")) { continue }
-    $targetPath = Get-BackupTargetPath $entry
-    if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-      throw "恢复失败：恢复目标缺失"
-    }
-    if ((Get-FileSha256 $targetPath) -ne [string]$entry.sha256) {
-      throw "恢复失败：恢复目标摘要不匹配"
-    }
-  }
 }
 
 function Wait-ServiceStopped {
@@ -1170,23 +1541,6 @@ function Assert-ServiceStoppable {
     $names = @($dependents | ForEach-Object { [string]$_.Name }) -join ", "
     throw "恢复失败：服务存在依赖服务（$names），拒绝停止"
   }
-}
-
-function Stop-TargetService {
-  $service = Get-Service -Name $ServiceName -ErrorAction Stop
-  Assert-ServiceStoppable $service
-  if ($service.Status -eq "Stopped") { return }
-  Stop-Service -Name $ServiceName -ErrorAction Stop
-  Wait-ServiceStopped
-}
-
-function Stop-AndDeleteCurrentService {
-  $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-  if ($null -eq $record) { return }
-  Stop-TargetService
-  & sc.exe delete $ServiceName | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "恢复失败：目标服务删除失败" }
-  Wait-ServiceAbsent
 }
 
 function Restore-Environment {
@@ -1224,39 +1578,47 @@ function Wait-ServiceRunning {
   throw "恢复失败：旧服务未进入 Running 状态"
 }
 
-$manifest = Assert-BackupIntact
-$snapshotEntry = Get-MetadataEntry $manifest "service.json"
-$snapshot = $null
-if ($null -ne $snapshotEntry) {
-  $snapshotPath = Get-BackupPayloadPath ([string]$snapshotEntry.backup_relative_path)
-  $snapshot = Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  Assert-ServiceSnapshotValid $snapshot
-  if ($UseNativeServiceMetadata) { Initialize-KaiwuServiceConfigurationApi }
-}
+$transaction = Enter-KaiwuInstallTransaction
+try {
+  $manifest = Assert-BackupIntact
+  $snapshotEntry = Get-MetadataEntry $manifest "service.json"
+  $snapshot = $null
+  if ($null -ne $snapshotEntry) {
+    $snapshotPath = Get-BackupPayloadPath ([string]$snapshotEntry.backup_relative_path)
+    $snapshot = Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-ServiceSnapshotValid $snapshot
+    Assert-KaiwuServiceBackupFiles $manifest
+    if ($UseNativeServiceMetadata) { Initialize-KaiwuServiceConfigurationApi }
+  }
+  $maintenanceEntry = Get-MetadataEntry $manifest "maintenance.json"
+  $maintenance = if ($null -ne $maintenanceEntry) {
+    Get-Content -LiteralPath (Get-BackupPayloadPath $maintenanceEntry.backup_relative_path) -Raw -Encoding UTF8 | ConvertFrom-Json
+  }
 
-Stop-AndDeleteCurrentService
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-foreach ($entry in @($manifest.entries)) {
-  if ($entry.category -notin @("program", "data")) { continue }
-  $sourcePath = Get-BackupPayloadPath ([string]$entry.backup_relative_path)
-  $targetPath = Get-BackupTargetPath $entry
-  $targetDirectory = Split-Path -Parent $targetPath
-  if ($targetDirectory) { New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null }
-  Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Force
+  $current = Get-KaiwuServiceRecord
+  $handoff = @{}
+  try {
+    Stop-KaiwuWriters $current $handoff
+    $manifest = Assert-BackupIntact
+    Remove-KaiwuStoppedService $current $handoff
+  } catch {
+    if (-not $handoff.delete_accepted) { Restore-KaiwuHandoff $current $handoff }
+    throw
+  }
+  Restore-KaiwuFiles $manifest
+  Restore-Environment $manifest
+  if ($null -ne $maintenance) { Restore-KaiwuMaintenanceRegistration $maintenance }
+  Assert-RestoredFiles $manifest
+  if ($null -ne $snapshot) { Restore-VerifiedService $manifest $snapshot }
+} finally {
+  $transaction.ReleaseMutex()
+  $transaction.Dispose()
 }
-Assert-RestoredFileDigests $manifest
-Restore-Environment $manifest
-
-if ($null -ne $snapshot) {
-  Restore-VerifiedService $manifest $snapshot
-} else {
-  Assert-RestoredStableFiles $manifest $null
-}
-Write-Host "已恢复安装前版本。"
+Write-Host "已核验恢复安装前的程序和配置。业务连通性待确认。"
 '@
     $RestoreScript = $RestoreScript.Replace("__BACKUP_MANIFEST_SHA256__", $BackupManifestHash)
     $RestoreScript = $RestoreScript.Replace("__SERVICE_RECOVERY_FUNCTIONS__", $ServiceRecoveryFunctions)
+    $RestoreScript = $RestoreScript.Replace("__MAINTENANCE_REGISTRY_NAMES__", (($MaintenanceRegistryNames | ForEach-Object { '"' + $_ + '"' }) -join ', '))
     $restorePath = Join-Path $BackupDir "restore.ps1"
     [System.IO.File]::WriteAllText(
       $restorePath,
@@ -1264,22 +1626,27 @@ Write-Host "已恢复安装前版本。"
       [System.Text.UTF8Encoding]::new($true)
     )
     Set-PrivateDataAcl -Path $BackupDir
-    Assert-BackupIntact | Out-Null
+    $verifiedBackup = Assert-BackupIntact
+    Assert-KaiwuQuiescent $ExistingService
+    try {
+      if ($HadExistingService) { Assert-KaiwuServiceBackupFiles $verifiedBackup }
+      Assert-RestoredFiles $verifiedBackup
+    } catch {
+      $BackupAvailable = $false
+      throw
+    }
     Write-Host "升级前程序、配置和本机秘密已备份并校验到 $BackupDir"
   }
-} catch {
-  Write-InstallResult "PRECHECK_FAILED"
-  throw
-}
 
-$OriginalError = $null
-try {
   $Stage = "pre_change_verification"
   Assert-CriticalFiles
   $Stage = "replace_install"
-  Stop-AndDeleteService -Original
+  Remove-KaiwuStoppedService $ExistingService $OriginalHandoff
   $InstallMutationStarted = $true
   $OldInstallChanged = $NeedsBackup
+  if (-not $NeedsBackup) {
+    foreach ($name in $BackupDataNames) { $CreatedManagedFiles.Add((Join-Path $DataDir $name)) }
+  }
 
   Ensure-ManagedDirectory $InstallDir
   Ensure-ManagedDirectory (Join-Path $InstallDir "docs")
@@ -1288,12 +1655,10 @@ try {
   Copy-ManagedFile (Join-Path $Source "bin\kaiwu-connector.exe") (Join-Path $InstallDir "kaiwu-connector.exe")
   Copy-ManagedFile (Join-Path $Source "bin\frpc.exe") (Join-Path $InstallDir "frpc.exe")
   Assert-CriticalFiles -Target
-  Get-ChildItem (Join-Path $Source "docs\*.md") -ErrorAction SilentlyContinue |
-    ForEach-Object {
+  $PayloadDocs | ForEach-Object {
       Copy-ManagedFile $_.FullName (Join-Path (Join-Path $InstallDir "docs") $_.Name)
     }
-  Get-ChildItem (Join-Path $Source "compliance\*") -File -ErrorAction SilentlyContinue |
-    ForEach-Object {
+  $PayloadCompliance | ForEach-Object {
       Copy-ManagedFile $_.FullName (Join-Path (Join-Path $InstallDir "compliance") $_.Name)
     }
   foreach ($name in @("uninstall.ps1", "windows-smoke.ps1", "install.ps1", "版本信息.txt")) {
@@ -1303,74 +1668,83 @@ try {
     }
   }
 
-  # 空白模板不应在升级时清掉客户已经填写的云端地址。
+  # 包内地址是缺省值。升级或重装保留已经设置的机器级端点。
   $EnvFile = Join-Path $Source "config\connector.env.example"
-  if (Test-Path $EnvFile) {
-    $envText = [System.IO.File]::ReadAllText($EnvFile, [System.Text.Encoding]::UTF8)
-    foreach ($line in ($envText -split "`r?`n")) {
-      if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$') {
-        $name = $matches[1]
-        $value = $matches[2].Trim()
-        if ([string]::IsNullOrWhiteSpace($value)) {
-          # Keep a non-empty machine value even when the service is currently
-          # absent. This is the normal case after a default uninstall, which
-          # deliberately preserves configuration for a later reinstall.
-          if (-not [string]::IsNullOrWhiteSpace($EnvironmentBefore[$name])) {
-            Write-Host "保留已有环境变量 $name"
-          } else {
-            Set-KaiwuMachineEnvironmentVariable $name $null
-            Remove-Item -Path ("Env:" + $name) -ErrorAction SilentlyContinue
-            Write-Host "已清空未配置的环境变量 $name"
-          }
-        } else {
-          Set-KaiwuMachineEnvironmentVariable $name $value
-          Set-Item -Path ("Env:" + $name) -Value $value
-          $check = Get-KaiwuMachineEnvironmentVariable $name
-          if ($check -ne $value) { throw "写入机器级环境变量失败: $name" }
-          Write-Host "已设置环境变量 $name"
-        }
+  if (Test-Path -LiteralPath $EnvFile -PathType Leaf) {
+    foreach ($line in [IO.File]::ReadAllLines($EnvFile, [Text.Encoding]::UTF8)) {
+      if ($line -notmatch '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$') { continue }
+      $name = $matches[1]
+      $value = $matches[2].Trim()
+      if ($name -notin $ManagedEnvNames) { continue }
+      $existing = $EnvironmentBefore[$name]
+      if (-not [string]::IsNullOrWhiteSpace($existing)) {
+        Set-Item -LiteralPath ("Env:" + $name) -Value $existing
+        Write-Host "保留已有环境变量 $name"
+        continue
       }
+      if ([string]::IsNullOrWhiteSpace($value)) { continue }
+      Set-KaiwuMachineEnvironmentVariable $name $value
+      Set-Item -LiteralPath ("Env:" + $name) -Value $value
+      if ((Get-KaiwuMachineEnvironmentVariable $name) -cne $value) { throw "写入机器级环境变量失败: $name" }
+      Write-Host "已设置环境变量 $name"
     }
   }
 
-  $Binary = Join-Path $InstallDir "kaiwu-connector.exe"
-  $BinPath = "`"$Binary`" serve --data-dir `"$DataDir`" --listen $Listen"
-
-  # 使用 New-Service 避免 sc.exe 在 Windows PowerShell 5.1 下拆分带空格的 binPath。
+  $BinPath = Get-KaiwuProductCommand
+  # Register disabled until the program, startup settings and security metadata are in place.
+  $ReplacementSnapshot = if ($HadExistingService) { $ServiceSnapshot } else {
+    [pscustomobject]@{
+      binary_path = $BinPath; display_name = "Kaiwu Intranet Connector"; start_mode = "Auto"
+      delayed_auto_start = $false; was_running = $true
+    }
+  }
   try {
-    New-Service -Name $ServiceName -BinaryPathName $BinPath -StartupType Automatic -DisplayName "Kaiwu Intranet Connector" -ErrorAction Stop | Out-Null
+    New-Service -Name $ServiceName -BinaryPathName $BinPath -StartupType Disabled -DisplayName $ReplacementSnapshot.display_name -ErrorAction Stop | Out-Null
   } catch {
     throw "注册服务失败: $($_.Exception.Message)"
   }
-
   $ReplacementServiceCreated = $true
-  sc.exe sidtype $ServiceName unrestricted | Out-Null
-  sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
-
-  try {
-    Start-Service -Name $ServiceName -ErrorAction Stop
-  } catch {
-    $events = Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
-      Where-Object { $_.Message -match 'Kaiwu|1053|7000|7009' } |
-      Select-Object -First 5 |
-      Format-List | Out-String
-    throw "启动服务失败: $($_.Exception.Message)`n$events"
+  if ($HadExistingService) {
+    Set-KaiwuServiceMetadata $ServiceName $ServiceSnapshot.scm_metadata
+    Assert-ServiceMetadataReadback $ServiceSnapshot.scm_metadata
+  } else {
+    & sc.exe sidtype $ServiceName unrestricted | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "设置服务安全标识失败" }
+    & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "设置服务故障动作失败" }
   }
-
-  $service = Wait-ServiceRunning
-  $HttpDeadline = (Get-Date).AddSeconds(30)
-  do {
+  if ($ReplacementSnapshot.start_mode -ne "Disabled") {
+    Set-KaiwuStartupMode $ReplacementSnapshot.start_mode $ReplacementSnapshot.delayed_auto_start
+  }
+  Assert-RestoredServiceRegistration $ReplacementSnapshot
+  if ($ReplacementSnapshot.was_running) {
     try {
-      $response = Invoke-WebRequest -Uri "http://$Listen/" -UseBasicParsing -TimeoutSec 2
-      $httpReady = $response.StatusCode -eq 200
+      Start-KaiwuService $ReplacementSnapshot.start_mode
     } catch {
-      $httpReady = $false
+      $events = Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match 'Kaiwu|1053|7000|7009' } |
+        Select-Object -First 5 |
+        Format-List | Out-String
+      throw "启动服务失败: $($_.Exception.Message)`n$events"
     }
-    if (-not $httpReady) { Start-Sleep -Milliseconds 500 }
-  } while (-not $httpReady -and (Get-Date) -lt $HttpDeadline)
-  if (-not $httpReady) {
-    throw "服务已经启动，但本机配置页面 http://$Listen/ 未在 30 秒内返回 200"
+    $HttpDeadline = (Get-Date).AddSeconds(30)
+    do {
+      try {
+        $response = Invoke-WebRequest -Uri "http://$Listen/" -UseBasicParsing -TimeoutSec 2
+        $httpReady = $response.StatusCode -eq 200
+      } catch {
+        $httpReady = $false
+      }
+      if (-not $httpReady) { Start-Sleep -Milliseconds 500 }
+    } while (-not $httpReady -and (Get-Date) -lt $HttpDeadline)
+    if (-not $httpReady) {
+      throw "服务已经启动，但本机配置页面 http://$Listen/ 未在 30 秒内返回 200"
+    }
   }
+  Assert-RestoredServiceRegistration $ReplacementSnapshot
+  $service = Get-Service -Name $ServiceName -ErrorAction Stop
+  $expectedStatus = if ($ReplacementSnapshot.was_running) { "Running" } else { "Stopped" }
+  if ($service.Status -ne $expectedStatus) { throw "安装后的服务未保持预期状态 ($expectedStatus)" }
 
   $Stage = "final_verification"
   Assert-CriticalFiles -Target
@@ -1383,6 +1757,10 @@ try {
     # installer-temporary metadata into install-state.json on PowerShell 5.1.
     $VersionLine = [string](Get-Content -LiteralPath $VersionFile -Encoding UTF8 -TotalCount 1)
   }
+  $InstallStatePath = Join-Path $DataDir "install-state.json"
+  if (-not (Test-Path -LiteralPath $InstallStatePath -PathType Leaf)) {
+    $CreatedManagedFiles.Add($InstallStatePath)
+  }
   [ordered]@{
     version = $VersionLine
     installed_at = (Get-Date).ToUniversalTime().ToString("o")
@@ -1390,7 +1768,7 @@ try {
     data_dir = $DataDir
     previous_backup = $BackupDir
     source = "windows-installer"
-  } | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $DataDir "install-state.json") -Encoding UTF8
+  } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $InstallStatePath -Encoding UTF8
 
   Write-Host ""
   Write-Host "安装完成。"
@@ -1404,35 +1782,42 @@ try {
 } catch {
   $OriginalError = $_.Exception.Message
   $FailureStage = $Stage
-  if ($FailureStage -eq "pre_change_verification") {
+  $PriorHandoffChanged = $OriginalHandoff.startup_changed -or $OriginalHandoff.stop_attempted
+  if (-not $InstallMutationStarted -and -not $OriginalHandoff.delete_accepted -and -not $PriorHandoffChanged) {
     Write-InstallResult "PRECHECK_FAILED"
     throw "安装前检查失败：$OriginalError"
   }
+  $OldInstallChanged = $OldInstallChanged -or $PriorHandoffChanged
   $Stage = "rollback"
   $RollbackErrors = @()
   $CanRestoreFiles = $false
   try {
-    if ($ReplacementServiceCreated) { Stop-AndDeleteService }
-    if ($InstallMutationStarted) {
-      $CanRestoreFiles = $true
-    } elseif ($OriginalServiceDeleteAccepted) {
-      # 删除已受理但尚未确认；等待删除完成，不再按名称删除。
+    if ($ReplacementServiceCreated) {
+      $current = Get-KaiwuServiceRecord
+      $replacementHandoff = @{}
+      try {
+        Stop-KaiwuWriters $current $replacementHandoff
+        Remove-KaiwuStoppedService $current $replacementHandoff
+      } catch {
+        if (-not $replacementHandoff.delete_accepted) { Restore-KaiwuHandoff $current $replacementHandoff }
+        throw
+      }
+    }
+    if ($OriginalHandoff.delete_accepted -and -not $InstallMutationStarted) {
       Wait-ServiceAbsent
+    }
+    if ($InstallMutationStarted -or $OriginalHandoff.delete_accepted) {
+      Assert-KaiwuQuiescent $null
       $CanRestoreFiles = $true
-    } elseif ($OriginalServiceStopAttempted) {
-      # 文件替换尚未开始。若原注册仍可核对，只恢复其运行状态。
-      $manifest = Assert-BackupIntact
-      $snapshot = Get-BackupServiceSnapshot $manifest
-      Assert-ServiceSnapshotValid $snapshot
-      Restore-VerifiedService $manifest $snapshot -ReuseExisting
     } else {
-      throw "原服务未获准替换，保留现有服务及文件"
+      # The original registration and files are still in place, even if no backup was completed.
+      Restore-KaiwuHandoff $ExistingService $OriginalHandoff
     }
   } catch {
     $RollbackErrors += "确认当前服务状态: $($_.Exception.Message)"
   }
 
-  if ($CanRestoreFiles -and $BackupDir) {
+  if ($CanRestoreFiles -and $NeedsBackup) {
     try {
       $manifest = Assert-BackupIntact
       $snapshot = $null
@@ -1441,25 +1826,11 @@ try {
         Assert-ServiceSnapshotValid $snapshot
       }
       Remove-ManagedFilesCreatedByRun
-      foreach ($entry in @($manifest.entries)) {
-        if ($entry.category -notin @("program", "data")) { continue }
-        $sourcePath = Get-BackupPayloadPath ([string]$entry.backup_relative_path)
-        $targetPath = Get-BackupTargetPath $entry
-        $targetDirectory = Split-Path -Parent $targetPath
-        if ($targetDirectory) {
-          New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
-        }
-        Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Force
-      }
-      Assert-RestoredFileDigests $manifest
+      Restore-KaiwuFiles $manifest
       Restore-EnvironmentSnapshot $manifest
-      Assert-RestoredFileDigests $manifest
-      if ($HadExistingService) {
-        Restore-VerifiedService $manifest $snapshot
-      } else {
-        Assert-RestoredStableFiles $manifest $null
-      }
-      Write-Host "安装失败，已核验恢复安装前程序和配置。"
+      Assert-RestoredFiles $manifest
+      if ($HadExistingService) { Restore-VerifiedService $manifest $snapshot }
+      Write-Host "安装失败，已核验恢复安装前程序和配置。业务连通性待确认。"
     } catch {
       $RollbackErrors += "恢复旧安装: $($_.Exception.Message)"
     }
@@ -1478,7 +1849,7 @@ try {
   }
 
   if ($RollbackErrors.Count -eq 0) {
-    if ($BackupDir) {
+    if ($NeedsBackup) {
       $Stage = "restored"
       $Cleanup = "restored"
       Write-InstallResult "FAILED_RESTORED"
@@ -1488,7 +1859,7 @@ try {
       Write-InstallResult "FAILED_NO_PRIOR_CLEANED"
     }
   } else {
-    if ($BackupDir) {
+    if ($NeedsBackup) {
       $Stage = "recovery_unconfirmed"
       $Cleanup = "unconfirmed"
       Write-InstallResult "FAILED_RECOVERY_UNCONFIRMED"
@@ -1500,9 +1871,13 @@ try {
   }
 
   $RollbackDetail = if ($RollbackErrors.Count -eq 0) {
-    if ($BackupDir) { "已核验恢复安装前状态。" } else { "已清理本次新增受管文件。" }
+    if ($NeedsBackup) { "已核验恢复安装前程序、配置和服务状态。业务连通性待确认。" } else { "已清理本次新增受管文件。" }
   } else {
     "恢复或清理未确认：" + ($RollbackErrors -join "; ")
   }
   throw "安装失败：$OriginalError`n$RollbackDetail`n备份目录：$BackupDir"
+}
+} finally {
+  $Transaction.ReleaseMutex()
+  $Transaction.Dispose()
 }
