@@ -592,13 +592,10 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
 
 typedef struct {
     const WCHAR *name, *pending;
-    ACCESS_MASK pending_access;
 } ReportFile;
 
-static const ReportFile summary_report = {SUMMARY_NAME, SUMMARY_PENDING, GENERIC_WRITE | READ_CONTROL | DELETE};
-static const ReportFile checkpoint_report = {
-    CHECKPOINT_NAME, CHECKPOINT_PENDING, GENERIC_WRITE | READ_CONTROL | FILE_READ_ATTRIBUTES | DELETE
-};
+static const ReportFile summary_report = {SUMMARY_NAME, SUMMARY_PENDING};
+static const ReportFile checkpoint_report = {CHECKPOINT_NAME, CHECKPOINT_PENDING};
 
 static SummaryResult write_report(HANDLE file, BOOL replace, const WCHAR *name, const WCHAR *text) {
     WCHAR bom = 0xfeff;
@@ -654,7 +651,7 @@ static SummaryResult replace_report(HANDLE directory, PSECURITY_DESCRIPTOR sd,
     /* A single reserved staging name also bounds leftovers after process death.
        Recover a stale staging file only after validating it by handle. */
     BOOL created;
-    HANDLE file = open_child_shared(directory, report->pending, report->pending_access,
+    HANDLE file = open_child_shared(directory, report->pending, GENERIC_WRITE | READ_CONTROL | FILE_READ_ATTRIBUTES | DELETE,
                                     FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE | FILE_WRITE_THROUGH, sd, 0, &created);
     if (file == INVALID_HANDLE_VALUE)
         return (SummaryResult){.step = L"打开暂存摘要", .error = GetLastError()};
