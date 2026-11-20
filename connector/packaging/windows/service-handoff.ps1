@@ -379,7 +379,7 @@ function Enter-KaiwuInstallTransaction {
   $mutex = [System.Threading.Mutex]::new($false, $Name)
   try {
     try {
-      if (-not $mutex.WaitOne(0)) { throw "已有开物安装、恢复或卸载任务正在运行" }
+      if (-not $mutex.WaitOne(0)) { throw [TimeoutException]::new("已有开物安装、恢复或卸载任务正在运行") }
     } catch [System.Threading.AbandonedMutexException] {
       # 内核已把锁交给本次执行。服务与文件仍须通过正常交接检查。
     }

@@ -57,9 +57,19 @@ if ! command -v unshare >/dev/null 2>&1; then
 fi
 NSIS_TMPDIR="${NSIS_TMPDIR:-${TMPDIR:-$ROOT/dist}/nsis-work}"
 mkdir -p "$NSIS_TMPDIR"
+plugin_dir=$(mktemp -d "$(cd "$NSIS_TMPDIR" && pwd)/journal-plugin.XXXXXXXX")
+trap 'rm -rf -- "$plugin_dir"' EXIT
+windows_x86_cc="${WINDOWS_X86_CC:-i686-w64-mingw32-gcc}"
+if ! command -v "$windows_x86_cc" >/dev/null 2>&1; then
+  echo "缺少 32 位 Windows MinGW 编译器。请安装 i686-w64-mingw32-gcc 或通过 WINDOWS_X86_CC 指定。" >&2
+  exit 1
+fi
+"$windows_x86_cc" -std=c11 -Os -Wall -Wextra -Werror -shared -static-libgcc \
+  -Wl,--no-insert-timestamp -o "$plugin_dir/KaiwuJournal.dll" \
+  "$ROOT/packaging/windows/attempt-journal.c" -ladvapi32 -lbcrypt -lshell32 -lntdll
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
-export SOURCE_DATE_EPOCH
+export SOURCE_DATE_EPOCH NSIS_SHARE_DIR
 unshare -Urmpf --propagation private bash -c '
   set -euo pipefail
   mount --bind "$1" /tmp
@@ -70,6 +80,7 @@ unshare -Urmpf --propagation private bash -c '
   exec "$@"
 ' bash "$NSIS_TMPDIR" "$MAKENSIS" -V2 -NOCD \
   -DPAYLOAD_DIR="$PAYLOAD_DIR" \
+  -DJOURNAL_PLUGIN_DIR="/tmp/${plugin_dir##*/}" \
   -DVERSION="$VERSION" \
   -DVERSION_QUAD="$VERSION_QUAD" \
   -DCOMMIT="$COMMIT" \

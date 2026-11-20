@@ -19,6 +19,10 @@ Unicode true
 !ifndef PAYLOAD_DIR
   !error "PAYLOAD_DIR is required"
 !endif
+!ifndef JOURNAL_PLUGIN_DIR
+  !error "JOURNAL_PLUGIN_DIR is required"
+!endif
+!addplugindir /x86-unicode "${JOURNAL_PLUGIN_DIR}"
 !ifndef OUTPUT_FILE
   !error "OUTPUT_FILE is required"
 !endif
@@ -30,13 +34,22 @@ Unicode true
 !define POWERSHELL_SYSTEM32 "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 Var SetupMutex
+Var AttemptId
+Var AttemptWritten
+Var AttemptDone
+Var AttemptStage
+Var AttemptCode
+Var WorkDir
+
+!macro Attempt stage outcome code
+  KaiwuJournal::Record /NOUNLOAD "${stage}" "${outcome}" "${code}"
+!macroend
 
 Name "开物内网连接器 ${VERSION}"
 Caption "开物内网连接器 ${VERSION}"
 BrandingText "Kaiwu Intranet Connector"
 OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\Kaiwu\Connector"
-InstallDirRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "InstallLocation"
 RequestExecutionLevel admin
 CRCCheck on
 XPStyle on
@@ -54,6 +67,7 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" "Kaiwu"
 VIAddVersionKey /LANG=2052 "Comments" "source commit ${COMMIT}"
 
 !define MUI_ABORTWARNING
+!define MUI_CUSTOMFUNCTION_ABORT OnSetupCancel
 !define MUI_FINISHPAGE_RUN "$INSTDIR\open-config.cmd"
 !define MUI_FINISHPAGE_RUN_TEXT "打开本机配置页面"
 !define MUI_FINISHPAGE_LINK "查看交付说明"
@@ -69,30 +83,104 @@ VIAddVersionKey /LANG=2052 "Comments" "source commit ${COMMIT}"
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
+Function ShowAttemptFailure
+  ${If} $AttemptId != ""
+    StrCpy $6 "$6$\r$\n$\r$\n安装编号：$AttemptId"
+  ${EndIf}
+  ${If} $AttemptWritten == 1
+    StrCpy $6 "$6$\r$\n可转发给技术支持：$\r$\n%ProgramData%\Kaiwu\Connector\logs\install-attempts\$AttemptId.jsonl"
+  ${Else}
+    StrCpy $6 "$6$\r$\n请复制此窗口内容并转发给技术支持（Ctrl+C）。"
+  ${EndIf}
+  MessageBox MB_ICONSTOP "$6" /SD IDOK
+FunctionEnd
+
+Function CompleteAttempt
+  ${If} $AttemptDone == 1
+    Return
+  ${EndIf}
+  StrCpy $AttemptDone 1
+  ${If} $WorkDir != ""
+    SetOutPath "$WINDIR"
+    KaiwuJournal::ReleaseWorkspace /NOUNLOAD
+    ClearErrors
+    RMDir /r "$WorkDir"
+    ${If} ${Errors}
+      !insertmacro Attempt "extract" "failed" "write_failed"
+    ${EndIf}
+  ${EndIf}
+  ${If} $AttemptCode == "ok"
+    !insertmacro Attempt "finish" "ok" "ok"
+  ${Else}
+    !insertmacro Attempt "finish" "failed" "$AttemptCode"
+    SetErrorLevel 1
+  ${EndIf}
+  KaiwuJournal::Close
+FunctionEnd
+
+Function .onInstFailed
+  ${If} $AttemptDone != 1
+    StrCpy $AttemptCode "unknown"
+    ${If} $AttemptStage == "extract"
+      StrCpy $AttemptCode "write_failed"
+    ${EndIf}
+    !insertmacro Attempt "$AttemptStage" "failed" "$AttemptCode"
+    Call CompleteAttempt
+    ${If} $SetupMutex != 0
+      Call ReleaseSetupTransaction
+    ${EndIf}
+    StrCpy $6 "安装程序中途退出。请将本次安装记录交给技术支持。"
+    Call ShowAttemptFailure
+  ${EndIf}
+FunctionEnd
+
+Function OnSetupCancel
+  ${If} $AttemptDone != 1
+    StrCpy $AttemptCode "unknown"
+    Call CompleteAttempt
+  ${EndIf}
+FunctionEnd
+
 Function .onInit
+  StrCpy $AttemptWritten 0
+  KaiwuJournal::Begin /NOUNLOAD
+  Pop $AttemptId
+  Pop $AttemptWritten
+  !insertmacro Attempt "precheck" "started" "ok"
+  StrCpy $AttemptStage "precheck"
+  StrCpy $AttemptCode "unknown"
   SetRegView 64
+  StrCpy $INSTDIR "$PROGRAMFILES64\Kaiwu\Connector"
   ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "本安装包仅支持 64 位 Windows。"
-    Abort
+    StrCpy $6 "本安装包仅支持 64 位 Windows。"
+    Goto unsupported_host
   ${EndIf}
   ${IfNot} ${AtLeastWin10}
-    MessageBox MB_ICONSTOP "本安装包要求 Windows 10 或 Windows Server 2016 及以上版本。"
-    Abort
+    StrCpy $6 "本安装包要求 Windows 10 或 Windows Server 2016 及以上版本。"
+    Goto unsupported_host
   ${EndIf}
   ${IfNot} ${FileExists} "${POWERSHELL64}"
-    MessageBox MB_ICONSTOP "系统缺少 64 位 Windows PowerShell，无法完成安装。"
-    Abort
+    StrCpy $6 "系统缺少 64 位 Windows PowerShell，无法完成安装。"
+    Goto unsupported_host
   ${EndIf}
-  ; Windows Server 2019 ships Windows PowerShell 5.1. Fail before changing
-  ; the machine if the native 64-bit PowerShell is older than 5.1.
-  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -NonInteractive -Command "if ((Get-Host).Version.Major -gt 5 -or ((Get-Host).Version.Major -eq 5 -and (Get-Host).Version.Minor -ge 1)) { exit 0 }; exit 1"'
+  ; Check the actual native PowerShell process before touching the product.
+  nsExec::Exec '"${POWERSHELL64}" -NoProfile -NonInteractive -Command "if ((Get-Host).Version.Major -gt 5 -or ((Get-Host).Version.Major -eq 5 -and (Get-Host).Version.Minor -ge 1)) { exit 0 }; exit 1"'
   Pop $0
-  Pop $1
   ${If} "$0" != "0"
-    MessageBox MB_ICONSTOP "64 位 Windows PowerShell 版本过低或无法启动。本安装包要求 Windows PowerShell 5.1 及以上；Windows Server 2019 默认提供 5.1。检测退出码：$0"
-    Abort
+    StrCpy $6 "64 位 Windows PowerShell 版本过低或无法启动。本安装包要求 Windows PowerShell 5.1 及以上。"
+    Goto unsupported_host
   ${EndIf}
-  InitPluginsDir
+  !insertmacro Attempt "precheck" "ok" "ok"
+  StrCpy $AttemptStage "lock"
+  SetShellVarContext all
+  Return
+
+  unsupported_host:
+    StrCpy $AttemptCode "unsupported_host"
+    !insertmacro Attempt "precheck" "failed" "unsupported_host"
+    Call CompleteAttempt
+    Call ShowAttemptFailure
+    Abort
 FunctionEnd
 
 Function RemoveLegacyX86Install
@@ -114,42 +202,88 @@ FunctionEnd
 Function ReleaseSetupTransaction
   System::Call 'kernel32::ReleaseMutex(p $SetupMutex)'
   System::Call 'kernel32::CloseHandle(p $SetupMutex)'
+  StrCpy $SetupMutex 0
 FunctionEnd
 
 Section "安装" SecInstall
   ; uninstall.ps1 acquires this gate before the shared service transaction.
-  ; Keep the gate through the NSIS-only writes after install.ps1 has returned.
-  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\KaiwuConnector.SetupTransaction") p .r0'
+  ; Keep it through the NSIS-only maintenance writes.
+  !insertmacro Attempt "lock" "started" "ok"
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\KaiwuConnector.SetupTransaction") p .r0 ?e'
+  Pop $1
   StrCpy $SetupMutex $0
   ${If} $SetupMutex == 0
-    MessageBox MB_ICONSTOP "无法取得安装事务锁。" /SD IDOK
-    Abort
+    StrCpy $AttemptCode "unknown"
+    ${If} $1 == 5
+      StrCpy $AttemptCode "access_denied"
+    ${EndIf}
+    !insertmacro Attempt "lock" "failed" "$AttemptCode"
+    StrCpy $6 "无法取得安装事务锁。"
+    Goto attempt_failed
   ${EndIf}
   System::Call 'kernel32::WaitForSingleObject(p $SetupMutex, i 0) i .r0'
   ${If} $0 != 0
   ${AndIf} $0 != 128
     System::Call 'kernel32::CloseHandle(p $SetupMutex)'
-    MessageBox MB_ICONSTOP "已有开物安装或卸载任务正在运行，或无法确认事务锁。" /SD IDOK
-    Abort
+    StrCpy $SetupMutex 0
+    StrCpy $AttemptCode "unknown"
+    ${If} $0 == 258
+      StrCpy $AttemptCode "busy"
+    ${EndIf}
+    !insertmacro Attempt "lock" "failed" "$AttemptCode"
+    StrCpy $6 "已有开物安装或卸载任务正在运行，或无法确认事务锁。"
+    Goto attempt_failed
   ${EndIf}
+  !insertmacro Attempt "lock" "ok" "ok"
 
-  SetShellVarContext all
-  SetOutPath "$PLUGINSDIR\payload"
+  StrCpy $AttemptStage "extract"
+  !insertmacro Attempt "extract" "started" "ok"
+  KaiwuJournal::Workspace /NOUNLOAD
+  Pop $WorkDir
+  ${If} $WorkDir == ""
+    ; NSIS creates the elevated plugin directory with restricted permissions.
+    InitPluginsDir
+    ${If} $PLUGINSDIR != ""
+      StrLen $1 "$PLUGINSDIR"
+      ${If} $1 < 164
+        StrCpy $WorkDir "$PLUGINSDIR\p"
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  ${If} $WorkDir == ""
+    StrCpy $AttemptCode "access_denied"
+    !insertmacro Attempt "extract" "failed" "access_denied"
+    StrCpy $6 "无法建立安全的安装临时目录。"
+    Goto attempt_failed
+  ${EndIf}
+  ClearErrors
+  SetOutPath "$WorkDir"
   File /r "${PAYLOAD_DIR}/*"
-
-  CreateDirectory "$APPDATA\Kaiwu\Connector\logs"
+  ${If} ${Errors}
+    StrCpy $AttemptCode "write_failed"
+    !insertmacro Attempt "extract" "failed" "write_failed"
+    StrCpy $6 "无法完整解包安装文件。"
+    Goto attempt_failed
+  ${EndIf}
+  ${IfNot} ${FileExists} "$WorkDir\install.ps1"
+    StrCpy $AttemptCode "file_missing"
+    !insertmacro Attempt "extract" "failed" "file_missing"
+    StrCpy $6 "解包后找不到安装脚本。"
+    Goto attempt_failed
+  ${EndIf}
+  !insertmacro Attempt "extract" "ok" "ok"
 
   DetailPrint "校验并安装连接器、官方 frpc 和 Windows 服务..."
-  Delete "$PLUGINSDIR\install-result.txt"
-  Delete "$PLUGINSDIR\install-failure-details.txt"
-  Delete "$APPDATA\Kaiwu\Connector\logs\install-failure-summary.txt"
-  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" -ResultPath "$PLUGINSDIR\install-result.txt" -FailureDetailsPath "$PLUGINSDIR\install-failure-details.txt" 2>&1'
+  StrCpy $AttemptStage "precheck"
+  SetOutPath "$WorkDir"
+  ; The launcher passes only an append-only journal handle to the worker.
+  KaiwuJournal::RunInstaller /NOUNLOAD "${POWERSHELL64}" "$WorkDir"
   Pop $0
-  Pop $1
 
   StrCpy $3 "result=UNKNOWN"
-  ${If} ${FileExists} "$PLUGINSDIR\install-result.txt"
-    FileOpen $4 "$PLUGINSDIR\install-result.txt" r
+  ClearErrors
+  FileOpen $4 "$WorkDir\result.txt" r
+  ${IfNot} ${Errors}
     FileRead $4 $3
     FileClose $4
     ${TrimNewLines} "$3" "$3"
@@ -165,17 +299,17 @@ Section "安装" SecInstall
   ${EndIf}
   StrCpy $3 "$5"
 
-  SetOutPath "$PLUGINSDIR"
-  FileOpen $2 "$APPDATA\Kaiwu\Connector\logs\install.log" w
-  FileWrite $2 "$3$\r$\n"
-  FileWrite $2 "---- install.ps1 output ----$\r$\n"
-  FileWrite $2 "$1"
-  FileClose $2
-
-  ${If} "$0" == "0"
-  ${AndIf} "$3" == "result=INSTALLED"
-    CopyFiles /SILENT "$APPDATA\Kaiwu\Connector\logs\install.log" "$INSTDIR\install.log"
-  ${Else}
+  ${If} "$0" != "0"
+  ${OrIf} "$3" != "result=INSTALLED"
+    StrCpy $AttemptCode "unknown"
+    ${If} "$3" == "result=UNKNOWN"
+      ${If} "$0" == "0"
+        StrCpy $AttemptCode "write_failed"
+        !insertmacro Attempt "verify" "failed" "write_failed"
+      ${Else}
+        !insertmacro Attempt "precheck" "failed" "unknown"
+      ${EndIf}
+    ${EndIf}
     StrCpy $4 "恢复或清理状态无法确认。"
     ${If} "$3" == "result=PRECHECK_FAILED"
       StrCpy $4 "未开始更改已有安装。"
@@ -194,7 +328,7 @@ Section "安装" SecInstall
     StrCpy $6 "失败阶段：无法确认"
     StrCpy $7 "原因：无法确认具体原因"
     ClearErrors
-    FileOpen $2 "$PLUGINSDIR\install-failure-details.txt" r
+    FileOpen $2 "$WorkDir\failure.txt" r
     ${IfNot} ${Errors}
       FileReadUTF16LE $2 $8
       FileReadUTF16LE $2 $9
@@ -209,24 +343,22 @@ Section "安装" SecInstall
     ${EndIf}
     StrCpy $6 "安装失败$\r$\n$6$\r$\n$7$\r$\n恢复结果：$4$\r$\n状态：$3$\r$\n退出码：$0"
 
-    StrCpy $7 "请将上述摘要转发给技术支持。"
-    ClearErrors
-    FileOpen $2 "$APPDATA\Kaiwu\Connector\logs\install-failure-summary.txt" w
-    ${IfNot} ${Errors}
-      FileWriteUTF16LE /BOM $2 "$6$\r$\n"
-      ${IfNot} ${Errors}
-        StrCpy $7 "可将此文件转发给技术支持：$\r$\n%ProgramData%\Kaiwu\Connector\logs\install-failure-summary.txt"
-      ${EndIf}
-      FileClose $2
-    ${EndIf}
-    Call ReleaseSetupTransaction
-    MessageBox MB_ICONSTOP "$6$\r$\n$\r$\n$7" /SD IDOK
-    Abort
+    Goto attempt_failed
   ${EndIf}
 
+  StrCpy $AttemptStage "verify"
+  !insertmacro Attempt "verify" "started" "ok"
+  KaiwuJournal::GuardProgramWrites /NOUNLOAD "$INSTDIR"
+  Pop $1
+  ${If} $1 != 1
+    Goto maintenance_failed
+  ${EndIf}
+  ClearErrors
   FileOpen $2 "$INSTDIR\open-config.cmd" w
+  IfErrors maintenance_failed
   FileWrite $2 "@echo off$\r$\nstart $\"Kaiwu Connector$\" $\"http://127.0.0.1:17872/$\"$\r$\n"
   FileClose $2
+  IfErrors maintenance_failed
 
   CreateDirectory "$SMPROGRAMS\开物内网连接器"
   CreateShortCut "$SMPROGRAMS\开物内网连接器\打开本机配置页面.lnk" "$INSTDIR\open-config.cmd"
@@ -237,13 +369,16 @@ Section "安装" SecInstall
 
   ; Remove a stale 32-bit uninstall record left by older candidate installers,
   ; then register the current x64 entry in the native registry view.
+  IfErrors maintenance_failed
   SetRegView 32
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
   SetRegView 64
+  ClearErrors ; The legacy registry entry need not exist.
   ; Early x64 probes were accidentally installed through 32-bit PowerShell.
   ; Remove only that known stale product directory after the native install
   ; succeeds; customer configuration remains under ProgramData.
   Call RemoveLegacyX86Install
+  ClearErrors ; An absent historical x86 directory is expected on a clean host.
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "DisplayName" "开物内网连接器"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "Publisher" "Kaiwu"
@@ -257,7 +392,27 @@ Section "安装" SecInstall
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "NoRepair" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "EstimatedSize" 26000
+  IfErrors maintenance_failed
+  !insertmacro Attempt "verify" "ok" "ok"
+  StrCpy $AttemptCode "ok"
+  Call CompleteAttempt
   Call ReleaseSetupTransaction
+  Goto attempt_end
+
+  maintenance_failed:
+    StrCpy $AttemptCode "write_failed"
+    !insertmacro Attempt "verify" "failed" "write_failed"
+    StrCpy $6 "连接器服务已安装，但配置入口或卸载登记保存失败。"
+
+  attempt_failed:
+    Call CompleteAttempt
+    ${If} $SetupMutex != 0
+      Call ReleaseSetupTransaction
+    ${EndIf}
+    Call ShowAttemptFailure
+    Abort
+
+  attempt_end:
 SectionEnd
 
 Section "Uninstall"

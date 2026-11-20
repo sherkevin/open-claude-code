@@ -3,7 +3,8 @@
 #Requires -RunAsAdministrator
 param(
   [string]$ResultPath = "",
-  [string]$FailureDetailsPath = ""
+  [string]$FailureDetailsPath = "",
+  [long]$AttemptHandle = 0
 )
 $ErrorActionPreference = "Stop"
 
@@ -60,6 +61,75 @@ $CriticalFiles = @(
   [pscustomobject]@{ SourceRelative = "bin/frpc.exe"; TargetName = "frpc.exe" },
   [pscustomobject]@{ SourceRelative = "service-handoff.ps1"; TargetName = "service-handoff.ps1" }
 )
+
+# The launcher gives this process an append-only file handle. The script never
+# opens a diagnostic path, and standalone installs can run without the handle.
+$AttemptPhase = $null
+$AttemptSequence = $null
+
+function Write-InstallEvent {
+  param([string]$Phase, [string]$Outcome, [string]$Code)
+  if (-not $AttemptHandle) { return }
+  if ($Phase -cnotin @('precheck', 'lock', 'backup', 'replace', 'service', 'verify', 'rollback') -or
+      $Outcome -cnotin @('started', 'ok', 'failed') -or
+      $Code -cnotin @('ok', 'unknown', 'unsupported_host', 'busy', 'file_missing', 'checksum_mismatch', 'access_denied',
+                     'service_registration', 'service_start', 'local_page_unready', 'write_failed', 'restored',
+                     'recovery_unconfirmed')) { return }
+  $stream = $null
+  try {
+    $handle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new([IntPtr]::new($AttemptHandle), $false)
+    $stream = [IO.FileStream]::new($handle, [IO.FileAccess]::ReadWrite)
+    if ($stream.Length -lt 1 -or $stream.Length -ge 4096) { return }
+    if ($null -eq $AttemptSequence) {
+      $null = $stream.Seek(0, [IO.SeekOrigin]::Begin)
+      $prefix = New-Object byte[] ([int]$stream.Length)
+      if ($stream.Read($prefix, 0, $prefix.Length) -ne $prefix.Length -or $prefix[-1] -ne 10) { return }
+      $script:AttemptSequence = 0
+      foreach ($byte in $prefix) { if ($byte -eq 10) { $script:AttemptSequence++ } }
+    }
+    $next = $AttemptSequence + 1
+    $line = '{"v":1,"seq":' + $next.ToString([Globalization.CultureInfo]::InvariantCulture) +
+      ',"stage":"' + $Phase + '","outcome":"' + $Outcome + '","code":"' + $Code + '"}' + "`n"
+    $bytes = [Text.Encoding]::ASCII.GetBytes($line)
+    if ($next -gt 48 -or ($stream.Length + $bytes.Length) -gt 4096) { return }
+    $null = $stream.Seek(0, [IO.SeekOrigin]::End)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $script:AttemptSequence = $next
+    $stream.Flush()
+  } catch {
+    $script:AttemptHandle = 0
+  } finally {
+    if ($stream) { try { $stream.Dispose() } catch {} }
+  }
+}
+
+function Enter-InstallPhase {
+  param([string]$Phase)
+  if ($AttemptPhase) { Write-InstallEvent $AttemptPhase 'ok' 'ok' }
+  $script:AttemptPhase = $Phase
+  Write-InstallEvent $Phase 'started' 'ok'
+}
+
+function Fail-InstallPhase {
+  param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+  $code = switch ($FailureReason) {
+    { $_ -in @('manifest_missing', 'file_missing') } { 'file_missing' }
+    { $_ -in @('manifest_invalid', 'file_unlisted', 'checksum_mismatch') } { 'checksum_mismatch' }
+    { $_ -in @('unsupported_host', 'service_registration', 'service_start', 'local_page_unready') } { $_ }
+    default {
+      $errorCause = $ErrorRecord.Exception.GetBaseException()
+      if ($errorCause -is [UnauthorizedAccessException] -or $ErrorRecord.CategoryInfo.Category -eq 'PermissionDenied') {
+        'access_denied'
+      } elseif ($AttemptPhase -eq 'lock' -and $errorCause -is [TimeoutException]) {
+        'busy'
+      } else {
+        'unknown'
+      }
+    }
+  }
+  if ($AttemptPhase) { Write-InstallEvent $AttemptPhase 'failed' $code }
+  $script:AttemptPhase = $null
+}
 
 function Set-InstallFailure {
   param([string]$Reason, [string]$SourceRelative)
@@ -137,7 +207,8 @@ function Write-InstallResult {
       [System.Text.UTF8Encoding]::new($false)
     )
   } catch {
-    Write-Host "无法写入安装结果状态: $($_.Exception.Message)"
+    Write-InstallEvent 'verify' 'failed' 'write_failed'
+    Write-Host "无法写入安装结果状态。"
   }
 }
 
@@ -171,6 +242,7 @@ function Assert-CriticalFiles {
 }
 
 $Stage = "source_precheck"
+Enter-InstallPhase 'precheck'
 try {
   if (-not [Environment]::Is64BitProcess) {
     Set-InstallFailure "unsupported_host"
@@ -209,21 +281,44 @@ try {
   $ServiceHandoffFunctions = [IO.File]::ReadAllText((Join-Path $Source "service-handoff.ps1"), [Text.Encoding]::UTF8)
   . ([scriptblock]::Create($ServiceHandoffFunctions))
 } catch {
+  Fail-InstallPhase $_
   Write-InstallResult "PRECHECK_FAILED"
   throw
 }
 
 function Set-PrivateDataAcl {
-  param([Parameter(Mandatory = $true)][string]$Path)
+  param([Parameter(Mandatory = $true)][string]$Path, [switch]$SkipAttemptJournal)
 
-  & icacls.exe $Path /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "设置数据目录 ACL 失败，icacls 退出码为 ${LASTEXITCODE}: $Path"
+  $items = @(Get-Item -LiteralPath $Path -Force)
+  if ($SkipAttemptJournal) {
+    # The launcher owns this subtree and may be writing concurrently with an earlier attempt.
+    # Protect the rest of DataDir even if the journal directory is unavailable.
+    $pending = [System.Collections.Generic.Stack[object]]::new()
+    $pending.Push($items[0])
+    $journal = Join-Path $Path 'logs\install-attempts'
+    $checked = [System.Collections.Generic.List[object]]::new()
+    while ($pending.Count) {
+      $item = $pending.Pop()
+      $checked.Add($item)
+      if ($item.PSIsContainer) {
+        foreach ($child in Get-ChildItem -LiteralPath $item.FullName -Force) {
+          if ($child.FullName -ne $journal -and -not ($child.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            $pending.Push($child)
+          }
+        }
+      }
+    }
+    $items = $checked
+  } else {
+    & icacls.exe $Path /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "设置数据目录 ACL 失败，icacls 退出码为 ${LASTEXITCODE}: $Path"
+    }
+    $items += @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop)
   }
 
   $systemSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18")
   $adminSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
-  $items = @(Get-Item -LiteralPath $Path -Force) + @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop)
   foreach ($item in $items) {
     $acl = Get-Acl -LiteralPath $item.FullName
     $acl.SetAccessRuleProtection($true, $false)
@@ -251,8 +346,7 @@ function Set-PrivateDataAcl {
     Set-Acl -LiteralPath $item.FullName -AclObject $acl
   }
 
-  $verifiedItems = @(Get-Item -LiteralPath $Path -Force) + @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop)
-  foreach ($verifiedItem in $verifiedItems) {
+  foreach ($verifiedItem in $items) {
     $verified = Get-Acl -LiteralPath $verifiedItem.FullName
     if (-not $verified.AreAccessRulesProtected) {
       throw "数据目录 ACL 仍会继承上级权限: $($verifiedItem.FullName)"
@@ -963,15 +1057,18 @@ $BackupProgramNames += @($PayloadDocs | ForEach-Object { "docs/" + $_.Name })
 $BackupProgramNames += @($PayloadCompliance | ForEach-Object { "compliance/" + $_.Name })
 
 $Stage = "transaction_lock"
+Enter-InstallPhase 'lock'
 try {
   $Transaction = Enter-KaiwuInstallTransaction
 } catch {
+  Fail-InstallPhase $_
   Write-InstallResult "PRECHECK_FAILED"
   throw
 }
 
 try {
 $Stage = "backup_prepare"
+Enter-InstallPhase 'backup'
 try {
   $EnvironmentBefore = @{}
   foreach ($name in $ManagedEnvNames) {
@@ -1011,9 +1108,9 @@ try {
   $Stage = "backup_prepare"
   if (-not (Test-Path -LiteralPath $DataDir -PathType Container)) {
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-    Set-PrivateDataAcl -Path $DataDir
+    Set-PrivateDataAcl -Path $DataDir -SkipAttemptJournal
   } elseif (-not $NeedsBackup) {
-    Set-PrivateDataAcl -Path $DataDir
+    Set-PrivateDataAcl -Path $DataDir -SkipAttemptJournal
   }
 
   if ($NeedsBackup) {
@@ -1301,8 +1398,10 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
   }
 
   $Stage = "pre_change_verification"
+  Enter-InstallPhase 'verify'
   Assert-CriticalFiles
   $Stage = "replace_install"
+  Enter-InstallPhase 'replace'
   Remove-KaiwuStoppedService $ExistingService $OriginalHandoff
   $InstallMutationStarted = $true
   $OldInstallChanged = $NeedsBackup
@@ -1353,6 +1452,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
     }
   }
 
+  Enter-InstallPhase 'service'
   $BinPath = Get-KaiwuProductCommand
   # Register disabled until the program, startup settings and security metadata are in place.
   $ReplacementSnapshot = if ($HadExistingService) { $ServiceSnapshot } else {
@@ -1386,11 +1486,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
       Start-KaiwuService $ReplacementSnapshot.start_mode
     } catch {
       Set-InstallFailure "service_start"
-      $events = Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
-        Where-Object { $_.Message -match 'Kaiwu|1053|7000|7009' } |
-        Select-Object -First 5 |
-        Format-List | Out-String
-      throw "启动服务失败: $($_.Exception.Message)`n$events"
+      throw "启动服务失败: $($_.Exception.Message)"
     }
     $HttpDeadline = (Get-Date).AddSeconds(30)
     do {
@@ -1413,6 +1509,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
   if ($service.Status -ne $expectedStatus) { throw "安装后的服务未保持预期状态 ($expectedStatus)" }
 
   $Stage = "final_verification"
+  Enter-InstallPhase 'verify'
   Assert-CriticalFiles -Target
 
   $VersionLine = "unknown"
@@ -1444,9 +1541,11 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
   Write-Host "注意：界面只监听本机回环地址，不要通过防火墙对外开放。"
   $Stage = "installed"
   $Cleanup = "not_needed"
+  Write-InstallEvent $AttemptPhase 'ok' 'ok'
   Write-InstallResult "INSTALLED"
 } catch {
   $OriginalError = $_.Exception.Message
+  Fail-InstallPhase $_
   $FailureStage = $Stage
   $PriorHandoffChanged = $OriginalHandoff.startup_changed -or $OriginalHandoff.stop_attempted
   if (-not $InstallMutationStarted -and -not $OriginalHandoff.delete_accepted -and -not $PriorHandoffChanged) {
@@ -1455,6 +1554,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
   }
   $OldInstallChanged = $OldInstallChanged -or $PriorHandoffChanged
   $Stage = "rollback"
+  Enter-InstallPhase 'rollback'
   $RollbackErrors = @()
   $CanRestoreFiles = $false
   try {
@@ -1515,6 +1615,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
   }
 
   if ($RollbackErrors.Count -eq 0) {
+    Write-InstallEvent 'rollback' 'ok' 'restored'
     if ($NeedsBackup) {
       $Stage = "restored"
       $Cleanup = "restored"
@@ -1525,6 +1626,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
       Write-InstallResult "FAILED_NO_PRIOR_CLEANED"
     }
   } else {
+    Write-InstallEvent 'rollback' 'failed' 'recovery_unconfirmed'
     if ($NeedsBackup) {
       $Stage = "recovery_unconfirmed"
       $Cleanup = "unconfirmed"
