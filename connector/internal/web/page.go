@@ -403,6 +403,7 @@ function renderSelfTest(status, stages, outcome){
   }
   if(status?.state === "PAUSED"){
     setStage("selfTunnel", "已暂停", "确认后点击“恢复连接”，再验证公网。", "warn");
+    setStage("selfEdge", "待验证", "恢复通道后，运行连接测试验证公网往返。", "warn");
   }else if(localPassed && outcome === "local-passed" && !revoked){
     const label = bound ? "待验证" : "待绑定";
     const detail = bound ? "重新运行连接测试以验证公网。" : "完成企业绑定后再验证公网。";

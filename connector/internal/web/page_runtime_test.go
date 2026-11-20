@@ -85,6 +85,9 @@ const document = {
 };
 const hidden = id => $(id).classList.contains("hidden");
 const primary = id => $(id).classList.contains("primary");
+let confirmReconnect = false;
+const reconnectPrompts = [];
+const confirm = question=>{ reconnectPrompts.push(question); return confirmReconnect; };
 const copied = [];
 const navigator = {clipboard:{writeText:async value=>{ copied.push(value); }}};
 const calls = [];
@@ -109,6 +112,9 @@ const fetch = async (path, options) => {
     }
     assert.equal(JSON.parse(options.body).code, "valid");
     status = bound;
+    data = status;
+  }else if(path === "/api/connect"){
+    status = {...bound, state:"READY", frpc_running:true, tunnel_connected:true};
     data = status;
   }else{ assert.fail("Unexpected API call: " + path); }
   return {json:async ()=>({ok:true,data})};
@@ -177,8 +183,15 @@ async function check(){
   testResult.stages[2].message = "测试通道尚未就绪，请在方便时重新连接";
   await $("selfTestBtn").onclick();
   assert.match($("nextStepDetail").textContent, /重连会短暂中断/);
-  assert.equal($("nextStepBtn").textContent, "查看运行日志");
+  assert.equal($("nextStepBtn").textContent, "重新连接");
   assert.ok(!calls.includes("/api/connect"));
+  await $("nextStepBtn").onclick();
+  assert.match(reconnectPrompts[0], /业务连接会短暂中断/);
+  assert.ok(!calls.includes("/api/connect"));
+  confirmReconnect = true;
+  await $("nextStepBtn").onclick();
+  assert.equal(reconnectPrompts.length, 2);
+  assert.equal(calls.filter(path=>path === "/api/connect").length, 1);
 
   status = {...bound, state:"READY", frpc_running:true, tunnel_connected:true};
   testResult = {ok:false, trace_id:trace, stages:[
