@@ -573,6 +573,19 @@ function authByID(id){ return ((currentStatus && currentStatus.auth_profiles) ||
 
 const levelLabels = {info:"信息", warn:"警告", error:"错误"};
 const resultLabels = {info:"成功", warn:"注意", error:"失败"};
+const installStageLabels = {
+  started:"启动安装程序", precheck:"检查安装条件", extract:"解压文件", lock:"获取安装锁",
+  backup:"备份旧版本", replace:"写入程序文件", service:"配置或启动服务",
+  verify:"核验安装结果", rollback:"恢复旧版本", finish:"结束安装"
+};
+const installOutcomeLabels = {started:"已开始", ok:"已完成", failed:"失败"};
+const installCodeLabels = {
+  unknown:"原因待查", unsupported_host:"系统不支持", busy:"已有安装或维护操作",
+  file_missing:"缺少文件", checksum_mismatch:"文件校验失败", access_denied:"权限不足",
+  service_registration:"服务登记失败", service_start:"服务启动失败",
+  local_page_unready:"本机配置页未就绪", write_failed:"写入失败",
+  restored:"已恢复安装前状态", recovery_unconfirmed:"恢复结果待确认"
+};
 function formatTime(value){
   if(!value){ return "—"; }
   const date = new Date(value);
@@ -688,11 +701,13 @@ function renderLogRows(events){
     if(event.install_stage){
       const stage = document.createElement("div");
       stage.className = "log-meta";
-      stage.textContent = event.install_seq + ". " + event.install_stage + " · " + event.install_code;
+      const reason = installCodeLabels[event.install_code];
+      stage.textContent = event.install_seq + ". " + (installStageLabels[event.install_stage] || "安装阶段")
+        + (reason ? " · " + reason : "");
       messageCell.appendChild(stage);
     }
     row.appendChild(messageCell);
-    row.appendChild(logCell(event.install_outcome || resultLabels[level] || "—"));
+    row.appendChild(logCell(installOutcomeLabels[event.install_outcome] || resultLabels[level] || "—"));
     row.appendChild(logCell(formatDuration(event.duration_ms), "log-duration"));
 
     const referenceCell = document.createElement("td");

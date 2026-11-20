@@ -4,19 +4,32 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
 	"golang.org/x/sys/windows/svc"
 )
 
 const windowsServiceName = "KaiwuConnector"
 
 type connectorService struct{}
+
+// Service arguments and error text can contain customer addresses or URL parameters.
+func logServiceFailure(stage string, err error) {
+	var code syscall.Errno
+	if errors.As(err, &code) {
+		log.Printf("%s: win32=%d", stage, uint32(code))
+		return
+	}
+	log.Printf("%s: %s", stage, diagnostics.CodeForError(err))
+}
 
 // runServiceIfNeeded 在 Windows 服务控制管理器启动本进程时接管生命周期。
 // 普通命令行启动时返回 false，继续走原有 CLI。
@@ -26,7 +39,7 @@ func runServiceIfNeeded() bool {
 		return false
 	}
 	if err := svc.Run(windowsServiceName, &connectorService{}); err != nil {
-		log.Printf("Windows service exited with error: %v", err)
+		logServiceFailure("Windows service exited", err)
 	}
 	return true
 }
@@ -48,24 +61,24 @@ func (s *connectorService) Execute(args []string, requests <-chan svc.ChangeRequ
 			defer file.Close()
 		}
 	}
-	log.Printf("service start: %s", strings.Join(args, " "))
+	log.Print("service start")
 
 	server, instance, _, _, err := newServer(args)
 	if err != nil {
-		log.Printf("service configuration failed: %v", err)
+		logServiceFailure("service configuration failed", err)
 		return false, 1
 	}
 	defer instance.Close()
 
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
-		log.Printf("service listen failed on %s: %v", server.Addr, err)
+		logServiceFailure("service listen failed", err)
 		instance.Close()
 		return false, 1
 	}
 	go func() {
 		if serveErr := server.Serve(listener); serveErr != nil {
-			log.Printf("service HTTP server stopped: %v", serveErr)
+			logServiceFailure("service HTTP server stopped", serveErr)
 		}
 	}()
 
