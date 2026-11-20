@@ -68,7 +68,7 @@ bash scripts/build.sh
 ```bash
 cd connector
 go test ./...
-bash scripts/build.sh            # 版本默认 1.3.6，可用 VERSION=... 覆盖
+bash scripts/build.sh            # 默认版本取自构建脚本，可用 VERSION=... 覆盖
 ```
 
 产物在 `dist/`：

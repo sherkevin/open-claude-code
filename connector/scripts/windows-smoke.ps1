@@ -504,8 +504,17 @@ function Invoke-PackageUninstaller {
         if ($KeepProgramDirectory) { throw "NSIS 安装模式不支持 KeepProgramDirectory 中间态" }
         $setupUninstaller = Join-Path $InstallDir "uninstall.exe"
         if (-not (Test-Path -LiteralPath $setupUninstaller)) { throw "找不到 NSIS 卸载程序: $setupUninstaller" }
-        $process = Start-Process -FilePath $setupUninstaller -ArgumentList "/S" -Wait -PassThru
-        if ($process.ExitCode -ne 0) { throw "NSIS 卸载程序退出码为 $($process.ExitCode)" }
+        # The installed launcher otherwise returns before the temporary uninstaller finishes.
+        $runnerDir = Join-Path $env:TEMP ("kaiwu-uninstall-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $runnerDir | Out-Null
+        try {
+            $runner = Join-Path $runnerDir "uninstall.exe"
+            Copy-Item -LiteralPath $setupUninstaller -Destination $runner
+            $process = Start-Process -FilePath $runner -ArgumentList "/S _?=$InstallDir" -WorkingDirectory $runnerDir -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "NSIS 卸载程序退出码为 $($process.ExitCode)" }
+        } finally {
+            Remove-Item -LiteralPath $runnerDir -Recurse -Force
+        }
         return
     }
     if (-not (Test-Path -LiteralPath $Uninstaller)) { throw "找不到卸载脚本: $Uninstaller" }
@@ -1123,6 +1132,7 @@ try {
 
     $required = @(
         "install.ps1",
+        "service-handoff.ps1",
         "uninstall.ps1",
         "windows-smoke.ps1",
         "SHA256SUMS",

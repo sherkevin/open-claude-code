@@ -147,6 +147,10 @@ cp "$ROOT/README.md" "$DIST/linux/docs/"
 cp "$ROOT/README.md" "$DIST/windows/docs/"
 
 for target in linux windows; do
+  sed "s/<版本号>/${VERSION}/g" "$ROOT/docs/交付与运维说明.md" > "$DIST/$target/docs/交付与运维说明.md"
+done
+
+for target in linux windows; do
   cp "$ROOT/third_party/README.md" "$DIST/$target/compliance/THIRD_PARTY_NOTICES.md"
   cp "$ROOT/third_party/frp/LICENSE" "$DIST/$target/compliance/frp-LICENSE"
   cp "$ROOT/third_party/frp/NOTICE.txt" "$DIST/$target/compliance/frp-NOTICE.txt"

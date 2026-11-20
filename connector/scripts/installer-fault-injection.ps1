@@ -133,6 +133,8 @@ function New-TestCase {
   $installer = Join-Path $source "install.ps1"
   New-Item -ItemType Directory -Force -Path $source, $programFiles, $programData, $temp | Out-Null
   [System.IO.File]::Copy($script:InstallerSource, $installer, $true)
+  $handoffPath = Join-Path $source "service-handoff.ps1"
+  [IO.File]::Copy((Join-Path (Split-Path -Parent $script:InstallerSource) "service-handoff.ps1"), $handoffPath)
 
   $payload = [ordered]@{
     "bin/kaiwu-connector.exe" = "fault-test-kaiwu-binary"
@@ -152,7 +154,7 @@ function New-TestCase {
       [System.Text.UTF8Encoding]::new($false)
     )
   }
-  $checksumLines = @()
+  $checksumLines = @(((Get-Sha256 $handoffPath) + "  service-handoff.ps1"))
   foreach ($relative in $payload.Keys) {
     $path = Join-Path $source ($relative -replace '/', '\')
     $checksumLines += ((Get-Sha256 $path) + "  " + $relative)
@@ -775,20 +777,24 @@ function Run-CaseB {
   })
 }
 
-function Run-CaseC {
-  $case = New-TestCase "C"
+function Run-MissingInstalledDependency {
+  param([string]$Id, [string]$RelativeName)
+  $targetName = Split-Path -Leaf $RelativeName
+  $case = New-TestCase $Id
   Set-CaseEnvironment $case
   Reset-MockState
   $global:Case = $case
-  $global:RemoveTargetOnStart = $true
+  $global:StartHook = {
+    Remove-Item -LiteralPath (Join-Path $global:Case.InstallDir $targetName) -Force
+  }.GetNewClosure()
   $run = Invoke-Installer $case
-  Assert-True ($run.ResultCode -eq "FAILED_NO_PRIOR_CLEANED") "C: expected confirmed first-install cleanup"
-  Assert-True ($run.FailureStage -eq "final_verification") "C: wrong failure stage: $($run.FailureStage)"
-  Assert-True (($run.Error -split "`r?`n")[0] -ceq "安装失败：关键安装文件缺失: bin/frpc.exe") "C: wrong dependency failure: $($run.Error)"
-  Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.InstallDir "frpc.exe"))) "C: target frpc still exists"
-  Assert-True ($global:StartServiceCalls -eq 1 -and $global:HttpCalls -eq 1) "C: service start and HTTP were not both exercised exactly once"
-  Assert-True ($null -eq $global:MockService) "C: failed replacement service still exists"
-  Add-CaseResult "C" "passed" "target frpc disappeared after service/HTTP doubles reported success" ([ordered]@{
+  Assert-True ($run.ResultCode -eq "FAILED_NO_PRIOR_CLEANED") "${Id}: expected confirmed first-install cleanup"
+  Assert-True ($run.FailureStage -eq "final_verification") "${Id}: wrong failure stage: $($run.FailureStage)"
+  Assert-True (($run.Error -split "`r?`n")[0] -ceq "安装失败：关键安装文件缺失: $RelativeName") "${Id}: wrong dependency failure: $($run.Error)"
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.InstallDir $targetName))) "${Id}: target $targetName still exists"
+  Assert-True ($global:StartServiceCalls -eq 1 -and $global:HttpCalls -eq 1) "${Id}: service start and HTTP were not both exercised exactly once"
+  Assert-True ($null -eq $global:MockService) "${Id}: failed replacement service still exists"
+  Add-CaseResult $Id "passed" "target $targetName disappeared after service/HTTP doubles reported success" ([ordered]@{
     result = $run.ResultCode
     failure_stage = $run.FailureStage
     start_calls = $global:StartServiceCalls
@@ -1184,6 +1190,7 @@ function Assert-MaintenanceFiles {
   foreach ($name in @("install.ps1", "uninstall.ps1", "windows-smoke.ps1", "open-config.cmd", "uninstall.exe", "docs/readme.md", "compliance/LICENSE")) {
     Assert-True ([IO.File]::ReadAllText((Join-Path $Case.InstallDir $name)) -ceq "old $name") "old maintenance file was not restored: $name"
   }
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $Case.InstallDir "service-handoff.ps1"))) "candidate handoff script remained after restore of older files"
   Assert-True ([IO.File]::ReadAllText((Join-Path $Case.DataDir "install-state.json")) -ceq "old install state") "old install-state not restored"
 }
 
@@ -1207,6 +1214,7 @@ function Run-UpgradeCase {
       }
       $run = Invoke-Installer $case
       Assert-True ($run.ResultCode -eq "INSTALLED") "active upgrade: $($run.Error)"
+      Assert-True ((Get-Sha256 (Join-Path $case.InstallDir "service-handoff.ps1")) -ceq (Get-Sha256 (Join-Path $case.Source "service-handoff.ps1"))) "service handoff script was not installed with the candidate"
       Assert-True ($child.Terminated -and $child.Exited -and -not $visitor.Exited -and $global:Terminations.Count -eq 1) "old child/visitor identity or exit mismatch"
       $backup = Find-BackupDirectory $case
       Assert-True ([IO.File]::ReadAllText((Join-Path $backup.FullName "frpc.toml")) -ceq "port = 19002") "backup did not capture stopped writer state"
@@ -1438,7 +1446,8 @@ try {
   if (-not $UpgradeOnly) {
   Invoke-Case "A" { Run-CaseA }
   Invoke-Case "B" { Run-CaseB }
-  Invoke-Case "C" { Run-CaseC }
+  Invoke-Case "C" { Run-MissingInstalledDependency "C" "bin/frpc.exe" }
+  Invoke-Case "missing-handoff" { Run-MissingInstalledDependency "missing-handoff" "service-handoff.ps1" }
   Invoke-Case "D1" { Run-CaseD1 }
   Invoke-Case "D2" { Run-CaseD2 }
   Invoke-Case "E" { Run-CaseE }
@@ -1462,7 +1471,7 @@ try {
   Invoke-Case "backup-reject" { Run-UpgradeCase backup-reject }
   Invoke-Case "prestart-bytes" { Run-UpgradeCase prestart-bytes }
   Invoke-Case "stable-after-start" { Run-UpgradeCase stable-after-start }
-  if ($script:Results.cases.Count -eq $(if ($UpgradeOnly) { 11 } else { 14 + 11 }) -and
+  if ($script:Results.cases.Count -eq $(if ($UpgradeOnly) { 11 } else { 15 + 11 }) -and
       @($script:Results.cases | Where-Object { $_.status -ne "passed" }).Count -eq 0) {
     $script:Results.status = "passed"
   } else {

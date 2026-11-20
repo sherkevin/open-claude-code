@@ -6,9 +6,6 @@ Unicode true
 !include "TextFunc.nsh"
 !include "WinVer.nsh"
 !include "x64.nsh"
-!include "StrFunc.nsh"
-
-${Using:StrFunc} UnStrStr
 
 !ifndef VERSION
   !error "VERSION is required"
@@ -30,6 +27,9 @@ ${Using:StrFunc} UnStrStr
 ; supported way to start 64-bit Windows PowerShell from the 32-bit installer;
 ; this keeps $env:ProgramFiles and the service path on the native x64 tree.
 !define POWERSHELL64 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+!define POWERSHELL_SYSTEM32 "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+Var SetupMutex
 
 Name "开物内网连接器 ${VERSION}"
 Caption "开物内网连接器 ${VERSION}"
@@ -111,7 +111,28 @@ Function RemoveLegacyX86Install
   RMDir "$PROGRAMFILES32\Kaiwu"
 FunctionEnd
 
+Function ReleaseSetupTransaction
+  System::Call 'kernel32::ReleaseMutex(p $SetupMutex)'
+  System::Call 'kernel32::CloseHandle(p $SetupMutex)'
+FunctionEnd
+
 Section "安装" SecInstall
+  ; uninstall.ps1 acquires this gate before the shared service transaction.
+  ; Keep the gate through the NSIS-only writes after install.ps1 has returned.
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\KaiwuConnector.SetupTransaction") p .r0'
+  StrCpy $SetupMutex $0
+  ${If} $SetupMutex == 0
+    MessageBox MB_ICONSTOP "无法取得安装事务锁。" /SD IDOK
+    Abort
+  ${EndIf}
+  System::Call 'kernel32::WaitForSingleObject(p $SetupMutex, i 0) i .r0'
+  ${If} $0 != 0
+  ${AndIf} $0 != 128
+    System::Call 'kernel32::CloseHandle(p $SetupMutex)'
+    MessageBox MB_ICONSTOP "已有开物安装或卸载任务正在运行，或无法确认事务锁。" /SD IDOK
+    Abort
+  ${EndIf}
+
   SetShellVarContext all
   SetOutPath "$PLUGINSDIR\payload"
   File /r "${PAYLOAD_DIR}/*"
@@ -165,6 +186,7 @@ Section "安装" SecInstall
     ${ElseIf} "$3" == "result=FAILED_NO_PRIOR_CLEANUP_UNCONFIRMED"
       StrCpy $4 "安装失败，未能确认已清理本次新增的受管文件。请保留日志并联系技术支持。"
     ${EndIf}
+    Call ReleaseSetupTransaction
     MessageBox MB_ICONSTOP "$4$\r$\n$\r$\n退出码：$0$\r$\n状态：$3$\r$\n日志：$APPDATA\Kaiwu\Connector\logs\install.log"
     Abort
   ${EndIf}
@@ -195,59 +217,57 @@ Section "安装" SecInstall
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "DisplayIcon" "$INSTDIR\kaiwu-connector.exe,0"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
+  ; The normal NSIS launcher returns before its temporary uninstaller exits.
+  ; Start the same PowerShell transaction directly for callers that need its exit code.
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "QuietUninstallString" '"${POWERSHELL_SYSTEM32}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\uninstall.ps1"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "Comments" "source commit ${COMMIT}"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "NoRepair" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector" "EstimatedSize" 26000
+  Call ReleaseSetupTransaction
 SectionEnd
 
 Section "Uninstall"
-  SetShellVarContext all
-  SetRegView 64
-  StrCpy $0 ""
-  ${UnStrStr} $1 "$CMDLINE" "/PURGE"
-  ${If} $1 != ""
-    StrCpy $0 "-Purge -KeepProgramDirectory"
-  ${Else}
-    StrCpy $0 "-KeepProgramDirectory"
+  ; NSIS normally runs a temporary copy so the installed launcher can be removed.
+  StrCpy $0 "$PROGRAMFILES64\Kaiwu\Connector"
+  ${If} "$INSTDIR" == "$0\"
+    StrCpy $INSTDIR "$0"
   ${EndIf}
-
-  ${IfNot} ${FileExists} "$INSTDIR\uninstall.ps1"
-    MessageBox MB_ICONSTOP "找不到卸载脚本：$INSTDIR\uninstall.ps1"
+  ${If} "$INSTDIR" != "$0"
+  ${OrIf} "$EXEPATH" == "$INSTDIR\uninstall.exe"
+    MessageBox MB_ICONSTOP "卸载程序的位置不受支持，请从 Windows 设置或开始菜单启动卸载。" /SD IDOK
+    SetErrorLevel 1
     Abort
   ${EndIf}
 
+  StrCpy $0 ""
+  ${un.GetParameters} $1
+  ${un.GetOptions} "$1" "/PURGE" $2
+  ${IfNot} ${Errors}
+  ${AndIf} "$2" == ""
+    StrCpy $0 "-Purge"
+  ${EndIf}
+  ${IfNot} ${FileExists} "$INSTDIR\uninstall.ps1"
+    MessageBox MB_ICONSTOP "找不到卸载脚本：$INSTDIR\uninstall.ps1" /SD IDOK
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
+
+  SetOutPath "$TEMP"
   DetailPrint "停止服务并卸载连接器..."
-  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\uninstall.ps1" $0'
+  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\uninstall.ps1" $0'
   Pop $1
   Pop $2
+  ClearErrors
   FileOpen $3 "$TEMP\KaiwuConnector-uninstall.log" w
-  FileWrite $3 "$2"
-  FileClose $3
+  ${IfNot} ${Errors}
+    FileWrite $3 "$2"
+    FileClose $3
+  ${EndIf}
 
   ${If} "$1" != "0"
-    MessageBox MB_ICONSTOP "卸载失败。$\r$\n$\r$\n退出码：$1$\r$\n日志：$TEMP\KaiwuConnector-uninstall.log"
+    MessageBox MB_ICONSTOP "卸载失败。$\r$\n$\r$\n退出码：$1$\r$\n日志：$TEMP\KaiwuConnector-uninstall.log" /SD IDOK
+    SetErrorLevel 1
     Abort
   ${EndIf}
-
-  Delete "$DESKTOP\开物内网连接器配置.lnk"
-  RMDir /r "$SMPROGRAMS\开物内网连接器"
-  RMDir /r "$INSTDIR"
-  Call un.RemoveLegacyX86Install
-  SetRegView 32
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
-  SetRegView 64
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
 SectionEnd
-
-Function un.RemoveLegacyX86Install
-  ; Match the install-time cleanup behavior without touching customer data.
-  ${If} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\kaiwu-connector.exe"
-  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\uninstall.exe"
-  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\install.ps1"
-  ${OrIf} ${FileExists} "$PROGRAMFILES32\Kaiwu\Connector\版本信息.txt"
-    RMDir /r "$PROGRAMFILES32\Kaiwu\Connector"
-  ${EndIf}
-  RMDir "$PROGRAMFILES32\Kaiwu"
-FunctionEnd
