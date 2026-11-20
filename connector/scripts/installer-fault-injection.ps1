@@ -12,7 +12,7 @@
 文件和环境变量调用，不改变安装器的校验和恢复算法。
 
 .EXAMPLE
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\installer-fault-injection.ps1
+powershell.exe -NoProfile -NonInteractive -File .\installer-fault-injection.ps1
 #>
 [CmdletBinding()]
 param(
@@ -216,10 +216,16 @@ function Reset-MockState {
   $global:StopCalls = @()
   $global:StartServiceCalls = 0
   $global:DeleteCalls = 0
+  $global:DeleteExitCode = 0
+  $global:NewServiceCalls = 0
+  $global:ServiceMetadataEvents = @()
+  $global:MockServiceMetadata = $null
+  $global:ServiceMetadataFault = ""
   $global:HttpCalls = 0
   $global:HttpReady = $true
   $global:MutateStateOnStart = $false
   $global:RemoveTargetOnStart = $false
+  $global:AddDependentOnStart = $false
   $global:CopyBeforeHook = $null
   $global:CopyAfterHook = $null
   $global:MockMachineEnvironment = @{}
@@ -232,6 +238,18 @@ function Set-MockService {
     [string]$State = "Running",
     [string[]]$Dependents = @()
   )
+  $global:MockServiceMetadata = [pscustomobject]@{
+    sid_type = 1
+    reset_seconds = 86400
+    on_non_crash_failures = $true
+    reboot_message = ""
+    command_line = ""
+    actions = @(
+      [pscustomobject]@{ type = 1; delay_ms = 5000 },
+      [pscustomobject]@{ type = 1; delay_ms = 15000 },
+      [pscustomobject]@{ type = 1; delay_ms = 60000 }
+    )
+  }
   $global:MockService = [pscustomobject]@{
     Name = "KaiwuConnector"
     DisplayName = "Kaiwu Intranet Connector"
@@ -260,14 +278,17 @@ function Invoke-Installer {
   } catch {
     $errorText = $_.Exception.Message
   }
-  $resultCode = "<missing>"
+  $fields = @{}
   if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
-    $firstLine = [string](Get-Content -LiteralPath $resultPath -Encoding UTF8 -TotalCount 1)
-    if ($firstLine -match '^result=([A-Z_]+)$') { $resultCode = $matches[1] }
+    foreach ($line in (Get-Content -LiteralPath $resultPath -Encoding UTF8)) {
+      if ($line -match '^([a-z_]+)=(.*)$') { $fields[$matches[1]] = $matches[2] }
+    }
   }
   return [pscustomobject]@{
-    ResultPath = $resultPath
-    ResultCode = $resultCode
+    ResultCode = $fields["result"]
+    Stage = $fields["stage"]
+    FailureStage = $fields["failure_stage"]
+    OldInstallChanged = $fields["old_install_changed"]
     Error = $errorText
   }
 }
@@ -340,6 +361,31 @@ function global:Get-CimInstance {
   return $global:MockService
 }
 
+function global:Get-KaiwuServiceMetadata {
+  param([string]$Name)
+  if ($global:MockService.Name -ne $Name) { throw "test mock: metadata service not found" }
+  $global:ServiceMetadataEvents += "read"
+  if ($global:ServiceMetadataFault -eq "capture" -or
+      ($global:ServiceMetadataFault -eq "readback" -and "write:Disabled" -in $global:ServiceMetadataEvents)) {
+    throw "synthetic service metadata read failure"
+  }
+  return ($global:MockServiceMetadata | ConvertTo-Json -Depth 6 | ConvertFrom-Json)
+}
+
+function global:Set-KaiwuServiceMetadata {
+  param([string]$Name, $Metadata)
+  if ($global:MockService.Name -ne $Name) { throw "test mock: metadata service not found" }
+  $global:ServiceMetadataEvents += "write:$($global:MockService.StartMode)"
+  if ($global:ServiceMetadataFault -eq "write") {
+    $global:MockServiceMetadata.sid_type = $Metadata.sid_type
+    throw "synthetic service metadata write failure"
+  }
+  $global:MockServiceMetadata = $Metadata | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+  if ($global:ServiceMetadataFault -eq "mismatch") {
+    $global:MockServiceMetadata.actions[1].delay_ms++
+  }
+}
+
 function global:New-Service {
   [CmdletBinding()]
   param(
@@ -350,6 +396,15 @@ function global:New-Service {
   )
   if ($null -ne $global:MockService) {
     throw "test mock: service already exists: $Name"
+  }
+  $global:NewServiceCalls++
+  $global:MockServiceMetadata = [pscustomobject]@{
+    sid_type = 0
+    reset_seconds = 0
+    on_non_crash_failures = $false
+    reboot_message = ""
+    command_line = ""
+    actions = @()
   }
   $global:MockService = [pscustomobject]@{
     Name = $Name
@@ -363,13 +418,27 @@ function global:New-Service {
   }
 }
 
+function global:Set-Service {
+  [CmdletBinding()]
+  param([string]$Name, [string]$StartupType)
+  if ($global:MockService.Name -ne $Name) { throw "test mock: Set-Service service not found" }
+  $global:ServiceMetadataEvents += "mode:$StartupType"
+  $global:MockService.StartMode = if ($StartupType -eq "Automatic") { "Auto" } else { $StartupType }
+  $global:MockService.DelayedAutoStart = $false
+}
+
 function global:Start-Service {
   [CmdletBinding()]
   param([string]$Name)
   if ($null -eq $global:MockService -or $global:MockService.Name -ne $Name) {
     throw "test mock: service not found: $Name"
   }
+  if ($global:MockService.StartMode -eq "Disabled") { throw "test mock: attempted to start disabled service" }
   $global:StartServiceCalls++
+  $global:ServiceMetadataEvents += "start"
+  if ($global:AddDependentOnStart) {
+    $global:MockService.DependentServices = @([pscustomobject]@{ Name = "KaiwuDependent" })
+  }
   $global:MockService.State = "Running"
   $global:MockService.Status = "Running"
   if ($global:RemoveTargetOnStart) {
@@ -421,10 +490,19 @@ function global:sc.exe {
   switch ($action) {
     "delete" {
       $global:DeleteCalls++
-      if ($null -ne $global:MockService) { $global:MockService = $null }
+      if ($global:DeleteExitCode -ne 0) {
+        $global:LASTEXITCODE = $global:DeleteExitCode
+        return
+      }
+      $global:MockService = $null
+      $global:MockServiceMetadata = $null
     }
     "config" {
-      if ($null -ne $global:MockService) { $global:MockService.DelayedAutoStart = $true }
+      if ($null -ne $global:MockService) {
+        $global:ServiceMetadataEvents += "mode:Delayed"
+        $global:MockService.StartMode = "Auto"
+        $global:MockService.DelayedAutoStart = $true
+      }
     }
   }
   $global:LASTEXITCODE = 0
@@ -483,6 +561,9 @@ function Assert-PlatformDoubles {
   $names = @(
     "Get-Service",
     "New-Service",
+    "Set-Service",
+    "Get-KaiwuServiceMetadata",
+    "Set-KaiwuServiceMetadata",
     "Start-Service",
     "Stop-Service",
     "Get-CimInstance",
@@ -553,9 +634,13 @@ function Run-CaseB {
   Assert-True ($global:MockService.Status -eq "Running") "B: old service was not restored to Running"
   Assert-True ((Get-Sha256 (Join-Path $case.DataDir "config.json")) -eq $oldConfig) "B: old config was not restored"
   Assert-True ((Get-Sha256 (Join-Path $case.InstallDir "frpc.exe")) -eq $oldFrpc) "B: old frpc was not restored"
+  Assert-RestoredServiceMetadata
+  $events = $global:ServiceMetadataEvents -join ","
+  Assert-True ($events -eq "read,write:Disabled,read,mode:Automatic,start,read") "B: wrong metadata/activation order: $events"
   Add-CaseResult "B" "passed" "source frpc disappeared during copy after backup" ([ordered]@{
     result = $run.ResultCode
     service_status = $global:MockService.Status
+    metadata_events = $events
     config_sha256 = $oldConfig
     frpc_sha256 = $oldFrpc
   })
@@ -568,11 +653,15 @@ function Run-CaseC {
   $global:Case = $case
   $global:RemoveTargetOnStart = $true
   $run = Invoke-Installer $case
-  Assert-True ($run.ResultCode -ne "INSTALLED") "C: installer reported success"
+  Assert-True ($run.ResultCode -eq "FAILED_NO_PRIOR_CLEANED") "C: expected confirmed first-install cleanup"
+  Assert-True ($run.FailureStage -eq "final_verification") "C: wrong failure stage: $($run.FailureStage)"
+  Assert-True (($run.Error -split "`r?`n")[0] -ceq "安装失败：关键安装文件缺失: bin/frpc.exe") "C: wrong dependency failure: $($run.Error)"
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.InstallDir "frpc.exe"))) "C: target frpc still exists"
-  Assert-True ($global:HttpCalls -gt 0) "C: HTTP double was not exercised"
+  Assert-True ($global:StartServiceCalls -eq 1 -and $global:HttpCalls -eq 1) "C: service start and HTTP were not both exercised exactly once"
+  Assert-True ($null -eq $global:MockService) "C: failed replacement service still exists"
   Add-CaseResult "C" "passed" "target frpc disappeared after service/HTTP doubles reported success" ([ordered]@{
     result = $run.ResultCode
+    failure_stage = $run.FailureStage
     start_calls = $global:StartServiceCalls
     http_calls = $global:HttpCalls
   })
@@ -606,42 +695,73 @@ function Run-CaseD1 {
   })
 }
 
-function Run-CaseD2 {
-  $case = New-TestCase "D2" -Existing
+function New-GeneratedRestoreFixture {
+  param([string]$Id)
+  $case = New-TestCase $Id -Existing
   Set-CaseEnvironment $case
   Reset-MockState
   $global:Case = $case
-  Set-MockService (Join-Path $case.InstallDir "kaiwu-connector.exe") "Running"
+  $binary = Join-Path $case.InstallDir "kaiwu-connector.exe"
+  $oldCommand = "`"$binary`" serve"
+  Set-MockService $oldCommand "Running"
+  $global:MockService.DelayedAutoStart = $true
   $sourceKaiwu = Join-Path $case.Source "bin\kaiwu-connector.exe"
-  $targetKaiwu = Join-Path $case.InstallDir "kaiwu-connector.exe"
+  $oldConfigHash = Get-Sha256 (Join-Path $case.DataDir "config.json")
+  $global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] = "https://old.example.invalid"
   $global:CopyBeforeHook = {
     param($source, $destination)
-    if ((Test-SamePath $source $sourceKaiwu) -and (Test-SamePath $destination $targetKaiwu)) {
-      throw "synthetic failure to create a real backup"
+    if ((Test-SamePath $source $sourceKaiwu) -and (Test-SamePath $destination $binary)) {
+      throw "synthetic installer failure after a valid backup"
     }
   }.GetNewClosure()
   $firstRun = Invoke-Installer $case
-  Assert-True ($firstRun.ResultCode -eq "FAILED_RESTORED") "D2: setup did not create a verified backup"
+  Assert-True ($firstRun.ResultCode -eq "FAILED_RESTORED") "${Id}: fixture did not create a verified backup: $($firstRun.Error)"
   $backup = Find-BackupDirectory $case
-  Assert-True ($null -ne $backup) "D2: backup directory missing"
+  Assert-True ($null -ne $backup) "${Id}: backup directory missing"
   $restorePath = Join-Path $backup.FullName "restore.ps1"
-  $manifestPath = Join-Path $backup.FullName "manifest\backup-manifest.json"
-  Assert-True (Test-Path -LiteralPath $restorePath -PathType Leaf) "D2: generated restore.ps1 missing"
-  Add-Content -LiteralPath $manifestPath -Value "corrupt" -Encoding UTF8
+  Assert-True (Test-Path -LiteralPath $restorePath -PathType Leaf) "${Id}: generated restore.ps1 missing"
+  $parseTokens = $null
+  $parseErrors = $null
+  $null = [System.Management.Automation.Language.Parser]::ParseFile($restorePath, [ref]$parseTokens, [ref]$parseErrors)
+  Assert-True ($parseErrors.Count -eq 0) "${Id}: generated restore.ps1 has syntax errors: $parseErrors"
   $global:StopCalls = @()
   $global:DeleteCalls = 0
   $global:StartServiceCalls = 0
+  $global:NewServiceCalls = 0
+  $global:ServiceMetadataEvents = @()
   $global:CopyBeforeHook = $null
-  $restore = Invoke-GeneratedRestore $restorePath
-  Assert-True $restore.Failed "D2: generated restore.ps1 accepted a corrupt manifest"
-  Assert-True ($global:StopCalls.Count -eq 0) "D2: generated restore stopped a service before verification"
-  Assert-True ($global:DeleteCalls -eq 0) "D2: generated restore deleted a service before verification"
-  Assert-True ($global:StartServiceCalls -eq 0) "D2: generated restore started a service"
-  Add-CaseResult "D2" "passed" "corrupt backup rejected by generated restore.ps1" ([ordered]@{
-    auto_result = $firstRun.ResultCode
-    restore_failed = $restore.Failed
+  return [pscustomobject]@{
+    Case = $case
+    OldCommand = $oldCommand
+    OldConfigHash = $oldConfigHash
+    Backup = $backup.FullName
+    RestorePath = $restorePath
+    ManifestPath = Join-Path $backup.FullName "manifest\backup-manifest.json"
+  }
+}
+
+function Assert-RestoredServiceMetadata {
+  $metadata = $global:MockServiceMetadata
+  Assert-True ($metadata.sid_type -eq 1 -and $metadata.reset_seconds -eq 86400 -and
+    $metadata.on_non_crash_failures -and $metadata.reboot_message -ceq "" -and $metadata.command_line -ceq "") "restored service metadata fields differ"
+  Assert-True (($metadata.actions.type -join ",") -eq "1,1,1" -and
+    ($metadata.actions.delay_ms -join ",") -eq "5000,15000,60000") "restored action types, delays or order differ"
+}
+
+function Run-CaseD2 {
+  $fixture = New-GeneratedRestoreFixture "D2"
+  # 修改合法 JSON 的空白。必须因摘要不匹配拒绝，而不能靠 JSON 或脚本解析失败通过。
+  [System.IO.File]::AppendAllText($fixture.ManifestPath, "`r`n ")
+  $null = Get-Content -LiteralPath $fixture.ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $restore = Invoke-GeneratedRestore $fixture.RestorePath
+  Assert-True ($restore.Failed -and $restore.Error -ceq "恢复失败：备份清单摘要不匹配") "D2: wrong rejection: $($restore.Error)"
+  Assert-True ($global:StopCalls.Count -eq 0 -and $global:DeleteCalls -eq 0 -and
+    $global:StartServiceCalls -eq 0 -and $global:NewServiceCalls -eq 0) "D2: service was touched before hash rejection"
+  Add-CaseResult "D2" "passed" "valid JSON with mismatched manifest hash rejected" ([ordered]@{
+    error = $restore.Error
     stop_calls = $global:StopCalls.Count
     delete_calls = $global:DeleteCalls
+    start_calls = $global:StartServiceCalls
   })
 }
 
@@ -707,11 +827,177 @@ function Run-CaseG {
   Assert-True ($run.ResultCode -eq "FAILED_RECOVERY_UNCONFIRMED") "G: expected FAILED_RECOVERY_UNCONFIRMED, got $($run.ResultCode)"
   Assert-True ($global:StopCalls.Count -eq 0) "G: Stop-Service was called despite a dependent service"
   Assert-True ($global:DeleteCalls -eq 0) "G: sc delete was called despite a dependent service"
+  Assert-True ($run.OldInstallChanged -eq "false" -and $global:StartServiceCalls -eq 0 -and
+    $global:NewServiceCalls -eq 0 -and ($global:ServiceMetadataEvents -join ",") -eq "read") "G: untouched original service was changed"
   Add-CaseResult "G" "passed" "dependent service blocks target stop and delete" ([ordered]@{
     result = $run.ResultCode
     stop_calls = $global:StopCalls.Count
     delete_calls = $global:DeleteCalls
   })
+}
+
+function Run-CaseH {
+  $fixture = New-GeneratedRestoreFixture "H"
+  $snapshot = Get-Content -LiteralPath (Join-Path $fixture.Backup "service.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+  Assert-True ($snapshot.scm_metadata.sid_type -eq 1 -and $snapshot.scm_metadata.reset_seconds -eq 86400 -and
+    ($snapshot.scm_metadata.actions.delay_ms -join ",") -eq "5000,15000,60000") "H: service metadata not saved in backup"
+  Set-MockService "replacement-command" "Running"
+  $global:MockServiceMetadata.sid_type = 3
+  $global:MockServiceMetadata.actions = @()
+  $global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] = "https://new.example.invalid"
+  $config = Join-Path $fixture.Case.DataDir "config.json"
+  [System.IO.File]::WriteAllText($config, '{"business":"replacement"}')
+  $restore = Invoke-GeneratedRestore $fixture.RestorePath
+  Assert-True (-not $restore.Failed) "H: generated restoration failed: $($restore.Error)"
+  Assert-True ($global:NewServiceCalls -eq 1 -and $global:DeleteCalls -eq 1 -and $global:StartServiceCalls -eq 1) "H: expected one service rebuild and start"
+  Assert-True ($global:MockService.Status -eq "Running" -and $global:MockService.PathName -ceq $fixture.OldCommand -and
+    $global:MockService.StartMode -eq "Auto" -and $global:MockService.DelayedAutoStart) "H: restored registration or state differs"
+  Assert-RestoredServiceMetadata
+  $events = $global:ServiceMetadataEvents -join ","
+  Assert-True ($events -eq "write:Disabled,read,mode:Delayed,start,read") "H: wrong metadata/activation order: $events"
+  Assert-True ((Get-Sha256 $config) -eq $fixture.OldConfigHash -and
+    $global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] -eq "https://old.example.invalid") "H: prior business configuration was not restored"
+  Add-CaseResult "H" "passed" "generated restoration from an intact backup" ([ordered]@{
+    service_status = $global:MockService.Status
+    metadata_events = $events
+    sid_type = $global:MockServiceMetadata.sid_type
+    failure_reset_seconds = $global:MockServiceMetadata.reset_seconds
+    failure_action_delays_ms = $global:MockServiceMetadata.actions.delay_ms
+  })
+}
+
+function Run-CaseI {
+  $case = New-TestCase "I" -Existing
+  Set-CaseEnvironment $case
+  Reset-MockState
+  Set-MockService (Join-Path $case.InstallDir "kaiwu-connector.exe") "Running"
+  $config = Join-Path $case.DataDir "config.json"
+  $hash = Get-Sha256 $config
+  $global:ServiceMetadataFault = "capture"
+  $run = Invoke-Installer $case
+  Assert-True ($run.ResultCode -eq "PRECHECK_FAILED" -and $run.Stage -eq "backup_prepare" -and
+    $run.Error -ceq "synthetic service metadata read failure") "I: wrong precheck failure: $($run.Error)"
+  Assert-True ($run.OldInstallChanged -eq "false" -and $global:MockService.Status -eq "Running" -and
+    $global:StopCalls.Count -eq 0 -and $global:DeleteCalls -eq 0 -and $global:StartServiceCalls -eq 0 -and
+    $global:NewServiceCalls -eq 0 -and (Get-Sha256 $config) -eq $hash) "I: old service or files changed after failed capture"
+  Add-CaseResult "I" "passed" "failed capture blocks mutation" @{ result = $run.ResultCode; stage = $run.Stage }
+}
+
+function Run-CaseJ {
+  $case = New-TestCase "J" -Existing
+  Set-CaseEnvironment $case
+  Reset-MockState
+  Set-MockService (Join-Path $case.InstallDir "kaiwu-connector.exe") "Running"
+  $original = $global:MockService
+  $global:DeleteExitCode = 5
+  $run = Invoke-Installer $case
+  $events = $global:ServiceMetadataEvents -join ","
+  Assert-True ($run.ResultCode -eq "FAILED_RESTORED" -and $run.FailureStage -eq "replace_install") "J: old registration recovery failed: $($run.Error)"
+  Assert-True ([object]::ReferenceEquals($original, $global:MockService)) "J: original registration was replaced"
+  Assert-True ($global:MockService.Status -eq "Running" -and $global:StopCalls.Count -eq 1 -and
+    $global:DeleteCalls -eq 1 -and $global:NewServiceCalls -eq 0 -and $global:StartServiceCalls -eq 1 -and
+    $events -eq "read,read,start,read") "J: original service was retried or reconfigured: $events"
+  $stoppedCase = New-TestCase "J-stopped" -Existing
+  Set-CaseEnvironment $stoppedCase
+  Reset-MockState
+  Set-MockService (Join-Path $stoppedCase.InstallDir "kaiwu-connector.exe") "Stopped"
+  $stoppedOriginal = $global:MockService
+  $global:DeleteExitCode = 5
+  $stoppedRun = Invoke-Installer $stoppedCase
+  Assert-True ($stoppedRun.ResultCode -eq "FAILED_RECOVERY_UNCONFIRMED" -and $stoppedRun.OldInstallChanged -eq "false" -and
+    [object]::ReferenceEquals($stoppedOriginal, $global:MockService) -and $global:MockService.Status -eq "Stopped" -and
+    $global:DeleteCalls -eq 1 -and $global:StopCalls.Count -eq 0 -and $global:StartServiceCalls -eq 0 -and
+    $global:NewServiceCalls -eq 0 -and ($global:ServiceMetadataEvents -join ",") -eq "read") "J: unchanged stopped service was touched"
+  Add-CaseResult "J" "passed" "delete rejected with original service running or already stopped" @{
+    resumed_result = $run.ResultCode
+    resumed_metadata_events = $events
+    untouched_result = $stoppedRun.ResultCode
+    untouched_old_install_changed = $stoppedRun.OldInstallChanged
+  }
+}
+
+function Run-CaseK {
+  $fixture = New-GeneratedRestoreFixture "K"
+  $snapshotPath = Join-Path $fixture.Backup "service.json"
+  $snapshot = Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $snapshot.PSObject.Properties.Remove("scm_metadata")
+  $snapshot | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $snapshotPath -Encoding UTF8
+  # 仅在合成旧格式夹具中更新摘要，使检查确实到达服务快照校验。
+  $oldHash = Get-Sha256 $fixture.ManifestPath
+  $manifest = Get-Content -LiteralPath $fixture.ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $entry = $manifest.entries | Where-Object { $_.category -eq "metadata" -and $_.relative_path -eq "service.json" }
+  $entry.sha256 = Get-Sha256 $snapshotPath
+  $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $fixture.ManifestPath -Encoding UTF8
+  $body = Get-Content -LiteralPath $fixture.RestorePath -Raw -Encoding UTF8
+  $body.Replace($oldHash, (Get-Sha256 $fixture.ManifestPath)) | Set-Content -LiteralPath $fixture.RestorePath -Encoding UTF8
+  $restore = Invoke-GeneratedRestore $fixture.RestorePath
+  Assert-True ($restore.Failed -and $restore.Error -ceq "恢复未确认：旧服务快照缺少安全标识符和故障动作元数据") "K: wrong rejection: $($restore.Error)"
+  Assert-True ($global:StopCalls.Count -eq 0 -and $global:DeleteCalls -eq 0 -and $global:NewServiceCalls -eq 0 -and
+    $global:StartServiceCalls -eq 0 -and $global:ServiceMetadataEvents.Count -eq 0) "K: old-format snapshot touched the current service"
+  Add-CaseResult "K" "passed" "old-format snapshot blocked before changing current service" @{ error = $restore.Error }
+}
+
+function Run-RecoveryFaults {
+  param([string]$Id, [switch]$Generated)
+  $faults = [ordered]@{
+    write = "synthetic service metadata write failure"
+    readback = "synthetic service metadata read failure"
+    mismatch = "恢复未确认：服务故障动作读回不匹配"
+    stable = "恢复后稳定目标缺失: frpc.exe"
+    dependent = "恢复后稳定目标缺失: frpc.exe"
+  }
+  $checks = [ordered]@{}
+  foreach ($fault in $faults.Keys) {
+    if ($Generated) {
+      $fixture = New-GeneratedRestoreFixture "$Id-$fault"
+    } else {
+      $case = New-TestCase "$Id-$fault" -Existing
+      Set-CaseEnvironment $case
+      Reset-MockState
+      $global:Case = $case
+      $oldBinary = Join-Path $case.InstallDir "kaiwu-connector.exe"
+      $sourceBinary = Join-Path $case.Source "bin\kaiwu-connector.exe"
+      Set-MockService $oldBinary "Running"
+      $global:CopyBeforeHook = {
+        param($source, $destination)
+        if ((Test-SamePath $source $sourceBinary) -and (Test-SamePath $destination $oldBinary)) {
+          throw "synthetic replacement failure"
+        }
+      }.GetNewClosure()
+    }
+    $afterStart = $fault -in @("stable", "dependent")
+    $global:ServiceMetadataFault = $fault
+    $global:RemoveTargetOnStart = $afterStart
+    $global:AddDependentOnStart = $fault -eq "dependent"
+
+    if ($Generated) {
+      $restore = Invoke-GeneratedRestore $fixture.RestorePath
+      Assert-True $restore.Failed "${Id}/${fault}: generated restore reported success"
+      $errorText = $restore.Error
+    } else {
+      $run = Invoke-Installer $case
+      Assert-True ($run.ResultCode -eq "FAILED_RECOVERY_UNCONFIRMED") "${Id}/${fault}: wrong result: $($run.ResultCode)"
+      $errorText = $run.Error
+    }
+    Assert-True ($errorText.Contains($faults[$fault])) "${Id}/${fault}: wrong failure: $errorText"
+    Assert-True ($global:DeleteCalls -eq 1 -and $global:NewServiceCalls -eq 1) "${Id}/${fault}: expected one service rebuild"
+    Assert-True ($global:StartServiceCalls -eq [int]$afterStart) "${Id}/${fault}: incorrect start count"
+    if ($fault -eq "dependent") {
+      Assert-True ($global:MockService.Status -eq "Running" -and $global:StopCalls.Count -eq 1 -and
+        $errorText.Contains("未能安全收尾") -and $errorText.Contains("KaiwuDependent")) "${Id}/${fault}: dependent-services guard did not block cleanup"
+    } else {
+      Assert-True ($global:MockService.StartMode -eq "Disabled" -and $global:MockService.Status -eq "Stopped" -and
+        $global:StopCalls.Count -eq (1 + [int]$afterStart)) "${Id}/${fault}: target was not safely contained"
+    }
+    Assert-True (@($global:StopCalls | Where-Object { $_ -ne "KaiwuConnector" }).Count -eq 0) "${Id}/${fault}: another service was stopped"
+    $checks[$fault] = @{
+      error = $faults[$fault]
+      service_status = $global:MockService.Status
+      start_calls = $global:StartServiceCalls
+      stop_calls = $global:StopCalls.Count
+    }
+  }
+  Add-CaseResult $Id "passed" "failed metadata write/readback and post-start verification" $checks
 }
 
 if ($env:OS -ne "Windows_NT") {
@@ -746,7 +1032,14 @@ try {
   Invoke-Case "E" { Run-CaseE }
   Invoke-Case "F" { Run-CaseF }
   Invoke-Case "G" { Run-CaseG }
-  if (@($script:Results.cases | Where-Object { $_.status -ne "passed" }).Count -eq 0) {
+  Invoke-Case "H" { Run-CaseH }
+  Invoke-Case "I" { Run-CaseI }
+  Invoke-Case "J" { Run-CaseJ }
+  Invoke-Case "K" { Run-CaseK }
+  Invoke-Case "L" { Run-RecoveryFaults "L" }
+  Invoke-Case "M" { Run-RecoveryFaults "M" -Generated }
+  if (($script:Results.cases.id -join ",") -ceq "A,B,C,D1,D2,E,F,G,H,I,J,K,L,M" -and
+      @($script:Results.cases | Where-Object { $_.status -ne "passed" }).Count -eq 0) {
     $script:Results.status = "passed"
   } else {
     $script:Results.status = "failed"

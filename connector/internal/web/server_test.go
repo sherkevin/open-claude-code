@@ -60,7 +60,9 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 		t.Fatal("页面内容不完整")
 	}
 	for _, expected := range []string{
-		"安装后填写您当前服务器的 MCP 参数即可接入",
+		"连接器首次使用",
+		"先检查本机示例，绑定企业后再验证公网",
+		"一次性企业绑定码",
 		"保存并连接",
 		"读取工具列表",
 		"停用此来源",
@@ -72,15 +74,21 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 		"开物调用日志",
 		"内置测试服务（示例数据）",
 		"运行连接测试",
-		"随安装自动启动，使用固定示例数据检查这台服务器到开物平台的连接，不读取您的业务系统",
-		"开物技术支持完成测试服务接入后，可在开物对话中使用",
-		"运行连接测试成功只代表链路已通过",
-		"地址预览不包含内置示例服务",
-		"不是华微真实业务数据",
+		"使用随安装启动的固定示例检查连接，无需填写业务地址或凭据",
+		"技术支持确认接入后，在开物试问示例",
+		"https://flintw.com/project/kaiwu/",
+		"访问令牌和签名密钥只在本机填写",
+		"示例数据与华微业务数据无关",
 	} {
 		if !strings.Contains(recorder.Body.String(), expected) {
 			t.Fatalf("页面缺少普通接入流程或交付边界文案: %s", expected)
 		}
+	}
+	body := recorder.Body.String()
+	binding := strings.Index(body, `id="bindForm"`)
+	advanced := strings.Index(body, `id="advancedPanel"`)
+	if binding < 0 || advanced < 0 || binding > advanced {
+		t.Fatal("企业绑定应在高级选项之前")
 	}
 	if strings.Contains(recorder.Body.String(), "第 1 步") {
 		t.Fatal("页面不应继续把本机配置展示成六步技术向导")

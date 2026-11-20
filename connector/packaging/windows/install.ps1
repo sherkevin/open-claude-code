@@ -34,6 +34,10 @@ if ([string]::IsNullOrWhiteSpace($ResultPath)) {
 }
 
 $Stage = "startup"
+$FailureStage = $null
+$OriginalServiceStopAttempted = $false
+$OriginalServiceDeleteAccepted = $false
+$ReplacementServiceCreated = $false
 $OldInstallChanged = $false
 $InstallMutationStarted = $false
 $Cleanup = "not_needed"
@@ -70,6 +74,7 @@ function Write-InstallResult {
     "backup_available=$($BackupAvailable.ToString().ToLowerInvariant())",
     "cleanup=$Cleanup"
   )
+  if ($FailureStage) { $lines += "failure_stage=$FailureStage" }
   if ($BackupDir) {
     $lines += "backup_dir=$BackupDir"
   }
@@ -145,8 +150,8 @@ function Wait-ServiceAbsent {
   param([int]$TimeoutSeconds = 15)
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   do {
-    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    if ($null -eq $service) { return }
+    $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+    if ($null -eq $record) { return }
     Start-Sleep -Milliseconds 500
   } while ((Get-Date) -lt $deadline)
   throw "服务 $ServiceName 未能及时删除"
@@ -245,36 +250,378 @@ function Assert-ServiceStoppable {
 }
 
 function Stop-TargetService {
-  param([string]$Name = $ServiceName)
-  $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
-  if ($null -eq $service) { return }
+  param([string]$Name = $ServiceName, [switch]$Original)
+  $service = Get-Service -Name $Name -ErrorAction Stop
   Assert-ServiceStoppable $service
   if ($service.Status -eq "Stopped") { return }
+  if ($Original) {
+    $script:OriginalServiceStopAttempted = $true
+    $script:OldInstallChanged = $true
+  }
   Stop-Service -Name $Name -ErrorAction Stop
   Wait-ServiceStopped -Name $Name
 }
 
 function Stop-AndDeleteService {
-  $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-  if (-not $service) { return }
-  Assert-ServiceStoppable $service
-  Stop-TargetService
+  param([switch]$Original)
+  $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+  if ($Original -and -not $script:HadExistingService) {
+    if ($null -ne $record) { throw "替换前出现未备份的同名服务" }
+    return
+  }
+  $expectedPath = if ($Original) { $script:ServiceSnapshot.binary_path } else { $script:BinPath }
+  if ($null -eq $record -or [string]$record.PathName -ne [string]$expectedPath) {
+    throw "无法确认待删除的同名服务"
+  }
+  Stop-TargetService -Original:$Original
   & sc.exe delete $ServiceName | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "删除服务 $ServiceName 失败：sc.exe 退出码为 $LASTEXITCODE"
   }
+  if ($Original) {
+    $script:OriginalServiceDeleteAccepted = $true
+    $script:OldInstallChanged = $true
+  }
   Wait-ServiceAbsent
 }
 
-function Get-ServiceStartupType {
-  param([string]$StartMode)
-  switch ($StartMode) {
-    "Auto" { return "Automatic" }
-    "Manual" { return "Manual" }
-    "Disabled" { return "Disabled" }
-    default { return "Automatic" }
+# 同一份服务恢复逻辑同时用于自动回滚和生成的独立恢复脚本。
+$ServiceRecoveryFunctions = @'
+function Initialize-KaiwuServiceConfigurationApi {
+  if ('Kaiwu.Installer.ServiceConfiguration' -as [type]) { return }
+  Add-Type -ErrorAction Stop -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace Kaiwu.Installer {
+    public static class ServiceConfiguration {
+        private const uint SC_MANAGER_CONNECT = 0x0001;
+        private const uint SERVICE_QUERY_CONFIG = 0x0001;
+        private const uint SERVICE_CHANGE_CONFIG = 0x0002;
+        private const uint SERVICE_START = 0x0010;
+        private const uint SERVICE_CONFIG_FAILURE_ACTIONS = 2;
+        private const uint SERVICE_CONFIG_FAILURE_ACTIONS_FLAG = 4;
+        private const uint SERVICE_CONFIG_SERVICE_SID_INFO = 5;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Action {
+            public uint type;
+            public uint delay_ms;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct FailureActions {
+            public uint ResetSeconds;
+            public IntPtr RebootMessage;
+            public IntPtr CommandLine;
+            public uint ActionCount;
+            public IntPtr Actions;
+        }
+
+        public sealed class Metadata {
+            public uint sid_type { get; set; }
+            public uint reset_seconds { get; set; }
+            public bool on_non_crash_failures { get; set; }
+            public string reboot_message { get; set; }
+            public string command_line { get; set; }
+            public Action[] actions { get; set; }
+        }
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+        private static extern IntPtr OpenSCManagerW(string machine, string database, uint access);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+        private static extern IntPtr OpenServiceW(IntPtr manager, string name, uint access);
+        [DllImport("advapi32.dll")]
+        private static extern bool CloseServiceHandle(IntPtr handle);
+        [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+        private static extern bool QueryServiceConfig2W(IntPtr service, uint level, IntPtr buffer, uint size, out uint needed);
+        [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+        private static extern bool ChangeServiceConfig2W(IntPtr service, uint level, IntPtr config);
+
+        private static Win32Exception Error(string operation) {
+            int code = Marshal.GetLastWin32Error();
+            return new Win32Exception(code, operation + " (Win32 " + code + ")");
+        }
+
+        private static void WithService(string name, uint access, System.Action<IntPtr> operation) {
+            IntPtr manager = OpenSCManagerW(null, null, SC_MANAGER_CONNECT);
+            if (manager == IntPtr.Zero) throw Error("OpenSCManagerW");
+            try {
+                IntPtr service = OpenServiceW(manager, name, access);
+                if (service == IntPtr.Zero) throw Error("OpenServiceW");
+                try { operation(service); }
+                finally { CloseServiceHandle(service); }
+            } finally { CloseServiceHandle(manager); }
+        }
+
+        private static void Query(IntPtr service, uint level, IntPtr buffer) {
+            uint needed;
+            // QueryServiceConfig2 documents 8 KiB as the maximum buffer size.
+            if (!QueryServiceConfig2W(service, level, buffer, 8192, out needed))
+                throw Error("QueryServiceConfig2W(" + level + ")");
+        }
+
+        public static Metadata Read(string name) {
+            Metadata metadata = new Metadata();
+            WithService(name, SERVICE_QUERY_CONFIG, service => {
+                IntPtr buffer = Marshal.AllocHGlobal(8192);
+                try {
+                    Query(service, SERVICE_CONFIG_SERVICE_SID_INFO, buffer);
+                    metadata.sid_type = unchecked((uint)Marshal.ReadInt32(buffer));
+                    Query(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, buffer);
+                    metadata.on_non_crash_failures = Marshal.ReadInt32(buffer) != 0;
+                    Query(service, SERVICE_CONFIG_FAILURE_ACTIONS, buffer);
+                    FailureActions config = (FailureActions)Marshal.PtrToStructure(buffer, typeof(FailureActions));
+                    metadata.reset_seconds = config.ResetSeconds;
+                    metadata.reboot_message = Marshal.PtrToStringUni(config.RebootMessage) ?? String.Empty;
+                    metadata.command_line = Marshal.PtrToStringUni(config.CommandLine) ?? String.Empty;
+                    metadata.actions = new Action[checked((int)config.ActionCount)];
+                    int actionSize = Marshal.SizeOf(typeof(Action));
+                    for (int index = 0; index < metadata.actions.Length; index++) {
+                        metadata.actions[index] = (Action)Marshal.PtrToStructure(
+                            IntPtr.Add(config.Actions, index * actionSize), typeof(Action));
+                    }
+                } finally { Marshal.FreeHGlobal(buffer); }
+            });
+            return metadata;
+        }
+
+        private static void Change(IntPtr service, uint level, IntPtr config) {
+            if (!ChangeServiceConfig2W(service, level, config))
+                throw Error("ChangeServiceConfig2W(" + level + ")");
+        }
+
+        public static void Write(string name, uint sidType, uint resetSeconds, bool onNonCrashFailures,
+                                 string rebootMessage, string commandLine, uint[] actionTypes, uint[] delays) {
+            uint access = SERVICE_CHANGE_CONFIG;
+            if (Array.IndexOf(actionTypes, 1u) >= 0) access |= SERVICE_START;
+            WithService(name, access, service => {
+                IntPtr buffer = IntPtr.Zero;
+                FailureActions config = new FailureActions();
+                try {
+                    buffer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FailureActions)));
+                    Marshal.WriteInt32(buffer, unchecked((int)sidType));
+                    Change(service, SERVICE_CONFIG_SERVICE_SID_INFO, buffer);
+
+                    config.ResetSeconds = resetSeconds;
+                    config.RebootMessage = Marshal.StringToHGlobalUni(rebootMessage);
+                    config.CommandLine = Marshal.StringToHGlobalUni(commandLine);
+                    config.ActionCount = (uint)actionTypes.Length;
+                    int actionSize = Marshal.SizeOf(typeof(Action));
+                    // A non-null pointer with count zero explicitly clears actions.
+                    config.Actions = Marshal.AllocHGlobal(checked(actionSize * Math.Max(1, actionTypes.Length)));
+                    for (int index = 0; index < actionTypes.Length; index++) {
+                        Action action = new Action { type = actionTypes[index], delay_ms = delays[index] };
+                        Marshal.StructureToPtr(action, IntPtr.Add(config.Actions, index * actionSize), false);
+                    }
+                    Marshal.StructureToPtr(config, buffer, false);
+                    Change(service, SERVICE_CONFIG_FAILURE_ACTIONS, buffer);
+
+                    Marshal.WriteInt32(buffer, onNonCrashFailures ? 1 : 0);
+                    Change(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, buffer);
+                } finally {
+                    Marshal.FreeHGlobal(config.Actions);
+                    Marshal.FreeHGlobal(config.CommandLine);
+                    Marshal.FreeHGlobal(config.RebootMessage);
+                    Marshal.FreeHGlobal(buffer);
+                }
+            });
+        }
+    }
+}
+"@
+}
+
+$UseNativeServiceMetadata = -not (
+  (Get-Command Get-KaiwuServiceMetadata -CommandType Function -ErrorAction SilentlyContinue) -and
+  (Get-Command Set-KaiwuServiceMetadata -CommandType Function -ErrorAction SilentlyContinue)
+)
+if ($UseNativeServiceMetadata) {
+  function Get-KaiwuServiceMetadata {
+    param([string]$Name)
+    Initialize-KaiwuServiceConfigurationApi
+    return [Kaiwu.Installer.ServiceConfiguration]::Read($Name)
+  }
+  function Set-KaiwuServiceMetadata {
+    param([string]$Name, $Metadata)
+    $actionTypes = [uint32[]]@($Metadata.actions | ForEach-Object { $_.type })
+    $delays = [uint32[]]@($Metadata.actions | ForEach-Object { $_.delay_ms })
+    Initialize-KaiwuServiceConfigurationApi
+    [Kaiwu.Installer.ServiceConfiguration]::Write(
+      $Name, $Metadata.sid_type, $Metadata.reset_seconds, $Metadata.on_non_crash_failures,
+      $Metadata.reboot_message, $Metadata.command_line, $actionTypes, $delays
+    )
   }
 }
+
+function Test-ServiceDword {
+  param($Value)
+  return (($Value -is [int] -or $Value -is [long] -or $Value -is [uint32]) -and
+    $Value -ge 0 -and $Value -le [uint32]::MaxValue)
+}
+
+function Assert-ServiceMetadataValid {
+  param($Metadata)
+  if ($null -eq $Metadata -or -not (Test-ServiceDword $Metadata.sid_type) -or
+      $Metadata.sid_type -notin @(0, 1, 3) -or -not (Test-ServiceDword $Metadata.reset_seconds) -or
+      $Metadata.on_non_crash_failures -isnot [bool] -or $Metadata.reboot_message -isnot [string] -or
+      $Metadata.command_line -isnot [string] -or $Metadata.actions -isnot [array]) {
+    throw "恢复未确认：服务安全标识符或故障动作元数据无效"
+  }
+  foreach ($action in $Metadata.actions) {
+    if (-not (Test-ServiceDword $action.type) -or $action.type -gt 3 -or
+        -not (Test-ServiceDword $action.delay_ms)) {
+      throw "恢复未确认：服务故障动作类型或延时无效"
+    }
+  }
+}
+
+function Assert-ServiceSnapshotValid {
+  param($Snapshot)
+  if ($null -eq $Snapshot) { throw "恢复未确认：服务快照缺失" }
+  if ([string]$Snapshot.name -ne $ServiceName -or
+      [string]::IsNullOrWhiteSpace([string]$Snapshot.binary_path) -or
+      [string]::IsNullOrWhiteSpace([string]$Snapshot.display_name) -or
+      $Snapshot.start_mode -notin @("Auto", "Manual", "Disabled") -or
+      $Snapshot.delayed_auto_start -isnot [bool] -or $Snapshot.was_running -isnot [bool]) {
+    throw "恢复未确认：服务快照的名称、程序路径或启动状态无效"
+  }
+  if ($null -eq $Snapshot.PSObject.Properties["scm_metadata"]) {
+    throw "恢复未确认：旧服务快照缺少安全标识符和故障动作元数据"
+  }
+  Assert-ServiceMetadataValid $Snapshot.scm_metadata
+}
+
+function Assert-ServiceMetadataReadback {
+  param($Expected)
+  $actual = Get-KaiwuServiceMetadata $ServiceName
+  Assert-ServiceMetadataValid $actual
+  if ($actual.sid_type -ne $Expected.sid_type) {
+    throw "恢复未确认：服务安全标识符类型读回不匹配"
+  }
+  if ($actual.reset_seconds -ne $Expected.reset_seconds -or
+      $actual.on_non_crash_failures -ne $Expected.on_non_crash_failures -or
+      $actual.reboot_message -cne $Expected.reboot_message -or
+      $actual.command_line -cne $Expected.command_line -or
+      $actual.actions.Count -ne $Expected.actions.Count) {
+    throw "恢复未确认：服务故障策略读回不匹配"
+  }
+  for ($index = 0; $index -lt $Expected.actions.Count; $index++) {
+    if ($actual.actions[$index].type -ne $Expected.actions[$index].type -or
+        $actual.actions[$index].delay_ms -ne $Expected.actions[$index].delay_ms) {
+      throw "恢复未确认：服务故障动作读回不匹配"
+    }
+  }
+}
+
+function Assert-RestoredStableFiles {
+  param($Manifest, $Snapshot)
+  # state.json 在服务启动后可合法变化。重建服务前已核验全量文件。
+  foreach ($entry in @($Manifest.entries)) {
+    if ($entry.category -notin @("program", "data")) { continue }
+    if ($entry.category -eq "data" -and $entry.relative_path -eq "state.json") { continue }
+    $targetPath = Get-BackupTargetPath $entry
+    if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+      throw "恢复后稳定目标缺失: $($entry.relative_path)"
+    }
+    if ((Get-FileSha256 $targetPath) -ne [string]$entry.sha256) {
+      throw "恢复后稳定目标摘要不匹配: $($entry.relative_path)"
+    }
+  }
+  if ($null -eq $Snapshot) { return }
+  foreach ($name in @("kaiwu-connector.exe", "frpc.exe")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $name) -PathType Leaf)) {
+      throw "恢复后关键程序缺失: $name"
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace([string]$Snapshot.version_line)) {
+    $versionPath = Join-Path $InstallDir "版本信息.txt"
+    $actualVersion = [string](Get-Content -LiteralPath $versionPath -Encoding UTF8 -TotalCount 1)
+    if ($actualVersion -ne [string]$Snapshot.version_line) {
+      throw "恢复未确认：旧版本信息不匹配"
+    }
+  }
+}
+
+function Assert-RestoredServiceRegistration {
+  param($Snapshot)
+  $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+  if ($null -eq $record -or [string]$record.PathName -ne [string]$Snapshot.binary_path -or
+      [string]$record.DisplayName -ne [string]$Snapshot.display_name -or
+      [string]$record.StartMode -ne [string]$Snapshot.start_mode -or
+      ($Snapshot.start_mode -eq "Auto" -and [bool]$record.DelayedAutoStart -ne $Snapshot.delayed_auto_start)) {
+    throw "恢复未确认：服务注册信息读回不匹配"
+  }
+}
+
+function Restore-VerifiedService {
+  param($Manifest, $Snapshot, [switch]$ReuseExisting)
+  $created = $false
+  $startAttempted = $false
+  Assert-RestoredStableFiles $Manifest $Snapshot
+  try {
+    if (-not $ReuseExisting) {
+      # 保持禁用，直到服务控制管理器读回的配置与快照一致。
+      New-Service -Name $ServiceName -BinaryPathName ([string]$Snapshot.binary_path) -StartupType Disabled -DisplayName ([string]$Snapshot.display_name) -ErrorAction Stop | Out-Null
+      $created = $true
+      Set-KaiwuServiceMetadata $ServiceName $Snapshot.scm_metadata
+    }
+    Assert-ServiceMetadataReadback $Snapshot.scm_metadata
+    if ($created) {
+      if ($Snapshot.start_mode -eq "Auto" -and $Snapshot.delayed_auto_start) {
+        & sc.exe config $ServiceName start= delayed-auto | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "恢复未确认：设置旧服务延迟启动失败" }
+      } elseif ($Snapshot.start_mode -ne "Disabled") {
+        $startupType = if ($Snapshot.start_mode -eq "Auto") { "Automatic" } else { "Manual" }
+        Set-Service -Name $ServiceName -StartupType $startupType -ErrorAction Stop
+      }
+    }
+    Assert-RestoredServiceRegistration $Snapshot
+    $service = Get-Service -Name $ServiceName -ErrorAction Stop
+    if ($Snapshot.was_running -and $service.Status -eq "Stopped") {
+      $startAttempted = $true
+      Start-Service -Name $ServiceName -ErrorAction Stop
+      Wait-ServiceRunning | Out-Null
+      Assert-RestoredStableFiles $Manifest $Snapshot
+      Assert-RestoredServiceRegistration $Snapshot
+      Assert-ServiceMetadataReadback $Snapshot.scm_metadata
+    }
+    $service = Get-Service -Name $ServiceName -ErrorAction Stop
+    $expectedStatus = if ($Snapshot.was_running) { "Running" } else { "Stopped" }
+    if ($null -eq $service -or $service.Status -ne $expectedStatus) {
+      throw "恢复未确认：旧服务未保持预期运行状态 ($expectedStatus)"
+    }
+  } catch {
+    $restoreError = $_
+    if ($created -or $startAttempted) {
+      try {
+        $service = Get-Service -Name $ServiceName -ErrorAction Stop
+        Assert-ServiceStoppable $service
+        $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        if ($null -eq $record -or [string]$record.PathName -ne [string]$Snapshot.binary_path) {
+          throw "无法确认同名服务属于本次恢复"
+        }
+        # 禁用新建服务以拦住已排队的自动重启。原有注册则保留其启动配置。
+        if ($created -and $record.StartMode -ne "Disabled") {
+          Set-Service -Name $ServiceName -StartupType Disabled -ErrorAction Stop
+        }
+        Stop-TargetService
+        if ($created) {
+          $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+          if ($null -eq $record -or $record.StartMode -ne "Disabled") {
+            throw "无法核验未确认恢复的服务已禁用"
+          }
+        }
+      } catch {
+        throw "$($restoreError.Exception.Message)`n未能安全收尾：$($_.Exception.Message)"
+      }
+    }
+    throw $restoreError
+  }
+}
+'@
+. ([scriptblock]::Create($ServiceRecoveryFunctions))
 
 function Write-Utf8Text {
   param(
@@ -512,65 +859,6 @@ function Get-BackupServiceSnapshot {
   }
 }
 
-function Assert-RestoredStableState {
-  param([Parameter(Mandatory = $true)]$Manifest)
-
-  # state.json 是服务启动后会合法更新的运行态文件。启动前已经做过全量摘要校验，
-  # 启动后只复核稳定程序和配置，避免把正常状态写入误判为恢复破坏。
-  foreach ($entry in @($Manifest.entries)) {
-    if ($entry.category -notin @("program", "data")) { continue }
-    if ($entry.category -eq "data" -and $entry.relative_path -eq "state.json") { continue }
-    $targetPath = Get-BackupTargetPath $entry
-    if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-      throw "恢复后稳定目标缺失: $($entry.relative_path)"
-    }
-    if ((Get-FileSha256 $targetPath) -ne [string]$entry.sha256) {
-      throw "恢复后稳定目标摘要不匹配: $($entry.relative_path)"
-    }
-  }
-
-  if ($script:HadExistingService) {
-    foreach ($name in @("kaiwu-connector.exe", "frpc.exe")) {
-      if (-not (Test-Path -LiteralPath (Join-Path $script:InstallDir $name) -PathType Leaf)) {
-        throw "恢复后关键程序缺失: $name"
-      }
-    }
-  }
-
-  if (-not $script:HadExistingService) { return }
-  $snapshot = Get-BackupServiceSnapshot $Manifest
-  if ($null -eq $snapshot) { throw "恢复未确认：服务快照缺失" }
-  if ([string]$snapshot.name -ne $script:ServiceName) {
-    throw "恢复未确认：服务快照名称不匹配"
-  }
-  if ([string]::IsNullOrWhiteSpace([string]$snapshot.binary_path)) {
-    throw "恢复未确认：服务快照缺少程序路径"
-  }
-  $service = Get-Service -Name $script:ServiceName -ErrorAction Stop
-  if ($null -eq $service) { throw "恢复未确认：旧服务不存在" }
-  if ([bool]$snapshot.was_running) {
-    if ($service.Status -ne "Running") { throw "恢复未确认：旧服务未运行" }
-  } elseif ($service.Status -eq "Running") {
-    throw "恢复未确认：旧服务安装前未运行，恢复后却处于运行状态"
-  }
-
-  $serviceRecord = Get-CimInstance Win32_Service -Filter "Name='$script:ServiceName'" -ErrorAction Stop
-  if ($null -eq $serviceRecord) { throw "恢复未确认：服务记录不存在" }
-  if ([string]$serviceRecord.PathName -ne [string]$snapshot.binary_path) {
-    throw "恢复未确认：服务程序路径不匹配"
-  }
-  if (-not [string]::IsNullOrWhiteSpace([string]$snapshot.version_line)) {
-    $versionPath = Join-Path $script:InstallDir "版本信息.txt"
-    if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
-      throw "恢复未确认：旧版本信息缺失"
-    }
-    $actualVersion = [string](Get-Content -LiteralPath $versionPath -Encoding UTF8 -TotalCount 1)
-    if ($actualVersion -ne [string]$snapshot.version_line) {
-      throw "恢复未确认：旧版本信息不匹配"
-    }
-  }
-}
-
 function Restore-EnvironmentSnapshot {
   param([Parameter(Mandatory = $true)]$Manifest)
   $entry = @(
@@ -616,49 +904,6 @@ function Restore-EnvironmentFromMemory {
   }
 }
 
-function Restore-PreviousService {
-  param([Parameter(Mandatory = $true)]$Manifest)
-  if (-not $script:HadExistingService) { return }
-  $snapshot = Get-BackupServiceSnapshot $Manifest
-  if ($null -eq $snapshot) { throw "恢复未确认：服务快照缺失" }
-  if ([string]$snapshot.name -ne $script:ServiceName) {
-    throw "恢复未确认：服务快照名称不匹配"
-  }
-  if ([string]::IsNullOrWhiteSpace([string]$snapshot.binary_path)) {
-    throw "恢复未确认：服务快照缺少程序路径"
-  }
-  if ($null -ne (Get-Service -Name $script:ServiceName -ErrorAction SilentlyContinue)) {
-    throw "恢复未确认：恢复旧服务前仍存在同名服务"
-  }
-
-  $startupType = Get-ServiceStartupType ([string]$snapshot.start_mode)
-  $displayName = [string]$snapshot.display_name
-  if ([string]::IsNullOrWhiteSpace($displayName)) {
-    $displayName = "Kaiwu Intranet Connector"
-  }
-  New-Service `
-    -Name $script:ServiceName `
-    -BinaryPathName ([string]$snapshot.binary_path) `
-    -StartupType $startupType `
-    -DisplayName $displayName `
-    -ErrorAction Stop | Out-Null
-  if ([bool]$snapshot.delayed_auto_start -and $startupType -eq "Automatic") {
-    sc.exe config $script:ServiceName start= delayed-auto | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-      throw "恢复未确认：设置旧服务延迟启动失败"
-    }
-  }
-  if ([bool]$snapshot.was_running) {
-    Start-Service -Name $script:ServiceName -ErrorAction Stop
-    Wait-ServiceRunning | Out-Null
-  } else {
-    $service = Get-Service -Name $script:ServiceName -ErrorAction Stop
-    if ($service.Status -eq "Running") {
-      throw "恢复未确认：旧服务安装前未运行，恢复后却处于运行状态"
-    }
-  }
-}
-
 $SensitiveFiles = @(
   "identity.json",
   "device_key.json",
@@ -670,8 +915,6 @@ $SensitiveFiles = @(
   "revoked.json"
 )
 $ManagedEnvNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")
-$ExistingService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
-$HadExistingService = $null -ne $ExistingService
 $ExistingSensitive = @($SensitiveFiles | ForEach-Object { Join-Path $DataDir $_ } | Where-Object { Test-Path -LiteralPath $_ })
 $ExistingProgramFiles = @(
   @("kaiwu-connector.exe", "frpc.exe", "版本信息.txt") |
@@ -683,9 +926,29 @@ foreach ($name in $ManagedEnvNames) {
   $EnvironmentBefore[$name] = Get-KaiwuMachineEnvironmentVariable $name
 }
 
-$NeedsBackup = $HadExistingService -or ($ExistingSensitive.Count -gt 0) -or ($ExistingProgramFiles.Count -gt 0)
 $Stage = "backup_prepare"
 try {
+  $ExistingService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+  $HadExistingService = $null -ne $ExistingService
+  $NeedsBackup = $HadExistingService -or ($ExistingSensitive.Count -gt 0) -or ($ExistingProgramFiles.Count -gt 0)
+  if ($HadExistingService) {
+    $VersionLine = $null
+    $VersionFile = Join-Path $InstallDir "版本信息.txt"
+    if (Test-Path -LiteralPath $VersionFile -PathType Leaf) {
+      $VersionLine = [string](Get-Content -LiteralPath $VersionFile -Encoding UTF8 -TotalCount 1)
+    }
+    $ServiceSnapshot = [pscustomobject][ordered]@{
+      name = $ServiceName
+      display_name = $ExistingService.DisplayName
+      binary_path = $ExistingService.PathName
+      start_mode = $ExistingService.StartMode
+      delayed_auto_start = [bool]$ExistingService.DelayedAutoStart
+      was_running = $ExistingService.State -eq "Running"
+      version_line = $VersionLine
+      scm_metadata = Get-KaiwuServiceMetadata $ServiceName
+    }
+    Assert-ServiceSnapshotValid $ServiceSnapshot
+  }
   New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
   Set-PrivateDataAcl -Path $DataDir
 
@@ -708,22 +971,8 @@ try {
       $BackupEntries += New-BackupEntry "program" $name ("program/" + $name)
     }
     if ($HadExistingService) {
-      $VersionLine = $null
-      $VersionFile = Join-Path $InstallDir "版本信息.txt"
-      if (Test-Path -LiteralPath $VersionFile -PathType Leaf) {
-        $VersionLine = [string](Get-Content -LiteralPath $VersionFile -Encoding UTF8 -TotalCount 1)
-      }
-      $ServiceSnapshot = [ordered]@{
-        name = $ServiceName
-        display_name = $ExistingService.DisplayName
-        binary_path = $ExistingService.PathName
-        start_mode = $ExistingService.StartMode
-        delayed_auto_start = [bool]$ExistingService.DelayedAutoStart
-        was_running = $ExistingService.State -eq "Running"
-        version_line = $VersionLine
-      }
       $servicePath = Join-Path $BackupDir "service.json"
-      Write-Utf8Text $servicePath ($ServiceSnapshot | ConvertTo-Json -Depth 4)
+      Write-Utf8Text $servicePath ($ServiceSnapshot | ConvertTo-Json -Depth 6)
       $BackupEntries += New-BackupEntry "metadata" "service.json" "service.json"
     }
     $environmentPath = Join-Path $BackupDir "environment.json"
@@ -749,6 +998,7 @@ try {
     $BackupManifestHash = Get-FileSha256 $BackupManifestPath
     $RestoreScript = @'
 # 仅供本次安装前备份使用。由管理员在 PowerShell 中运行。
+#Requires -RunAsAdministrator
 $ErrorActionPreference = "Stop"
 $ExpectedManifestSha256 = "__BACKUP_MANIFEST_SHA256__"
 $BackupDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -773,6 +1023,8 @@ if (-not (Get-Command Set-KaiwuMachineEnvironmentVariable -CommandType Function 
     [Environment]::SetEnvironmentVariable($Name, $Value, "Machine")
   }
 }
+
+__SERVICE_RECOVERY_FUNCTIONS__
 
 function Get-FileSha256 {
   param([string]$Path)
@@ -888,51 +1140,6 @@ function Assert-RestoredFileDigests {
   }
 }
 
-function Assert-RestoredStableState {
-  param($Manifest, $Snapshot)
-  foreach ($entry in @($Manifest.entries)) {
-    if ($entry.category -notin @("program", "data")) { continue }
-    if ($entry.category -eq "data" -and $entry.relative_path -eq "state.json") { continue }
-    $targetPath = Get-BackupTargetPath $entry
-    if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
-      throw "恢复失败：稳定目标缺失"
-    }
-    if ((Get-FileSha256 $targetPath) -ne [string]$entry.sha256) {
-      throw "恢复失败：稳定目标摘要不匹配"
-    }
-  }
-  if ($null -ne $Snapshot) {
-    foreach ($name in @("kaiwu-connector.exe", "frpc.exe")) {
-      if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $name) -PathType Leaf)) {
-        throw "恢复失败：关键程序缺失"
-      }
-    }
-  }
-  if ($null -eq $Snapshot) { return }
-  $service = Get-Service -Name $ServiceName -ErrorAction Stop
-  if ($null -eq $service) { throw "恢复失败：旧服务不存在" }
-  if ([bool]$Snapshot.was_running) {
-    if ($service.Status -ne "Running") { throw "恢复失败：旧服务未运行" }
-  } elseif ($service.Status -eq "Running") {
-    throw "恢复失败：旧服务安装前未运行，恢复后却处于运行状态"
-  }
-  $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-  if ($null -eq $record) { throw "恢复失败：服务记录不存在" }
-  if ([string]$record.PathName -ne [string]$Snapshot.binary_path) {
-    throw "恢复失败：服务程序路径不匹配"
-  }
-  if (-not [string]::IsNullOrWhiteSpace([string]$Snapshot.version_line)) {
-    $versionPath = Join-Path $InstallDir "版本信息.txt"
-    if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
-      throw "恢复失败：旧版本信息缺失"
-    }
-    $actualVersion = [string](Get-Content -LiteralPath $versionPath -Encoding UTF8 -TotalCount 1)
-    if ($actualVersion -ne [string]$Snapshot.version_line) {
-      throw "恢复失败：旧版本信息不匹配"
-    }
-  }
-}
-
 function Wait-ServiceStopped {
   param([int]$TimeoutSeconds = 15)
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -949,7 +1156,8 @@ function Wait-ServiceAbsent {
   param([int]$TimeoutSeconds = 15)
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   do {
-    if ($null -eq (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) { return }
+    $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+    if ($null -eq $record) { return }
     Start-Sleep -Milliseconds 500
   } while ((Get-Date) -lt $deadline)
   throw "恢复失败：目标服务未能删除"
@@ -964,14 +1172,18 @@ function Assert-ServiceStoppable {
   }
 }
 
-function Stop-AndDeleteCurrentService {
-  $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-  if ($null -eq $service) { return }
+function Stop-TargetService {
+  $service = Get-Service -Name $ServiceName -ErrorAction Stop
   Assert-ServiceStoppable $service
-  if ($service.Status -ne "Stopped") {
-    Stop-Service -Name $ServiceName -ErrorAction Stop
-    Wait-ServiceStopped
-  }
+  if ($service.Status -eq "Stopped") { return }
+  Stop-Service -Name $ServiceName -ErrorAction Stop
+  Wait-ServiceStopped
+}
+
+function Stop-AndDeleteCurrentService {
+  $record = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+  if ($null -eq $record) { return }
+  Stop-TargetService
   & sc.exe delete $ServiceName | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "恢复失败：目标服务删除失败" }
   Wait-ServiceAbsent
@@ -1002,14 +1214,14 @@ function Restore-Environment {
   }
 }
 
-function Get-ServiceStartupType {
-  param([string]$StartMode)
-  switch ($StartMode) {
-    "Auto" { return "Automatic" }
-    "Manual" { return "Manual" }
-    "Disabled" { return "Disabled" }
-    default { return "Automatic" }
-  }
+function Wait-ServiceRunning {
+  $deadline = (Get-Date).AddSeconds(45)
+  do {
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($null -ne $service -and $service.Status -eq "Running") { return }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+  throw "恢复失败：旧服务未进入 Running 状态"
 }
 
 $manifest = Assert-BackupIntact
@@ -1018,10 +1230,8 @@ $snapshot = $null
 if ($null -ne $snapshotEntry) {
   $snapshotPath = Get-BackupPayloadPath ([string]$snapshotEntry.backup_relative_path)
   $snapshot = Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  if ([string]$snapshot.name -ne $ServiceName) { throw "恢复失败：服务快照名称不匹配" }
-  if ([string]::IsNullOrWhiteSpace([string]$snapshot.binary_path)) {
-    throw "恢复失败：服务快照缺少程序路径"
-  }
+  Assert-ServiceSnapshotValid $snapshot
+  if ($UseNativeServiceMetadata) { Initialize-KaiwuServiceConfigurationApi }
 }
 
 Stop-AndDeleteCurrentService
@@ -1039,32 +1249,14 @@ Assert-RestoredFileDigests $manifest
 Restore-Environment $manifest
 
 if ($null -ne $snapshot) {
-  $startupType = Get-ServiceStartupType ([string]$snapshot.start_mode)
-  $displayName = [string]$snapshot.display_name
-  if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = "Kaiwu Intranet Connector" }
-  New-Service -Name $ServiceName -BinaryPathName ([string]$snapshot.binary_path) -StartupType $startupType -DisplayName $displayName -ErrorAction Stop | Out-Null
-  if ([bool]$snapshot.delayed_auto_start -and $startupType -eq "Automatic") {
-    & sc.exe config $ServiceName start= delayed-auto | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "恢复失败：设置旧服务延迟启动失败" }
-  }
-  if ([bool]$snapshot.was_running) {
-    Start-Service -Name $ServiceName -ErrorAction Stop
-    $deadline = (Get-Date).AddSeconds(45)
-    do {
-      $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-      if ($null -ne $service -and $service.Status -eq "Running") { break }
-      Start-Sleep -Milliseconds 500
-    } while ((Get-Date) -lt $deadline)
-    if ($null -eq $service -or $service.Status -ne "Running") {
-      throw "恢复失败：旧服务未进入 Running 状态"
-    }
-  }
+  Restore-VerifiedService $manifest $snapshot
+} else {
+  Assert-RestoredStableFiles $manifest $null
 }
-
-Assert-RestoredStableState $manifest $snapshot
 Write-Host "已恢复安装前版本。"
 '@
     $RestoreScript = $RestoreScript.Replace("__BACKUP_MANIFEST_SHA256__", $BackupManifestHash)
+    $RestoreScript = $RestoreScript.Replace("__SERVICE_RECOVERY_FUNCTIONS__", $ServiceRecoveryFunctions)
     $restorePath = Join-Path $BackupDir "restore.ps1"
     [System.IO.File]::WriteAllText(
       $restorePath,
@@ -1085,9 +1277,9 @@ try {
   $Stage = "pre_change_verification"
   Assert-CriticalFiles
   $Stage = "replace_install"
+  Stop-AndDeleteService -Original
   $InstallMutationStarted = $true
   $OldInstallChanged = $NeedsBackup
-  Stop-AndDeleteService
 
   Ensure-ManagedDirectory $InstallDir
   Ensure-ManagedDirectory (Join-Path $InstallDir "docs")
@@ -1151,6 +1343,7 @@ try {
     throw "注册服务失败: $($_.Exception.Message)"
   }
 
+  $ReplacementServiceCreated = $true
   sc.exe sidtype $ServiceName unrestricted | Out-Null
   sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
 
@@ -1210,30 +1403,43 @@ try {
   Write-InstallResult "INSTALLED"
 } catch {
   $OriginalError = $_.Exception.Message
-  $Stage = "rollback"
-  $RollbackErrors = @()
-  $NewServiceRemoved = $false
-  if ($InstallMutationStarted) {
-    try {
-      Stop-AndDeleteService
-      $NewServiceRemoved = $true
-    } catch {
-      $RollbackErrors += "删除失败的新服务: $($_.Exception.Message)"
-    }
-  } else {
-    $NewServiceRemoved = $true
-  }
-
-  if (-not $InstallMutationStarted) {
+  $FailureStage = $Stage
+  if ($FailureStage -eq "pre_change_verification") {
     Write-InstallResult "PRECHECK_FAILED"
     throw "安装前检查失败：$OriginalError"
   }
+  $Stage = "rollback"
+  $RollbackErrors = @()
+  $CanRestoreFiles = $false
+  try {
+    if ($ReplacementServiceCreated) { Stop-AndDeleteService }
+    if ($InstallMutationStarted) {
+      $CanRestoreFiles = $true
+    } elseif ($OriginalServiceDeleteAccepted) {
+      # 删除已受理但尚未确认；等待删除完成，不再按名称删除。
+      Wait-ServiceAbsent
+      $CanRestoreFiles = $true
+    } elseif ($OriginalServiceStopAttempted) {
+      # 文件替换尚未开始。若原注册仍可核对，只恢复其运行状态。
+      $manifest = Assert-BackupIntact
+      $snapshot = Get-BackupServiceSnapshot $manifest
+      Assert-ServiceSnapshotValid $snapshot
+      Restore-VerifiedService $manifest $snapshot -ReuseExisting
+    } else {
+      throw "原服务未获准替换，保留现有服务及文件"
+    }
+  } catch {
+    $RollbackErrors += "确认当前服务状态: $($_.Exception.Message)"
+  }
 
-  if (-not $NewServiceRemoved) {
-    $RollbackErrors += "当前服务未能移除，未执行旧安装恢复"
-  } elseif ($BackupDir) {
+  if ($CanRestoreFiles -and $BackupDir) {
     try {
       $manifest = Assert-BackupIntact
+      $snapshot = $null
+      if ($HadExistingService) {
+        $snapshot = Get-BackupServiceSnapshot $manifest
+        Assert-ServiceSnapshotValid $snapshot
+      }
       Remove-ManagedFilesCreatedByRun
       foreach ($entry in @($manifest.entries)) {
         if ($entry.category -notin @("program", "data")) { continue }
@@ -1248,23 +1454,16 @@ try {
       Assert-RestoredFileDigests $manifest
       Restore-EnvironmentSnapshot $manifest
       Assert-RestoredFileDigests $manifest
-      Restore-PreviousService $manifest
-      Assert-RestoredStableState $manifest
+      if ($HadExistingService) {
+        Restore-VerifiedService $manifest $snapshot
+      } else {
+        Assert-RestoredStableFiles $manifest $null
+      }
       Write-Host "安装失败，已核验恢复安装前程序和配置。"
     } catch {
       $RollbackErrors += "恢复旧安装: $($_.Exception.Message)"
-      if ($HadExistingService) {
-        $restoredService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        if ($null -ne $restoredService -and $restoredService.Status -ne "Stopped") {
-          try {
-            Stop-TargetService
-          } catch {
-            $RollbackErrors += "停止未确认恢复的旧服务: $($_.Exception.Message)"
-          }
-        }
-      }
     }
-  } else {
+  } elseif ($CanRestoreFiles) {
     try {
       Restore-EnvironmentFromMemory
     } catch {

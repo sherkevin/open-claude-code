@@ -27,6 +27,12 @@ main{max-width:920px;margin:0 auto;padding:20px}
 .self-test-stages{grid-template-columns:repeat(4,minmax(0,1fr))}
 .self-test-answer{border:1px solid #d8e2fa;border-radius:10px;background:#f8faff;padding:12px;margin-top:12px;font-size:12.5px}
 .self-test-answer b{display:block;margin-bottom:4px}.self-test-list{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px}
+.first-run{border-left:3px solid var(--brand);border-radius:8px;background:#f8faff;padding:12px}
+.first-run p{margin:5px 0 10px}
+.bind-panel{margin-top:12px}.bind-panel p{margin:0 0 6px}.bind-panel form{align-items:flex-end}
+.bind-panel form .field{max-width:420px}
+.self-test-result{margin-top:12px}.self-test-result code{overflow-wrap:anywhere}
+a{color:var(--brand)}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 .row.end{justify-content:flex-end}.grow{flex:1 1 220px}
 .pill{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;background:var(--brand-soft);color:var(--brand);white-space:nowrap}
@@ -41,7 +47,7 @@ button{padding:9px 16px;border-radius:8px;border:1px solid var(--line);backgroun
 button:hover:not(:disabled){border-color:#b6c3e7}button.primary{background:var(--brand);border-color:var(--brand);color:#fff}button.primary:hover:not(:disabled){background:#173fb3}
 button.danger{color:var(--err);border-color:#efc3bf}button:disabled{opacity:.5;cursor:not-allowed}
 .action-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
-.action-bar .primary{min-width:160px;font-weight:650}.message{flex:1 1 260px;font-size:13px;color:var(--muted)}
+#saveConnectBtn{min-width:160px;font-weight:650}.message{flex:1 1 260px;font-size:13px;color:var(--muted)}
 .message.ok{color:var(--ok)}.message.warn{color:var(--warn)}.message.err{color:var(--err)}
 .auth-box{margin-top:14px;border:1px dashed #cbd5ea;border-radius:10px;padding:14px;background:#fbfcff}
 .auth-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
@@ -91,50 +97,61 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
 <header><div class="brand">开物<small>内网连接器</small></div><span class="pill" id="statePill">读取中…</span></header>
 <main>
 <section class="card intro">
-  <h1>安装后填写您当前服务器的 MCP 参数即可接入</h1>
-  <p>不需要手工编写 JSON。填写服务地址和认证信息，读取并勾选允许使用的工具，再点击“保存并连接”。企业接入配置和来源路由由开物管理员完成。</p>
-  <div class="stage-grid">
-    <div class="stage" id="localStage"><b>内网 MCP 可访问</b><small id="localState">尚未检测</small><p id="localDetail">保存配置后会检查地址、协议和工具目录。</p></div>
-    <div class="stage" id="tunnelStage"><b>公网隧道已连接</b><small id="tunnelState">尚未连接</small><p id="tunnelDetail">需要完成企业绑定后建立。</p></div>
-    <div class="stage" id="platformStage"><b>开物平台接入</b><small id="platformState">等待管理员配置</small><p id="platformDetail">企业接入配置和来源路由由开物管理员配置。</p></div>
-  </div>
+  <h1>连接器首次使用</h1>
+  <p>先检查本机示例，绑定企业后再验证公网，最后接入业务服务并到开物试问。</p>
 </section>
 
 <section class="card" id="builtinDemoPanel">
   <div class="row" style="justify-content:space-between;align-items:flex-start">
     <div>
       <h2>内置测试服务（示例数据）</h2>
-      <p class="section-hint">随安装自动启动，使用固定示例数据检查这台服务器到开物平台的连接，不读取您的业务系统</p>
+      <p class="section-hint">使用随安装启动的固定示例检查连接，无需填写业务地址或凭据。</p>
     </div>
     <span class="pill" id="builtinDemoPill">读取中…</span>
   </div>
-  <div class="row">
-    <button class="primary" id="selfTestBtn" type="button">运行连接测试</button>
-    <button id="demoToggleBtn" type="button" disabled>停用内置测试服务</button>
-    <span class="subtle" id="selfTestSummary">尚未运行连接测试。</span>
+  <div class="first-run">
+    <strong id="nextStepTitle">先检查本机示例</strong>
+    <p class="subtle" id="nextStepDetail">正在读取连接器状态…</p>
+    <div class="row">
+      <button class="primary" id="selfTestBtn" type="button" disabled>运行连接测试</button>
+      <button class="primary hidden" id="nextStepBtn" type="button"></button>
+      <button class="hidden" id="copySelfTestTraceBtn" type="button">复制诊断编号</button>
+    </div>
+    <div class="bind-panel">
+      <p class="subtle" id="bindHint"></p>
+      <form class="row hidden" id="bindForm">
+        <label class="field grow"><span>一次性企业绑定码</span><input id="bindCode" type="password" autocomplete="off" required></label>
+        <button id="bindBtn" type="submit" disabled>绑定企业</button>
+      </form>
+      <div class="message" id="firstRunNotice" role="status"></div>
+    </div>
+  </div>
+  <div class="self-test-result row">
+    <strong class="message" id="selfTestSummary" role="status">尚未运行连接测试。</strong>
+    <span class="subtle" id="selfTestTime"></span>
   </div>
   <div class="stage-grid self-test-stages" style="margin-top:14px">
     <div class="stage" id="selfLocalStage"><b>本机示例 MCP</b><small id="selfLocalState">尚未检测</small><p id="selfLocalDetail">检查本机测试服务运行状态和固定示例数据。</p></div>
     <div class="stage" id="selfBindingStage"><b>企业绑定</b><small id="selfBindingState">尚未检测</small><p id="selfBindingDetail">未绑定时只执行本机阶段。</p></div>
     <div class="stage" id="selfTunnelStage"><b>公网隧道</b><small id="selfTunnelState">尚未检测</small><p id="selfTunnelDetail">绑定后使用独立示例来源建立路由。</p></div>
-    <div class="stage" id="selfEdgeStage"><b>开物平台连接</b><small id="selfEdgeState">尚未检测</small><p id="selfEdgeDetail">由开物平台通过公网连接回到这台服务器。</p></div>
+    <div class="stage" id="selfEdgeStage"><b>开物公网验证</b><small id="selfEdgeState">尚未检测</small><p id="selfEdgeDetail">检查开物能否通过公网取回本机示例结果。</p></div>
   </div>
-  <div id="selfTestCloudWrap" class="hidden">
-    <b style="font-size:13px">公网自检分层明细</b>
-    <ul class="self-test-list" id="selfTestCloudStages"></ul>
+  <div class="row subtle self-test-result hidden" id="selfTestTraceWrap">
+    <span>诊断编号 <code id="selfTestTrace"></code></span><span id="selfTestTraceNotice" role="status"></span>
   </div>
-  <div class="self-test-answer">
-    <b>测试问题（完成测试服务接入后使用）</b>
+  <div class="self-test-answer hidden" id="selfTestAnswer">
+    <b>技术支持确认接入后，在开物试问示例</b>
+    <p class="subtle">请开物技术支持确认示例服务已授权给哪个助手，并领取试用账号。收到确认后，<a href="https://flintw.com/project/kaiwu/" target="_blank" rel="noopener noreferrer">登录开物</a>，选择该助手，发送下面的问题。</p>
     <div id="selfTestQuestion">请用内置测试服务查询订单数和 KAIWU-DEMO-001 的库存。</div>
-    <p class="subtle" id="selfTestExpected">固定正确答案：示例订单数 12；KAIWU-DEMO-001 示例库存 128。以上均为示例数据，不是华微真实业务数据。</p>
-    <div class="row"><button id="copyTestQuestionBtn" type="button">复制测试问题</button><span class="subtle" id="selfTestTrace">尚无链路追踪编号</span></div>
-    <p class="subtle" id="selfTestAccessHint">开物技术支持完成测试服务接入后，可在开物对话中使用。运行连接测试成功只代表链路已通过；地址预览不包含内置示例服务，也不代表已经可以直接提问。</p>
+    <p class="subtle" id="selfTestExpected">预期结果为示例订单数 12、KAIWU-DEMO-001 示例库存 128。示例数据与华微业务数据无关。</p>
+    <button id="copyTestQuestionBtn" type="button">复制测试问题</button>
   </div>
 </section>
 
-<section class="card">
-  <h2>配置当前服务器的 MCP 服务</h2>
-  <p class="section-hint">首次安装请选择“新增 MCP 服务”。升级后如保留旧服务，请先选中旧服务并点击“停用此来源”，再配置当前服务；停用不会删除旧配置、访问令牌或签名密钥。</p>
+<section class="card" id="businessPanel">
+  <h2 tabindex="-1" id="businessHeading">配置业务 MCP 服务</h2>
+  <p class="section-hint">请向业务服务维护人员确认服务名称、完整 MCP HTTP 地址、允许使用的查询工具，以及服务要求的访问令牌或华微动态签名参数。访问令牌和签名密钥只在本机填写。</p>
+  <p class="section-hint">首次安装请选择“新增 MCP 服务”。升级后可选中暂时不用的服务并点击“停用此来源”；停用不会删除旧配置、访问令牌或签名密钥。</p>
   <div class="form-grid">
     <label class="field span-2"><span>当前配置对象</span><select id="sourceSelect"><option value="">＋ 新增 MCP 服务</option></select></label>
     <div class="row span-2"><button id="toggleSourceBtn" type="button" disabled>停用此来源</button><span class="subtle" id="sourceEnabledHint">新增服务保存后默认启用；已有来源可选择后停用。</span></div>
@@ -165,13 +182,19 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
   </div>
 
   <div class="action-bar">
-    <button class="primary" id="saveConnectBtn" type="button">保存并连接</button>
-    <div class="message" id="formMessage">保存成功后会立即检查内网 MCP；企业已绑定时继续启动公网隧道。</div>
+    <button id="saveConnectBtn" type="button">保存并连接</button>
+    <div class="message" id="formMessage" role="status">保存后立即检查业务服务。企业已绑定时继续建立公网隧道。</div>
   </div>
+  <div class="stage-grid">
+    <div class="stage" id="localStage"><b>业务服务本机检查</b><small id="localState">尚未检测</small><p id="localDetail">保存配置后会检查地址、协议和工具目录。</p></div>
+    <div class="stage" id="tunnelStage"><b>连接器公网隧道</b><small id="tunnelState">尚未连接</small><p id="tunnelDetail">需要完成企业绑定后建立。</p></div>
+    <div class="stage" id="platformStage"><b>开物业务接入</b><small id="platformState">等待管理员配置</small><p id="platformDetail">联系开物技术支持确认业务来源和助手授权。</p></div>
+  </div>
+  <p class="subtle">业务服务连接后，请开物技术支持确认业务来源和助手授权。收到确认后，使用已分配的账号<a href="https://flintw.com/project/kaiwu/" target="_blank" rel="noopener noreferrer">登录开物</a>，选择指定助手，试问一条已知正确结果的业务问题，并与原业务系统核对。</p>
 </section>
 
 <section class="card" id="logsPanel">
-  <h2>运行日志</h2>
+  <h2 tabindex="-1" id="logsHeading">运行日志</h2>
   <p class="section-hint">为便于开物技术支持排查连接问题，连接状态、操作结果和错误代码会自动上报至开物服务，不包含访问密钥、查询参数或业务数据。</p>
   <div class="log-toolbar">
     <div class="log-tabs" role="tablist">
@@ -218,16 +241,15 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
       <ul class="issues" id="importIssues"></ul>
     </div>
 
-    <div class="advanced-section">
-      <h3>企业绑定</h3>
-      <p id="bindHint">一次性接入码由开物管理员签发，只能使用一次。</p>
-      <div class="row"><input class="grow" id="bindCode" placeholder="一次性接入码" autocomplete="off"><button id="bindBtn" type="button" disabled>绑定企业</button></div>
+    <div class="advanced-section hidden" id="selfTestCloudWrap">
+      <h3>公网自检分层明细</h3>
+      <ul class="self-test-list" id="selfTestCloudStages"></ul>
     </div>
 
     <div class="advanced-section">
       <h3>本地与隧道维护</h3>
       <p>诊断原始结果只用于排障。暂停或断开不会删除当前服务器的来源配置。</p>
-      <div class="row"><button id="diagnoseBtn" type="button">运行详细诊断</button><button id="pauseBtn" type="button">暂停</button><button id="disconnectBtn" type="button">断开并回到待配置</button></div>
+      <div class="row"><button id="diagnoseBtn" type="button">运行详细诊断</button><button id="pauseBtn" type="button">暂停</button><button id="disconnectBtn" type="button">断开并回到待配置</button><button id="demoToggleBtn" type="button" disabled>停用内置测试服务</button></div>
       <pre id="diagnoseOut" class="hidden" style="margin-top:12px"></pre>
     </div>
 
@@ -266,6 +288,11 @@ let currentStatus = null;
 let diagnosisBySource = {};
 let formDirty = false;
 let busy = false;
+let statusUnavailable = false;
+let statusRequest = 0;
+let firstRunOperation = "";
+let selfTestResult = null;
+let selfTestError = "";
 let logTab = "connector";
 let logSignature = "";
 
@@ -282,6 +309,11 @@ async function api(path, body){
 
 function setMessage(text, kind){
   const node = $("formMessage");
+  node.textContent = text;
+  node.className = "message" + (kind ? " " + kind : "");
+}
+function setFirstRunNotice(text, kind){
+  const node = $("firstRunNotice");
   node.textContent = text;
   node.className = "message" + (kind ? " " + kind : "");
 }
@@ -304,60 +336,74 @@ function selfTestLabel(status){
   return "等待";
 }
 function setSelfTestStage(prefix, stage, fallback){
-  const value = stage || {status:"skipped", message:fallback || "本阶段未执行。"};
-  setStage(prefix, selfTestLabel(value.status), value.message, selfTestKind(value.status));
+  if(stage){
+    setStage(prefix, selfTestLabel(stage.status), stage.message, selfTestKind(stage.status));
+  }else{
+    setStage(prefix, "尚未检测", fallback, "");
+  }
 }
-function renderBuiltinDemo(status){
-  const demo = (status && status.builtin_demo) || {};
+function renderBuiltinDemo(demo){
   const pill = $("builtinDemoPill");
   const toggle = $("demoToggleBtn");
-  const run = $("selfTestBtn");
-  toggle.disabled = busy;
-  run.disabled = busy || !demo.enabled || !!demo.error_code;
-  if(!demo.enabled){
+  toggle.disabled = busy || !demo;
+  if(!demo){
+    pill.textContent = statusUnavailable ? "状态不可用" : "读取中…";
+    pill.className = "pill";
+  }else if(!demo.enabled){
     pill.textContent = "已关闭";
     pill.className = "pill warn";
-    toggle.textContent = "启用内置测试服务";
-    setStage("selfLocal", "已关闭", "用户已关闭内置测试服务；业务 MCP 和企业隧道不受影响。", "warn");
-    return;
-  }
-  if(demo.error_code){
-    const conflict = demo.error_code === "BUILTIN_SOURCE_CONFLICT";
-    pill.textContent = conflict ? "来源冲突" : "启动异常";
+  }else if(demo.error_code || !demo.running){
+    pill.textContent = demo.error_code === "BUILTIN_SOURCE_CONFLICT" ? "来源冲突" : "启动异常";
     pill.className = "pill err";
-    toggle.textContent = "停用内置测试服务";
-    setStage("selfLocal", conflict ? "来源冲突" : "启动异常", conflict
-      ? "内置测试来源的固定编号已被其他 MCP 来源占用；客户来源没有被修改，请调整来源配置后重试。"
-      : "内置测试服务没有正常运行，请查看诊断日志或联系开物技术支持。", "error");
-    return;
-  }
-  if(demo.running){
+  }else{
     pill.textContent = "运行中";
     pill.className = "pill ok";
-    toggle.textContent = "停用内置测试服务";
-    setStage("selfLocal", "运行中", "固定只读工具：" + ((demo.tools || []).join("、") || "正在加载"), "ready");
-    return;
   }
-  pill.textContent = "启动异常";
-  pill.className = "pill err";
-  toggle.textContent = "停用内置测试服务";
-  setStage("selfLocal", "启动异常", "内置测试服务没有运行，请查看诊断日志或联系开物技术支持。", "error");
+  toggle.textContent = demo && !demo.enabled ? "启用内置测试服务" : "停用内置测试服务";
 }
-function renderSelfTest(result){
-  const stages = (result && result.stages) || [];
-  const byID = {};
-  stages.forEach(item=>{ byID[item.id] = item; });
-  setSelfTestStage("selfLocal", byID.local_mcp, "本机示例服务未执行。");
-  setSelfTestStage("selfBinding", byID.enterprise_binding, "企业绑定阶段未执行。");
-  setSelfTestStage("selfTunnel", byID.tunnel, "公网隧道阶段未执行。");
-  const localIDs = new Set(["local_mcp", "enterprise_binding", "tunnel"]);
-  const cloudStages = stages.filter(item=>!localIDs.has(item.id));
-  let edgeStage = byID.edge_connect;
-  if(!edgeStage && cloudStages.length){
-    const failed = cloudStages.find(item=>item.status === "failed");
-    edgeStage = failed || cloudStages[cloudStages.length - 1];
+function selfTestTraceID(result){
+  const trace = result && result.trace_id;
+  return typeof trace === "string" && /^kwtr_[0-9a-f]{24,64}$/.test(trace) ? trace : "";
+}
+function selfTestOutcome(result, stages){
+  if(!result){ return "pending"; }
+  if(stages.local_mcp?.status !== "passed"){ return "local-failed"; }
+  if(!stages.enterprise_binding || stages.enterprise_binding.status === "skipped"){ return "local-passed"; }
+  if(stages.tunnel?.status === "failed"){ return "tunnel-failed"; }
+  if(result.ok === true && stages.enterprise_binding.status === "passed" &&
+     stages.tunnel?.status === "passed" && stages.edge_connect?.status === "passed" &&
+     Object.values(stages).every(stage=>stage.status === "passed")){
+    return "public-passed";
   }
-  setSelfTestStage("selfEdge", edgeStage, "开物平台连接阶段未执行。");
+  return "public-failed";
+}
+function renderSelfTest(status, stages, outcome){
+  const localPassed = stages.local_mcp?.status === "passed";
+  const revoked = status?.state === "REVOKED";
+  const bound = status?.bound && !revoked;
+  const publicPassed = bound && outcome === "public-passed";
+  setSelfTestStage("selfLocal", stages.local_mcp, "运行连接测试，检查本机示例服务。");
+  if(revoked){
+    setStage("selfBinding", "已撤销", "请开物技术支持确认服务器身份并重新签发接入码。", "error");
+  }else if(status){
+    setStage("selfBinding", bound ? "已绑定" : "待绑定", bound ? (status.tenant_name || "已加载企业身份。") : "需要一次性企业绑定码。", bound ? "ready" : "warn");
+  }else{
+    setStage("selfBinding", "待确认", "读取连接器状态后确认企业绑定。", "");
+  }
+  setSelfTestStage("selfTunnel", stages.tunnel, "企业绑定后运行连接测试。");
+  const cloudStages = Object.values(stages).filter(stage=>!["local_mcp", "enterprise_binding", "tunnel"].includes(stage.id));
+  if(outcome === "public-failed"){
+    const failure = cloudStages.find(stage=>stage.status === "failed");
+    setStage("selfEdge", "未通过", failure?.message || "未能验证本次公网返回的示例结果。", "error");
+  }else{
+    setSelfTestStage("selfEdge", stages.edge_connect, "公网隧道建立后检查。");
+  }
+  if(localPassed && outcome === "local-passed" && !revoked){
+    const label = bound ? "待验证" : "待绑定";
+    const detail = bound ? "重新运行连接测试以验证公网。" : "完成企业绑定后再验证公网。";
+    setStage("selfTunnel", label, detail, "warn");
+    setStage("selfEdge", label, detail, "warn");
+  }
   const list = $("selfTestCloudStages");
   list.replaceChildren();
   cloudStages.forEach(item=>{
@@ -366,13 +412,135 @@ function renderSelfTest(result){
     list.appendChild(li);
   });
   $("selfTestCloudWrap").classList.toggle("hidden", cloudStages.length === 0);
-  $("selfTestTrace").textContent = result && result.trace_id
-    ? "链路追踪编号 " + result.trace_id
-    : "尚无链路追踪编号";
-  $("selfTestSummary").textContent = result
-    ? (result.ok ? "连接测试通过，仅代表链路已通过；完成测试服务接入后，可在开物对话中使用。" : "连接测试未全部通过，请按上方分层结果处理。")
-    : "尚未运行连接测试。";
-  $("selfTestSummary").className = "subtle";
+  const trace = selfTestTraceID(selfTestResult);
+  if($("selfTestTrace").textContent !== trace){ $("selfTestTraceNotice").textContent = ""; }
+  $("selfTestTrace").textContent = trace;
+  $("selfTestTraceWrap").classList.toggle("hidden", !trace);
+  $("copySelfTestTraceBtn").classList.toggle("hidden", !trace);
+  $("selfTestAnswer").classList.toggle("hidden", !publicPassed);
+  const testTime = formatTime(selfTestResult?.generated_at);
+  $("selfTestTime").textContent = testTime === "—" ? "" : testTime;
+
+  let summary = "尚未运行连接测试。";
+  let kind = "";
+  if(firstRunOperation === "test"){
+    summary = "正在运行连接测试…";
+  }else if(selfTestError){
+    summary = "无法完成连接测试：" + selfTestError;
+    kind = "err";
+  }else if(outcome === "local-failed"){
+    summary = "本机示例检查未通过。";
+    kind = "err";
+  }else if(outcome === "tunnel-failed" || outcome === "public-failed"){
+    summary = outcome === "tunnel-failed" ? "本机示例已通过，公网隧道未通过。" : "本机示例已通过，公网验证未通过。";
+    kind = "err";
+  }else if(publicPassed){
+    summary = "本机示例和公网验证已通过，助手授权待确认。";
+    kind = "ok";
+  }else if(localPassed){
+    summary = "本机示例已通过，" + (!status || revoked ? "企业状态待确认。" : (bound ? "公网待验证。" : "公网待绑定企业。"));
+    kind = "warn";
+  }
+  if($("selfTestSummary").textContent !== summary){ $("selfTestSummary").textContent = summary; }
+  $("selfTestSummary").className = "message" + (kind ? " " + kind : "");
+}
+function firstRunStep(status, demo, stages, outcome){
+  if(statusUnavailable){
+    return ["连接器状态暂时不可用", "请重试。若仍无法读取，请联系开物技术支持检查本机连接器。", "refresh", "重新读取状态"];
+  }
+  if(!status){ return ["先检查本机示例", "正在读取连接器状态…", "test", "运行连接测试"]; }
+  if(firstRunOperation === "test"){
+    return ["正在检查连接", status.bound ? "正在检查本机示例和公网连接。" : "正在检查本机示例。绑定企业后可继续验证公网。", "test", "正在测试…"];
+  }
+  if(firstRunOperation === "bind"){
+    return ["正在绑定企业", "请等待绑定结果。", "bind"];
+  }
+  if(!demo?.enabled){
+    return ["先启用内置测试服务", "启用后即可检查本机示例。", "enable", "启用内置测试服务"];
+  }
+  if(demo.error_code){
+    const detail = demo.error_code === "BUILTIN_SOURCE_CONFLICT"
+      ? "内置示例与现有来源冲突。请把页面提示和发生时间提供给开物技术支持。"
+      : "内置示例启动异常。请把页面提示和发生时间提供给开物技术支持。";
+    return ["请开物技术支持检查示例服务", detail, "logs", "查看运行日志"];
+  }
+  const hasTrace = !!selfTestTraceID(selfTestResult);
+  const diagnosticHint = hasTrace
+    ? "联系开物技术支持时，请提供诊断编号、失败项和发生时间。"
+    : "联系开物技术支持时，请提供失败项和发生时间，或下载对应的脱敏日志。";
+  if(status.state === "REVOKED" && status.bound){
+    return ["请技术支持检查企业绑定", "当前服务器身份已撤销。请联系开物技术支持处理原绑定并签发新的接入码。", "logs", "查看运行日志"];
+  }
+  if(selfTestError || outcome === "local-failed"){
+    return ["重新检查本机示例", "确认连接器在本机运行后再试。若仍未通过，" + diagnosticHint, "test", "重新运行连接测试"];
+  }
+  if(outcome === "pending"){
+    return ["先检查本机示例", "点击运行连接测试。" + (status.bound ? "已绑定企业，本次也会验证公网。" : "可先检查本机，之后再绑定企业。"), "test", "运行连接测试"];
+  }
+  if(!status.bound){
+    return status.cloud_configured
+      ? [status.state === "REVOKED" ? "重新绑定企业" : "绑定企业以验证公网", "本机示例已通过。请在下方填写一次性企业绑定码。", "bind"]
+      : ["请技术支持提供接入安装包", "本机示例已通过。当前安装包未配置企业绑定，请联系开物技术支持获取接入安装包。"];
+  }
+  if(outcome === "local-passed"){
+    return ["验证公网连接", "企业已绑定。请重新运行连接测试，验证开物能否经公网取回本机示例结果。", "test", "验证公网连接"];
+  }
+  if(outcome === "tunnel-failed"){
+    if(stages.tunnel.message?.includes("测试通道尚未就绪，请在方便时重新连接")){
+      return ["请维护人员安排重连", "请让维护人员在合适的时间用业务配置中的“保存并连接”重新连接，再运行连接测试。重连会短暂中断正在使用的业务连接。", "logs", "查看运行日志"];
+    }
+    if(stages.tunnel.message?.includes("云端尚未批准")){
+      return ["请技术支持确认示例来源授权", "示例路由尚未获准。请开物技术支持确认来源授权后重新运行连接测试。", "logs", "查看运行日志"];
+    }
+    return ["排查公网隧道后重试", "确认本机可以访问公网，再运行连接测试。若仍未通过，" + diagnosticHint, "test", "重新运行连接测试"];
+  }
+  if(outcome === "public-failed"){
+    return ["请技术支持排查公网验证", diagnosticHint, hasTrace ? "copy" : "logs", "查看运行日志"];
+  }
+  if((status.sources || []).some(source=>!source.disabled)){
+    return ["查看业务接入状态", "已有启用的业务配置。请查看业务连接结果，收到技术支持的助手授权确认后，再登录开物试问。", "business", "查看业务配置"];
+  }
+  return ["填写业务服务配置", "请准备业务服务的地址、认证信息和允许查询的工具。示例试问需先由技术支持确认助手授权。", "business", "填写业务配置"];
+}
+function renderFirstRun(){
+  const status = statusUnavailable ? null : currentStatus;
+  const demo = status?.builtin_demo;
+  const stages = Object.fromEntries((selfTestResult?.stages || []).map(stage=>[stage.id, stage]));
+  const outcome = selfTestOutcome(selfTestResult, stages);
+  renderBuiltinDemo(demo);
+  renderSelfTest(status, stages, outcome);
+
+  const [title, detail, action, label] = firstRunStep(status, demo, stages, outcome);
+  $("nextStepTitle").textContent = title;
+  $("nextStepDetail").textContent = detail;
+  const test = $("selfTestBtn");
+  const canTest = !!demo?.enabled && !demo.error_code && !(status?.bound && status.state === "REVOKED");
+  test.disabled = busy || !canTest;
+  test.classList.toggle("hidden", !canTest && !!action && action !== "test");
+  test.classList.toggle("primary", action === "test");
+  test.textContent = action === "test" ? label : "重新运行连接测试";
+  $("copySelfTestTraceBtn").classList.toggle("primary", action === "copy");
+
+  const next = $("nextStepBtn");
+  const actions = {
+    refresh:()=>refresh(!currentStatus),
+    enable:()=>$("demoToggleBtn").click(),
+    logs:()=>$("logsHeading").focus(),
+    business:()=>$("businessHeading").focus()
+  };
+  next.classList.toggle("hidden", !actions[action]);
+  next.textContent = actions[action] ? label : "";
+  next.onclick = actions[action] || null;
+  next.disabled = busy;
+
+  const canBind = !!status && !status.bound && status.cloud_configured;
+  $("bindForm").classList.toggle("hidden", !canBind);
+  $("bindCode").disabled = busy || !canBind;
+  $("bindBtn").disabled = busy || !canBind;
+  $("bindBtn").classList.toggle("primary", action === "bind");
+  $("bindHint").textContent = canBind
+    ? "接入码由开物技术支持签发，只能使用一次。缺少、过期或已使用时请联系技术支持。"
+    : (!status || status.bound ? "" : "当前安装包未配置企业绑定，请联系开物技术支持。");
 }
 function stateClass(value){
   if(value === "READY") return "ok";
@@ -446,18 +614,24 @@ function logCell(text, className){
   return cell;
 }
 async function copyText(value){
-  if(!value){ return; }
+  if(!value){ return false; }
   try{
     await navigator.clipboard.writeText(value);
+    return true;
   }catch(_error){
     const area = document.createElement("textarea");
     area.value = value;
     area.style.position = "fixed";
     area.style.opacity = "0";
     document.body.appendChild(area);
-    area.select();
-    document.execCommand("copy");
-    area.remove();
+    try{
+      area.select();
+      return document.execCommand("copy");
+    }catch(_fallbackError){
+      return false;
+    }finally{
+      area.remove();
+    }
   }
 }
 function renderLogRows(events){
@@ -555,7 +729,9 @@ function renderStageSummary(){
   if(!currentStatus){ return; }
   const sourceID = $("sourceSelect").value;
   const report = diagnosisBySource[sourceID];
-  if(report){
+  if(sourceByID(sourceID)?.disabled){
+    setStage("local", "已停用", "此来源当前不参与连接。", "warn");
+  }else if(report){
     if(report.ok){ setStage("local", "可访问", "MCP 初始化、认证和工具目录检查通过。", "ready"); }
     else{
       const failure = (report.checks || []).find(item=>item.status === "fail");
@@ -572,10 +748,12 @@ function renderStageSummary(){
 
   if(currentStatus.tunnel_connected){
     setStage("tunnel", "已连接", currentStatus.tunnel_detail || "官方 frpc 来源代理已运行。", "ready");
-  }else if(currentStatus.frpc_running){
-    setStage("tunnel", "连接中", currentStatus.tunnel_detail || "frpc 进程已启动，但中继尚未就绪。", "warn");
   }else if(currentStatus.state === "DEGRADED_RELAY"){
     setStage("tunnel", "连接失败", currentStatus.last_error || currentStatus.tunnel_detail || "公网中继连接失败。", "error");
+  }else if(currentStatus.frpc_running){
+    setStage("tunnel", "连接中", currentStatus.tunnel_detail || "frpc 进程已启动，但中继尚未就绪。", "warn");
+  }else if(currentStatus.state === "PAUSED"){
+    setStage("tunnel", "已暂停", "确认可以恢复连接后，点击“保存并连接”。", "warn");
   }else{
     setStage("tunnel", "尚未连接", currentStatus.bound ? "保存并连接后启动公网隧道。" : "需要先完成企业绑定。", "");
   }
@@ -583,15 +761,43 @@ function renderStageSummary(){
   if(currentStatus.state === "REVOKED"){
     setStage("platform", "已撤销", "当前服务器身份已撤销，需要开物管理员重新签发。", "error");
   }else if(!currentStatus.bound){
-    setStage("platform", "等待管理员配置", "企业绑定、企业接入配置和来源路由仍待开物管理员完成。", "warn");
+    setStage("platform", "等待企业绑定", "请在页面上方完成企业绑定。", "warn");
+  }else if(!(currentStatus.sources || []).some(source=>!source.disabled)){
+    setStage("platform", "等待业务配置", "请添加并启用业务服务。", "");
   }else if(currentStatus.tunnel_connected){
-    setStage("platform", "待管理员确认", "当前服务器和公网隧道已经就绪；平台授权状态需要开物管理员确认，页面不会把本地成功当作平台已可使用。", "warn");
+    setStage("platform", "待管理员确认", "请开物技术支持确认业务来源和助手授权。", "warn");
   }else{
     setStage("platform", "等待公网隧道", "隧道建立后仍需开物管理员确认企业接入配置和来源路由。", "");
   }
 }
 
+function keepLocalSelfTest(){
+  if(!selfTestResult){ return; }
+  selfTestResult = {
+    generated_at: selfTestResult.generated_at,
+    stages: (selfTestResult.stages || []).filter(stage=>stage.id === "local_mcp")
+  };
+}
 function renderStatus(status){
+  const previous = currentStatus;
+  const demo = status.builtin_demo;
+  const localPassed = selfTestResult?.stages?.some(stage=>stage.id === "local_mcp" && stage.status === "passed");
+  if(!demo?.enabled || (localPassed && (!demo.running || demo.error_code))){
+    selfTestResult = null;
+    selfTestError = "";
+  }else if((previous?.bound && (!status.bound || previous.connector_id !== status.connector_id)) ||
+           (status.state === "REVOKED" && previous?.state !== "REVOKED") ||
+           (selfTestResult?.ok && (!status.frpc_running ||
+             (previous?.frpc_running && previous.frpc_restarts !== status.frpc_restarts)))){
+    // The live status reports the whole tunnel, not the exact demo route.
+    // Discard the public result only when the identity or process changed.
+    keepLocalSelfTest();
+  }
+  if(previous?.bound && !status.bound){ setFirstRunNotice("", ""); }
+  if(statusUnavailable){
+    ["saveConnectBtn","readToolsBtn","diagnoseBtn"].forEach(id=>$(id).disabled = false);
+  }
+  statusUnavailable = false;
   currentStatus = status;
   const pill = $("statePill");
   pill.textContent = status.state_label || status.state || "未知状态";
@@ -606,11 +812,7 @@ function renderStatus(status){
   $("edgeEndpoint").textContent = status.edge_configured ? (status.edge_base || "已配置") : "未配置";
   $("statusReason").textContent = status.last_error || status.reason || "";
   renderDiagnosticSummary(status.diagnostics);
-  renderBuiltinDemo(status);
-  $("bindBtn").disabled = !!status.bound || !status.cloud_configured || busy;
-  $("bindHint").textContent = status.bound
-    ? "当前服务器已经绑定企业，不需要重复使用接入码。"
-    : (status.cloud_configured ? "一次性接入码由开物管理员签发，只能使用一次。" : "当前安装包未配置云端控制面，不能绑定企业。");
+  renderFirstRun();
   renderSourceOptions(status);
   syncSourceEnabledControl();
   renderStageSummary();
@@ -763,14 +965,21 @@ function applySourceSelection(){
 }
 
 async function refresh(initial){
+  const request = ++statusRequest;
   try{
-    renderStatus(await api("/api/status"));
-    if(initial){ applySourceSelection(); }
+    const status = await api("/api/status");
+    if(request !== statusRequest || busy){ return; }
+    const firstStatus = !currentStatus;
+    renderStatus(status);
+    if(initial || firstStatus){ applySourceSelection(); }
   }catch(error){
+    if(request !== statusRequest || busy){ return; }
+    statusUnavailable = true;
     $("statePill").textContent = "当前服务器服务未就绪";
     $("statePill").className = "pill err";
     setMessage("无法读取当前服务器连接器状态：" + error.message, "err");
-    ["bindBtn","saveConnectBtn","readToolsBtn","diagnoseBtn","toggleSourceBtn","selfTestBtn","demoToggleBtn"].forEach(id=>$(id).disabled=true);
+    ["saveConnectBtn","readToolsBtn","diagnoseBtn","toggleSourceBtn"].forEach(id=>$(id).disabled=true);
+    renderFirstRun();
   }
 }
 
@@ -784,6 +993,7 @@ $("dynamicAuth").onchange = ()=>{
 $("sourceSelect").onchange = applySourceSelection;
 
 $("toggleSourceBtn").onclick = async ()=>{
+  if(busy){ return; }
   const source = selectedSource();
   if(!source){ return; }
   const enabling = !!source.disabled;
@@ -808,6 +1018,7 @@ $("toggleSourceBtn").onclick = async ()=>{
 };
 
 $("readToolsBtn").onclick = async ()=>{
+  if(busy){ return; }
   const button = $("readToolsBtn");
   const payload = payloadFromForm();
   const wantedTools = selectedTools();
@@ -836,6 +1047,7 @@ $("readToolsBtn").onclick = async ()=>{
 };
 
 $("saveConnectBtn").onclick = async ()=>{
+  if(busy){ return; }
   const button = $("saveConnectBtn");
   const payload = payloadFromForm();
   const error = validateForm(payload);
@@ -849,6 +1061,8 @@ $("saveConnectBtn").onclick = async ()=>{
       await api("/api/pause", {});
     }
     const saved = await api("/api/source/save", payload);
+    delete diagnosisBySource[saved.source.source_id];
+    renderStatus(saved.status);
     $("sourceSelect").value = saved.source.source_id;
     $("bearerToken").value = "";
     $("authHMACKey").value = "";
@@ -865,27 +1079,24 @@ $("saveConnectBtn").onclick = async ()=>{
       setStage("local", "不可访问", detail, "error");
       setStage("tunnel", "未建立", "内网 MCP 未通过，未继续启动公网隧道。", "");
       setStage("platform", "未到平台接入阶段", "请先修正当前服务器的 MCP 配置。", "");
-      setMessage("内网 MCP 检查失败：" + detail + " 请根据诊断详情修正地址、访问令牌或动态签名后重试。", "err");
+      setMessage("内网 MCP 检查失败：" + detail + " 请核对地址、访问令牌或动态签名后重试。详细诊断在高级选项。", "err");
       $("diagnoseOut").textContent = JSON.stringify(reports, null, 2);
       $("diagnoseOut").classList.remove("hidden");
-      $("advancedPanel").open = true;
       return;
     }
     setStage("local", "可访问", "MCP 初始化、认证和工具目录检查通过。", "ready");
     setMessage("内网 MCP 已通过检查。正在核对公网与企业接入状态…", "ok");
     let latest = await api("/api/status");
     renderStatus(latest);
-    if(!latest.bound){
-      setStage("tunnel", "尚未建立", "当前服务器尚未绑定企业，未启动公网隧道。", "warn");
-      setStage("platform", "等待管理员配置", "下一阶段由开物管理员完成企业绑定、企业接入配置和来源路由。", "warn");
-      setMessage("内网 MCP 已验证。当前服务器安装和配置已完成；公网与开物平台接入等待开物管理员完成企业绑定、企业接入配置和来源路由。", "warn");
-      $("advancedPanel").open = true;
-      return;
-    }
     if(!latest.cloud_configured){
       setStage("tunnel", "无法连接", "当前安装包未配置云端控制面。", "error");
       setStage("platform", "等待管理员配置", "请使用开物管理员提供的正式安装包。", "warn");
       setMessage("内网 MCP 已验证，但当前安装包未配置云端控制面，无法建立公网隧道。", "err");
+      return;
+    }
+    if(!latest.bound){
+      setStage("tunnel", "尚未建立", "当前服务器尚未绑定企业。", "warn");
+      setMessage("业务服务本机检查已通过。请在页面上方绑定企业，再点击“保存并连接”。", "warn");
       return;
     }
 
@@ -896,13 +1107,12 @@ $("saveConnectBtn").onclick = async ()=>{
     }catch(connectError){
       setStage("tunnel", "连接失败", connectError.message, "error");
       setStage("platform", "等待公网隧道与平台配置", "公网隧道未就绪，平台接入不能视为完成。", "warn");
-      setMessage("公网隧道连接失败：" + connectError.message + " 如果提示来源路由或企业授权，请联系开物管理员。", "err");
-      $("advancedPanel").open = true;
+      setMessage("公网隧道连接失败：" + connectError.message + " 请核对公网连接后重试。如提示来源授权或仍失败，请联系开物技术支持。", "err");
       return;
     }
     renderStatus(latest);
     if(latest.tunnel_connected){
-      setMessage("内网 MCP 与公网隧道均已就绪。平台接入仍由开物管理员确认企业接入配置和来源路由，页面不会把这一步显示为平台已可使用。", "warn");
+      setMessage("业务服务本机检查已通过，连接器公网隧道已建立。请开物技术支持确认业务来源和助手授权，再登录开物试问。", "warn");
     }else{
       setMessage("内网 MCP 已验证，但公网隧道尚未就绪：" + (latest.tunnel_detail || latest.last_error || "请查看详细诊断。"), "warn");
     }
@@ -915,17 +1125,28 @@ $("saveConnectBtn").onclick = async ()=>{
   }
 };
 
-$("bindBtn").onclick = async ()=>{
+$("bindForm").onsubmit = async event=>{
+  event.preventDefault();
+  if(busy || $("bindBtn").disabled){ return; }
+  const code = $("bindCode").value.trim();
+  if(!code){
+    setFirstRunNotice("请填写一次性企业绑定码。", "err");
+    return;
+  }
+  busy = true;
+  firstRunOperation = "bind";
+  setFirstRunNotice("", "");
+  renderFirstRun();
   try{
-    busy = true;
-    $("bindBtn").disabled = true;
-    await api("/api/bind", {code:$("bindCode").value});
+    const status = await api("/api/bind", {code:code});
     $("bindCode").value = "";
-    setMessage("企业绑定成功。请点击“保存并连接”继续检查内网和公网隧道。", "ok");
+    renderStatus(status);
+    setFirstRunNotice("企业绑定成功。请运行连接测试验证公网。", "ok");
   }catch(error){
-    setMessage("企业绑定失败：" + error.message, "err");
+    setFirstRunNotice("企业绑定失败：" + error.message + " 请核对接入码，过期或已使用时请联系开物技术支持。", "err");
   }finally{
     busy = false;
+    firstRunOperation = "";
     await refresh(false);
   }
 };
@@ -991,45 +1212,52 @@ $("exportBtn").onclick = async ()=>{
 };
 
 $("demoToggleBtn").onclick = async ()=>{
+  if(busy || statusUnavailable){ return; }
   const demo = (currentStatus && currentStatus.builtin_demo) || {};
   const enabled = !demo.enabled;
-  $("demoToggleBtn").disabled = true;
   busy = true;
+  renderFirstRun();
   try{
-    await api("/api/builtin-demo/enabled", {enabled:enabled});
-    setMessage(enabled
-      ? "内置测试服务已启用，可运行连接测试；不会修改业务 MCP。"
-      : "内置测试服务已关闭并保存选择；业务 MCP 和现有企业隧道不会被停用。", "ok");
+    const status = await api("/api/builtin-demo/enabled", {enabled:enabled});
+    renderStatus(status);
+    setFirstRunNotice(enabled ? "内置测试服务已启用，可运行连接测试。" : "内置测试服务已关闭。", "ok");
   }catch(error){
-    setMessage("切换内置测试服务失败：" + error.message, "err");
+    setFirstRunNotice("切换内置测试服务失败：" + error.message + " 请联系开物技术支持。", "err");
   }finally{
     busy = false;
+    renderFirstRun();
     await refresh(false);
   }
 };
 
 $("selfTestBtn").onclick = async ()=>{
-  const button = $("selfTestBtn");
-  button.disabled = true;
+  if(busy || $("selfTestBtn").disabled){ return; }
   busy = true;
-  $("selfTestSummary").textContent = "正在检查本机测试服务、企业绑定、公网连接和开物平台连接…";
+  firstRunOperation = "test";
+  selfTestResult = null;
+  selfTestError = "";
+  setFirstRunNotice("", "");
+  renderFirstRun();
   try{
-    const result = await api("/api/self-test", {});
-    renderSelfTest(result);
-    if(result.ok){
-      setMessage("连接测试通过，仅代表链路已通过。开物技术支持完成测试服务接入后，可在开物对话中使用；地址预览不包含内置示例服务。", "ok");
-    }else{
-      setMessage("连接测试未全部通过，请按内置测试服务的分层结果定位问题。", "warn");
-    }
+    selfTestResult = await api("/api/self-test", {});
   }catch(error){
-    setMessage("运行连接测试失败：" + error.message, "err");
+    selfTestError = error.message;
   }finally{
     busy = false;
+    firstRunOperation = "";
     await refresh(false);
   }
 };
 
 $("copyTestQuestionBtn").onclick = ()=>copyText($("selfTestQuestion").textContent);
+$("copySelfTestTraceBtn").onclick = async ()=>{
+  const trace = selfTestTraceID(selfTestResult);
+  if(!trace){ return; }
+  const copied = await copyText(trace);
+  if(trace === selfTestTraceID(selfTestResult)){
+    $("selfTestTraceNotice").textContent = copied ? "已复制诊断编号。" : "未能自动复制，请选中编号手动复制。";
+  }
+};
 
 $("connectorLogTab").onclick = ()=>switchLogTab("connector");
 $("platformLogTab").onclick = ()=>switchLogTab("platform");
@@ -1070,7 +1298,7 @@ $("logDownloadBtn").onclick = async ()=>{
 };
 
 refresh(true).then(()=>loadLogs(true));
-setInterval(()=>refresh(false), 5000);
+setInterval(()=>{ if(!busy){ refresh(false); } }, 5000);
 setInterval(()=>{
   if($("logAutoRefresh").checked && document.visibilityState === "visible"){ loadLogs(false); }
 }, 3000);
