@@ -454,10 +454,12 @@ func (s *Server) handleDiagnosticsSettings(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "BODY_INVALID", "必须明确指定暂停或恢复诊断上报")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":   true,
-		"data": s.Agent.SetDiagnosticsPaused(*body.Paused),
-	})
+	stats := s.Agent.SetDiagnosticsPaused(*body.Paused)
+	if stats.StorageErrorCode != "" {
+		writeError(w, http.StatusServiceUnavailable, stats.StorageErrorCode, "本机诊断设置暂时无法保存，请稍后重试")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": stats})
 }
 
 func (s *Server) handleLogsDownload(w http.ResponseWriter, r *http.Request) {

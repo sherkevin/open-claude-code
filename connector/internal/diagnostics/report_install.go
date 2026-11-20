@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// ErrReportingBusy means another process holds the diagnostic queue lock.
+var ErrReportingBusy = errors.New("连接器或另一条诊断命令正在使用本机诊断")
+
 // LockReporting serializes the serving connector and the offline diagnostic
 // command before either loads the pause flag or starts writing the shared queue.
 func LockReporting(dataDir string) (*os.File, error) {
@@ -25,7 +28,7 @@ func LockReporting(dataDir string) (*os.File, error) {
 	}
 	if err := lockReportingFile(lock); err != nil {
 		lock.Close()
-		return nil, errors.New("连接器或另一条诊断命令正在使用本机诊断")
+		return nil, err
 	}
 	return lock, nil
 }

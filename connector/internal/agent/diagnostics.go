@@ -16,39 +16,167 @@ import (
 	"github.com/sherkevin/open-claude-code/connector/internal/store"
 )
 
+func (a *Agent) openDiagnostics() (*diagnostics.Manager, error) {
+	if a.opts.diagnosticsFactory != nil {
+		return a.opts.diagnosticsFactory(a.store.Dir)
+	}
+	return diagnostics.New(a.store.Dir)
+}
+
+func (a *Agent) installDiagnosticsLocked(manager *diagnostics.Manager) {
+	manager.SetUploader(a.uploadDiagnostics)
+	if a.identity.DeviceToken != "" {
+		manager.SetOwnerSince(a.identity.ConnectorID, a.identity.TenantID, diagnosticIdentityTime(a.store))
+	} else if a.state.Current() == state.Revoked {
+		manager.ClearOwner()
+	}
+	applyDiagnosticApprovals(manager, a.config.Sources)
+	a.diagMgr = manager
+}
+
+func (a *Agent) startDiagnostics() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return
+	}
+	if a.diagMgr != nil {
+		a.startDiagnosticManagerLocked()
+	} else if a.diagnosticsBusy {
+		a.diagnosticsRetryDone = make(chan struct{})
+		go a.recoverDiagnostics(a.runtimeCtx, a.diagnosticsRetryDone)
+	}
+}
+
+func (a *Agent) startDiagnosticManagerLocked() {
+	a.diagMgr.Record(diagnostics.Record{EventCode: "connector_started"})
+	a.diagMgr.Start()
+}
+
+// recoverDiagnostics retests a nonblocking lock with bounded backoff. A
+// second serving process can hold the lock indefinitely without blocking
+// this process's startup, local requests, or shutdown.
+func (a *Agent) recoverDiagnostics(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	const maxBackoff = 2 * time.Second
+	for delay := 50 * time.Millisecond; ctx.Err() == nil; delay = min(delay*2, maxBackoff) {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		lock, err := diagnostics.LockReporting(a.store.Dir)
+		if errors.Is(err, diagnostics.ErrReportingBusy) {
+			continue
+		}
+		if err != nil {
+			return
+		}
+		// A binding or revocation that ran while the lock was busy must
+		// finish before we pick the owner of the reloaded queue.
+		if !a.connectMu.TryLock() {
+			lock.Close()
+			continue
+		}
+		a.restoreDiagnostics(lock)
+		a.connectMu.Unlock()
+		return
+	}
+}
+
+func (a *Agent) restoreDiagnostics(lock *os.File) {
+	defer func() {
+		if lock != nil {
+			lock.Close()
+		}
+	}()
+	if a.isClosed() || !a.diagnosticIdentityStillCurrent() {
+		return
+	}
+	manager, err := a.openDiagnostics()
+	if err != nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return
+	}
+	a.installDiagnosticsLocked(manager)
+	a.diagnosticsLock, lock = lock, nil
+	a.startDiagnosticManagerLocked()
+}
+
+// A long-running lock holder might itself be another service. A waiting
+// instance must never take over its queue using a stale local binding.
+// The caller holds connectMu so binding changes in this instance are complete.
+func (a *Agent) diagnosticIdentityStillCurrent() bool {
+	a.mu.RLock()
+	identity := a.identity
+	revoked := a.state.Current() == state.Revoked
+	a.mu.RUnlock()
+	if revoked {
+		return identity.DeviceToken == ""
+	}
+	if a.store.Exists(fileRevoked) {
+		return false
+	}
+	var saved cloud.Identity
+	err := a.store.ReadProtectedJSON(fileIdentity, &saved)
+	if errors.Is(err, fs.ErrNotExist) {
+		return identity.DeviceToken == ""
+	}
+	return err == nil && saved.DeviceToken == identity.DeviceToken &&
+		saved.ConnectorID == identity.ConnectorID && saved.TenantID == identity.TenantID &&
+		saved.DeviceKeyID == identity.DeviceKeyID
+}
+
+func (a *Agent) closeDiagnostics(ctx context.Context) {
+	a.mu.Lock()
+	done := a.diagnosticsRetryDone
+	manager, lock := a.diagMgr, a.diagnosticsLock
+	a.diagMgr, a.diagnosticsLock = nil, nil
+	a.mu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+	}
+	if manager != nil {
+		manager.Record(diagnostics.Record{EventCode: "connector_stopped"})
+		manager.Close()
+	}
+	if lock != nil {
+		lock.Close()
+	}
+}
+
 func (a *Agent) recordDiagnostic(record diagnostics.Record) diagnostics.Event {
-	if a == nil || a.diagMgr == nil {
+	if a == nil {
+		return diagnostics.Event{}
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.diagMgr == nil {
 		return diagnostics.Event{}
 	}
 	return a.diagMgr.Record(record)
 }
 
-// StartDiagnostics starts durable persistence and background upload. It is
-// separate from Agent construction so CLI and unit-test callers control it.
-func (a *Agent) StartDiagnostics() {
-	if a != nil && a.diagMgr != nil {
-		a.diagMgr.Start()
-	}
-}
-
-// RecordStartup writes the connector lifecycle event for the serving process.
-func (a *Agent) RecordStartup() {
-	a.recordDiagnostic(diagnostics.Record{EventCode: "connector_started"})
-}
-
 func (a *Agent) syncDiagnosticApprovals() {
 	a.mu.RLock()
-	sources := append([]config.Source(nil), a.config.Sources...)
-	a.mu.RUnlock()
-	a.applyDiagnosticApprovals(sources)
+	defer a.mu.RUnlock()
+	if a.diagMgr != nil {
+		applyDiagnosticApprovals(a.diagMgr, a.config.Sources)
+	}
 }
 
-func (a *Agent) applyDiagnosticApprovals(sources []config.Source) {
-	if a == nil || a.diagMgr == nil {
-		return
-	}
+func applyDiagnosticApprovals(manager *diagnostics.Manager, sources []config.Source) {
 	for _, source := range sources {
-		a.diagMgr.SetApprovedTools(source.SourceID, source.ToolAllowlist)
+		manager.SetApprovedTools(source.SourceID, source.ToolAllowlist)
 	}
 }
 
@@ -99,7 +227,12 @@ func (a *Agent) markSourceRegistered(sourceID string, tools []string) {
 
 // DiagnosticLogs returns only local catalog-controlled connector events.
 func (a *Agent) DiagnosticLogs(query diagnostics.Query) []diagnostics.View {
-	if a == nil || a.diagMgr == nil {
+	if a == nil {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.diagMgr == nil {
 		return nil
 	}
 	return a.diagMgr.Logs(query)
@@ -110,6 +243,12 @@ func (a *Agent) DiagnosticStats() diagnostics.Stats {
 	if a == nil {
 		return diagnostics.Stats{}
 	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.diagnosticStatsLocked()
+}
+
+func (a *Agent) diagnosticStatsLocked() diagnostics.Stats {
 	if a.diagMgr == nil {
 		return diagnostics.Stats{StorageErrorCode: "LOCAL_STORAGE_FAILED"}
 	}
@@ -122,8 +261,10 @@ func (a *Agent) SetDiagnosticsPaused(paused bool) diagnostics.Stats {
 	if a == nil {
 		return diagnostics.Stats{}
 	}
-	if a.diagMgr == nil {
-		return a.DiagnosticStats()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.diagMgr == nil || a.closed {
+		return a.diagnosticStatsLocked()
 	}
 	before := a.diagMgr.Stats()
 	a.diagMgr.SetPaused(paused)
@@ -132,7 +273,7 @@ func (a *Agent) SetDiagnosticsPaused(paused bool) diagnostics.Stats {
 		if paused {
 			code = "diagnostics_paused"
 		}
-		a.recordDiagnostic(diagnostics.Record{EventCode: code})
+		a.diagMgr.Record(diagnostics.Record{EventCode: code})
 	}
 	return a.diagMgr.Stats()
 }
@@ -153,13 +294,6 @@ func (a *Agent) PlatformDiagnosticLogs(ctx context.Context, limit int) ([]diagno
 		return nil, diagnostics.CodeForError(err)
 	}
 	return diagnostics.SafePlatformViews(items), ""
-}
-
-func (a *Agent) bindDiagnosticsOwner(identity cloud.Identity) {
-	if a == nil || a.diagMgr == nil {
-		return
-	}
-	a.diagMgr.SetOwnerSince(identity.ConnectorID, identity.TenantID, diagnosticIdentityTime(a.store))
 }
 
 func diagnosticIdentityTime(st *store.Store) time.Time {
@@ -219,13 +353,6 @@ func ReportInstall(ctx context.Context, opts Options, attemptID string) (int, er
 		})
 }
 
-func (a *Agent) clearDiagnosticsOwner() {
-	if a == nil || a.diagMgr == nil {
-		return
-	}
-	a.diagMgr.ClearOwner()
-}
-
 func diagnosticDuration(start time.Time) int64 {
 	if start.IsZero() {
 		return 0
@@ -234,9 +361,6 @@ func diagnosticDuration(start time.Time) int64 {
 }
 
 func (a *Agent) reportAuthProxyCall(observation authproxy.Observation) {
-	if a == nil || a.diagMgr == nil {
-		return
-	}
 	code := "platform_request_succeeded"
 	if observation.Failed {
 		code = "platform_request_failed"

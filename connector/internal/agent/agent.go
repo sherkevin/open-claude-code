@@ -77,12 +77,15 @@ type Agent struct {
 	state         *state.Machine
 	cloud         *cloud.Client
 	deviceKey     *devicekey.Key
-	diagMgr       *diagnostics.Manager
 	demoServer    *demomcp.Server
 	demoState     builtinDemoState
 	demoErrorCode string
 
-	diagnosticsLock *os.File
+	// mu guards publication and shutdown of the diagnostic queue writer.
+	diagMgr              *diagnostics.Manager
+	diagnosticsLock      *os.File
+	diagnosticsBusy      bool
+	diagnosticsRetryDone chan struct{}
 
 	mu            sync.RWMutex
 	connectMu     sync.Mutex
@@ -162,8 +165,9 @@ func New(opts Options) (*Agent, error) {
 		return nil, err
 	}
 	var diagnosticsLock *os.File
+	var lockErr error
 	if opts.ExclusiveDiagnostics {
-		diagnosticsLock, _ = diagnostics.LockReporting(st.Dir)
+		diagnosticsLock, lockErr = diagnostics.LockReporting(st.Dir)
 		defer func() {
 			if diagnosticsLock != nil {
 				diagnosticsLock.Close()
@@ -256,26 +260,16 @@ func New(opts Options) (*Agent, error) {
 		}
 		agent.cloud = client
 	}
-	openDiagnostics := opts.diagnosticsFactory
-	if openDiagnostics == nil {
-		openDiagnostics = diagnostics.New
-	}
-	// A failed or occupied diagnostics lock degrades reporting rather than
-	// blocking the local connector or tunnel.
-	if !opts.ExclusiveDiagnostics || diagnosticsLock != nil {
-		if manager, err := openDiagnostics(st.Dir); err == nil {
-			agent.diagMgr = manager
-			manager.SetUploader(agent.uploadDiagnostics)
-			if agent.identity.DeviceToken != "" {
-				agent.bindDiagnosticsOwner(agent.identity)
-			} else if revoked {
-				manager.ClearOwner()
-			}
-			agent.applyDiagnosticApprovals(agent.config.Sources)
+	// Diagnostics may be temporarily owned by the offline reporting command.
+	// The serving runtime retries contention without delaying the local UI.
+	agent.diagnosticsBusy = errors.Is(lockErr, diagnostics.ErrReportingBusy)
+	if lockErr == nil {
+		if manager, err := agent.openDiagnostics(); err == nil {
+			agent.installDiagnosticsLocked(manager)
+			agent.diagnosticsLock, diagnosticsLock = diagnosticsLock, nil
 		}
 	}
 	agent.reapStaleFrpc()
-	agent.diagnosticsLock, diagnosticsLock = diagnosticsLock, nil
 	return agent, nil
 }
 
@@ -289,8 +283,7 @@ func (a *Agent) StartRuntime() {
 		return
 	}
 	a.runtimeOnce.Do(func() {
-		a.StartDiagnostics()
-		a.RecordStartup()
+		a.startDiagnostics()
 		if err := a.StartBuiltinDemo(); err != nil {
 			a.recordDiagnostic(diagnostics.Record{EventCode: "operation_failed"})
 		}
@@ -340,13 +333,7 @@ func (a *Agent) CloseContext(ctx context.Context) {
 		a.stopAuthProxies()
 		a.stopPreparedAuthProxies()
 		a.stopBuiltinDemoServer()
-		if a.diagMgr != nil {
-			a.recordDiagnostic(diagnostics.Record{EventCode: "connector_stopped"})
-			a.diagMgr.Close()
-		}
-		if a.diagnosticsLock != nil {
-			a.diagnosticsLock.Close()
-		}
+		a.closeDiagnostics(ctx)
 		a.mu.Lock()
 		a.stoppingTunnels--
 		a.mu.Unlock()
@@ -773,9 +760,11 @@ func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
 	}
 	a.mu.Lock()
 	a.cloud = client
+	if a.diagMgr != nil {
+		a.diagMgr.SetOwnerSince(identity.ConnectorID, identity.TenantID, diagnosticIdentityTime(a.store))
+		applyDiagnosticApprovals(a.diagMgr, a.config.Sources)
+	}
 	a.mu.Unlock()
-	a.bindDiagnosticsOwner(identity)
-	a.syncDiagnosticApprovals()
 	a.state.Transition(state.Configuring, "设备已绑定")
 	a.recordDiagnostic(diagnostics.Record{
 		EventCode:   "enrollment_succeeded",
@@ -1612,8 +1601,10 @@ func (a *Agent) revokeLocally(ctx context.Context, connectorID, reason string) e
 	}
 	saveErr := a.saveTunnelChoice(tunnelDisconnected, state.Revoked)
 	stopErr := a.stopTunnel(ctx)
-	a.clearDiagnosticsOwner()
 	a.mu.Lock()
+	if a.diagMgr != nil {
+		a.diagMgr.ClearOwner()
+	}
 	a.identity = cloud.Identity{}
 	a.cloud = nil
 	a.secrets = map[string]map[string]string{}

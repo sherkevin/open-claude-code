@@ -351,7 +351,7 @@ func (a *Agent) statusLocked() Status {
 		Version:         version.String(),
 		EdgeBase:        a.edgeBase(),
 		AuthProfiles:    a.authStatusLocked(),
-		Diagnostics:     a.DiagnosticStats(),
+		Diagnostics:     a.diagnosticStatsLocked(),
 		BuiltinDemo:     a.builtinDemoStatusLocked(),
 		UpdatedAt:       time.Now().UTC(),
 	}
