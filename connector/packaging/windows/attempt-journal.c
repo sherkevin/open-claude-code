@@ -26,6 +26,9 @@ typedef struct Stack { struct Stack *next; WCHAR text[1]; } Stack;
 #define SUMMARY_TEXT_LENGTH 512
 #define SUMMARY_NAME L"install-failure-summary.txt"
 #define SUMMARY_PENDING L"install-failure-summary.pending"
+#define CHECKPOINT_NAME L"install-package-checkpoints.txt"
+#define CHECKPOINT_PENDING L"install-package-checkpoints.pending"
+#define RESULT_NAME L"result.txt"
 #define READ_SHARE (FILE_SHARE_READ | FILE_SHARE_WRITE)
 #define PRIVATE_DIRECTORY L"O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 #define PRIVATE_FILE L"O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"
@@ -44,6 +47,7 @@ typedef struct {
 } SummaryResult;
 static SummaryResult logs_failure = {.step = L"准备日志目录"};
 static DWORD attempt_error;
+static WCHAR checkpoint_notice[192] = L"本次没有可保存的安装包检查记录。";
 static PSID admins, system_account, trusted_installer;
 
 static void push(Stack **stack, int size, const WCHAR *value) {
@@ -586,16 +590,26 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
     return length > 0 && length < SUMMARY_TEXT_LENGTH;
 }
 
-static SummaryResult write_summary(HANDLE file, BOOL replace, const WCHAR *summary) {
+typedef struct {
+    const WCHAR *name, *pending;
+    ACCESS_MASK pending_access;
+} ReportFile;
+
+static const ReportFile summary_report = {SUMMARY_NAME, SUMMARY_PENDING, GENERIC_WRITE | READ_CONTROL | DELETE};
+static const ReportFile checkpoint_report = {
+    CHECKPOINT_NAME, CHECKPOINT_PENDING, GENERIC_WRITE | READ_CONTROL | FILE_READ_ATTRIBUTES | DELETE
+};
+
+static SummaryResult write_report(HANDLE file, BOOL replace, const WCHAR *name, const WCHAR *text) {
     WCHAR bom = 0xfeff;
-    DWORD written, bytes = (DWORD)(wcslen(summary) * sizeof(WCHAR));
+    DWORD written, bytes = (DWORD)(wcslen(text) * sizeof(WCHAR));
     if (!SetEndOfFile(file))
         return (SummaryResult){.step = L"截断暂存摘要", .error = GetLastError()};
     if (!WriteFile(file, &bom, sizeof(bom), &written, NULL))
         return (SummaryResult){.step = L"写入摘要编码标记", .error = GetLastError()};
     if (written != sizeof(bom))
         return (SummaryResult){.step = L"摘要编码标记写入不完整"};
-    if (!WriteFile(file, summary, bytes, &written, NULL))
+    if (!WriteFile(file, text, bytes, &written, NULL))
         return (SummaryResult){.step = L"写入摘要正文", .error = GetLastError()};
     if (written != bytes)
         return (SummaryResult){.step = L"摘要正文写入不完整"};
@@ -604,12 +618,12 @@ static SummaryResult write_summary(HANDLE file, BOOL replace, const WCHAR *summa
 
     union {
         FILE_RENAME_INFORMATION info;
-        BYTE bytes[sizeof(FILE_RENAME_INFORMATION) + sizeof(SUMMARY_NAME)];
+        BYTE bytes[sizeof(FILE_RENAME_INFORMATION) + sizeof(CHECKPOINT_NAME)];
     } rename = {0};
     /* A simple name with no root handle renames within the open file's directory. */
     rename.info.ReplaceIfExists = replace;
-    rename.info.FileNameLength = sizeof(SUMMARY_NAME) - sizeof(WCHAR);
-    memcpy(rename.info.FileName, SUMMARY_NAME, sizeof(SUMMARY_NAME));
+    rename.info.FileNameLength = (ULONG)(wcslen(name) * sizeof(WCHAR));
+    memcpy(rename.info.FileName, name, rename.info.FileNameLength);
     IO_STATUS_BLOCK status;
     NTSTATUS renamed = NtSetInformationFile(file, &status, &rename, sizeof(rename), FileRenameInformation);
     if (renamed < 0)
@@ -617,10 +631,11 @@ static SummaryResult write_summary(HANDLE file, BOOL replace, const WCHAR *summa
     return (SummaryResult){0};
 }
 
-static SummaryResult replace_summary(HANDLE directory, PSECURITY_DESCRIPTOR sd, const WCHAR *summary) {
+static SummaryResult replace_report(HANDLE directory, PSECURITY_DESCRIPTOR sd,
+                                    const ReportFile *report, const WCHAR *text) {
     /* The caller holds the quota mutex and the logs directory has no untrusted
        writers. Inspect any previous destination without following links. */
-    HANDLE old = open_child(directory, SUMMARY_NAME, READ_CONTROL | FILE_READ_ATTRIBUTES,
+    HANDLE old = open_child(directory, report->name, READ_CONTROL | FILE_READ_ATTRIBUTES,
                             FILE_OPEN, FILE_NON_DIRECTORY_FILE, NULL);
     BY_HANDLE_FILE_INFORMATION info;
     BOOL replace = old != INVALID_HANDLE_VALUE;
@@ -639,7 +654,7 @@ static SummaryResult replace_summary(HANDLE directory, PSECURITY_DESCRIPTOR sd, 
     /* A single reserved staging name also bounds leftovers after process death.
        Recover a stale staging file only after validating it by handle. */
     BOOL created;
-    HANDLE file = open_child_shared(directory, SUMMARY_PENDING, GENERIC_WRITE | READ_CONTROL | DELETE,
+    HANDLE file = open_child_shared(directory, report->pending, report->pending_access,
                                     FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE | FILE_WRITE_THROUGH, sd, 0, &created);
     if (file == INVALID_HANDLE_VALUE)
         return (SummaryResult){.step = L"打开暂存摘要", .error = GetLastError()};
@@ -647,7 +662,7 @@ static SummaryResult replace_summary(HANDLE directory, PSECURITY_DESCRIPTOR sd, 
     SummaryResult result;
     BOOL validated = private_regular_file(file, &info, &check);
     if (validated) {
-        result = write_summary(file, replace, summary);
+        result = write_report(file, replace, report->name, text);
     } else {
         result = (SummaryResult){.step = check, .file = L"暂存摘要", .error = GetLastError()};
     }
@@ -658,7 +673,7 @@ static SummaryResult replace_summary(HANDLE directory, PSECURITY_DESCRIPTOR sd, 
     return result;
 }
 
-static SummaryResult save_summary(const WCHAR *summary) {
+static SummaryResult save_report(const ReportFile *report, const WCHAR *text) {
     if (!*attempt) return (SummaryResult){.step = L"生成安装编号", .error = attempt_error};
     if (logs_directory == INVALID_HANDLE_VALUE) return logs_failure;
     if (!safe_permissions(logs_directory, 0))
@@ -669,13 +684,17 @@ static SummaryResult save_summary(const WCHAR *summary) {
     SummaryResult result;
     HANDLE quota = lock_journal(sd);
     if (quota) {
-        result = replace_summary(logs_directory, sd, summary);
+        result = replace_report(logs_directory, sd, report, text);
         unlock_journal(quota);
     } else {
         result = (SummaryResult){.step = L"取得摘要保存锁", .error = GetLastError()};
     }
     LocalFree(sd);
     return result;
+}
+
+static SummaryResult save_summary(const WCHAR *summary) {
+    return save_report(&summary_report, summary);
 }
 
 static void failure_message(WCHAR *message, size_t capacity, const WCHAR *summary, SummaryResult result) {
@@ -699,10 +718,10 @@ static void failure_message(WCHAR *message, size_t capacity, const WCHAR *summar
                    L"Kaiwu\\Connector\\logs\\install-attempts\\%ls.jsonl", attempt);
 
     _snwprintf(message, capacity,
-        L"%ls\r\n%ls\r\n%ls\r\n请复制此窗口内容并转发给技术支持（Ctrl+C）。", summary,
+        L"%ls\r\n%ls\r\n%ls\r\n%ls\r\n请复制此窗口内容并转发给技术支持（Ctrl+C）。", summary,
         result.step ? failure : L"已保存本次摘要。此文件保存最近一次失败，请先核对安装编号。\r\n"
                                 L"位置：Windows 公共应用数据目录下的 Kaiwu\\Connector\\logs\\" SUMMARY_NAME,
-        journal_finished ? event : L"本次事件文件未能确认写完。");
+        journal_finished ? event : L"本次事件文件未能确认写完。", checkpoint_notice);
     message[capacity - 1] = 0;
 }
 
@@ -736,13 +755,153 @@ EXPORT(Workspace) {
     push(stack, size, L"");
 }
 
+static const char *const checkpoints[] = {"source_precheck", "pre_change_verification"};
+static const char *const checkpoint_files[] = {"bin/kaiwu-connector.exe", "bin/frpc.exe", "service-handoff.ps1"};
+static const char *const checkpoint_results[] = {
+    "present|ok", "present|checksum_mismatch", "missing|file_missing", "access_denied|access_denied",
+    "unknown|unknown"
+};
+#define MAX_CHECKPOINTS (ARRAY_SIZE(checkpoints) * ARRAY_SIZE(checkpoint_files))
+
+typedef struct { const char *checkpoint, *file, *result; } CheckpointRow;
+
+static int checkpoint_field(const char **line, const char *const *choices, size_t count, char end) {
+    for (size_t i = 0; i < count; ++i) {
+        const char *cursor = *line;
+        if (consume_text(&cursor, choices[i]) && *cursor == end) {
+            *line = end ? cursor + 1 : cursor;
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* The worker appends a counted footer, so a write cut off at a line boundary
+   cannot be published as a shorter, apparently complete report. */
+static int parse_checkpoints(char *line, CheckpointRow *rows) {
+    BOOL identified = FALSE;
+    unsigned int seen = 0;
+    int count = 0;
+    while (*line) {
+        char *newline = strchr(line, '\n');
+        if (!newline || newline == line || newline[-1] != '\r') return -1;
+        newline[-1] = 0;
+        const char *field = line;
+        line = newline + 1;
+        if (!identified) {
+            if (consume_text(&field, "package_check_attempt_id=")) {
+                for (size_t i = 0; i < ARRAY_SIZE(attempt) - 1; ++i)
+                    if (!field[i] || (unsigned char)field[i] != attempt[i]) return -1;
+                if (field[ARRAY_SIZE(attempt) - 1]) return -1;
+                identified = TRUE;
+            } else if (consume_text(&field, "package_check")) {
+                return -1;
+            }
+            continue; /* Historical result fields are handled by the existing NSIS path. */
+        }
+        if (consume_text(&field, "package_check_end="))
+            return !*line && field[0] == '0' + count && !field[1] ? count : -1;
+        if (!consume_text(&field, "package_check=") || (size_t)count == MAX_CHECKPOINTS) return -1;
+        int stage = checkpoint_field(&field, checkpoints, ARRAY_SIZE(checkpoints), '|');
+        int file = checkpoint_field(&field, checkpoint_files, ARRAY_SIZE(checkpoint_files), '|');
+        int result = checkpoint_field(&field, checkpoint_results, ARRAY_SIZE(checkpoint_results), 0);
+        if (stage < 0 || file < 0 || result < 0) return -1;
+        unsigned int key = 1u << (stage * ARRAY_SIZE(checkpoint_files) + file);
+        if (seen & key) return -1;
+        seen |= key;
+        rows[count++] = (CheckpointRow){checkpoints[stage], checkpoint_files[file], checkpoint_results[result]};
+    }
+    return identified ? -1 : 0;
+}
+
+static void checkpoint_failure(const WCHAR *reason, DWORD error, DWORD cleanup_error) {
+    WCHAR detail[48] = L"", cleanup[48] = L"";
+    if (error) wsprintfW(detail, L"（系统错误码 %lu）", error);
+    if (cleanup_error) wsprintfW(cleanup, L"暂存清理失败（系统错误码 %lu）。", cleanup_error);
+    _snwprintf(checkpoint_notice, ARRAY_SIZE(checkpoint_notice),
+        L"未能保存本次安装包检查记录。%ls%ls。%ls", reason, detail, cleanup);
+}
+
+static void prepare_checkpoint_result(HANDLE directory) {
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(PRIVATE_FILE, SDDL_REVISION_1, &sd, NULL)) {
+        /* WriteAllText uses CreateFile's create-always semantics. Pre-create
+           here so that the result has a trusted owner even on tokens whose
+           default owner is the individual user. */
+        HANDLE file = open_child(directory, RESULT_NAME, FILE_WRITE_DATA, FILE_CREATE, FILE_NON_DIRECTORY_FILE, sd);
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        LocalFree(sd);
+    }
+}
+
+static void persist_checkpoints(HANDLE directory) {
+    if (directory == INVALID_HANDLE_VALUE) {
+        checkpoint_failure(L"没有可校验的本次工作区或安装编号", 0, 0);
+        return;
+    }
+    HANDLE file = open_child_shared(directory, RESULT_NAME, GENERIC_READ, FILE_OPEN,
+                                    FILE_NON_DIRECTORY_FILE, NULL, FILE_SHARE_READ, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND) checkpoint_failure(L"打开本次结果文件失败", error, 0);
+        return;
+    }
+    char input[MAX_BYTES + 1];
+    BY_HANDLE_FILE_INFORMATION info;
+    LARGE_INTEGER length;
+    DWORD read = 0, error = ERROR_SUCCESS;
+    BOOL valid = private_regular_file(file, &info, NULL) && GetFileSizeEx(file, &length);
+    if (valid && length.QuadPart > MAX_BYTES) {
+        error = ERROR_FILE_TOO_LARGE;
+        valid = FALSE;
+    } else if (!valid || (length.QuadPart && !ReadFile(file, input, (DWORD)length.QuadPart, &read, NULL))) {
+        error = GetLastError();
+        valid = FALSE;
+    }
+    CloseHandle(file);
+    if (!valid) {
+        checkpoint_failure(L"读取并校验本次结果文件失败", error, 0);
+        return;
+    }
+    if (!read && !length.QuadPart) return;
+    input[read] = 0;
+    CheckpointRow rows[MAX_CHECKPOINTS];
+    int count = read == (DWORD)length.QuadPart && !memchr(input, 0, read) ? parse_checkpoints(input, rows) : -1;
+    if (count < 0) {
+        checkpoint_failure(L"本次检查记录格式不完整或未通过校验", 0, 0);
+        return;
+    }
+    if (!count) return;
+
+    WCHAR text[768];
+    int used = _snwprintf(text, ARRAY_SIZE(text), L"package_check_attempt_id=%ls\r\n", attempt);
+    for (int i = 0; used > 0 && (size_t)used < ARRAY_SIZE(text) && i < count; ++i) {
+        size_t remaining = ARRAY_SIZE(text) - used;
+        int added = _snwprintf(text + used, remaining, L"package_check=%hs|%hs|%hs\r\n",
+                               rows[i].checkpoint, rows[i].file, rows[i].result);
+        used = added > 0 && (size_t)added < remaining ? used + added : -1;
+    }
+    if (used <= 0 || (size_t)used >= ARRAY_SIZE(text)) {
+        checkpoint_failure(L"无法生成本次检查记录", 0, 0);
+        return;
+    }
+    SummaryResult saved = save_report(&checkpoint_report, text);
+    if (saved.step) {
+        checkpoint_failure(L"发布本次检查记录失败", saved.error, saved.cleanup_error);
+        return;
+    }
+    wcscpy(checkpoint_notice, L"已保存本次安装包检查记录。请先核对安装编号。\r\n"
+          L"位置：Windows 公共应用数据目录下的 Kaiwu\\Connector\\logs\\" CHECKPOINT_NAME);
+}
+
 static BOOL start_installer(const WCHAR *powershell, const WCHAR *source, const WCHAR *argument,
                             STARTUPINFOEXW *startup, DWORD flags, PROCESS_INFORMATION *process) {
     WCHAR command[5 * MAX_PATH];
     int length = _snwprintf(command, ARRAY_SIZE(command),
         L"\"%ls\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"%ls\\install.ps1\" "
-        L"-ResultPath \"%ls\\result.txt\" -FailureDetailsPath \"%ls\\failure.txt\" -FailureDetailsCodes -UsePackageTemp%ls",
-        powershell, source, source, source, argument);
+        L"-ResultPath \"%ls\\" RESULT_NAME L"\" -FailureDetailsPath \"%ls\\failure.txt\" "
+        L"-FailureDetailsCodes -UsePackageTemp%ls%ls%ls",
+        powershell, source, source, source, *attempt ? L" -PackageCheckAttemptId " : L"", attempt, argument);
     return length > 0 && (size_t)length < ARRAY_SIZE(command) &&
            CreateProcessW(powershell, command, NULL, NULL, startup->lpAttributeList != NULL, flags, NULL,
                           source, &startup->StartupInfo, process);
@@ -755,6 +914,9 @@ EXPORT(RunInstaller) {
         push(stack, size, L"error");
         return;
     }
+    HANDLE directory = *attempt && workspace_dirs.count && !wcscmp(source, workspace)
+                       ? parent_handle(&workspace_dirs) : INVALID_HANDLE_VALUE;
+    if (directory != INVALID_HANDLE_VALUE) prepare_checkpoint_result(directory);
 
     /* Inherit only the append-only journal handle. PowerShell never opens a diagnostic path. */
     HANDLE child_journal = NULL;
@@ -799,9 +961,10 @@ EXPORT(RunInstaller) {
     }
     CloseHandle(process.hThread);
     DWORD exit_code;
-    BOOL finished = WaitForSingleObject(process.hProcess, INFINITE) == WAIT_OBJECT_0 &&
-                    GetExitCodeProcess(process.hProcess, &exit_code);
+    BOOL exited = WaitForSingleObject(process.hProcess, INFINITE) == WAIT_OBJECT_0;
+    BOOL finished = exited && GetExitCodeProcess(process.hProcess, &exit_code);
     CloseHandle(process.hProcess);
+    if (exited) persist_checkpoints(directory);
     if (finished) wsprintfW(result, L"%lu", exit_code);
     push(stack, size, finished ? result : L"error");
 }

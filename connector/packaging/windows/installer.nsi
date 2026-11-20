@@ -343,6 +343,10 @@ Section "安装" SecInstall
     Goto maintenance_failed
   ${EndIf}
   ClearErrors
+  ; Shortcuts use $OUTDIR as their working directory. Keep the extracted
+  ; package directory out of Shell Link so it can be removed after install.
+  SetOutPath "$INSTDIR"
+  IfErrors maintenance_failed
   FileOpen $2 "$INSTDIR\open-config.cmd" w
   IfErrors maintenance_failed
   FileWrite $2 "@echo off$\r$\nstart $\"Kaiwu Connector$\" $\"http://127.0.0.1:17872/$\"$\r$\n"

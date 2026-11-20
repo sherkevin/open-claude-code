@@ -227,6 +227,10 @@ function Write-InstallResult {
   # Local only. Keep the launcher's result line and the event journal format intact.
   $lines += "package_check_attempt_id=$PackageCheckAttemptId"
   foreach ($check in $PackageChecks.Values) { $lines += "package_check=$check" }
+  if ($FailureDetailsCodes) {
+    # The graphical launcher requires this footer before publishing any rows.
+    $lines += "package_check_end=$($PackageChecks.Count)"
+  }
   try {
     $parent = Split-Path -Parent $ResultPath
     if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
