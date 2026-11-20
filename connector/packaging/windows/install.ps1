@@ -2,7 +2,8 @@
 # 用法：以管理员身份运行 PowerShell：.\install.ps1
 #Requires -RunAsAdministrator
 param(
-  [string]$ResultPath = ""
+  [string]$ResultPath = "",
+  [string]$FailureDetailsPath = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -39,6 +40,8 @@ if ([string]::IsNullOrWhiteSpace($ResultPath)) {
 
 $Stage = "startup"
 $FailureStage = $null
+$FailureReason = "unknown"
+$FailureFile = $null
 $OriginalHandoff = @{ startup_changed = $false; stop_attempted = $false; delete_accepted = $false }
 $ReplacementServiceCreated = $false
 $OldInstallChanged = $false
@@ -57,6 +60,47 @@ $CriticalFiles = @(
   [pscustomobject]@{ SourceRelative = "bin/frpc.exe"; TargetName = "frpc.exe" },
   [pscustomobject]@{ SourceRelative = "service-handoff.ps1"; TargetName = "service-handoff.ps1" }
 )
+
+function Set-InstallFailure {
+  param([string]$Reason, [string]$SourceRelative)
+  $script:FailureReason = $Reason
+  # Only product filenames from code are eligible for the support summary.
+  $script:FailureFile = $CriticalFiles | Where-Object SourceRelative -eq $SourceRelative |
+    ForEach-Object { $_.TargetName }
+}
+
+function Write-InstallFailureDetails {
+  if ([string]::IsNullOrWhiteSpace($FailureDetailsPath)) { return }
+  $phase = switch ($FailureStage) {
+    "source_precheck"          { "校验解包后的安装文件" }
+    "transaction_lock"         { "取得安装事务锁" }
+    "backup_prepare"           { "检查并备份已有安装" }
+    "quiesce"                  { "停止原服务和相关进程" }
+    "pre_change_verification"  { "替换程序前再次校验安装文件" }
+    "replace_install"          { "替换程序或配置服务" }
+    "final_verification"       { "最终校验并记录安装状态" }
+    default                    { "无法确认" }
+  }
+  $reason = switch ($FailureReason) {
+    "manifest_missing"     { "缺少校验清单 SHA256SUMS" }
+    "manifest_invalid"     { "校验清单 SHA256SUMS 含非法路径" }
+    "file_missing"         { if ($FailureFile) { "未找到文件 $FailureFile" } else { "未找到安装包清单中的文件" } }
+    "file_unlisted"        { "校验清单 SHA256SUMS 缺少 $FailureFile 的记录" }
+    "checksum_mismatch"    { if ($FailureFile) { "$FailureFile 未通过 SHA256 校验" } else { "安装包中的文件未通过 SHA256 校验" } }
+    "unsupported_host"     { "安装脚本需要 64 位 Windows PowerShell" }
+    "service_registration" { "无法注册连接器服务" }
+    "service_start"        { "无法启动连接器服务" }
+    "local_page_unready"   { "本机配置页面未在规定时间内就绪" }
+    default               { "无法确认具体原因" }
+  }
+  try {
+    [IO.File]::WriteAllText(
+      $FailureDetailsPath, "失败阶段：$phase`r`n原因：$reason`r`n", [Text.UnicodeEncoding]::new($false, $false)
+    )
+  } catch {
+    Write-Host "无法写入安装失败摘要。"
+  }
+}
 
 function Write-InstallResult {
   param([string]$ResultCode)
@@ -78,9 +122,11 @@ function Write-InstallResult {
     "backup_available=$($BackupAvailable.ToString().ToLowerInvariant())",
     "cleanup=$Cleanup"
   )
-  if ($FailureStage) { $lines += "failure_stage=$FailureStage" }
-  if ($BackupDir) {
-    $lines += "backup_dir=$BackupDir"
+  if ($ResultCode -ne "INSTALLED") {
+    if (-not $FailureStage) { $FailureStage = $Stage }
+    $lines += @("failure_stage=$FailureStage", "failure_reason=$FailureReason")
+    if ($FailureFile) { $lines += "failure_file=$FailureFile" }
+    Write-InstallFailureDetails
   }
   try {
     $parent = Split-Path -Parent $ResultPath
@@ -109,13 +155,16 @@ function Assert-CriticalFiles {
       $path = Join-Path $Source ($item.SourceRelative -replace '/', '\')
     }
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      Set-InstallFailure "file_missing" $item.SourceRelative
       throw "关键安装文件缺失: $($item.SourceRelative)"
     }
     $expected = $FrozenHashes[$item.SourceRelative]
     if (-not $expected) {
+      Set-InstallFailure "file_unlisted" $item.SourceRelative
       throw "SHA256SUMS 缺少关键文件: $($item.SourceRelative)"
     }
     if ((Get-FileSha256 $path) -ne $expected) {
+      Set-InstallFailure "checksum_mismatch" $item.SourceRelative
       throw "关键安装文件校验失败: $($item.SourceRelative)"
     }
   }
@@ -123,9 +172,13 @@ function Assert-CriticalFiles {
 
 $Stage = "source_precheck"
 try {
-  if (-not [Environment]::Is64BitProcess) { throw "请使用 64 位 Windows PowerShell" }
+  if (-not [Environment]::Is64BitProcess) {
+    Set-InstallFailure "unsupported_host"
+    throw "请使用 64 位 Windows PowerShell"
+  }
   $ChecksumFile = Join-Path $Source "SHA256SUMS"
   if (-not (Test-Path -LiteralPath $ChecksumFile -PathType Leaf)) {
+    Set-InstallFailure "manifest_missing"
     throw "安装包缺少 SHA256SUMS，拒绝安装"
   }
   foreach ($line in [System.IO.File]::ReadAllLines($ChecksumFile, [System.Text.Encoding]::UTF8)) {
@@ -138,12 +191,19 @@ try {
       [System.IO.Path]::IsPathRooted($relative) -or
       $relative -match '(^|/)\.\.?(/|$)'
     ) {
+      Set-InstallFailure "manifest_invalid"
       throw "SHA256SUMS 含非法路径"
     }
     $FrozenHashes[$relative] = $expected
     $target = Join-Path $Source ($relative -replace '/', '\')
-    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "安装包缺少文件: $relative" }
-    if ((Get-FileSha256 $target) -ne $expected) { throw "安装包文件校验失败: $relative" }
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+      Set-InstallFailure "file_missing" $relative
+      throw "安装包缺少文件: $relative"
+    }
+    if ((Get-FileSha256 $target) -ne $expected) {
+      Set-InstallFailure "checksum_mismatch" $relative
+      throw "安装包文件校验失败: $relative"
+    }
   }
   Assert-CriticalFiles
   $ServiceHandoffFunctions = [IO.File]::ReadAllText((Join-Path $Source "service-handoff.ps1"), [Text.Encoding]::UTF8)
@@ -647,12 +707,25 @@ function Ensure-ManagedDirectory {
 function Copy-ManagedFile {
   param(
     [Parameter(Mandatory = $true)][string]$SourcePath,
-    [Parameter(Mandatory = $true)][string]$DestinationPath
+    [Parameter(Mandatory = $true)][string]$DestinationPath,
+    [string]$CriticalSource
   )
   if (-not (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
     $script:CreatedManagedFiles.Add($DestinationPath)
   }
-  Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+  try {
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+  } catch {
+    if ($CriticalSource) {
+      # A critical source can disappear between verification and the copy.
+      $probeErrors = @()
+      $sourcePresent = Test-Path -LiteralPath $SourcePath -PathType Leaf -ErrorAction SilentlyContinue -ErrorVariable probeErrors
+      if (-not $sourcePresent -and $probeErrors.Count -eq 0) {
+        Set-InstallFailure "file_missing" $CriticalSource
+      }
+    }
+    throw
+  }
 }
 
 function Remove-ManagedFilesCreatedByRun {
@@ -889,6 +962,7 @@ $PayloadCompliance = @(Get-ChildItem (Join-Path $Source "compliance\*") -File -E
 $BackupProgramNames += @($PayloadDocs | ForEach-Object { "docs/" + $_.Name })
 $BackupProgramNames += @($PayloadCompliance | ForEach-Object { "compliance/" + $_.Name })
 
+$Stage = "transaction_lock"
 try {
   $Transaction = Enter-KaiwuInstallTransaction
 } catch {
@@ -897,13 +971,13 @@ try {
 }
 
 try {
-$EnvironmentBefore = @{}
-foreach ($name in $ManagedEnvNames) {
-  $EnvironmentBefore[$name] = Get-KaiwuMachineEnvironmentVariable $name
-}
-
 $Stage = "backup_prepare"
 try {
+  $EnvironmentBefore = @{}
+  foreach ($name in $ManagedEnvNames) {
+    $EnvironmentBefore[$name] = Get-KaiwuMachineEnvironmentVariable $name
+  }
+
   $ExistingService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
   $HadExistingService = $null -ne $ExistingService
   $NeedsBackup = $HadExistingService -or
@@ -1240,8 +1314,8 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
   Ensure-ManagedDirectory (Join-Path $InstallDir "docs")
   Ensure-ManagedDirectory (Join-Path $InstallDir "compliance")
 
-  Copy-ManagedFile (Join-Path $Source "bin\kaiwu-connector.exe") (Join-Path $InstallDir "kaiwu-connector.exe")
-  Copy-ManagedFile (Join-Path $Source "bin\frpc.exe") (Join-Path $InstallDir "frpc.exe")
+  Copy-ManagedFile (Join-Path $Source "bin\kaiwu-connector.exe") (Join-Path $InstallDir "kaiwu-connector.exe") -CriticalSource "bin/kaiwu-connector.exe"
+  Copy-ManagedFile (Join-Path $Source "bin\frpc.exe") (Join-Path $InstallDir "frpc.exe") -CriticalSource "bin/frpc.exe"
   $PayloadDocs | ForEach-Object {
       Copy-ManagedFile $_.FullName (Join-Path (Join-Path $InstallDir "docs") $_.Name)
     }
@@ -1290,6 +1364,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
   try {
     New-Service -Name $ServiceName -BinaryPathName $BinPath -StartupType Disabled -DisplayName $ReplacementSnapshot.display_name -ErrorAction Stop | Out-Null
   } catch {
+    Set-InstallFailure "service_registration"
     throw "注册服务失败: $($_.Exception.Message)"
   }
   $ReplacementServiceCreated = $true
@@ -1310,6 +1385,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
     try {
       Start-KaiwuService $ReplacementSnapshot.start_mode
     } catch {
+      Set-InstallFailure "service_start"
       $events = Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue |
         Where-Object { $_.Message -match 'Kaiwu|1053|7000|7009' } |
         Select-Object -First 5 |
@@ -1327,6 +1403,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
       if (-not $httpReady) { Start-Sleep -Milliseconds 500 }
     } while (-not $httpReady -and (Get-Date) -lt $HttpDeadline)
     if (-not $httpReady) {
+      Set-InstallFailure "local_page_unready"
       throw "服务已经启动，但本机配置页面 http://$Listen/ 未在 30 秒内返回 200"
     }
   }

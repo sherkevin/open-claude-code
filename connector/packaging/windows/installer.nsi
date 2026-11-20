@@ -141,7 +141,9 @@ Section "安装" SecInstall
 
   DetailPrint "校验并安装连接器、官方 frpc 和 Windows 服务..."
   Delete "$PLUGINSDIR\install-result.txt"
-  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" -ResultPath "$PLUGINSDIR\install-result.txt" 2>&1'
+  Delete "$PLUGINSDIR\install-failure-details.txt"
+  Delete "$APPDATA\Kaiwu\Connector\logs\install-failure-summary.txt"
+  nsExec::ExecToStack '"${POWERSHELL64}" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\payload\install.ps1" -ResultPath "$PLUGINSDIR\install-result.txt" -FailureDetailsPath "$PLUGINSDIR\install-failure-details.txt" 2>&1'
   Pop $0
   Pop $1
 
@@ -174,20 +176,51 @@ Section "安装" SecInstall
   ${AndIf} "$3" == "result=INSTALLED"
     CopyFiles /SILENT "$APPDATA\Kaiwu\Connector\logs\install.log" "$INSTDIR\install.log"
   ${Else}
-    StrCpy $4 "安装失败，恢复或清理状态未确认。请保留日志并联系技术支持。"
+    StrCpy $4 "恢复或清理状态无法确认。"
     ${If} "$3" == "result=PRECHECK_FAILED"
-      StrCpy $4 "安装前检查失败，未开始更改已有安装。"
+      StrCpy $4 "未开始更改已有安装。"
     ${ElseIf} "$3" == "result=FAILED_RESTORED"
-      StrCpy $4 "安装失败，已核验恢复安装前的程序和配置。请在开物中验证业务连接。"
+      StrCpy $4 "已核验恢复安装前的程序和配置。业务连通性待确认。"
     ${ElseIf} "$3" == "result=FAILED_RECOVERY_UNCONFIRMED"
-      StrCpy $4 "安装失败，未能确认恢复安装前的状态。请不要按已恢复处理，保留日志并联系技术支持。"
+      StrCpy $4 "未能确认已恢复安装前的状态。"
     ${ElseIf} "$3" == "result=FAILED_NO_PRIOR_CLEANED"
-      StrCpy $4 "安装失败，已清理本次新增的受管文件。"
+      StrCpy $4 "已清理本次新增的受管文件。"
     ${ElseIf} "$3" == "result=FAILED_NO_PRIOR_CLEANUP_UNCONFIRMED"
-      StrCpy $4 "安装失败，未能确认已清理本次新增的受管文件。请保留日志并联系技术支持。"
+      StrCpy $4 "未能确认已清理本次新增的受管文件。"
+    ${EndIf}
+
+    ; Read the two short UTF-16LE lines written by PowerShell, independently of
+    ; nsExec stdout. The fallback also covers failure to start PowerShell.
+    StrCpy $6 "失败阶段：无法确认"
+    StrCpy $7 "原因：无法确认具体原因"
+    ClearErrors
+    FileOpen $2 "$PLUGINSDIR\install-failure-details.txt" r
+    ${IfNot} ${Errors}
+      FileReadUTF16LE $2 $8
+      FileReadUTF16LE $2 $9
+      ${TrimNewLines} "$8" "$8"
+      ${TrimNewLines} "$9" "$9"
+      ${If} "$8" != ""
+      ${AndIf} "$9" != ""
+        StrCpy $6 "$8"
+        StrCpy $7 "$9"
+      ${EndIf}
+      FileClose $2
+    ${EndIf}
+    StrCpy $6 "安装失败$\r$\n$6$\r$\n$7$\r$\n恢复结果：$4$\r$\n状态：$3$\r$\n退出码：$0"
+
+    StrCpy $7 "请将上述摘要转发给技术支持。"
+    ClearErrors
+    FileOpen $2 "$APPDATA\Kaiwu\Connector\logs\install-failure-summary.txt" w
+    ${IfNot} ${Errors}
+      FileWriteUTF16LE /BOM $2 "$6$\r$\n"
+      ${IfNot} ${Errors}
+        StrCpy $7 "可将此文件转发给技术支持：$\r$\n%ProgramData%\Kaiwu\Connector\logs\install-failure-summary.txt"
+      ${EndIf}
+      FileClose $2
     ${EndIf}
     Call ReleaseSetupTransaction
-    MessageBox MB_ICONSTOP "$4$\r$\n$\r$\n退出码：$0$\r$\n状态：$3$\r$\n日志：$APPDATA\Kaiwu\Connector\logs\install.log"
+    MessageBox MB_ICONSTOP "$6$\r$\n$\r$\n$7" /SD IDOK
     Abort
   ${EndIf}
 
