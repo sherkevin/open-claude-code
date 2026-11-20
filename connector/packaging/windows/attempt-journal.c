@@ -34,8 +34,16 @@ typedef struct { HANDLE items[MAX_PATH / 2]; size_t count; } DirectoryChain;
 static DirectoryChain journal_dirs, workspace_dirs, program_dirs;
 static HANDLE journal = INVALID_HANDLE_VALUE;
 static BOOL journal_started, journal_finished;
-static WCHAR attempt[33], workspace[MAX_PATH], logs_path[MAX_PATH];
+static WCHAR attempt[33], workspace[MAX_PATH];
 static HANDLE logs_directory = INVALID_HANDLE_VALUE;
+typedef struct {
+    const WCHAR *step;
+    const WCHAR *file;
+    DWORD error;
+    DWORD cleanup_error;
+} SummaryResult;
+static SummaryResult logs_failure = {.step = L"准备日志目录"};
+static DWORD attempt_error;
 static PSID admins, system_account, trusted_installer;
 
 static void push(Stack **stack, int size, const WCHAR *value) {
@@ -69,8 +77,12 @@ static BOOL safe_permissions(HANDLE object, DWORD allowed_writes) {
     PSECURITY_DESCRIPTOR sd = NULL;
     DWORD status = GetSecurityInfo(object, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
                                    &owner, NULL, &dacl, NULL, &sd);
-    if (status != ERROR_SUCCESS) return FALSE;
+    if (status != ERROR_SUCCESS) {
+        SetLastError(status);
+        return FALSE;
+    }
 
+    DWORD error = ERROR_SUCCESS;
     DWORD write_rights = DELETE | WRITE_DAC | WRITE_OWNER | FILE_DELETE_CHILD | FILE_WRITE_EA |
                          FILE_WRITE_ATTRIBUTES | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY;
     write_rights &= ~allowed_writes;
@@ -78,7 +90,11 @@ static BOOL safe_permissions(HANDLE object, DWORD allowed_writes) {
     BOOL safe = trusted_sid(owner) && dacl;
     for (DWORD i = 0; safe && i < dacl->AceCount; ++i) {
         ACE_HEADER *header = NULL;
-        if (!GetAce(dacl, i, (void **)&header)) { safe = FALSE; break; }
+        if (!GetAce(dacl, i, (void **)&header)) {
+            error = GetLastError();
+            safe = FALSE;
+            break;
+        }
         if (header->AceFlags & INHERIT_ONLY_ACE || header->AceType == ACCESS_DENIED_ACE_TYPE) continue;
         if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) { safe = FALSE; break; }
         ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)header;
@@ -87,43 +103,61 @@ static BOOL safe_permissions(HANDLE object, DWORD allowed_writes) {
         safe = !(rights & write_rights) || trusted_sid(&ace->SidStart);
     }
     LocalFree(sd);
+    if (!safe) SetLastError(error);
     return safe;
 }
 
 static BOOL keep_directory(DirectoryChain *chain, HANDLE dir, DWORD allowed_writes) {
     if (dir == INVALID_HANDLE_VALUE) return FALSE;
     BY_HANDLE_FILE_INFORMATION info;
-    if (chain->count == ARRAY_SIZE(chain->items) || !GetFileInformationByHandle(dir, &info) ||
-        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != FILE_ATTRIBUTE_DIRECTORY ||
-        !safe_permissions(dir, allowed_writes)) {
-        CloseHandle(dir);
-        return FALSE;
+    DWORD error = ERROR_SUCCESS;
+    if (chain->count == ARRAY_SIZE(chain->items)) goto rejected;
+    if (!GetFileInformationByHandle(dir, &info)) {
+        error = GetLastError();
+        goto rejected;
+    }
+    if ((info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != FILE_ATTRIBUTE_DIRECTORY)
+        goto rejected;
+    if (!safe_permissions(dir, allowed_writes)) {
+        error = GetLastError();
+        goto rejected;
     }
     /* No share-delete while paths below this validated directory are in use. */
     chain->items[chain->count++] = dir;
     return TRUE;
+
+rejected:
+    CloseHandle(dir);
+    SetLastError(error);
+    return FALSE;
 }
 
 #define DIR_ACCESS (FILE_LIST_DIRECTORY | READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE)
 #define COMMON_DATA_WRITES (FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA)
 
 static HANDLE open_child_shared(HANDLE parent, const WCHAR *name, ACCESS_MASK access, ULONG disposition,
-                                ULONG options, PSECURITY_DESCRIPTOR security, ULONG sharing) {
+                                ULONG options, PSECURITY_DESCRIPTOR security, ULONG sharing,
+                                BOOL *created) {
     UNICODE_STRING child;
     RtlInitUnicodeString(&child, name);
     OBJECT_ATTRIBUTES attributes;
     InitializeObjectAttributes(&attributes, &child, OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE, parent, security);
     IO_STATUS_BLOCK status;
     HANDLE file;
-    if (NtCreateFile(&file, access | SYNCHRONIZE, &attributes, &status, NULL, FILE_ATTRIBUTE_NORMAL,
-                     sharing, disposition, options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
-                     NULL, 0) < 0) return INVALID_HANDLE_VALUE;
+    NTSTATUS opened = NtCreateFile(&file, access | SYNCHRONIZE, &attributes, &status, NULL, FILE_ATTRIBUTE_NORMAL,
+                                   sharing, disposition, options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+                                   NULL, 0);
+    if (opened < 0) {
+        SetLastError(RtlNtStatusToDosError(opened));
+        return INVALID_HANDLE_VALUE;
+    }
+    if (created) *created = status.Information == FILE_CREATED;
     return file;
 }
 
 static HANDLE open_child(HANDLE parent, const WCHAR *name, ACCESS_MASK access, ULONG disposition,
                          ULONG options, PSECURITY_DESCRIPTOR security) {
-    return open_child_shared(parent, name, access, disposition, options, security, READ_SHARE);
+    return open_child_shared(parent, name, access, disposition, options, security, READ_SHARE, NULL);
 }
 
 static HANDLE parent_handle(const DirectoryChain *chain) {
@@ -141,6 +175,7 @@ static BOOL append_path(WCHAR *path, const WCHAR *name) {
 
 static BOOL pin_known_path(DirectoryChain *chain, WCHAR *path, DWORD allowed_writes) {
     /* Reject redirected UNC paths, non-canonical components and alternate streams. */
+    SetLastError(ERROR_SUCCESS);
     WCHAR *next = NULL;
     if (wcslen(path) < 3 || path[1] != L':' || path[2] != L'\\' ||
         wcspbrk(path + 2, L"/:*?\"<>|") || !((path[0] >= L'A' && path[0] <= L'Z') ||
@@ -152,7 +187,10 @@ static BOOL pin_known_path(DirectoryChain *chain, WCHAR *path, DWORD allowed_wri
         if (!next) break;
     }
     WCHAR root[] = {path[0], L':', L'\\', 0};
-    if (GetDriveTypeW(root) != DRIVE_FIXED) return FALSE;
+    if (GetDriveTypeW(root) != DRIVE_FIXED) {
+        SetLastError(ERROR_SUCCESS);
+        return FALSE;
+    }
     HANDLE drive = CreateFileW(root, DIR_ACCESS, READ_SHARE, NULL, OPEN_EXISTING,
                                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     if (!keep_directory(chain, drive, FILE_ADD_SUBDIRECTORY)) return FALSE;
@@ -194,10 +232,17 @@ static const char *const codes[] = {"ok", "unknown", "unsupported_host", "busy",
     "checksum_mismatch", "access_denied", "service_registration", "service_start", "local_page_unready",
     "write_failed", "restored", "recovery_unconfirmed"};
 
-static BOOL private_regular_file(HANDLE file, BY_HANDLE_FILE_INFORMATION *info) {
-    return GetFileInformationByHandle(file, info) && info->nNumberOfLinks == 1 &&
-           !(info->dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
-           safe_permissions(file, 0);
+static BOOL private_regular_file(HANDLE file, BY_HANDLE_FILE_INFORMATION *info, const WCHAR **check) {
+    if (check) *check = L"读取文件属性";
+    if (!GetFileInformationByHandle(file, info)) return FALSE;
+    if (info->nNumberOfLinks != 1 ||
+        (info->dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+        if (check) *check = L"校验普通文件与链接数";
+        SetLastError(ERROR_SUCCESS);
+        return FALSE;
+    }
+    if (check) *check = L"校验文件访问权限";
+    return safe_permissions(file, 0);
 }
 
 static BOOL consume_text(const char **cursor, const char *expected) {
@@ -258,7 +303,7 @@ static BOOL recyclable_attempt(HANDLE file, BY_HANDLE_FILE_INFORMATION *info) {
     char contents[MAX_BYTES + 1];
     LARGE_INTEGER length;
     DWORD size;
-    if (!private_regular_file(file, info) || (info->dwFileAttributes & FILE_ATTRIBUTE_READONLY) ||
+    if (!private_regular_file(file, info, NULL) || (info->dwFileAttributes & FILE_ATTRIBUTE_READONLY) ||
         !GetFileSizeEx(file, &length) ||
         length.QuadPart <= 0 || length.QuadPart > MAX_BYTES ||
         !ReadFile(file, contents, (DWORD)length.QuadPart, &size, NULL) ||
@@ -305,7 +350,7 @@ static BOOL reserve_journal_slot(HANDLE directory, const WCHAR *id) {
     unsigned int oldest_name = 0;
     for (unsigned int i = 0; i < name_count; ++i) {
         HANDLE file = open_child_shared(directory, names[i], DIR_ACCESS | DELETE,
-                                        FILE_OPEN, FILE_NON_DIRECTORY_FILE, NULL, 0);
+                                        FILE_OPEN, FILE_NON_DIRECTORY_FILE, NULL, 0, NULL);
         if (file == INVALID_HANDLE_VALUE) continue;
         BY_HANDLE_FILE_INFORMATION info;
         if (recyclable_attempt(file, &info)) {
@@ -333,7 +378,9 @@ static HANDLE lock_journal(PSECURITY_DESCRIPTOR sd) {
     if (quota) {
         DWORD wait = WaitForSingleObject(quota, 1000);
         if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) return quota;
+        DWORD error = wait == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT;
         CloseHandle(quota);
+        SetLastError(error);
     }
     return NULL;
 }
@@ -360,12 +407,22 @@ static HANDLE create_journal(HANDLE directory, PSECURITY_DESCRIPTOR sd, const WC
 
 static void open_journal(void) {
     WCHAR path[MAX_PATH];
-    if (FAILED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, SHGFP_TYPE_CURRENT, path)) ||
-        !pin_known_path(&journal_dirs, path, COMMON_DATA_WRITES)) return;
+    HRESULT folder = SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, SHGFP_TYPE_CURRENT, path);
+    if (FAILED(folder)) {
+        DWORD error = HRESULT_FACILITY(folder) == FACILITY_WIN32 ? HRESULT_CODE(folder) : (DWORD)folder;
+        logs_failure = (SummaryResult){.step = L"定位 Windows 公共应用数据目录", .error = error};
+        return;
+    }
+    if (!pin_known_path(&journal_dirs, path, COMMON_DATA_WRITES)) {
+        logs_failure = (SummaryResult){.step = L"打开并校验公共应用数据目录", .error = GetLastError()};
+        return;
+    }
 
     PSECURITY_DESCRIPTOR dir_sd = NULL;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(PRIVATE_DIRECTORY, SDDL_REVISION_1, &dir_sd, NULL))
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(PRIVATE_DIRECTORY, SDDL_REVISION_1, &dir_sd, NULL)) {
+        logs_failure = (SummaryResult){.step = L"构造日志目录访问权限", .error = GetLastError()};
         return;
+    }
     /* Common AppData allows standard users to create children and change attributes.
        All journal operations use validated directory handles and never resolve that path again. */
     BOOL safe = open_journal_dir(L"Kaiwu", dir_sd, COMMON_DATA_WRITES) &&
@@ -373,9 +430,9 @@ static void open_journal(void) {
                 open_journal_dir(L"logs", dir_sd, COMMON_DATA_WRITES);
     if (safe) {
         logs_directory = parent_handle(&journal_dirs);
-        if (append_path(path, L"Kaiwu") && append_path(path, L"Connector") && append_path(path, L"logs"))
-            wcscpy(logs_path, path);
         safe = open_journal_dir(L"install-attempts", dir_sd, 0);
+    } else {
+        logs_failure = (SummaryResult){.step = L"打开并校验日志目录", .error = GetLastError()};
     }
     LocalFree(dir_sd);
     if (!safe) return;
@@ -419,7 +476,9 @@ static BOOL append_event(const WCHAR *stage_arg, const WCHAR *outcome_arg, const
 EXPORT(Begin) {
     static const WCHAR hex[] = L"0123456789abcdef";
     BYTE random[16];
-    if (BCryptGenRandom(NULL, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0) {
+    NTSTATUS rng = BCryptGenRandom(NULL, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    attempt_error = rng ? RtlNtStatusToDosError(rng) : ERROR_SUCCESS;
+    if (rng == 0) {
         for (size_t i = 0; i < ARRAY_SIZE(random); ++i) {
             attempt[i * 2] = hex[random[i] >> 4];
             attempt[i * 2 + 1] = hex[random[i] & 15];
@@ -430,6 +489,8 @@ EXPORT(Begin) {
         ConvertStringSidToSidW(L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", &trusted_installer)) {
         open_journal();
         if (logs_directory == INVALID_HANDLE_VALUE) close_chain(&journal_dirs);
+    } else if (*attempt) {
+        logs_failure = (SummaryResult){.step = L"初始化日志权限校验", .error = GetLastError()};
     }
     journal_started = append_event(L"started", L"started", L"ok");
 }
@@ -525,104 +586,137 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
     return length > 0 && length < SUMMARY_TEXT_LENGTH;
 }
 
-static BOOL replace_summary(HANDLE directory, PSECURITY_DESCRIPTOR sd, const WCHAR *summary) {
+static SummaryResult write_summary(HANDLE file, BOOL replace, const WCHAR *summary) {
+    WCHAR bom = 0xfeff;
+    DWORD written, bytes = (DWORD)(wcslen(summary) * sizeof(WCHAR));
+    if (!SetEndOfFile(file))
+        return (SummaryResult){.step = L"截断暂存摘要", .error = GetLastError()};
+    if (!WriteFile(file, &bom, sizeof(bom), &written, NULL))
+        return (SummaryResult){.step = L"写入摘要编码标记", .error = GetLastError()};
+    if (written != sizeof(bom))
+        return (SummaryResult){.step = L"摘要编码标记写入不完整"};
+    if (!WriteFile(file, summary, bytes, &written, NULL))
+        return (SummaryResult){.step = L"写入摘要正文", .error = GetLastError()};
+    if (written != bytes)
+        return (SummaryResult){.step = L"摘要正文写入不完整"};
+    if (!FlushFileBuffers(file))
+        return (SummaryResult){.step = L"提交暂存摘要写入", .error = GetLastError()};
+
+    union {
+        FILE_RENAME_INFORMATION info;
+        BYTE bytes[sizeof(FILE_RENAME_INFORMATION) + sizeof(SUMMARY_NAME)];
+    } rename = {0};
+    /* A simple name with no root handle renames within the open file's directory. */
+    rename.info.ReplaceIfExists = replace;
+    rename.info.FileNameLength = sizeof(SUMMARY_NAME) - sizeof(WCHAR);
+    memcpy(rename.info.FileName, SUMMARY_NAME, sizeof(SUMMARY_NAME));
+    IO_STATUS_BLOCK status;
+    NTSTATUS renamed = NtSetInformationFile(file, &status, &rename, sizeof(rename), FileRenameInformation);
+    if (renamed < 0)
+        return (SummaryResult){.step = L"发布正式摘要", .error = RtlNtStatusToDosError(renamed)};
+    return (SummaryResult){0};
+}
+
+static SummaryResult replace_summary(HANDLE directory, PSECURITY_DESCRIPTOR sd, const WCHAR *summary) {
     /* The caller holds the quota mutex and the logs directory has no untrusted
        writers. Inspect any previous destination without following links. */
     HANDLE old = open_child(directory, SUMMARY_NAME, READ_CONTROL | FILE_READ_ATTRIBUTES,
                             FILE_OPEN, FILE_NON_DIRECTORY_FILE, NULL);
     BY_HANDLE_FILE_INFORMATION info;
     BOOL replace = old != INVALID_HANDLE_VALUE;
+    const WCHAR *check;
     if (replace) {
-        BOOL safe = private_regular_file(old, &info);
+        BOOL safe = private_regular_file(old, &info, &check);
+        DWORD error = safe ? ERROR_SUCCESS : GetLastError();
         CloseHandle(old);
-        if (!safe) return FALSE;
+        if (!safe) return (SummaryResult){.step = check, .file = L"原摘要", .error = error};
+    } else {
+        DWORD error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND)
+            return (SummaryResult){.step = L"打开原摘要", .error = error};
     }
 
     /* A single reserved staging name also bounds leftovers after process death.
        Recover a stale staging file only after validating it by handle. */
+    BOOL created;
     HANDLE file = open_child_shared(directory, SUMMARY_PENDING, GENERIC_WRITE | READ_CONTROL | DELETE,
-                                    FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE | FILE_WRITE_THROUGH, sd, 0);
-    if (file == INVALID_HANDLE_VALUE) return FALSE;
-    if (!private_regular_file(file, &info)) {
-        CloseHandle(file);
-        return FALSE;
-    }
+                                    FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE | FILE_WRITE_THROUGH, sd, 0, &created);
+    if (file == INVALID_HANDLE_VALUE)
+        return (SummaryResult){.step = L"打开暂存摘要", .error = GetLastError()};
 
-    WCHAR bom = 0xfeff;
-    DWORD written, bytes = (DWORD)(wcslen(summary) * sizeof(WCHAR));
-    BOOL saved = SetEndOfFile(file) &&
-                 WriteFile(file, &bom, sizeof(bom), &written, NULL) && written == sizeof(bom) &&
-                 WriteFile(file, summary, bytes, &written, NULL) && written == bytes &&
-                 FlushFileBuffers(file);
-    if (saved) {
-        union {
-            FILE_RENAME_INFORMATION info;
-            BYTE bytes[sizeof(FILE_RENAME_INFORMATION) + sizeof(SUMMARY_NAME)];
-        } rename = {0};
-        /* A simple name with no root handle renames within the open file's directory. */
-        rename.info.ReplaceIfExists = replace;
-        rename.info.FileNameLength = sizeof(SUMMARY_NAME) - sizeof(WCHAR);
-        memcpy(rename.info.FileName, SUMMARY_NAME, sizeof(SUMMARY_NAME));
-        IO_STATUS_BLOCK status;
-        saved = NtSetInformationFile(file, &status, &rename, sizeof(rename), FileRenameInformation) >= 0;
+    SummaryResult result;
+    BOOL validated = private_regular_file(file, &info, &check);
+    if (validated) {
+        result = write_summary(file, replace, summary);
+    } else {
+        result = (SummaryResult){.step = check, .file = L"暂存摘要", .error = GetLastError()};
     }
-    if (!saved) delete_on_close(file);
+    /* Only remove the file we just created or the staging file we validated. */
+    if (result.step && (created || validated) && !delete_on_close(file))
+        result.cleanup_error = GetLastError();
     CloseHandle(file);
-    return saved;
+    return result;
 }
 
-static BOOL save_summary(const WCHAR *summary) {
-    if (!*attempt || logs_directory == INVALID_HANDLE_VALUE || !safe_permissions(logs_directory, 0))
-        return FALSE;
+static SummaryResult save_summary(const WCHAR *summary) {
+    if (!*attempt) return (SummaryResult){.step = L"生成安装编号", .error = attempt_error};
+    if (logs_directory == INVALID_HANDLE_VALUE) return logs_failure;
+    if (!safe_permissions(logs_directory, 0))
+        return (SummaryResult){.step = L"复核日志目录访问权限", .error = GetLastError()};
     PSECURITY_DESCRIPTOR sd = NULL;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(PRIVATE_FILE, SDDL_REVISION_1, &sd, NULL))
-        return FALSE;
-    BOOL saved = FALSE;
+        return (SummaryResult){.step = L"构造摘要文件访问权限", .error = GetLastError()};
+    SummaryResult result;
     HANDLE quota = lock_journal(sd);
     if (quota) {
-        saved = replace_summary(logs_directory, sd, summary);
+        result = replace_summary(logs_directory, sd, summary);
         unlock_journal(quota);
+    } else {
+        result = (SummaryResult){.step = L"取得摘要保存锁", .error = GetLastError()};
     }
     LocalFree(sd);
-    return saved;
+    return result;
 }
 
-static void failure_message(WCHAR *message, size_t capacity, const WCHAR *summary, BOOL saved) {
-    WCHAR summary_path[MAX_PATH] = L"", event_path[MAX_PATH] = L"", event_name[ATTEMPT_NAME_LENGTH + 1];
-    if (saved && *logs_path) {
-        wcscpy(summary_path, logs_path);
-        if (!append_path(summary_path, SUMMARY_NAME)) *summary_path = 0;
+static void failure_message(WCHAR *message, size_t capacity, const WCHAR *summary, SummaryResult result) {
+    WCHAR failure[192] = L"", cleanup[64] = L"", event[192] = L"";
+    if (result.step) {
+        const WCHAR *file = result.file ? result.file : L"";
+        const WCHAR *separator = result.file ? L"：" : L"";
+        if (result.cleanup_error)
+            _snwprintf(cleanup, ARRAY_SIZE(cleanup), L" 清理暂存摘要失败，系统错误码 %lu（0x%08lX）。",
+                       result.cleanup_error, result.cleanup_error);
+        if (result.error)
+            _snwprintf(failure, ARRAY_SIZE(failure), L"未能保存本次摘要。%ls%ls%ls，系统错误码 %lu（0x%08lX）。%ls",
+                       file, separator, result.step, result.error, result.error, cleanup);
+        else
+            _snwprintf(failure, ARRAY_SIZE(failure), L"未能保存本次摘要。%ls%ls%ls（系统未返回错误码）。%ls",
+                       file, separator, result.step, cleanup);
     }
-    if (journal_finished && *logs_path) {
-        wsprintfW(event_name, L"%ls.jsonl", attempt);
-        wcscpy(event_path, logs_path);
-        if (!append_path(event_path, L"install-attempts") || !append_path(event_path, event_name))
-            *event_path = 0;
-    }
+    if (journal_finished)
+        _snwprintf(event, ARRAY_SIZE(event),
+                   L"本次事件文件已写入结束标记。\r\n位置：Windows 公共应用数据目录下的 "
+                   L"Kaiwu\\Connector\\logs\\install-attempts\\%ls.jsonl", attempt);
 
     _snwprintf(message, capacity,
-        L"%ls\r\n%ls%ls%ls\r\n%ls%ls\r\n请复制此窗口内容并转发给技术支持（Ctrl+C）。", summary,
-        *summary_path ? L"已保存本次摘要。此文件保存最近一次失败，请先核对安装编号。\r\n" :
-        saved ? L"已保存本次摘要，路径无法在窗口中显示。" : L"未能保存本次摘要。",
-        summary_path, *summary_path ? L"\r\n" : L"",
-        *event_path ? L"本次事件文件已写入结束标记：\r\n" :
-        journal_finished ? L"本次事件文件已写入结束标记，路径无法在窗口中显示。" :
-                           L"本次事件文件未能确认写完。",
-        event_path);
+        L"%ls\r\n%ls\r\n%ls\r\n请复制此窗口内容并转发给技术支持（Ctrl+C）。", summary,
+        result.step ? failure : L"已保存本次摘要。此文件保存最近一次失败，请先核对安装编号。\r\n"
+                                L"位置：Windows 公共应用数据目录下的 Kaiwu\\Connector\\logs\\" SUMMARY_NAME,
+        journal_finished ? event : L"本次事件文件未能确认写完。");
     message[capacity - 1] = 0;
 }
 
 EXPORT(ExplainFailure) {
     WCHAR stage[64], reason[64], file[64], recovery[64];
-    WCHAR summary[SUMMARY_TEXT_LENGTH], message[SUMMARY_TEXT_LENGTH + 2 * MAX_PATH + 256];
+    WCHAR summary[SUMMARY_TEXT_LENGTH], message[SUMMARY_TEXT_LENGTH + 512];
     if (!pop(stack, stage, ARRAY_SIZE(stage)) || !pop(stack, reason, ARRAY_SIZE(reason)) ||
         !pop(stack, file, ARRAY_SIZE(file)) || !pop(stack, recovery, ARRAY_SIZE(recovery)) ||
         !format_failure(summary, stage, reason, file, recovery)) {
         push(stack, size, L"安装失败。未能生成本次摘要，请复制此窗口内容并转发给技术支持（Ctrl+C）。");
         return;
     }
-    BOOL saved = save_summary(summary);
-    failure_message(message, ARRAY_SIZE(message), summary, saved);
+    SummaryResult result = save_summary(summary);
+    failure_message(message, ARRAY_SIZE(message), summary, result);
     push(stack, size, message);
 }
 

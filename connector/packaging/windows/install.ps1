@@ -6,7 +6,8 @@ param(
   [string]$FailureDetailsPath = "",
   [long]$AttemptHandle = 0,
   [switch]$UsePackageTemp,
-  [switch]$FailureDetailsCodes
+  [switch]$FailureDetailsCodes,
+  [string]$PackageCheckAttemptId = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -69,6 +70,12 @@ $CriticalFiles = @(
   [pscustomobject]@{ SourceRelative = "bin/frpc.exe"; TargetName = "frpc.exe" },
   [pscustomobject]@{ SourceRelative = "service-handoff.ps1"; TargetName = "service-handoff.ps1" }
 )
+$CriticalFilesBySource = @{}
+foreach ($item in $CriticalFiles) { $CriticalFilesBySource[$item.SourceRelative] = $item }
+$PackageChecks = [ordered]@{}
+if ($PackageCheckAttemptId -cnotmatch '\A[0-9a-f]{32}\z') {
+  $PackageCheckAttemptId = [guid]::NewGuid().ToString('N')
+}
 
 # The launcher gives this process an append-only file handle. The script never
 # opens a diagnostic path, and standalone installs can run without the handle.
@@ -123,7 +130,7 @@ function Fail-InstallPhase {
   $code = switch ($FailureReason) {
     { $_ -in @('manifest_missing', 'file_missing') } { 'file_missing' }
     { $_ -in @('manifest_invalid', 'file_unlisted', 'checksum_mismatch') } { 'checksum_mismatch' }
-    { $_ -in @('unsupported_host', 'service_registration', 'service_start', 'local_page_unready') } { $_ }
+    { $_ -in @('access_denied', 'unsupported_host', 'service_registration', 'service_start', 'local_page_unready') } { $_ }
     default {
       $errorCause = $ErrorRecord.Exception.GetBaseException()
       if ($errorCause -is [UnauthorizedAccessException] -or $ErrorRecord.CategoryInfo.Category -eq 'PermissionDenied') {
@@ -175,6 +182,7 @@ function Write-InstallFailureDetails {
     "file_missing"         { if ($FailureFile) { "未找到文件 $FailureFile" } else { "未找到安装包清单中的文件" } }
     "file_unlisted"        { "校验清单 SHA256SUMS 缺少 $FailureFile 的记录" }
     "checksum_mismatch"    { if ($FailureFile) { "$FailureFile 未通过 SHA256 校验" } else { "安装包中的文件未通过 SHA256 校验" } }
+    "access_denied"        { if ($FailureFile) { "系统拒绝读取文件 $FailureFile" } else { "系统拒绝本次操作所需的访问" } }
     "unsupported_host"     { "安装脚本需要 64 位 Windows PowerShell" }
     "service_registration" { "无法注册连接器服务" }
     "service_start"        { "无法启动连接器服务" }
@@ -216,6 +224,9 @@ function Write-InstallResult {
     if ($FailureFile) { $lines += "failure_file=$FailureFile" }
     Write-InstallFailureDetails
   }
+  # Local only. Keep the launcher's result line and the event journal format intact.
+  $lines += "package_check_attempt_id=$PackageCheckAttemptId"
+  foreach ($check in $PackageChecks.Values) { $lines += "package_check=$check" }
   try {
     $parent = Split-Path -Parent $ResultPath
     if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
@@ -235,19 +246,74 @@ function Get-FileSha256 {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-PackageCheckErrorCode {
+  param([System.Management.Automation.ErrorRecord]$Record)
+  for ($cause = $Record.Exception; $cause; $cause = $cause.InnerException) {
+    if ($cause -is [UnauthorizedAccessException] -or $cause.HResult -eq 0x80070005) {
+      return 'access_denied'
+    }
+    if ($cause -is [IO.FileNotFoundException] -or $cause -is [IO.DirectoryNotFoundException] -or
+        $cause -is [System.Management.Automation.ItemNotFoundException] -or
+        $cause.HResult -in @(0x80070002, 0x80070003)) {
+      return 'file_missing'
+    }
+  }
+  switch ($Record.CategoryInfo.Category) {
+    'PermissionDenied' { return 'access_denied' }
+    'ObjectNotFound' { return 'file_missing' }
+    default { return 'unknown' }
+  }
+}
+
+function Assert-PackageSourceFile {
+  param($Item, [string]$Path, [string]$Expected)
+  $state = $code = $reason = 'unknown'
+  try {
+    if (Test-Path -LiteralPath $Path -PathType Leaf -ErrorAction Stop) {
+      $state = 'present'
+      if (-not $Expected) {
+        $code = 'checksum_mismatch'
+        $reason = 'file_unlisted'
+      } elseif ((Get-FileSha256 $Path) -ne $Expected) {
+        $code = $reason = 'checksum_mismatch'
+      } else {
+        $code = 'ok'
+      }
+    } else {
+      # Keep the failed leaf check, and use the literal path's filesystem
+      # error rather than the provider's false result for the diagnosis.
+      $null = [IO.File]::GetAttributes($Path)
+    }
+  } catch {
+    $code = $reason = Get-PackageCheckErrorCode $_
+    $state = switch ($code) {
+      'file_missing' { 'missing' }
+      'access_denied' { 'access_denied' }
+      default { 'unknown' }
+    }
+  }
+  $key = "$Stage|$($Item.SourceRelative)"
+  $PackageChecks[$key] = "$key|$state|$code"
+  if ($code -ne 'ok') {
+    Set-InstallFailure $reason $Item.SourceRelative
+    throw "安装包文件 $($Item.SourceRelative) 校验失败（$state / $code）"
+  }
+}
+
 function Assert-CriticalFiles {
   param([switch]$Target)
   foreach ($item in $CriticalFiles) {
-    if ($Target) {
-      $path = Join-Path $InstallDir $item.TargetName
-    } else {
+    $expected = $FrozenHashes[$item.SourceRelative]
+    if (-not $Target) {
       $path = Join-Path $Source ($item.SourceRelative -replace '/', '\')
+      Assert-PackageSourceFile $item $path $expected
+      continue
     }
+    $path = Join-Path $InstallDir $item.TargetName
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
       Set-InstallFailure "file_missing" $item.SourceRelative
       throw "关键安装文件缺失: $($item.SourceRelative)"
     }
-    $expected = $FrozenHashes[$item.SourceRelative]
     if (-not $expected) {
       Set-InstallFailure "file_unlisted" $item.SourceRelative
       throw "SHA256SUMS 缺少关键文件: $($item.SourceRelative)"
@@ -286,6 +352,11 @@ try {
     }
     $FrozenHashes[$relative] = $expected
     $target = Join-Path $Source ($relative -replace '/', '\')
+    $critical = $CriticalFilesBySource[$relative]
+    if ($critical) {
+      Assert-PackageSourceFile $critical $target $expected
+      continue
+    }
     if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
       Set-InstallFailure "file_missing" $relative
       throw "安装包缺少文件: $relative"
