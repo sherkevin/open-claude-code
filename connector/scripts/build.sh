@@ -7,7 +7,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.3.13}"
+VERSION="${VERSION:-1.3.14}"
 COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 # Bind package metadata and ZIP timestamps to the source commit unless the
 # release operator supplies an explicit epoch. Rebuilding the same commit then
@@ -142,9 +142,7 @@ for value in "$CLOUD_BASE_VALUE" "$EDGE_BASE_VALUE"; do
   fi
 done
 cp "$ROOT/docs/"*.md "$DIST/linux/docs/"
-cp "$ROOT/docs/"*.md "$DIST/windows/docs/"
 cp "$ROOT/README.md" "$DIST/linux/docs/"
-cp "$ROOT/README.md" "$DIST/windows/docs/"
 
 for target in linux windows; do
   sed "s/<版本号>/${VERSION}/g" "$ROOT/docs/交付与运维说明.md" > "$DIST/$target/docs/交付与运维说明.md"
