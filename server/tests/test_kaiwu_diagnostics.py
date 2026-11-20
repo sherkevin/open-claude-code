@@ -299,6 +299,53 @@ def test_upload_positive_negative_scope_and_idempotency(env):
     ).status_code in {413, 422}
 
 
+def test_install_event_fields_scope_and_retry(env):
+    client, identity = env["client"], env["a"]
+    key, key_id = env["key_a"], env["key_id_a"]
+    attempt_id = "a" * 32
+    event_id = "evt_" + hashlib.sha256(f"kaiwu-install-v1/{attempt_id}/3".encode()).hexdigest()[:32]
+    event = make_event(
+        "install_stage_failed", event_id=event_id, install_attempt_id=attempt_id,
+        install_seq=3, install_stage="service", install_outcome="failed", install_code="service_start",
+        occurred_at=(datetime.now(timezone.utc) - timedelta(days=15)).isoformat(),
+    )
+    negative = [
+        dict(event, install_seq=49),
+        dict(event, install_stage="free form"),
+        dict(event, install_outcome="ok"),
+        dict(event, install_code="raw error"),
+        dict(event, event_id="evt_" + "b" * 32),
+        dict(event, source_id=SOURCE_A),
+        dict(make_event(), install_code="ok"),
+    ]
+    for item in negative:
+        response = upload(client, identity, key, key_id, [item])
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "DIAGNOSTICS_EVENT_INVALID"
+    assert upload(client, identity, key, key_id, [event], connector_id=env["b"]["connector_id"]).status_code == 403
+    for _ in range(2):
+        assert upload(client, identity, key, key_id, [event]).json() == {"accepted": 1}
+    diag.prune(env["app"].state.service.db)
+    rows = admin_get(client, f"?install_attempt_id={attempt_id}").json()["events"]
+    assert len(rows) == 1
+    assert rows[0]["tenant_id"] == "tenant-a"
+    assert rows[0]["connector_id"] == identity["connector_id"]
+    assert {field: rows[0][field] for field in diag.INSTALL_FIELDS} == {
+        field: event[field] for field in diag.INSTALL_FIELDS
+    }
+    assert admin_get(client, "?install_attempt_id=invalid").status_code == 422
+    assert device_get(client, identity, key, key_id, identity["connector_id"], "platform-events").json()["events"] == []
+    assert device_get(client, identity, key, key_id, identity["connector_id"], "events").status_code == 405
+    revoke_path = BASE + f"/v1/connectors/{identity['connector_id']}/self-revoke"
+    revoked = client.post(
+        revoke_path,
+        headers={"Authorization": "Bearer " + identity["device_token"],
+                 **signed_headers(key, key_id, "POST", revoke_path, b"")},
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert upload(client, identity, key, key_id, [event]).json()["error"]["code"] == "DEVICE_REVOKED"
+
+
 def test_rpc_error_code_contract_boundaries(env):
     client, a = env["client"], env["a"]
     key, key_id = env["key_a"], env["key_id_a"]
@@ -500,6 +547,7 @@ def test_intermediate_database_gains_origin_column(tmp_path):
     try:
         columns = {row["name"] for row in database.all("PRAGMA table_info(kaiwu_diagnostic_events)")}
         assert "origin" in columns
+        assert set(diag.INSTALL_FIELDS).issubset(columns)
         assert database.one("SELECT origin FROM kaiwu_diagnostic_events")["origin"] == "connector"
         indexes = {row["name"] for row in database.all("PRAGMA index_list(kaiwu_diagnostic_events)")}
         assert "kaiwu_diagnostic_events_origin" in indexes
@@ -772,7 +820,7 @@ function makeEl(id) {
   };
 }
 ["login","console","status","rows","token","auth","refresh","download","logout",
- "f-connector","f-source","f-level","f-trace","f-since","f-until"].forEach(id => { elements[id] = makeEl(id); });
+ "f-connector","f-source","f-level","f-trace","f-install","f-since","f-until"].forEach(id => { elements[id] = makeEl(id); });
 global.document = {
   getElementById: id => elements[id],
   createElement: tag => makeEl(tag),
@@ -788,10 +836,10 @@ global.fetch = async (url, options) => {
     json: async () => ({ events: [{
       occurred_at: "2026-11-19T00:00:00+00:00", level: "info",
       connector_id: "conn_1", source_id: "src_1",
-      event_code: "platform_request_succeeded", message: "平台调用成功",
-      tool_name: "lookup_order", http_status: 200, duration_ms: 5,
-      trace_id: "kwtr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      received_at: "2026-11-19T00:00:01+00:00"
+      event_code: "install_stage_failed", message: "安装阶段失败",
+      received_at: "2026-11-19T00:00:01+00:00",
+      install_attempt_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      install_seq: 3, install_stage: "service", install_outcome: "failed", install_code: "service_start"
     }] })
   };
 };
@@ -799,6 +847,7 @@ eval(fs.readFileSync(process.argv[2], "utf8"));
 (async () => {
   try {
     elements["f-since"].value = "2026-11-19T08:00";
+    elements["f-install"].value = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     elements["token"].value = "admin-token";
     elements["auth"].handlers.submit({ preventDefault() {} });
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -807,6 +856,8 @@ eval(fs.readFileSync(process.argv[2], "utf8"));
     if (global.__lastFetch.url.includes("admin-token")) throw new Error("token leaked to URL");
     if (elements["token"].value !== "") throw new Error("token input not cleared");
     if (elements["rows"].children.length !== 1) throw new Error("row not rendered");
+    if (!global.__lastFetch.url.includes("install_attempt_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")) throw new Error("install filter missing");
+    if (!elements["rows"].children[0].children.some(cell => cell.textContent === "service_start")) throw new Error("install stage code not rendered");
     if (!global.__lastFetch.url.includes("since=2026-11-19T00%3A00%3A00Z")) throw new Error("date conversion failed: " + global.__lastFetch.url);
     console.log("JS_OK");
     process.exit(0);

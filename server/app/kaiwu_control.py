@@ -49,6 +49,7 @@ from .kaiwu_diagnostics import (
     DEFAULT_ADMIN_EVENTS,
     DEFAULT_DEVICE_EVENTS,
     LEVELS,
+    INSTALL_ATTEMPT_ID_RE,
     MAX_BATCH_BYTES,
     MAX_BATCH_EVENTS,
     OPS_PAGE,
@@ -1985,17 +1986,10 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             raise AppError(422, "DIAGNOSTICS_BATCH_INVALID", "诊断批次不能为空")
         if len(data.events) > MAX_BATCH_EVENTS:
             raise AppError(422, "DIAGNOSTICS_BATCH_INVALID", "单个诊断批次最多 100 条事件")
-        # Every event is validated against the fixed catalog and this device's
-        # own source/tool grants before the single write transaction starts.
-        grants = source_grants(service_obj.db, connector_id)
+        db = service_obj.db
+        grants = source_grants(db, connector_id)
         rows = [normalize_event(event, grants) for event in data.events]
-        accepted = insert_rows(
-            service_obj.db,
-            connector["tenant_id"],
-            connector_id,
-            rows,
-            origin="connector",
-        )
+        accepted = insert_rows(db, connector["tenant_id"], connector_id, rows, origin="connector")
         maybe_prune(service_obj.db)
         return {"accepted": accepted}
 
@@ -2028,6 +2022,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         level: str | None = None,
         trace_id: str | None = None,
         event_code: str | None = None,
+        install_attempt_id: str | None = None,
         since: str | None = None,
         until: str | None = None,
         admin_ctx=Depends(admin),
@@ -2037,6 +2032,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         validate_filter("connector_id", connector_id, CONNECTOR_ID_RE)
         validate_filter("source_id", source_id, SOURCE_ID_RE)
         validate_filter("trace_id", trace_id, TRACE_ID_RE)
+        validate_filter("install_attempt_id", install_attempt_id, INSTALL_ATTEMPT_ID_RE)
         if level and level not in LEVELS:
             raise AppError(422, "DIAGNOSTICS_FILTER_INVALID", "诊断筛选条件无效：level")
         if event_code and event_code not in CATALOG:
@@ -2059,6 +2055,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             level=level,
             trace_id=trace_id,
             event_code=event_code,
+            install_attempt_id=install_attempt_id,
             since=since_value,
             until=until_value,
         )

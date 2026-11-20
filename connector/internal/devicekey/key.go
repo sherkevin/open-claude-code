@@ -32,28 +32,34 @@ type Key struct {
 	keyID   string
 }
 
+// Load reads the existing signing identity without generating a replacement.
+func Load(path string) (*Key, error) {
+	var stored document
+	if _, err := secretfile.ReadJSON(path, &stored); err != nil {
+		return nil, err
+	}
+	encoded, err := base64.RawURLEncoding.DecodeString(stored.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("设备密钥编码无效: %w", err)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("设备密钥格式无效: %w", err)
+	}
+	private, ok := parsed.(ed25519.PrivateKey)
+	if !ok {
+		return nil, errors.New("设备密钥不是 Ed25519")
+	}
+	return fromPrivate(private), nil
+}
+
 // LoadOrCreate loads an existing private key or creates one atomically.
 func LoadOrCreate(path string) (*Key, bool, error) {
-	var stored document
-	_, err := secretfile.ReadJSON(path, &stored)
-	switch {
-	case err == nil:
-		encoded, err := base64.RawURLEncoding.DecodeString(stored.PrivateKey)
-		if err != nil {
-			return nil, false, fmt.Errorf("设备密钥编码无效: %w", err)
-		}
-		parsed, err := x509.ParsePKCS8PrivateKey(encoded)
-		if err != nil {
-			return nil, false, fmt.Errorf("设备密钥格式无效: %w", err)
-		}
-		private, ok := parsed.(ed25519.PrivateKey)
-		if !ok {
-			return nil, false, errors.New("设备密钥不是 Ed25519")
-		}
-		return fromPrivate(private), false, nil
-	case errors.Is(err, fs.ErrNotExist):
-		// Continue below and create a new identity.
-	default:
+	key, err := Load(path)
+	if err == nil {
+		return key, false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
 		return nil, false, err
 	}
 
@@ -65,7 +71,7 @@ func LoadOrCreate(path string) (*Key, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	stored = document{
+	stored := document{
 		SchemaVersion: 1,
 		PrivateKey:    base64.RawURLEncoding.EncodeToString(encoded),
 	}

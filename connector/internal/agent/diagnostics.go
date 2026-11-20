@@ -3,12 +3,17 @@ package agent
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/authproxy"
 	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/devicekey"
 	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
+	"github.com/sherkevin/open-claude-code/connector/internal/state"
+	"github.com/sherkevin/open-claude-code/connector/internal/store"
 )
 
 func (a *Agent) recordDiagnostic(record diagnostics.Record) diagnostics.Event {
@@ -154,7 +159,64 @@ func (a *Agent) bindDiagnosticsOwner(identity cloud.Identity) {
 	if a == nil || a.diagMgr == nil {
 		return
 	}
-	a.diagMgr.SetOwner(identity.ConnectorID, identity.TenantID)
+	a.diagMgr.SetOwnerSince(identity.ConnectorID, identity.TenantID, diagnosticIdentityTime(a.store))
+}
+
+func diagnosticIdentityTime(st *store.Store) time.Time {
+	if info, err := os.Lstat(st.Path(fileIdentity)); err == nil && info.Mode().IsRegular() {
+		return info.ModTime().UTC()
+	}
+	return time.Time{}
+}
+
+// ReportInstall works with a stopped service and an existing, active
+// device identity. It doesn't start the tunnel or enroll a device.
+func ReportInstall(ctx context.Context, opts Options, attemptID string) (int, error) {
+	if attemptID == "" {
+		return 0, errors.New("请用 --attempt 指定安装编号")
+	}
+	st := &store.Store{Dir: opts.DataDir}
+	lock, err := diagnostics.LockReporting(st.Dir)
+	if err != nil {
+		return 0, err
+	}
+	defer lock.Close()
+
+	if _, err := os.Lstat(st.Path(fileRevoked)); !errors.Is(err, fs.ErrNotExist) {
+		return 0, errors.New("设备已撤销或无法核对本机撤销记录")
+	}
+	var saved persistedState
+	if err := st.ReadJSON(fileState, &saved); (err != nil && !errors.Is(err, fs.ErrNotExist)) || saved.State == state.Revoked {
+		return 0, errors.New("设备已撤销或无法核对本机状态")
+	}
+	var identity cloud.Identity
+	if err := st.ReadProtectedJSON(fileIdentity, &identity); err != nil ||
+		identity.DeviceToken == "" || identity.ConnectorID == "" || identity.TenantID == "" {
+		return 0, errors.New("本机没有已绑定的设备身份，请将安装编号和脱敏记录交给技术支持")
+	}
+	key, err := devicekey.Load(st.Path(fileDeviceKey))
+	if err != nil || identity.DeviceKeyID != key.KeyID() {
+		return 0, errors.New("本机设备签名密钥不可用")
+	}
+	var cfg config.Connector
+	if err := st.ReadJSON(fileConfig, &cfg); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return 0, errors.New("无法读取现有连接器配置")
+	}
+	base := cfg.CloudBaseURL
+	if base == "" {
+		base = opts.CloudBase
+	}
+	if !endpointConfigured(base) {
+		return 0, errors.New("云端控制面地址未配置")
+	}
+	client, err := cloud.NewWithSigner(base, identity.DeviceToken, key)
+	if err != nil {
+		return 0, err
+	}
+	return diagnostics.ReportInstall(ctx, st.Dir, attemptID, identity.ConnectorID, identity.TenantID,
+		diagnosticIdentityTime(st), func(ctx context.Context, connectorID string, events []diagnostics.Event) error {
+			return client.UploadDiagnosticEvents(ctx, connectorID, events)
+		})
 }
 
 func (a *Agent) clearDiagnosticsOwner() {

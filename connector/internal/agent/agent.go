@@ -65,6 +65,8 @@ type Options struct {
 	ListenAddr string
 	AllowStdio bool
 
+	ExclusiveDiagnostics bool
+
 	diagnosticsFactory func(string) (*diagnostics.Manager, error)
 }
 
@@ -79,6 +81,8 @@ type Agent struct {
 	demoServer    *demomcp.Server
 	demoState     builtinDemoState
 	demoErrorCode string
+
+	diagnosticsLock *os.File
 
 	mu            sync.RWMutex
 	connectMu     sync.Mutex
@@ -156,6 +160,15 @@ func New(opts Options) (*Agent, error) {
 	st, err := store.New(opts.DataDir)
 	if err != nil {
 		return nil, err
+	}
+	var diagnosticsLock *os.File
+	if opts.ExclusiveDiagnostics {
+		diagnosticsLock, _ = diagnostics.LockReporting(st.Dir)
+		defer func() {
+			if diagnosticsLock != nil {
+				diagnosticsLock.Close()
+			}
+		}()
 	}
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	agent := &Agent{
@@ -247,15 +260,22 @@ func New(opts Options) (*Agent, error) {
 	if openDiagnostics == nil {
 		openDiagnostics = diagnostics.New
 	}
-	if manager, err := openDiagnostics(st.Dir); err == nil {
-		agent.diagMgr = manager
-		manager.SetUploader(agent.uploadDiagnostics)
-		if agent.identity.DeviceToken != "" {
-			manager.SetOwner(agent.identity.ConnectorID, agent.identity.TenantID)
+	// A failed or occupied diagnostics lock degrades reporting rather than
+	// blocking the local connector or tunnel.
+	if !opts.ExclusiveDiagnostics || diagnosticsLock != nil {
+		if manager, err := openDiagnostics(st.Dir); err == nil {
+			agent.diagMgr = manager
+			manager.SetUploader(agent.uploadDiagnostics)
+			if agent.identity.DeviceToken != "" {
+				agent.bindDiagnosticsOwner(agent.identity)
+			} else if revoked {
+				manager.ClearOwner()
+			}
+			agent.applyDiagnosticApprovals(agent.config.Sources)
 		}
-		agent.applyDiagnosticApprovals(agent.config.Sources)
 	}
 	agent.reapStaleFrpc()
+	agent.diagnosticsLock, diagnosticsLock = diagnosticsLock, nil
 	return agent, nil
 }
 
@@ -323,6 +343,9 @@ func (a *Agent) CloseContext(ctx context.Context) {
 		if a.diagMgr != nil {
 			a.recordDiagnostic(diagnostics.Record{EventCode: "connector_stopped"})
 			a.diagMgr.Close()
+		}
+		if a.diagnosticsLock != nil {
+			a.diagnosticsLock.Close()
 		}
 		a.mu.Lock()
 		a.stoppingTunnels--

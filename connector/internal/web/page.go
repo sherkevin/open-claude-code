@@ -685,20 +685,27 @@ function renderLogRows(events){
       tool.textContent = "工具 " + event.tool_name;
       messageCell.appendChild(tool);
     }
+    if(event.install_stage){
+      const stage = document.createElement("div");
+      stage.className = "log-meta";
+      stage.textContent = event.install_seq + ". " + event.install_stage + " · " + event.install_code;
+      messageCell.appendChild(stage);
+    }
     row.appendChild(messageCell);
-    row.appendChild(logCell(resultLabels[level] || "—"));
+    row.appendChild(logCell(event.install_outcome || resultLabels[level] || "—"));
     row.appendChild(logCell(formatDuration(event.duration_ms), "log-duration"));
 
     const referenceCell = document.createElement("td");
     const references = [];
     if(event.rpc_error_code){ references.push("错误码 " + event.rpc_error_code); }
     if(event.trace_id){ references.push("关联编号 " + event.trace_id); }
+    if(event.install_attempt_id){ references.push("安装编号 " + event.install_attempt_id); }
     if(!references.length && event.event_id){ references.push("事件编号 " + event.event_id); }
     const reference = document.createElement("div");
     reference.className = "log-meta";
     reference.textContent = references.join("；");
     referenceCell.appendChild(reference);
-    const copyValue = event.trace_id || event.event_id || "";
+    const copyValue = event.install_attempt_id || event.trace_id || event.event_id || "";
     if(copyValue){
       const copy = document.createElement("button");
       copy.type = "button";

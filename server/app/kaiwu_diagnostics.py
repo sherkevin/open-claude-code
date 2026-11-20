@@ -9,6 +9,7 @@ credentials.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -44,6 +45,23 @@ OPERATION_ID_RE = re.compile(r"^op_[0-9a-f]{16,64}$")
 TRACE_ID_RE = re.compile(r"^kwtr_[0-9a-f]{24,64}$")
 SOURCE_ID_RE = re.compile(r"^src_[0-9a-f]{32}$")
 CONNECTOR_ID_RE = re.compile(r"^conn_[0-9a-f]{32}$")
+INSTALL_ATTEMPT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+MAX_INSTALL_SEQ = 48
+INSTALL_STAGES = {
+    "started", "precheck", "extract", "lock", "backup",
+    "replace", "service", "verify", "rollback", "finish",
+}
+INSTALL_OUTCOMES = {
+    "started": "install_stage_started",
+    "ok": "install_stage_succeeded",
+    "failed": "install_stage_failed",
+}
+INSTALL_CODES = {
+    "ok", "unknown", "unsupported_host", "busy", "file_missing", "checksum_mismatch",
+    "access_denied", "service_registration", "service_start", "local_page_unready",
+    "write_failed", "restored", "recovery_unconfirmed",
+}
+INSTALL_FIELDS = ("install_attempt_id", "install_seq", "install_stage", "install_outcome", "install_code")
 TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 INTEGER_CODE_RE = re.compile(r"^-32(?:[0-6][0-9]{2}|700)$")
 RFC3339_RE = re.compile(
@@ -61,6 +79,7 @@ COMPONENTS = (
     "mcp",
     "platform",
     "diagnostics",
+    "install",
 )
 
 
@@ -74,6 +93,9 @@ class EventSpec:
 # This catalog is a byte-for-byte mirror of
 # connector/internal/diagnostics/catalog.go.  Both sides must change together.
 CATALOG: dict[str, EventSpec] = {
+    "install_stage_started": EventSpec("info", "install", "安装阶段已开始"),
+    "install_stage_succeeded": EventSpec("info", "install", "安装阶段已完成"),
+    "install_stage_failed": EventSpec("error", "install", "安装阶段失败"),
     "connector_started": EventSpec("info", "connector", "连接器已启动"),
     "connector_stopped": EventSpec("info", "connector", "连接器已停止"),
     "version_loaded": EventSpec("info", "connector", "连接器版本已加载"),
@@ -165,6 +187,11 @@ class DiagnosticEvent(_Model):
     rpc_error_code: StrictStr | None = None
     duration_ms: StrictInt | None = None
     attempt: StrictInt | None = None
+    install_attempt_id: StrictStr | None = None
+    install_seq: StrictInt | None = None
+    install_stage: StrictStr | None = None
+    install_outcome: StrictStr | None = None
+    install_code: StrictStr | None = None
 
     @field_validator("occurred_at", mode="before")
     @classmethod
@@ -201,6 +228,34 @@ def source_grants(db: Database, connector_id: str) -> dict[str, set[str]]:
     return grants
 
 
+def validate_install_event(event: DiagnosticEvent) -> None:
+    if event.component != "install":
+        if any(getattr(event, field) is not None for field in INSTALL_FIELDS):
+            raise _invalid("unexpected_install_fields")
+        return
+    if (
+        not event.install_attempt_id
+        or not INSTALL_ATTEMPT_ID_RE.fullmatch(event.install_attempt_id)
+        or event.install_seq is None
+        or not 1 <= event.install_seq <= MAX_INSTALL_SEQ
+        or event.install_stage not in INSTALL_STAGES
+        or INSTALL_OUTCOMES.get(event.install_outcome) != event.event_code
+        or event.install_code not in INSTALL_CODES
+    ):
+        raise _invalid("install_fields")
+    if any(
+        value is not None
+        for value in (
+            event.operation_id, event.trace_id, event.source_id, event.tool_name,
+            event.http_status, event.rpc_error_code, event.duration_ms, event.attempt,
+        )
+    ):
+        raise _invalid("unexpected_install_metadata")
+    key = f"kaiwu-install-v1/{event.install_attempt_id}/{event.install_seq}".encode("ascii")
+    if event.event_id != "evt_" + hashlib.sha256(key).hexdigest()[:32]:
+        raise _invalid("install_event_id")
+
+
 def normalize_event(event: DiagnosticEvent, grants: dict[str, set[str]]) -> dict[str, Any]:
     """Validate one event and return the exact SQLite row fields."""
     if event.schema_version != SCHEMA_VERSION:
@@ -214,6 +269,7 @@ def normalize_event(event: DiagnosticEvent, grants: dict[str, set[str]]) -> dict
         raise _invalid("message_code")
     if event.level != spec.level or event.component != spec.component:
         raise _invalid("catalog_mismatch")
+    validate_install_event(event)
     occurred = event.occurred_at
     if occurred > datetime.now(timezone.utc) + timedelta(seconds=CLOCK_SKEW_FORWARD_SECONDS):
         raise _invalid("occurred_at_future")
@@ -255,14 +311,16 @@ def normalize_event(event: DiagnosticEvent, grants: dict[str, set[str]]) -> dict
         "rpc_error_code": event.rpc_error_code,
         "duration_ms": event.duration_ms,
         "attempt": event.attempt,
+        **{field: getattr(event, field) for field in INSTALL_FIELDS},
     }
 
 _INSERT_SQL = (
     "INSERT OR IGNORE INTO kaiwu_diagnostic_events"
     "(tenant_id,connector_id,event_id,occurred_at,level,component,event_code,"
     "message_code,operation_id,trace_id,source_id,tool_name,http_status,"
-    "rpc_error_code,duration_ms,attempt,origin,received_at)"
-    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "rpc_error_code,duration_ms,attempt,origin,received_at,"
+    "install_attempt_id,install_seq,install_stage,install_outcome,install_code)"
+    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 
@@ -279,6 +337,14 @@ def insert_rows(
         raise ValueError("invalid diagnostics origin")
     received = now()
     with db.transaction():
+        # An authenticated upload may race with device revocation.
+        if origin == "connector":
+            current = db.one(
+                "SELECT revoked FROM kaiwu_connectors WHERE id=? AND tenant_id=?",
+                (connector_id, tenant_id),
+            )
+            if not current or current["revoked"]:
+                raise AppError(403, "DEVICE_REVOKED", "设备身份已失效")
         for row in rows:
             db.execute(
                 _INSERT_SQL,
@@ -301,6 +367,7 @@ def insert_rows(
                     row.get("attempt"),
                     origin,
                     received,
+                    *(row.get(field) for field in INSTALL_FIELDS),
                 ),
             )
     return len(rows)
@@ -322,7 +389,16 @@ def prune(
     current = current or datetime.now(timezone.utc)
     cutoff = (current - timedelta(days=retention_days)).isoformat()
     with db.transaction():
-        db.execute("DELETE FROM kaiwu_diagnostic_events WHERE occurred_at < ?", (cutoff,))
+        db.execute(
+            "DELETE FROM kaiwu_diagnostic_events WHERE occurred_at < ? AND install_attempt_id IS NULL",
+            (cutoff,),
+        )
+        # Give support the normal retention window even if a device was
+        # offline throughout the days immediately after the installation.
+        db.execute(
+            "DELETE FROM kaiwu_diagnostic_events WHERE install_attempt_id IS NOT NULL AND received_at < ?",
+            (cutoff,),
+        )
         over = db.all(
             "SELECT connector_id,COUNT(*) AS n FROM kaiwu_diagnostic_events "
             "GROUP BY connector_id HAVING COUNT(*) > ?",
@@ -376,6 +452,7 @@ def event_view(row: dict[str, Any], *, admin: bool) -> dict[str, Any]:
         "rpc_error_code",
         "duration_ms",
         "attempt",
+        *INSTALL_FIELDS,
     ):
         if row.get(key) is not None:
             view[key] = row[key]
@@ -418,6 +495,7 @@ def query_admin_events(
     level: str | None,
     trace_id: str | None,
     event_code: str | None,
+    install_attempt_id: str | None = None,
     since: datetime | None,
     until: datetime | None,
 ) -> tuple[list[dict[str, Any]], int | None]:
@@ -442,6 +520,9 @@ def query_admin_events(
     if event_code:
         clauses.append("event_code = ?")
         values.append(event_code)
+    if install_attempt_id:
+        clauses.append("install_attempt_id = ?")
+        values.append(install_attempt_id)
     if since is not None:
         clauses.append("occurred_at >= ?")
         values.append(since.isoformat())
@@ -724,6 +805,7 @@ td{max-width:280px;overflow-wrap:anywhere}
 <label>来源<input id="f-source" placeholder="src_..."></label>
 <label>级别<select id="f-level"><option value="">全部</option><option>info</option><option>warn</option><option>error</option></select></label>
 <label>追踪编号<input id="f-trace" placeholder="kwtr_..."></label>
+<label>安装编号<input id="f-install" maxlength="32" spellcheck="false"></label>
 <label>开始时间<input id="f-since" type="datetime-local"></label>
 <label>结束时间<input id="f-until" type="datetime-local"></label>
 <button id="refresh" type="button">刷新</button>
@@ -733,7 +815,7 @@ td{max-width:280px;overflow-wrap:anywhere}
 <div id="status" class="status"></div>
 <div style="overflow:auto;max-height:70vh">
 <table><thead><tr>
-<th>发生时间</th><th>级别</th><th>事件来源</th><th>连接器</th><th>来源</th><th>事件</th><th>说明</th><th>工具</th><th>状态码</th><th>耗时(ms)</th><th>追踪编号</th><th>接收时间</th>
+<th>发生时间</th><th>级别</th><th>事件来源</th><th>连接器</th><th>来源</th><th>事件</th><th>说明</th><th>工具</th><th>状态码</th><th>耗时(ms)</th><th>追踪编号</th><th>安装编号</th><th>次序</th><th>阶段</th><th>结果</th><th>安装结果码</th><th>接收时间</th>
 </tr></thead><tbody id="rows"></tbody></table>
 </div>
 </section>
@@ -775,7 +857,7 @@ td{max-width:280px;overflow-wrap:anywhere}
     var params = new URLSearchParams();
     params.set("limit", "200");
     var fields = [["connector_id", "f-connector"], ["source_id", "f-source"],
-      ["level", "f-level"], ["trace_id", "f-trace"]];
+      ["level", "f-level"], ["trace_id", "f-trace"], ["install_attempt_id", "f-install"]];
     fields.forEach(function (pair) {
       var value = document.getElementById(pair[1]).value.trim();
       if (value) { params.set(pair[0], value); }
@@ -800,7 +882,8 @@ td{max-width:280px;overflow-wrap:anywhere}
       var tr = document.createElement("tr");
       [event.occurred_at, event.level, event.origin, event.connector_id, event.source_id,
        event.event_code, event.message, event.tool_name, event.http_status,
-       event.duration_ms, event.trace_id, event.received_at].forEach(function (value) {
+       event.duration_ms, event.trace_id, event.install_attempt_id, event.install_seq,
+       event.install_stage, event.install_outcome, event.install_code, event.received_at].forEach(function (value) {
         tr.appendChild(cell(value));
       });
       tbody.appendChild(tr);

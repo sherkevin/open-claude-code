@@ -329,6 +329,11 @@ CREATE TABLE IF NOT EXISTS kaiwu_diagnostic_events(
     rpc_error_code TEXT,
     duration_ms INTEGER,
     attempt INTEGER,
+    install_attempt_id TEXT,
+    install_seq INTEGER,
+    install_stage TEXT,
+    install_outcome TEXT,
+    install_code TEXT,
     origin TEXT NOT NULL DEFAULT 'connector' CHECK(origin IN ('connector','edge')),
     received_at TEXT NOT NULL,
     UNIQUE(tenant_id,connector_id,event_id)
@@ -390,6 +395,16 @@ class Database:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_origin "
             "ON kaiwu_diagnostic_events(origin,connector_id,received_at)"
+        )
+        for column, kind in (
+            ("install_attempt_id", "TEXT"), ("install_seq", "INTEGER"),
+            ("install_stage", "TEXT"), ("install_outcome", "TEXT"), ("install_code", "TEXT"),
+        ):
+            if column not in diagnostic_columns:
+                self.conn.execute(f"ALTER TABLE kaiwu_diagnostic_events ADD COLUMN {column} {kind}")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_install_attempt "
+            "ON kaiwu_diagnostic_events(install_attempt_id,id) WHERE install_attempt_id IS NOT NULL"
         )
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(runs)")}
         if "execution_meta" not in columns:

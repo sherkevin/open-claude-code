@@ -70,6 +70,7 @@ const (
 	ComponentMCP         Component = "mcp"
 	ComponentPlatform    Component = "platform"
 	ComponentDiagnostics Component = "diagnostics"
+	ComponentInstall     Component = "install"
 )
 
 // Event is the complete wire and persistence contract. There is deliberately
@@ -90,6 +91,12 @@ type Event struct {
 	RPCErrorCode  string    `json:"rpc_error_code,omitempty"`
 	DurationMS    int64     `json:"duration_ms,omitempty"`
 	Attempt       int       `json:"attempt,omitempty"`
+
+	InstallAttemptID string `json:"install_attempt_id,omitempty"`
+	InstallSeq       int    `json:"install_seq,omitempty"`
+	InstallStage     string `json:"install_stage,omitempty"`
+	InstallOutcome   string `json:"install_outcome,omitempty"`
+	InstallCode      string `json:"install_code,omitempty"`
 }
 
 // View is returned to local callers with catalog-controlled text only.
@@ -153,6 +160,9 @@ type persisted struct {
 	LastSuccessAt    *time.Time    `json:"last_success_at,omitempty"`
 	LastErrorCode    string        `json:"last_error_code,omitempty"`
 	StorageErrorCode string        `json:"storage_error_code,omitempty"`
+
+	InstallSince       *time.Time                   `json:"install_since,omitempty"`
+	InstallCheckpoints map[string]installCheckpoint `json:"install_checkpoints,omitempty"`
 }
 
 // Uploader sends one authenticated batch through the existing device signer.
@@ -179,6 +189,9 @@ type Manager struct {
 	approved    map[string]map[string]bool
 	durableIDs  map[string]bool
 
+	installSince       time.Time
+	installCheckpoints map[string]installCheckpoint
+
 	maxQueueEvents int
 	maxQueueBytes  int
 	maxLogEvents   int
@@ -190,6 +203,7 @@ type Manager struct {
 
 	wake        chan struct{}
 	persistWake chan struct{}
+	installWake chan struct{}
 	stop        chan struct{}
 	stopOnce    sync.Once
 	started     bool
@@ -200,6 +214,10 @@ type Manager struct {
 
 // New creates a manager rooted under the existing connector data directory.
 func New(dataDir string) (*Manager, error) {
+	return openManager(dataDir, false)
+}
+
+func openManager(dataDir string, requireExisting bool) (*Manager, error) {
 	st, err := store.New(dataDir)
 	if err != nil {
 		return nil, err
@@ -219,26 +237,46 @@ func New(dataDir string) (*Manager, error) {
 		wake:           make(chan struct{}, 1),
 		persistWake:    make(chan struct{}, 1),
 		stop:           make(chan struct{}),
+
+		installWake:        make(chan struct{}, 1),
+		installCheckpoints: make(map[string]installCheckpoint),
 	}
-	if err := m.load(st); err != nil {
+	if err := m.load(st, requireExisting); err != nil {
 		return nil, err
 	}
 	return m, nil
 }
 
-func (m *Manager) load(st *store.Store) error {
+func (m *Manager) load(st *store.Store, requireExisting bool) error {
 	var saved persisted
 	if err := st.ReadJSON(fileDiagnostics, &saved); err != nil {
+		if requireExisting {
+			return err
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		_ = st.Remove(fileDiagnostics)
 		return nil
 	}
+	if requireExisting && saved.SchemaVersion != SchemaVersion {
+		return errors.New("diagnostics state has an unsupported schema")
+	}
 	m.ownerID = saved.OwnerConnectorID
 	m.ownerTenant = saved.OwnerTenantID
 	m.dropped = maxInt64(0, saved.DroppedEvents)
 	m.paused = saved.Paused
+	if saved.InstallSince != nil {
+		m.installSince = saved.InstallSince.UTC()
+	}
+	for id, checkpoint := range saved.InstallCheckpoints {
+		if len(m.installCheckpoints) == maxInstallFiles {
+			break
+		}
+		if installIDRE.MatchString(id) && !checkpoint.Created.IsZero() && checkpoint.Seq > 0 && checkpoint.Seq <= maxInstallSeq {
+			m.installCheckpoints[id] = checkpoint
+		}
+	}
 	m.lastOK = saved.LastSuccessAt
 	m.lastCode = safeCode(saved.LastErrorCode)
 	m.storageCode = safeCode(saved.StorageErrorCode)
@@ -321,6 +359,12 @@ func (m *Manager) SetApprovedTools(sourceID string, tools []string) {
 
 // SetOwner binds the pending queue and local log to one connector identity.
 func (m *Manager) SetOwner(connectorID, tenantID string) {
+	m.SetOwnerSince(connectorID, tenantID, time.Time{})
+}
+
+// SetOwnerSince enables journal attribution from the write of a verified local
+// device identity. A zero time keeps the normal queue and disables journal import.
+func (m *Manager) SetOwnerSince(connectorID, tenantID string, since time.Time) {
 	connectorID = strings.TrimSpace(connectorID)
 	tenantID = strings.TrimSpace(tenantID)
 	if connectorID == "" || tenantID == "" {
@@ -349,10 +393,20 @@ func (m *Manager) SetOwner(connectorID, tenantID string) {
 		}
 		m.ownerID = connectorID
 		m.ownerTenant = tenantID
+		clear(m.installCheckpoints)
+		m.installSince = since
+	} else if m.installSince.IsZero() || since.IsZero() {
+		// Preserve a known binding boundary for this identity when an
+		// installer or protection migration later rewrites its file.
+		m.installSince = since
 	}
 	m.mu.Unlock()
 	m.signalPersist()
 	m.signal()
+	select {
+	case m.installWake <- struct{}{}:
+	default:
+	}
 }
 
 // ClearOwner drops the current connector's pending queue and local history so
@@ -367,6 +421,8 @@ func (m *Manager) ClearOwner() {
 	}
 	m.ownerID = ""
 	m.ownerTenant = ""
+	m.installSince = time.Time{}
+	clear(m.installCheckpoints)
 	m.logs = nil
 	m.logSizes = nil
 	m.logBytes = 0
@@ -395,15 +451,16 @@ func (m *Manager) SetUploader(uploader Uploader) {
 // SetPaused controls remote diagnostics only. Local logs and MCP continue.
 func (m *Manager) SetPaused(paused bool) {
 	m.mu.Lock()
-	if m.paused != paused {
-		m.paused = paused
-		if paused {
-			m.nextAttempt = time.Time{}
-			m.retryDelay = 0
-		}
+	changed := m.paused != paused
+	m.paused = paused
+	if changed && paused {
+		m.nextAttempt = time.Time{}
+		m.retryDelay = 0
 	}
 	m.mu.Unlock()
-	m.signalPersist()
+	if changed && !m.persistNow() {
+		m.signalPersist()
+	}
 	m.signal()
 }
 
@@ -458,12 +515,20 @@ func (m *Manager) Record(input Record) Event {
 		}
 	}
 	raw, _ := json.Marshal(event)
+	m.appendEventLocked(event, len(raw))
+	m.mu.Unlock()
+	m.signalPersist()
+	m.signal()
+	return event
+}
+
+func (m *Manager) appendEventLocked(event Event, size int) {
 	m.logs = append(m.logs, event)
-	m.logSizes = append(m.logSizes, len(raw))
-	m.logBytes += len(raw)
+	m.logSizes = append(m.logSizes, size)
+	m.logBytes += size
 	m.trimLogsLocked()
 	if m.ownerID != "" && m.ownerTenant != "" {
-		if len(m.outbox) >= m.maxQueueEvents || m.outboxSize+len(raw) > m.maxQueueBytes {
+		if len(m.outbox) >= m.maxQueueEvents || m.outboxSize+size > m.maxQueueBytes {
 			m.dropped++
 		} else {
 			m.outbox = append(m.outbox, queuedEvent{
@@ -471,13 +536,9 @@ func (m *Manager) Record(input Record) Event {
 				OwnerTenantID:    m.ownerTenant,
 				Event:            event,
 			})
-			m.outboxSize += len(raw)
+			m.outboxSize += size
 		}
 	}
-	m.mu.Unlock()
-	m.signalPersist()
-	m.signal()
-	return event
 }
 
 // Logs returns the latest matching local events in chronological order.
@@ -550,10 +611,11 @@ func (m *Manager) Start() {
 		return
 	}
 	m.started = true
-	m.wg.Add(2)
+	m.wg.Add(3)
 	m.mu.Unlock()
 	go m.loop()
 	go m.persistLoop()
+	go m.installJournalLoop()
 }
 
 // Close stops background work and makes one final persistence attempt.
@@ -619,6 +681,9 @@ func (m *Manager) uploadSchedule() (time.Duration, bool) {
 	if m.paused || m.uploader == nil || m.ownerID == "" || len(m.outbox) == 0 {
 		return 0, false
 	}
+	if !m.uploadableLocked(m.outbox[0].Event) {
+		return 0, false
+	}
 	if m.nextAttempt.IsZero() {
 		return 0, true
 	}
@@ -631,6 +696,10 @@ func (m *Manager) uploadSchedule() (time.Duration, bool) {
 
 // UploadOnce is exported for deterministic tests and operational smoke tests.
 func (m *Manager) UploadOnce(ctx context.Context) (int, error) {
+	return m.uploadSelected(ctx, "")
+}
+
+func (m *Manager) uploadSelected(ctx context.Context, installAttemptID string) (int, error) {
 	m.mu.Lock()
 	uploader := m.uploader
 	ownerID := m.ownerID
@@ -638,7 +707,14 @@ func (m *Manager) UploadOnce(ctx context.Context) (int, error) {
 	batch := make([]Event, 0, m.batchSize)
 	if !paused && uploader != nil && ownerID != "" {
 		for i := 0; i < len(m.outbox) && len(batch) < m.batchSize; i++ {
-			batch = append(batch, m.outbox[i].Event)
+			event := m.outbox[i].Event
+			if installAttemptID != "" && event.InstallAttemptID != installAttemptID {
+				continue
+			}
+			if !m.uploadableLocked(event) {
+				break
+			}
+			batch = append(batch, event)
 		}
 	}
 	timeout := m.uploadTimeout
@@ -657,6 +733,11 @@ func (m *Manager) UploadOnce(ctx context.Context) (int, error) {
 	}
 	m.removeUploaded(batch, ownerID)
 	return len(batch), nil
+}
+
+func (m *Manager) uploadableLocked(event Event) bool {
+	// A journal checkpoint and its event must reach disk together before upload.
+	return event.InstallAttemptID == "" || m.durableIDs[event.EventID]
 }
 
 func (m *Manager) removeUploaded(batch []Event, ownerID string) {
@@ -787,6 +868,15 @@ func (m *Manager) persistNow() bool {
 		LastSuccessAt:    cloneTime(m.lastOK),
 		LastErrorCode:    m.lastCode,
 		StorageErrorCode: m.storageCode,
+
+		InstallCheckpoints: make(map[string]installCheckpoint, len(m.installCheckpoints)),
+	}
+	if !m.installSince.IsZero() {
+		since := m.installSince
+		snapshot.InstallSince = &since
+	}
+	for id, checkpoint := range m.installCheckpoints {
+		snapshot.InstallCheckpoints[id] = checkpoint
 	}
 	m.mu.Unlock()
 	st, err := store.New(m.dir)
@@ -812,6 +902,7 @@ func (m *Manager) persistNow() bool {
 	m.durableIDs = durable
 	m.storageCode = ""
 	m.mu.Unlock()
+	m.signal()
 	return true
 }
 
@@ -845,6 +936,9 @@ func Validate(event Event, approvedTools map[string]bool) error {
 	}
 	if _, ok := Catalog[event.EventCode]; !ok {
 		return errors.New("unknown event_code")
+	}
+	if !validateInstallEvent(event) {
+		return errors.New("invalid install event")
 	}
 	if event.OperationID != "" && !operationIDRE.MatchString(event.OperationID) {
 		return errors.New("invalid operation_id")
@@ -1028,7 +1122,7 @@ func validComponent(value Component) bool {
 	switch value {
 	case ComponentConnector, ComponentConfig, ComponentSource, ComponentAuth,
 		ComponentDiagnosis, ComponentTunnel, ComponentMCP, ComponentPlatform,
-		ComponentDiagnostics:
+		ComponentDiagnostics, ComponentInstall:
 		return true
 	default:
 		return false

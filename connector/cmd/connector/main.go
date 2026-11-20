@@ -37,6 +37,8 @@ func main() {
 		exportCommand(os.Args[2:])
 	case "diagnose":
 		diagnoseCommand(os.Args[2:])
+	case "report-install":
+		reportInstallCommand(os.Args[2:])
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -54,6 +56,7 @@ func usage() {
   connector import      校验并导入 MCP 配置文件
   connector export      生成平台可导入的配置
   connector diagnose    执行一次内网诊断
+  connector report-install --attempt <编号>  服务停止时提交当前设备的安装记录
   connector version     查看版本
 
 常用参数:
@@ -68,6 +71,7 @@ func usage() {
 func newServer(args []string) (*web.Server, *agent.Agent, *agent.Options, *string, error) {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	opts, listen := registerCommon(flags)
+	opts.ExclusiveDiagnostics = true
 	if err := flags.Parse(args); err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -77,6 +81,7 @@ func newServer(args []string) (*web.Server, *agent.Agent, *agent.Options, *strin
 	}
 	server, err := web.New(instance, *listen)
 	if err != nil {
+		instance.Close()
 		return nil, nil, nil, nil, err
 	}
 	return server, instance, opts, listen, nil
@@ -160,6 +165,20 @@ func diagnoseCommand(args []string) {
 			os.Exit(1)
 		}
 	}
+}
+
+func reportInstallCommand(args []string) {
+	flags := flag.NewFlagSet("report-install", flag.ExitOnError)
+	opts, _ := registerCommon(flags)
+	attempt := flags.String("attempt", "", "脱敏安装记录的编号")
+	flags.Parse(args)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	count, err := agent.ReportInstall(ctx, *opts, *attempt)
+	if err != nil {
+		fatal(err)
+	}
+	printJSON(map[string]int{"accepted": count})
 }
 
 func registerCommon(flags *flag.FlagSet) (*agent.Options, *string) {

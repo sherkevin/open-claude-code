@@ -11,6 +11,9 @@ type EventSpec struct {
 // Catalog is intentionally explicit. Adding an event requires code review and
 // a corresponding allow-list update on the cloud receiver.
 var Catalog = map[string]EventSpec{
+	"install_stage_started":        {LevelInfo, ComponentInstall, "安装阶段已开始"},
+	"install_stage_succeeded":      {LevelInfo, ComponentInstall, "安装阶段已完成"},
+	"install_stage_failed":         {LevelError, ComponentInstall, "安装阶段失败"},
 	"connector_started":            {LevelInfo, ComponentConnector, "连接器已启动"},
 	"connector_stopped":            {LevelInfo, ComponentConnector, "连接器已停止"},
 	"version_loaded":               {LevelInfo, ComponentConnector, "连接器版本已加载"},
