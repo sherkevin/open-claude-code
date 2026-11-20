@@ -34,11 +34,14 @@ Unicode true
 !define POWERSHELL_SYSTEM32 "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 Var SetupMutex
-Var AttemptId
-Var AttemptWritten
 Var AttemptDone
 Var AttemptStage
 Var AttemptCode
+Var FailureStage
+Var FailureReason
+Var FailureFile
+Var FailureRecovery
+Var WorkerExit
 Var WorkDir
 
 !macro Attempt stage outcome code
@@ -84,13 +87,15 @@ VIAddVersionKey /LANG=2052 "Comments" "source commit ${COMMIT}"
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
 Function ShowAttemptFailure
-  ${If} $AttemptId != ""
-    StrCpy $6 "$6$\r$\n$\r$\n安装编号：$AttemptId"
+  ${If} $FailureStage == ""
+    StrCpy $FailureStage "$AttemptStage"
   ${EndIf}
-  ${If} $AttemptWritten == 1
-    StrCpy $6 "$6$\r$\n可转发给技术支持：$\r$\n%ProgramData%\Kaiwu\Connector\logs\install-attempts\$AttemptId.jsonl"
-  ${Else}
-    StrCpy $6 "$6$\r$\n请复制此窗口内容并转发给技术支持（Ctrl+C）。"
+  KaiwuJournal::ExplainFailure /NOUNLOAD "$FailureStage" "$FailureReason" "$FailureFile" "$FailureRecovery"
+  Pop $6
+  KaiwuJournal::Close
+  ${If} $WorkerExit != ""
+    ; The worker launcher returns a numeric exit code or the literal "error".
+    StrCpy $6 "$6$\r$\n状态：$FailureRecovery$\r$\n退出码：$WorkerExit"
   ${EndIf}
   MessageBox MB_ICONSTOP "$6" /SD IDOK
 FunctionEnd
@@ -109,13 +114,10 @@ Function CompleteAttempt
       !insertmacro Attempt "extract" "failed" "write_failed"
     ${EndIf}
   ${EndIf}
-  ${If} $AttemptCode == "ok"
-    !insertmacro Attempt "finish" "ok" "ok"
-  ${Else}
-    !insertmacro Attempt "finish" "failed" "$AttemptCode"
+  KaiwuJournal::Finish /NOUNLOAD "$AttemptCode"
+  ${If} $AttemptCode != "ok"
     SetErrorLevel 1
   ${EndIf}
-  KaiwuJournal::Close
 FunctionEnd
 
 Function .onInstFailed
@@ -129,7 +131,7 @@ Function .onInstFailed
     ${If} $SetupMutex != 0
       Call ReleaseSetupTransaction
     ${EndIf}
-    StrCpy $6 "安装程序中途退出。请将本次安装记录交给技术支持。"
+    StrCpy $FailureReason "interrupted"
     Call ShowAttemptFailure
   ${EndIf}
 FunctionEnd
@@ -138,36 +140,34 @@ Function OnSetupCancel
   ${If} $AttemptDone != 1
     StrCpy $AttemptCode "unknown"
     Call CompleteAttempt
+    KaiwuJournal::Close
   ${EndIf}
 FunctionEnd
 
 Function .onInit
-  StrCpy $AttemptWritten 0
   KaiwuJournal::Begin /NOUNLOAD
-  Pop $AttemptId
-  Pop $AttemptWritten
   !insertmacro Attempt "precheck" "started" "ok"
   StrCpy $AttemptStage "precheck"
   StrCpy $AttemptCode "unknown"
   SetRegView 64
   StrCpy $INSTDIR "$PROGRAMFILES64\Kaiwu\Connector"
   ${IfNot} ${RunningX64}
-    StrCpy $6 "本安装包仅支持 64 位 Windows。"
+    StrCpy $FailureReason "host_x64"
     Goto unsupported_host
   ${EndIf}
   ${IfNot} ${AtLeastWin10}
-    StrCpy $6 "本安装包要求 Windows 10 或 Windows Server 2016 及以上版本。"
+    StrCpy $FailureReason "host_version"
     Goto unsupported_host
   ${EndIf}
   ${IfNot} ${FileExists} "${POWERSHELL64}"
-    StrCpy $6 "系统缺少 64 位 Windows PowerShell，无法完成安装。"
+    StrCpy $FailureReason "host_powershell_missing"
     Goto unsupported_host
   ${EndIf}
   ; Check the actual native PowerShell process before touching the product.
   nsExec::Exec '"${POWERSHELL64}" -NoProfile -NonInteractive -Command "if ((Get-Host).Version.Major -gt 5 -or ((Get-Host).Version.Major -eq 5 -and (Get-Host).Version.Minor -ge 1)) { exit 0 }; exit 1"'
   Pop $0
   ${If} "$0" != "0"
-    StrCpy $6 "64 位 Windows PowerShell 版本过低或无法启动。本安装包要求 Windows PowerShell 5.1 及以上。"
+    StrCpy $FailureReason "host_powershell_version"
     Goto unsupported_host
   ${EndIf}
   !insertmacro Attempt "precheck" "ok" "ok"
@@ -177,6 +177,7 @@ Function .onInit
 
   unsupported_host:
     StrCpy $AttemptCode "unsupported_host"
+    StrCpy $FailureRecovery "not_started"
     !insertmacro Attempt "precheck" "failed" "unsupported_host"
     Call CompleteAttempt
     Call ShowAttemptFailure
@@ -208,6 +209,7 @@ FunctionEnd
 Section "安装" SecInstall
   ; uninstall.ps1 acquires this gate before the shared service transaction.
   ; Keep it through the NSIS-only maintenance writes.
+  StrCpy $FailureRecovery "not_started"
   !insertmacro Attempt "lock" "started" "ok"
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\KaiwuConnector.SetupTransaction") p .r0 ?e'
   Pop $1
@@ -218,7 +220,7 @@ Section "安装" SecInstall
       StrCpy $AttemptCode "access_denied"
     ${EndIf}
     !insertmacro Attempt "lock" "failed" "$AttemptCode"
-    StrCpy $6 "无法取得安装事务锁。"
+    StrCpy $FailureReason "lock_unavailable"
     Goto attempt_failed
   ${EndIf}
   System::Call 'kernel32::WaitForSingleObject(p $SetupMutex, i 0) i .r0'
@@ -227,11 +229,12 @@ Section "安装" SecInstall
     System::Call 'kernel32::CloseHandle(p $SetupMutex)'
     StrCpy $SetupMutex 0
     StrCpy $AttemptCode "unknown"
+    StrCpy $FailureReason "lock_unavailable"
     ${If} $0 == 258
       StrCpy $AttemptCode "busy"
+      StrCpy $FailureReason "lock_busy"
     ${EndIf}
     !insertmacro Attempt "lock" "failed" "$AttemptCode"
-    StrCpy $6 "已有开物安装或卸载任务正在运行，或无法确认事务锁。"
     Goto attempt_failed
   ${EndIf}
   !insertmacro Attempt "lock" "ok" "ok"
@@ -253,7 +256,7 @@ Section "安装" SecInstall
   ${If} $WorkDir == ""
     StrCpy $AttemptCode "access_denied"
     !insertmacro Attempt "extract" "failed" "access_denied"
-    StrCpy $6 "无法建立安全的安装临时目录。"
+    StrCpy $FailureReason "workspace_unavailable"
     Goto attempt_failed
   ${EndIf}
   ClearErrors
@@ -262,19 +265,20 @@ Section "安装" SecInstall
   ${If} ${Errors}
     StrCpy $AttemptCode "write_failed"
     !insertmacro Attempt "extract" "failed" "write_failed"
-    StrCpy $6 "无法完整解包安装文件。"
+    StrCpy $FailureReason "extract_write_failed"
     Goto attempt_failed
   ${EndIf}
   ${IfNot} ${FileExists} "$WorkDir\install.ps1"
     StrCpy $AttemptCode "file_missing"
     !insertmacro Attempt "extract" "failed" "file_missing"
-    StrCpy $6 "解包后找不到安装脚本。"
+    StrCpy $FailureReason "install_script_missing"
     Goto attempt_failed
   ${EndIf}
   !insertmacro Attempt "extract" "ok" "ok"
 
   DetailPrint "校验并安装连接器、官方 frpc 和 Windows 服务..."
   StrCpy $AttemptStage "precheck"
+  StrCpy $FailureRecovery ""
   SetOutPath "$WorkDir"
   ; The launcher passes only an append-only journal handle to the worker.
   KaiwuJournal::RunInstaller /NOUNLOAD "${POWERSHELL64}" "$WorkDir"
@@ -310,38 +314,23 @@ Section "安装" SecInstall
         !insertmacro Attempt "precheck" "failed" "unknown"
       ${EndIf}
     ${EndIf}
-    StrCpy $4 "恢复或清理状态无法确认。"
-    ${If} "$3" == "result=PRECHECK_FAILED"
-      StrCpy $4 "未开始更改已有安装。"
-    ${ElseIf} "$3" == "result=FAILED_RESTORED"
-      StrCpy $4 "已核验恢复安装前的程序和配置。业务连通性待确认。"
-    ${ElseIf} "$3" == "result=FAILED_RECOVERY_UNCONFIRMED"
-      StrCpy $4 "未能确认已恢复安装前的状态。"
-    ${ElseIf} "$3" == "result=FAILED_NO_PRIOR_CLEANED"
-      StrCpy $4 "已清理本次新增的受管文件。"
-    ${ElseIf} "$3" == "result=FAILED_NO_PRIOR_CLEANUP_UNCONFIRMED"
-      StrCpy $4 "未能确认已清理本次新增的受管文件。"
-    ${EndIf}
-
-    ; Read the two short UTF-16LE lines written by PowerShell, independently of
-    ; nsExec stdout. The fallback also covers failure to start PowerShell.
-    StrCpy $6 "失败阶段：无法确认"
-    StrCpy $7 "原因：无法确认具体原因"
+    StrCpy $FailureRecovery "$3"
+    StrCpy $WorkerExit "$0"
+    StrCpy $FailureStage "unknown"
+    StrCpy $FailureReason "result_unavailable"
+    ; The temporary worker output contains codes only. The native module
+    ; accepts exact known values and renders the summary and popup together.
     ClearErrors
     FileOpen $2 "$WorkDir\failure.txt" r
     ${IfNot} ${Errors}
-      FileReadUTF16LE $2 $8
-      FileReadUTF16LE $2 $9
-      ${TrimNewLines} "$8" "$8"
-      ${TrimNewLines} "$9" "$9"
-      ${If} "$8" != ""
-      ${AndIf} "$9" != ""
-        StrCpy $6 "$8"
-        StrCpy $7 "$9"
-      ${EndIf}
+      FileReadUTF16LE $2 $FailureStage
+      FileReadUTF16LE $2 $FailureReason
+      FileReadUTF16LE $2 $FailureFile
       FileClose $2
+      ${TrimNewLines} "$FailureStage" "$FailureStage"
+      ${TrimNewLines} "$FailureReason" "$FailureReason"
+      ${TrimNewLines} "$FailureFile" "$FailureFile"
     ${EndIf}
-    StrCpy $6 "安装失败$\r$\n$6$\r$\n$7$\r$\n恢复结果：$4$\r$\n状态：$3$\r$\n退出码：$0"
 
     Goto attempt_failed
   ${EndIf}
@@ -396,13 +385,15 @@ Section "安装" SecInstall
   !insertmacro Attempt "verify" "ok" "ok"
   StrCpy $AttemptCode "ok"
   Call CompleteAttempt
+  KaiwuJournal::Close
   Call ReleaseSetupTransaction
   Goto attempt_end
 
   maintenance_failed:
     StrCpy $AttemptCode "write_failed"
     !insertmacro Attempt "verify" "failed" "write_failed"
-    StrCpy $6 "连接器服务已安装，但配置入口或卸载登记保存失败。"
+    StrCpy $FailureReason "maintenance_write_failed"
+    StrCpy $FailureRecovery "maintenance_failed"
 
   attempt_failed:
     Call CompleteAttempt

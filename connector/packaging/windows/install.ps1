@@ -5,7 +5,8 @@ param(
   [string]$ResultPath = "",
   [string]$FailureDetailsPath = "",
   [long]$AttemptHandle = 0,
-  [switch]$UsePackageTemp
+  [switch]$UsePackageTemp,
+  [switch]$FailureDetailsCodes
 )
 $ErrorActionPreference = "Stop"
 
@@ -148,6 +149,16 @@ function Set-InstallFailure {
 
 function Write-InstallFailureDetails {
   if ([string]::IsNullOrWhiteSpace($FailureDetailsPath)) { return }
+  if ($FailureDetailsCodes) {
+    # The graphical launcher renders these identifiers with its own allowlist.
+    try {
+      [IO.File]::WriteAllText($FailureDetailsPath, "$FailureStage`r`n$FailureReason`r`n$FailureFile`r`n",
+        [Text.UnicodeEncoding]::new($false, $false))
+    } catch {
+      Write-Host "无法写入安装失败摘要。"
+    }
+    return
+  }
   $phase = switch ($FailureStage) {
     "source_precheck"          { "校验解包后的安装文件" }
     "transaction_lock"         { "取得安装事务锁" }
@@ -302,14 +313,18 @@ function Set-PrivateDataAcl {
     # Protect the rest of DataDir even if the journal directory is unavailable.
     $pending = [System.Collections.Generic.Stack[object]]::new()
     $pending.Push($items[0])
-    $journal = Join-Path $Path 'logs\install-attempts'
+    $launcherManaged = @(
+      (Join-Path $Path 'logs\install-attempts'),
+      (Join-Path $Path 'logs\install-failure-summary.txt'),
+      (Join-Path $Path 'logs\install-failure-summary.pending')
+    )
     $checked = [System.Collections.Generic.List[object]]::new()
     while ($pending.Count) {
       $item = $pending.Pop()
       $checked.Add($item)
       if ($item.PSIsContainer) {
         foreach ($child in Get-ChildItem -LiteralPath $item.FullName -Force) {
-          if ($child.FullName -ne $journal -and -not ($child.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+          if ($child.FullName -notin $launcherManaged -and -not ($child.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             $pending.Push($child)
           }
         }
