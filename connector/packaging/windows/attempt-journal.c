@@ -315,7 +315,7 @@ static BOOL start_installer(const WCHAR *powershell, const WCHAR *source, const 
     WCHAR command[5 * MAX_PATH];
     int length = _snwprintf(command, ARRAY_SIZE(command),
         L"\"%ls\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"%ls\\install.ps1\" "
-        L"-ResultPath \"%ls\\result.txt\" -FailureDetailsPath \"%ls\\failure.txt\"%ls",
+        L"-ResultPath \"%ls\\result.txt\" -FailureDetailsPath \"%ls\\failure.txt\" -UsePackageTemp%ls",
         powershell, source, source, source, argument);
     return length > 0 && (size_t)length < ARRAY_SIZE(command) &&
            CreateProcessW(powershell, command, NULL, NULL, startup->lpAttributeList != NULL, flags, NULL,
@@ -329,10 +329,6 @@ EXPORT(RunInstaller) {
         push(stack, size, L"error");
         return;
     }
-
-    /* Windows PowerShell 5.1 also uses TEMP for native SCM interop compilation. */
-    SetEnvironmentVariableW(L"TEMP", source);
-    SetEnvironmentVariableW(L"TMP", source);
 
     /* Inherit only the append-only journal handle. PowerShell never opens a diagnostic path. */
     HANDLE child_journal = NULL;

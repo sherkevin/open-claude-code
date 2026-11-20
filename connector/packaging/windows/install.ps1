@@ -4,7 +4,8 @@
 param(
   [string]$ResultPath = "",
   [string]$FailureDetailsPath = "",
-  [long]$AttemptHandle = 0
+  [long]$AttemptHandle = 0,
+  [switch]$UsePackageTemp
 )
 $ErrorActionPreference = "Stop"
 
@@ -27,6 +28,12 @@ if (-not (Get-Command Set-KaiwuMachineEnvironmentVariable -CommandType Function 
 }
 
 $Source = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($UsePackageTemp) {
+  # Keep PowerShell 5.1 SCM interop compilation in the launcher's protected short path.
+  # The finish page may launch a browser after this directory has been removed.
+  $env:TEMP = $Source
+  $env:TMP = $Source
+}
 $InstallDir = Join-Path $env:ProgramFiles "Kaiwu\Connector"
 $DataDir = Join-Path $env:ProgramData "Kaiwu\Connector"
 $ServiceName = "KaiwuConnector"
