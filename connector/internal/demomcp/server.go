@@ -181,7 +181,7 @@ func (s *Server) InstanceID() string {
 func (s *Server) mcpServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "kaiwu-builtin-demo",
-		Version: "1.3.11",
+		Version: "1.3.12",
 	}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{},
 	})

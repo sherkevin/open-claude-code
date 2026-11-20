@@ -70,7 +70,8 @@ from .security import AppError
 
 
 ADMIN_PREFIX = "/api/kaiwu"
-MAX_SOURCES = 16
+MAX_BUSINESS_SOURCES = 16
+MAX_CONNECTOR_SOURCES = MAX_BUSINESS_SOURCES + 1
 MAX_TOOL_COUNT = 64
 CLOCK_SKEW_SECONDS = 60
 SOURCE_ID_RE = re.compile(r"^src_[0-9a-f]{32}$")
@@ -167,7 +168,7 @@ class HeartbeatRequest(StrictModel):
     state: str = Field(min_length=1, max_length=64)
     version: str = Field(min_length=1, max_length=256)
     observed_at: datetime
-    source_ids: list[str] = Field(max_length=MAX_SOURCES)
+    source_ids: list[str] = Field(max_length=MAX_CONNECTOR_SOURCES)
     last_error: str = Field(max_length=1000)
 
     @field_validator("state")
@@ -193,7 +194,7 @@ class IntegrationCreateRequest(StrictModel):
     tenant_id: str = Field(min_length=1, max_length=128)
     connector_id: str = Field(min_length=1, max_length=128)
     display_name: str = Field(min_length=1, max_length=128)
-    source_ids: list[str] = Field(min_length=1, max_length=MAX_SOURCES)
+    source_ids: list[str] = Field(min_length=1, max_length=MAX_CONNECTOR_SOURCES)
     ttl_seconds: int | None = Field(default=None, ge=60, le=INTEGRATION_TTL_MAX)
 
     @field_validator("tenant_id")
@@ -282,6 +283,30 @@ def _builtin_demo_source_id(connector_id: str) -> str:
         (BUILTIN_DEMO_SOURCE_ID_NAMESPACE + ":" + connector_id).encode("utf-8")
     ).hexdigest()
     return "src_" + digest[:32]
+
+
+def _is_builtin_demo(connector_id: str, source: dict) -> bool:
+    if (
+        source["source_id"] != _builtin_demo_source_id(connector_id)
+        or source["transport"] != "streamable_http"
+    ):
+        return False
+    try:
+        tools = json.loads(source["allowed_tools"])
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(tools, list)
+        and len(tools) == len(BUILTIN_DEMO_TOOLS)
+        and all(isinstance(tool, str) for tool in tools)
+        and set(tools) == BUILTIN_DEMO_TOOLS
+    )
+
+
+def _assert_business_source_limit(connector_id: str, sources: list[dict]) -> None:
+    count = sum(not _is_builtin_demo(connector_id, source) for source in sources)
+    if count > MAX_BUSINESS_SOURCES:
+        raise AppError(409, "SOURCE_LIMIT_EXCEEDED", "单个连接器最多允许 16 个业务来源")
 
 
 def _base64url(raw: bytes) -> str:
@@ -1228,6 +1253,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         if connector["tenant_id"] != data.tenant_id:
             raise AppError(403, "INTEGRATION_TENANT_DENIED", "连接器不属于该企业")
         sources = _integration_rows(service_obj.db, data.connector_id, data.source_ids)
+        _assert_business_source_limit(data.connector_id, sources)
         _edge_public_base(settings)
         token = _new_integration_token()
         ttl = data.ttl_seconds or settings.kaiwu_integration_default_ttl_seconds
@@ -1537,29 +1563,46 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         service_obj=Depends(service),
     ):
         connector = device_ctx["connector"]
-        existing = service_obj.db.one(
-            "SELECT * FROM kaiwu_sources WHERE connector_id=? AND source_id=?",
-            (connector["id"], data.source_id),
-        )
-        desired = {
-            "display_name": data.display_name,
-            "allowed_tools": dump(data.allowed_tools),
-            "tool_schema_sha256": data.tool_schema_sha256,
-            "target_binding_sha256": data.target_binding_sha256,
-            "transport": data.transport,
-        }
-        trace_id = "tr_" + uid()
-        if existing:
-            current = {key: existing[key] for key in desired}
-            if current != desired:
-                raise AppError(409, "SOURCE_CONFIG_CONFLICT", "同一来源编号的配置发生变化，请重新审核")
-            route = service_obj.db.one(
-                "SELECT 1 FROM kaiwu_edge_routes WHERE connector_id=? AND source_id=?",
+        with service_obj.db.transaction():
+            existing = service_obj.db.one(
+                "SELECT * FROM kaiwu_sources WHERE connector_id=? AND source_id=?",
                 (connector["id"], data.source_id),
             )
-            if not route:
-                timestamp = now()
-                with service_obj.db.transaction():
+            desired = {
+                "display_name": data.display_name,
+                "allowed_tools": dump(data.allowed_tools),
+                "tool_schema_sha256": data.tool_schema_sha256,
+                "target_binding_sha256": data.target_binding_sha256,
+                "transport": data.transport,
+            }
+            trace_id = "tr_" + uid()
+            if existing:
+                current = {key: existing[key] for key in desired}
+                if current != desired:
+                    # Earlier clients hashed the ephemeral loopback port. Migrate
+                    # only the exact built-in contract to its stable binding digest.
+                    stable_binding = hashlib.sha256(
+                        (BUILTIN_DEMO_SOURCE_ID_NAMESPACE + ":" + data.source_id).encode("utf-8")
+                    ).hexdigest()
+                    if (
+                        _is_builtin_demo(connector["id"], existing)
+                        and desired["target_binding_sha256"] == stable_binding
+                        and (current | {"target_binding_sha256": stable_binding}) == desired
+                    ):
+                        service_obj.db.execute(
+                            "UPDATE kaiwu_sources SET target_binding_sha256=?,updated_at=? "
+                            "WHERE connector_id=? AND source_id=?",
+                            (stable_binding, now(), connector["id"], data.source_id),
+                        )
+                        existing["target_binding_sha256"] = stable_binding
+                    else:
+                        raise AppError(409, "SOURCE_CONFIG_CONFLICT", "同一来源编号的配置发生变化，请重新审核")
+                route = service_obj.db.one(
+                    "SELECT 1 FROM kaiwu_edge_routes WHERE connector_id=? AND source_id=?",
+                    (connector["id"], data.source_id),
+                )
+                if not route:
+                    timestamp = now()
                     visitor_port = _allocate_visitor_port(service_obj.db, device_ctx["settings"])
                     service_obj.db.execute(
                         "INSERT INTO kaiwu_edge_routes"
@@ -1586,17 +1629,15 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                         trace_id=trace_id,
                         detail={"visitor_port": visitor_port},
                     )
-            return {"source": _source_view(existing, device_ctx["settings"]), "revision": connector["revision"], "trace_id": trace_id}
-        count = service_obj.db.one(
-            "SELECT COUNT(*) AS n FROM kaiwu_sources WHERE connector_id=?",
-            (connector["id"],),
-        )["n"]
-        if count >= MAX_SOURCES:
-            raise AppError(409, "SOURCE_LIMIT_EXCEEDED", "单个连接器最多允许 16 个来源")
-        derived = _derive_secret(
-            device_ctx["settings"], "stcp", f"{connector['id']}:{data.source_id}:1"
-        )
-        with service_obj.db.transaction():
+                return {"source": _source_view(existing, device_ctx["settings"]), "revision": connector["revision"], "trace_id": trace_id}
+            registered = service_obj.db.all(
+                "SELECT source_id, allowed_tools, transport FROM kaiwu_sources WHERE connector_id=?",
+                (connector["id"],),
+            )
+            _assert_business_source_limit(connector["id"], [*registered, {"source_id": data.source_id, **desired}])
+            derived = _derive_secret(
+                device_ctx["settings"], "stcp", f"{connector['id']}:{data.source_id}:1"
+            )
             visitor_port = _allocate_visitor_port(service_obj.db, device_ctx["settings"])
             service_obj.db.execute(
                 "INSERT INTO kaiwu_sources"
@@ -1696,15 +1737,16 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         connector = device_ctx["connector"]
         if connector["id"] != connector_id:
             raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
-        known = {
-            row["source_id"]
+        sources = {
+            row["source_id"]: row
             for row in service_obj.db.all(
-                "SELECT source_id FROM kaiwu_sources WHERE connector_id=?",
+                "SELECT source_id, allowed_tools, transport FROM kaiwu_sources WHERE connector_id=?",
                 (connector_id,),
             )
         }
-        if not set(data.source_ids).issubset(known):
+        if not set(data.source_ids).issubset(sources):
             raise AppError(409, "HEARTBEAT_SOURCE_UNKNOWN", "心跳包含未登记来源")
+        _assert_business_source_limit(connector_id, [sources[source_id] for source_id in data.source_ids])
         observed = data.observed_at
         if observed.tzinfo is None:
             observed = observed.replace(tzinfo=timezone.utc)

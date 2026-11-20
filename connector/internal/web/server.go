@@ -92,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/bind", s.guard(postOnly(s.handleBind)))
 	mux.HandleFunc("/api/import", s.guard(postOnly(s.handleImport)))
 	mux.HandleFunc("/api/source/save", s.guard(postOnly(s.handleSourceSave)))
+	mux.HandleFunc("/api/source/save-and-connect", s.guard(postOnly(s.handleSourceSaveAndConnect)))
 	mux.HandleFunc("/api/source/tools", s.guard(postOnly(s.handleSourceTools)))
 	mux.HandleFunc("/api/source/enabled", s.guard(postOnly(s.handleSourceEnabled)))
 	mux.HandleFunc("/api/builtin-demo/enabled", s.guard(postOnly(s.handleBuiltinDemoEnabled)))
@@ -210,6 +211,21 @@ func (s *Server) handleSourceSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.Agent.SaveSource(body)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": result})
+}
+
+func (s *Server) handleSourceSaveAndConnect(w http.ResponseWriter, r *http.Request) {
+	var body agent.SourceInput
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+	result, err := s.Agent.SaveSourceAndConnect(ctx, body)
 	if err != nil {
 		writeAPIError(w, err)
 		return

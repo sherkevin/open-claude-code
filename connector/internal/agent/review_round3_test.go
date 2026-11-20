@@ -373,7 +373,8 @@ func TestCloseCancelsInFlightAutoConnectBeforeResourcesStart(t *testing.T) {
 	}
 	blocked := make(chan struct{})
 	release := make(chan struct{})
-	var blockOnce sync.Once
+	var blockOnce, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/sources":
@@ -389,6 +390,7 @@ func TestCloseCancelsInFlightAutoConnectBeforeResourcesStart(t *testing.T) {
 		}
 	}))
 	t.Cleanup(control.Close)
+	t.Cleanup(unblock)
 
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "frpc-started")
@@ -434,7 +436,7 @@ func TestCloseCancelsInFlightAutoConnectBeforeResourcesStart(t *testing.T) {
 		t.Fatal("AutoConnect did not reach the blocked cloud request")
 	}
 	instance.mu.RLock()
-	demoProxy := instance.proxies[demoID]
+	demoProxy := instance.preparedProxies[demoID]
 	instance.mu.RUnlock()
 	if demoProxy == nil {
 		t.Fatal("blocked connect did not create the expected local demo proxy")
@@ -445,10 +447,10 @@ func TestCloseCancelsInFlightAutoConnectBeforeResourcesStart(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		close(release)
+		unblock()
 		t.Fatal("Close did not cancel the in-flight AutoConnect")
 	}
-	close(release)
+	unblock()
 
 	if !instance.isClosed() {
 		t.Fatal("agent did not remain closed")
@@ -456,7 +458,7 @@ func TestCloseCancelsInFlightAutoConnectBeforeResourcesStart(t *testing.T) {
 	instance.mu.RLock()
 	currentSupervisor := instance.supervisor
 	currentHeartbeat := instance.heartbeat
-	proxyCount := len(instance.proxies)
+	proxyCount := len(instance.proxies) + len(instance.preparedProxies)
 	instance.mu.RUnlock()
 	if currentSupervisor != nil || currentHeartbeat != nil || proxyCount != 0 {
 		t.Fatalf("Close left runtime resources: supervisor=%v heartbeat=%v proxies=%d", currentSupervisor, currentHeartbeat, proxyCount)

@@ -69,6 +69,8 @@ func (a *Agent) AutoConnect() {
 	_, _ = a.runConnect(ctx, false, true)
 }
 
+var errTunnelPaused = errors.New("通道已暂停，恢复连接后可验证公网")
+
 var errTunnelSelectionSuperseded = errors.New("通道操作已被更新的用户选择取消")
 
 // supersedeTunnelOperationLocked is called under mu before an explicit

@@ -19,6 +19,7 @@ const (
 	SelfTestStatusPassed  = "passed"
 	SelfTestStatusFailed  = "failed"
 	SelfTestStatusSkipped = "skipped"
+	SelfTestStatusPaused  = "paused"
 
 	SelfTestQuestion = "请用内置测试服务查询订单数和 KAIWU-DEMO-001 的库存。"
 	SelfTestAnswer   = "示例订单数 12；KAIWU-DEMO-001 示例库存 128。两者都不是华微真实业务数据。"
@@ -64,11 +65,8 @@ func (a *Agent) SelfTest(ctx context.Context) (result SelfTestResult) {
 	}
 	defer release()
 	a.recordDiagnostic(diagnostics.Record{EventCode: "diagnosis_started", OperationID: operationID})
+	code := "diagnosis_failed"
 	defer func() {
-		code := "diagnosis_succeeded"
-		if !result.OK {
-			code = "diagnosis_failed"
-		}
 		a.recordDiagnostic(diagnostics.Record{
 			EventCode:   code,
 			OperationID: operationID,
@@ -88,11 +86,12 @@ func (a *Agent) SelfTest(ctx context.Context) (result SelfTestResult) {
 	}
 	status := a.Status()
 	if !status.BuiltinDemo.Enabled {
+		code = "self_test_demo_disabled"
 		result.Stages = append(result.Stages, SelfTestStage{
 			ID: "local_mcp", Status: SelfTestStatusSkipped,
 			Message: "内置测试服务已由用户关闭",
 		})
-		appendSelfTestSkipped(&result, "enterprise_binding", "tunnel", "edge_connect")
+		skipSelfTestStages(&result, "内置测试服务已关闭，本阶段未执行", "enterprise_binding", "tunnel", "edge_connect")
 		return result
 	}
 	if !status.BuiltinDemo.Running {
@@ -144,11 +143,12 @@ func (a *Agent) SelfTest(ctx context.Context) (result SelfTestResult) {
 	})
 
 	if !status.Bound {
+		code = "self_test_local_passed"
 		result.Stages = append(result.Stages, SelfTestStage{
 			ID: "enterprise_binding", Status: SelfTestStatusSkipped,
 			Message: "当前尚未绑定企业，本机示例服务已通过，公网链路未执行",
 		})
-		appendSelfTestSkipped(&result, "tunnel", "edge_connect")
+		skipSelfTestStages(&result, "等待企业绑定，本阶段未执行", "tunnel", "edge_connect")
 		return result
 	}
 	result.Stages = append(result.Stages, SelfTestStage{
@@ -157,6 +157,15 @@ func (a *Agent) SelfTest(ctx context.Context) (result SelfTestResult) {
 	})
 
 	_, connectErr := a.connect(ctx, true)
+	if errors.Is(connectErr, errTunnelPaused) {
+		code = "self_test_tunnel_paused"
+		result.Stages = append(result.Stages, SelfTestStage{
+			ID: "tunnel", Status: SelfTestStatusPaused,
+			Message: "通道已暂停，请确认后点击“恢复连接”",
+		})
+		skipSelfTestStages(&result, "通道已暂停，公网验证未执行", "edge_connect")
+		return result
+	}
 	if connectErr != nil {
 		result.Stages = append(result.Stages, SelfTestStage{
 			ID: "tunnel", Status: SelfTestStatusFailed,
@@ -215,6 +224,9 @@ func (a *Agent) SelfTest(ctx context.Context) (result SelfTestResult) {
 		return result
 	}
 	result.OK = selfTestStagesPassed(result.Stages)
+	if result.OK {
+		code = "diagnosis_succeeded"
+	}
 	return result
 }
 
@@ -271,9 +283,13 @@ func runLocalDemoProbe(ctx context.Context, endpoint, nonce string) (cloud.SelfT
 }
 
 func appendSelfTestSkipped(result *SelfTestResult, ids ...string) {
+	skipSelfTestStages(result, "前序阶段未通过，本阶段未执行", ids...)
+}
+
+func skipSelfTestStages(result *SelfTestResult, message string, ids ...string) {
 	for _, id := range ids {
 		result.Stages = appendOrReplaceStage(result.Stages, SelfTestStage{
-			ID: id, Status: SelfTestStatusSkipped, Message: "前序阶段未通过，本阶段未执行",
+			ID: id, Status: SelfTestStatusSkipped, Message: message,
 		})
 	}
 }

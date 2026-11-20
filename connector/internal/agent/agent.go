@@ -94,9 +94,10 @@ type Agent struct {
 	profiles      map[string]huaweiauth.Profile
 	lastError     string
 
-	supervisor *supervisor.Supervisor
-	proxies    map[string]*authproxy.Server
-	heartbeat  context.CancelFunc
+	supervisor      *supervisor.Supervisor
+	proxies         map[string]*authproxy.Server
+	preparedProxies map[string]*authproxy.Server
+	heartbeat       context.CancelFunc
 
 	frpcAdminPort     int
 	frpcAdminUser     string
@@ -317,6 +318,7 @@ func (a *Agent) CloseContext(ctx context.Context) {
 			_ = s.Stop(ctx)
 		}
 		a.stopAuthProxies()
+		a.stopPreparedAuthProxies()
 		a.stopBuiltinDemoServer()
 		if a.diagMgr != nil {
 			a.recordDiagnostic(diagnostics.Record{EventCode: "connector_stopped"})
@@ -695,6 +697,8 @@ func (a *Agent) statusSnapshot() Status {
 
 // Bind 用一次性接入码兑换设备身份。
 func (a *Agent) Bind(ctx context.Context, code string) (Status, error) {
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
 	started := time.Now()
 	operationID := diagnostics.NewOperationID()
 	code = strings.TrimSpace(code)
@@ -771,12 +775,14 @@ func (a *Agent) ImportConfig(ctx context.Context, raw []byte) (config.ImportRepo
 		a.recordDiagnostic(diagnostics.Record{EventCode: "config_import_failed", OperationID: operationID, DurationMS: diagnosticDuration(started)})
 		return report, nil
 	}
-	if len(report.Sources) > 16 {
+	if len(report.Sources) > maxBusinessSources {
 		a.recordDiagnostic(diagnostics.Record{EventCode: "config_import_failed", OperationID: operationID, DurationMS: diagnosticDuration(started)})
-		return report, errors.New("单个连接器最多允许 16 个来源")
+		return report, errors.New("单个连接器最多允许 16 个业务来源")
 	}
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
 	a.mu.Lock()
-	report.Sources, report.Secrets, err = assignSourceIDs(report.Sources, report.Secrets, a.config.Sources)
+	report.Sources, report.Secrets, err = assignSourceIDs(report.Sources, report.Secrets, a.businessSourcesLocked())
 	if err != nil {
 		a.mu.Unlock()
 		a.recordDiagnostic(diagnostics.Record{EventCode: "config_import_failed", OperationID: operationID, DurationMS: diagnosticDuration(started)})
@@ -1004,19 +1010,9 @@ func containsTool(tools []string, wanted string) bool {
 
 // registerSources publishes only opaque source metadata to the control plane.
 // Customer URLs, credentials and local proxy targets remain local.
-func (a *Agent) registerSources(ctx context.Context) error {
+func (a *Agent) registerSources(ctx context.Context, sources []config.Source, proxies map[string]*authproxy.Server) error {
 	a.mu.RLock()
-	sources := enabledSources(a.config.Sources)
-	a.mu.RUnlock()
-	return a.registerSourcesFor(ctx, sources)
-}
-
-func (a *Agent) registerSourcesFor(ctx context.Context, sources []config.Source) error {
-	a.mu.RLock()
-	proxies := make(map[string]*authproxy.Server, len(a.proxies))
-	for sourceID, proxy := range a.proxies {
-		proxies[sourceID] = proxy
-	}
+	demoID := a.demoState.SourceID
 	a.mu.RUnlock()
 	if a.cloud == nil {
 		return errors.New("请先绑定企业")
@@ -1040,12 +1036,17 @@ func (a *Agent) registerSourcesFor(ctx context.Context, sources []config.Source)
 		if err != nil {
 			return fmt.Errorf("来源 %s 的工具 schema 发现失败: %w", source.DisplayName, err)
 		}
+		bindingDigest := digestString(strings.TrimRight(source.UpstreamURL, "/"))
+		if source.SourceID == demoID {
+			// Each process chooses a new loopback port for the same bundled service.
+			bindingDigest = digestString(builtinDemoProtocolProfile + ":" + demoID)
+		}
 		if _, fail := a.cloud.RegisterSource(ctx, cloud.SourceRegistration{
 			SourceID:            source.SourceID,
 			DisplayName:         source.DisplayName,
 			AllowedTools:        allowedTools,
 			ToolSchemaSHA256:    schemaDigest,
-			TargetBindingSHA256: digestString(strings.TrimRight(source.UpstreamURL, "/")),
+			TargetBindingSHA256: bindingDigest,
 			Transport:           source.Transport,
 		}); fail != nil {
 			return fmt.Errorf("登记来源 %s 失败: %w", source.DisplayName, fail)
@@ -1158,6 +1159,9 @@ func (a *Agent) connect(ctx context.Context, demoOnly bool) (Status, error) {
 }
 
 func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (status Status, err error) {
+	if demoOnly && a.state.Current() == state.Paused {
+		return a.statusSnapshot(), errTunnelPaused
+	}
 	started := time.Now()
 	operationID := diagnostics.NewOperationID()
 	a.recordDiagnostic(diagnostics.Record{EventCode: "connection_started", OperationID: operationID})
@@ -1178,13 +1182,11 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 	if a.state.Current() == state.Revoked {
 		return a.statusSnapshot(), errors.New("连接器已被撤销")
 	}
-	if demoOnly && a.state.Current() == state.Paused {
-		return a.statusSnapshot(), errors.New("通道已暂停，恢复连接后可验证公网")
-	}
 	a.mu.RLock()
 	client := a.cloud
 	identity := a.identity
-	hasSources := len(a.runtimeSourcesLocked()) > 0
+	sources := a.runtimeSourcesLocked()
+	hasSources := len(sources) > 0
 	demoID := a.demoState.SourceID
 	demoSourceIndex := a.builtinDemoSourceIndexLocked()
 	demoRunning := a.builtinDemoRuntimeReadyLocked()
@@ -1213,11 +1215,14 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 		a.state.Transition(state.Connecting, "开始建立通道")
 	}
 
-	var demoCreatedProxies map[string]*authproxy.Server
+	var proxies, demoCreatedProxies map[string]*authproxy.Server
 	if demoOnly {
 		demoCreatedProxies, err = a.startAuthProxiesForDemo()
+		a.mu.RLock()
+		proxies = a.proxies
+		a.mu.RUnlock()
 	} else {
-		err = a.startAuthProxies()
+		proxies, err = a.prepareAuthProxies(sources)
 	}
 	if err != nil {
 		if !demoOnly {
@@ -1240,7 +1245,7 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 			a.stopNewAuthProxies(demoCreatedProxies)
 			return
 		}
-		a.stopAuthProxies()
+		a.stopPreparedAuthProxies()
 	}
 	registrationErr := error(nil)
 	if demoOnly {
@@ -1248,13 +1253,14 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 		if sourceErr != nil {
 			registrationErr = sourceErr
 		} else {
-			registrationErr = a.registerSourcesFor(ctx, []config.Source{source})
+			registrationErr = a.registerSources(ctx, []config.Source{source}, proxies)
 		}
 	} else {
-		registrationErr = a.registerSources(ctx)
+		registrationErr = a.registerSources(ctx, sources, proxies)
 	}
 	if registrationErr != nil {
 		if cloudRevokedDevice(registrationErr) {
+			cleanupProxies()
 			return a.revokeFromCloud(ctx, identity.ConnectorID)
 		}
 		cleanupProxies()
@@ -1266,6 +1272,7 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 	desired, err := client.DesiredState(ctx, identity.ConnectorID)
 	if err != nil {
 		if cloudRevokedDevice(err) {
+			cleanupProxies()
 			return a.revokeFromCloud(ctx, identity.ConnectorID)
 		}
 		cleanupProxies()
@@ -1275,14 +1282,17 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 		return a.Status(), err
 	}
 	if desired.Revoked {
+		cleanupProxies()
 		return a.revokeFromCloud(ctx, identity.ConnectorID)
 	}
 	if desired.Draining {
+		cleanupProxies()
 		return a.drainTunnel(ctx)
 	}
 	secretsState, err := client.TransportSecrets(ctx, identity.ConnectorID)
 	if err != nil {
 		if cloudRevokedDevice(err) {
+			cleanupProxies()
 			return a.revokeFromCloud(ctx, identity.ConnectorID)
 		}
 		cleanupProxies()
@@ -1292,14 +1302,16 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 		return a.Status(), fmt.Errorf("获取通道密钥失败: %w", err)
 	}
 	if secretsState.Revoked {
+		cleanupProxies()
 		return a.revokeFromCloud(ctx, identity.ConnectorID)
 	}
 	if secretsState.Draining {
+		cleanupProxies()
 		return a.drainTunnel(ctx)
 	}
 	desired = mergeSecrets(desired, secretsState)
 
-	generated, err := a.buildFrpcConfig(desired)
+	generated, err := a.buildFrpcConfig(desired, proxies)
 	if err != nil {
 		cleanupProxies()
 		if !demoOnly {
@@ -1343,16 +1355,6 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 	generated.AdminPort = adminPort
 	generated.AdminUser = "kaiwu"
 	generated.AdminPassword = adminPassword
-	configPath := a.store.Path(fileFrpc)
-	frpcEnvironment, err := generated.WriteEnvFile(configPath)
-	if err != nil {
-		cleanupProxies()
-		if !demoOnly {
-			a.state.Transition(state.DegradedRelay, "写入通道配置失败: "+err.Error())
-		}
-		return a.Status(), err
-	}
-
 	binary := a.frpcBinary()
 	if _, err := os.Stat(binary); err != nil {
 		cleanupProxies()
@@ -1360,6 +1362,13 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 			a.state.Transition(state.DegradedRelay, "找不到 frpc 程序")
 		}
 		return a.Status(), fmt.Errorf("找不到 frpc 程序: %s", binary)
+	}
+
+	configPath := a.store.Path(fileFrpc)
+	configText, frpcEnvironment, err := generated.RenderWithEnvSecrets()
+	if err != nil {
+		cleanupProxies()
+		return a.statusSnapshot(), err
 	}
 
 	a.lifecycleMu.Lock()
@@ -1375,7 +1384,33 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 	}
 	a.mu.Lock()
 	previousSupervisor := a.supervisor
+	previousProxies := a.proxies
 	a.stoppingTunnels++
+	a.mu.Unlock()
+	if previousSupervisor != nil {
+		err = stopSupervisor(previousSupervisor)
+	}
+	if err == nil {
+		// A restarting previous supervisor must not read the new file with
+		// its old environment. Replace the file after that supervisor stops.
+		if writeErr := a.store.WriteFile(fileFrpc, []byte(configText)); writeErr != nil {
+			err = fmt.Errorf("写入通道配置失败: %w", writeErr)
+			if previousSupervisor != nil {
+				err = errors.Join(err, previousSupervisor.Start(ctx))
+			}
+		}
+	}
+	a.mu.Lock()
+	a.stoppingTunnels--
+	if err != nil {
+		a.mu.Unlock()
+		a.lifecycleMu.Unlock()
+		cleanupProxies()
+		if !demoOnly {
+			a.state.Transition(state.DegradedRelay, err.Error())
+		}
+		return a.Status(), err
+	}
 	a.frpcAdminPort = adminPort
 	a.frpcAdminUser = generated.AdminUser
 	a.frpcAdminPassword = adminPassword
@@ -1387,13 +1422,15 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 	s.OnChange = a.onFrpChange
 	a.supervisor = s
 	stopHeartbeat := a.heartbeat
-	a.mu.Unlock()
-	if previousSupervisor != nil {
-		_ = stopSupervisor(previousSupervisor)
+	if !demoOnly {
+		a.proxies = proxies
+		a.preparedProxies = nil
 	}
-	a.mu.Lock()
-	a.stoppingTunnels--
 	a.mu.Unlock()
+	if !demoOnly {
+		closeProxies(previousProxies)
+		cleanupProxies = a.stopAuthProxies
+	}
 	if stopHeartbeat != nil {
 		stopHeartbeat()
 	}
@@ -1589,13 +1626,9 @@ func (a *Agent) Export() ([]byte, error) {
 	return config.BuildPlatformConfig(business, edgeBase, "")
 }
 
-func (a *Agent) buildFrpcConfig(desired cloud.DesiredState) (frpc.Config, error) {
+func (a *Agent) buildFrpcConfig(desired cloud.DesiredState, proxies map[string]*authproxy.Server) (frpc.Config, error) {
 	a.mu.RLock()
 	sources := append([]config.Source(nil), a.config.Sources...)
-	proxies := make(map[string]*authproxy.Server, len(a.proxies))
-	for sourceID, proxy := range a.proxies {
-		proxies[sourceID] = proxy
-	}
 	demoID := a.demoState.SourceID
 	a.mu.RUnlock()
 

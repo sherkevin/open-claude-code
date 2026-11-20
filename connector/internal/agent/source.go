@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/diag"
 	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 	"github.com/sherkevin/open-claude-code/connector/internal/mcp"
@@ -46,6 +49,16 @@ type ToolSummary struct {
 	Description string `json:"description,omitempty"`
 }
 
+const maxBusinessSources = 16
+
+// SourceConnectionResult separates a saved local configuration from the
+// outcome of establishing or replacing the public tunnel.
+type SourceConnectionResult struct {
+	SourceSaveResult
+	LocalDiagnosis  *diag.Report `json:"local_diagnosis,omitempty"`
+	ConnectionError string       `json:"connection_error,omitempty"`
+}
+
 type preparedSource struct {
 	source     config.Source
 	secret     map[string]string
@@ -57,7 +70,18 @@ type preparedSource struct {
 
 // SaveSource creates or updates exactly one source. Unlike the advanced
 // whole-import path, it never replaces other sources or their secrets.
-func (a *Agent) SaveSource(input SourceInput) (result SourceSaveResult, err error) {
+func (a *Agent) SaveSource(input SourceInput) (SourceSaveResult, error) {
+	result, err := a.saveSource(context.Background(), input, false)
+	return result.SourceSaveResult, err
+}
+
+// SaveSourceAndConnect checks the draft before changing the live configuration.
+// A local save and a failed cloud connection are reported as separate outcomes.
+func (a *Agent) SaveSourceAndConnect(ctx context.Context, input SourceInput) (SourceConnectionResult, error) {
+	return a.saveSource(ctx, input, true)
+}
+
+func (a *Agent) saveSource(ctx context.Context, input SourceInput, connect bool) (result SourceConnectionResult, err error) {
 	started := time.Now()
 	operationID := diagnostics.NewOperationID()
 	defer func() {
@@ -72,31 +96,69 @@ func (a *Agent) SaveSource(input SourceInput) (result SourceSaveResult, err erro
 			DurationMS:  diagnosticDuration(started),
 		})
 	}()
-	a.mu.Lock()
-	switch a.state.Current() {
-	case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:
-		a.mu.Unlock()
-		return SourceSaveResult{}, errors.New("请先暂停连接，再修改 MCP 服务配置")
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	ctx, release, err := a.beginRuntimeOperation(ctx)
+	if err != nil {
+		return result, err
 	}
+	defer release()
+
+	a.mu.Lock()
+	current := a.state.Current()
+	if !connect && (current == state.Ready || current == state.Connecting ||
+		current == state.DegradedRelay || current == state.DegradedUpstream) {
+		a.mu.Unlock()
+		return result, errors.New("请先暂停连接，再修改 MCP 服务配置")
+	}
+	choice := a.tunnelRevision
+	revision := a.config.Revision
+	a.connectCancel = release
+	defer func() {
+		a.mu.Lock()
+		a.connectCancel = nil
+		a.mu.Unlock()
+	}()
 
 	prepared, err := a.prepareSourceLocked(input)
 	if err != nil {
 		a.mu.Unlock()
-		return SourceSaveResult{}, err
+		return SourceConnectionResult{}, err
 	}
 	if len(prepared.source.ToolAllowlist) == 0 {
 		a.mu.Unlock()
-		return SourceSaveResult{}, errors.New("请先读取工具列表，并至少勾选一个允许使用的只读工具")
+		return SourceConnectionResult{}, errors.New("请先读取工具列表，并至少勾选一个允许使用的只读工具")
 	}
 
+	if prepared.created && len(a.businessSourcesLocked()) >= maxBusinessSources {
+		a.mu.Unlock()
+		return result, errors.New("单个连接器最多允许 16 个业务来源")
+	}
+	a.mu.Unlock()
+
+	if connect && !prepared.source.Disabled {
+		report := diag.Run(ctx, prepared.source, diag.Options{HeaderValues: prepared.secret})
+		for _, check := range report.Checks {
+			if check.Status == diag.StatusFail {
+				return result, fmt.Errorf("%s：%s", check.Label, check.Detail)
+			}
+		}
+		result.LocalDiagnosis = &report
+	}
+
+	a.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		a.mu.Unlock()
+		return result, err
+	}
+	if choice != a.tunnelRevision || revision != a.config.Revision {
+		a.mu.Unlock()
+		return result, errors.New("本机配置或通道选择已更新，请刷新后重试")
+	}
 	nextConfig := a.config
 	nextConfig.Revision++
 	nextConfig.Sources = append([]config.Source(nil), a.config.Sources...)
 	if prepared.created {
-		if len(nextConfig.Sources) >= 16 {
-			a.mu.Unlock()
-			return SourceSaveResult{}, errors.New("单个连接器最多允许 16 个来源")
-		}
 		nextConfig.Sources = append(nextConfig.Sources, prepared.source)
 	} else {
 		nextConfig.Sources[prepared.index] = prepared.source
@@ -116,17 +178,9 @@ func (a *Agent) SaveSource(input SourceInput) (result SourceSaveResult, err erro
 		delete(nextProfiles, prepared.source.SourceID)
 	}
 
-	if err := a.store.WriteJSON(fileConfig, nextConfig); err != nil {
+	if err := a.writeSourceFilesLocked(nextConfig, nextSecrets, nextProfiles); err != nil {
 		a.mu.Unlock()
-		return SourceSaveResult{}, err
-	}
-	if err := a.store.WriteProtectedJSON(fileSecrets, nextSecrets); err != nil {
-		a.mu.Unlock()
-		return SourceSaveResult{}, err
-	}
-	if err := a.store.WriteProtectedJSON(fileAuth, nextProfiles); err != nil {
-		a.mu.Unlock()
-		return SourceSaveResult{}, err
+		return result, err
 	}
 
 	a.config = nextConfig
@@ -140,7 +194,64 @@ func (a *Agent) SaveSource(input SourceInput) (result SourceSaveResult, err erro
 		status = a.Status()
 	}
 	a.syncDiagnosticApprovals()
-	return SourceSaveResult{Created: prepared.created, Source: prepared.source, Status: status}, nil
+	result.SourceSaveResult = SourceSaveResult{Created: prepared.created, Source: prepared.source, Status: status}
+	if !connect || prepared.source.Disabled || status.State == state.Paused ||
+		!status.Bound || !status.CloudConfigured {
+		return result, nil
+	}
+
+	// Retain the earlier persisted choice until the newly configured tunnel is ready.
+	result.Status, err = a.establishTunnel(ctx, false, true)
+	if err == nil {
+		a.mu.Lock()
+		if choice == a.tunnelRevision && ctx.Err() == nil {
+			err = a.saveTunnelChoice(tunnelConnected, state.Ready)
+			if err == nil {
+				a.startupConnectPending = false
+			}
+		} else {
+			err = errTunnelSelectionSuperseded
+		}
+		a.mu.Unlock()
+	}
+	if err != nil {
+		result.ConnectionError = err.Error()
+	}
+	return result, nil
+}
+
+// The store atomically replaces each file. Restore earlier files if a later
+// write fails so the next process also sees the previously saved configuration.
+func (a *Agent) writeSourceFilesLocked(next config.Connector, secrets map[string]map[string]string, profiles map[string]huaweiauth.Profile) error {
+	files := []struct {
+		name     string
+		write    func() error
+		original []byte
+	}{
+		{name: fileSecrets, write: func() error { return a.store.WriteProtectedJSON(fileSecrets, secrets) }},
+		{name: fileAuth, write: func() error { return a.store.WriteProtectedJSON(fileAuth, profiles) }},
+		{name: fileConfig, write: func() error { return a.store.WriteJSON(fileConfig, next) }},
+	}
+	for i := range files {
+		original, err := os.ReadFile(a.store.Path(files[i].name))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		files[i].original = original
+	}
+	for index, file := range files {
+		if err := file.write(); err != nil {
+			for _, written := range files[:index] {
+				if written.original == nil {
+					err = errors.Join(err, a.store.Remove(written.name))
+				} else {
+					err = errors.Join(err, a.store.WriteFile(written.name, written.original))
+				}
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // SetSourceEnabled changes only whether one source participates in diagnosis,
@@ -169,6 +280,8 @@ func (a *Agent) SetSourceEnabled(sourceID string, enabled bool) (result SourceSa
 		return SourceSaveResult{}, errors.New("请选择 MCP 服务")
 	}
 
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
 	a.mu.Lock()
 	switch a.state.Current() {
 	case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:

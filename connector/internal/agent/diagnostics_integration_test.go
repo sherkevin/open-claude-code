@@ -239,7 +239,7 @@ func TestDiagnosticUploadSanitizesUnregisteredSourceThenCarriesRegisteredScope(t
 	}
 
 	upstreamDown.Store(false)
-	if err := instance.registerSources(ctx); err != nil {
+	if err := instance.registerSources(ctx, instance.runtimeSourcesLocked(), instance.proxies); err != nil {
 		t.Fatal(err)
 	}
 	recorded := instance.recordDiagnostic(diagnostics.Record{

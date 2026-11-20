@@ -687,7 +687,7 @@ func TestBuildFrpcConfigStartsOnlyCloudApprovedSources(t *testing.T) {
 		UpstreamURL:   "http://10.0.0.8:8000/mcp",
 		ToolAllowlist: []string{"query_orders"},
 	}}
-	if _, err := instance.buildFrpcConfig(cloud.DesiredState{Revision: 1}); err == nil ||
+	if _, err := instance.buildFrpcConfig(cloud.DesiredState{Revision: 1}, instance.proxies); err == nil ||
 		!strings.Contains(err.Error(), "尚未批准任何可用来源") {
 		t.Fatalf("未获云端批准的来源不能启动通道: %v", err)
 	}
@@ -876,7 +876,7 @@ func TestDisabledSourceDoesNotBlockEnabledSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	instance.cloud = client
-	if err := instance.registerSources(context.Background()); err != nil {
+	if err := instance.registerSources(context.Background(), instance.runtimeSourcesLocked(), instance.proxies); err != nil {
 		t.Fatalf("云端来源登记不应被停用来源阻断: %v", err)
 	}
 	if got := len(registrations); got != 1 {
@@ -897,7 +897,7 @@ func TestDisabledSourceDoesNotBlockEnabledSource(t *testing.T) {
 			{SourceID: current.Source.SourceID, STCPSecret: "current-stcp", AllowUsers: []string{"kaiwu"}},
 		},
 	}
-	generated, err := instance.buildFrpcConfig(desired)
+	generated, err := instance.buildFrpcConfig(desired, instance.proxies)
 	if err != nil {
 		t.Fatalf("生成专属 FRP 配置失败: %v", err)
 	}
@@ -962,4 +962,16 @@ func TestConnectFailsWhenEnabledSourceCannotBeRegistered(t *testing.T) {
 	if status.State == state.Ready {
 		t.Fatal("启用来源失败时绝不能显示已连接")
 	}
+}
+
+func (a *Agent) startAuthProxies() error {
+	proxies, err := a.prepareAuthProxies(a.runtimeSourcesLocked())
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.proxies = proxies
+	a.preparedProxies = nil
+	a.mu.Unlock()
+	return nil
 }

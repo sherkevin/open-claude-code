@@ -85,11 +85,7 @@ func (a *Agent) validateBuiltinDemoIdentity(connectorID string) error {
 		return nil
 	}
 	targetID := builtinDemoSourceID(connectorID)
-	trackedExists := false
 	for _, source := range a.config.Sources {
-		if source.SourceID == a.demoState.SourceID {
-			trackedExists = true
-		}
 		if source.SourceID != targetID {
 			continue
 		}
@@ -97,9 +93,6 @@ func (a *Agent) validateBuiltinDemoIdentity(connectorID string) error {
 			return errors.New("内置测试来源的固定编号已被其他来源占用")
 		}
 		return nil
-	}
-	if !trackedExists && len(a.config.Sources) >= 16 {
-		return errors.New("来源数量已达到上限，无法迁移内置测试来源")
 	}
 	return nil
 }
@@ -156,6 +149,8 @@ func (a *Agent) SetBuiltinDemoEnabled(enabled bool) (Status, error) {
 	if a == nil {
 		return Status{}, errors.New("connector is nil")
 	}
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
 	if a.isClosed() {
 		return a.statusSnapshot(), errAgentClosed
 	}
@@ -278,7 +273,7 @@ func (a *Agent) setBuiltinDemoError(code string) {
 
 func safeDemoErrorCode(code string) string {
 	switch code {
-	case "", "LOCAL_LISTENER_FAILED", "BUILTIN_SOURCE_FAILED", "BUILTIN_SOURCE_CONFLICT", "SOURCE_LIMIT_REACHED":
+	case "", "LOCAL_LISTENER_FAILED", "BUILTIN_SOURCE_FAILED", "BUILTIN_SOURCE_CONFLICT":
 		return code
 	default:
 		return "BUILTIN_DEMO_FAILED"
@@ -335,10 +330,6 @@ func (a *Agent) syncBuiltinDemoSource(connectorID, endpoint string) error {
 	if targetIndex >= 0 && targetIndex != currentIndex {
 		a.demoErrorCode = "BUILTIN_SOURCE_CONFLICT"
 		return errors.New("内置测试来源的固定编号已被其他来源占用")
-	}
-	if currentIndex < 0 && len(a.config.Sources) >= 16 {
-		a.demoErrorCode = "SOURCE_LIMIT_REACHED"
-		return errors.New("来源数量已达到上限，无法追加内置测试来源")
 	}
 
 	nextSources := append([]config.Source(nil), a.config.Sources...)

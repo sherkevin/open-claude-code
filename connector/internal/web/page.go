@@ -249,7 +249,7 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
     <div class="advanced-section">
       <h3>本地与隧道维护</h3>
       <p>诊断原始结果只用于排障。暂停或断开不会删除当前服务器的来源配置。</p>
-      <div class="row"><button id="diagnoseBtn" type="button">运行详细诊断</button><button id="pauseBtn" type="button">暂停</button><button id="disconnectBtn" type="button">断开并回到待配置</button><button id="demoToggleBtn" type="button" disabled>停用内置测试服务</button></div>
+      <div class="row"><button id="diagnoseBtn" type="button">运行详细诊断</button><button id="pauseBtn" type="button">暂停</button><button class="hidden" id="resumeBtn" type="button">恢复连接</button><button id="disconnectBtn" type="button">断开并回到待配置</button><button id="demoToggleBtn" type="button" disabled>停用内置测试服务</button></div>
       <pre id="diagnoseOut" class="hidden" style="margin-top:12px"></pre>
     </div>
 
@@ -326,13 +326,14 @@ function setStage(prefix, state, detail, kind){
 function selfTestKind(status){
   if(status === "passed"){ return "ready"; }
   if(status === "failed"){ return "error"; }
-  if(status === "skipped"){ return "warn"; }
+  if(status === "skipped" || status === "paused"){ return "warn"; }
   return "";
 }
 function selfTestLabel(status){
   if(status === "passed"){ return "通过"; }
   if(status === "failed"){ return "失败"; }
   if(status === "skipped"){ return "未执行"; }
+  if(status === "paused"){ return "已暂停"; }
   return "等待";
 }
 function setSelfTestStage(prefix, stage, fallback){
@@ -367,7 +368,9 @@ function selfTestTraceID(result){
 }
 function selfTestOutcome(result, stages){
   if(!result){ return "pending"; }
+  if(stages.local_mcp?.status === "skipped"){ return "demo-disabled"; }
   if(stages.local_mcp?.status !== "passed"){ return "local-failed"; }
+  if(stages.tunnel?.status === "paused"){ return "local-passed"; }
   if(!stages.enterprise_binding || stages.enterprise_binding.status === "skipped"){ return "local-passed"; }
   if(stages.tunnel?.status === "failed"){ return "tunnel-failed"; }
   if(result.ok === true && stages.enterprise_binding.status === "passed" &&
@@ -398,7 +401,9 @@ function renderSelfTest(status, stages, outcome){
   }else{
     setSelfTestStage("selfEdge", stages.edge_connect, "公网隧道建立后检查。");
   }
-  if(localPassed && outcome === "local-passed" && !revoked){
+  if(status?.state === "PAUSED"){
+    setStage("selfTunnel", "已暂停", "确认后点击“恢复连接”，再验证公网。", "warn");
+  }else if(localPassed && outcome === "local-passed" && !revoked){
     const label = bound ? "待验证" : "待绑定";
     const detail = bound ? "重新运行连接测试以验证公网。" : "完成企业绑定后再验证公网。";
     setStage("selfTunnel", label, detail, "warn");
@@ -428,6 +433,12 @@ function renderSelfTest(status, stages, outcome){
   }else if(selfTestError){
     summary = "无法完成连接测试：" + selfTestError;
     kind = "err";
+  }else if(outcome === "demo-disabled"){
+    summary = "内置测试服务已关闭，本次未运行示例检查。";
+    kind = "warn";
+  }else if(localPassed && status?.state === "PAUSED"){
+    summary = "本机示例已通过，公网通道已暂停。";
+    kind = "warn";
   }else if(outcome === "local-failed"){
     summary = "本机示例检查未通过。";
     kind = "err";
@@ -454,6 +465,9 @@ function firstRunStep(status, demo, stages, outcome){
   }
   if(firstRunOperation === "bind"){
     return ["正在绑定企业", "请等待绑定结果。", "bind"];
+  }
+  if(status.bound && status.state === "PAUSED"){
+    return ["恢复公网连接", "此连接器已暂停。确认可以恢复后点击“恢复连接”。", "resume", "恢复连接"];
   }
   if(!demo?.enabled){
     return ["先启用内置测试服务", "启用后即可检查本机示例。", "enable", "启用内置测试服务"];
@@ -487,7 +501,7 @@ function firstRunStep(status, demo, stages, outcome){
   }
   if(outcome === "tunnel-failed"){
     if(stages.tunnel.message?.includes("测试通道尚未就绪，请在方便时重新连接")){
-      return ["请维护人员安排重连", "请让维护人员在合适的时间用业务配置中的“保存并连接”重新连接，再运行连接测试。重连会短暂中断正在使用的业务连接。", "logs", "查看运行日志"];
+      return ["请维护人员安排重连", "重连会短暂中断正在使用的业务连接。请在合适的时间重新连接，再运行连接测试。", "reconnect", "重新连接"];
     }
     if(stages.tunnel.message?.includes("云端尚未批准")){
       return ["请技术支持确认示例来源授权", "示例路由尚未获准。请开物技术支持确认来源授权后重新运行连接测试。", "logs", "查看运行日志"];
@@ -525,6 +539,8 @@ function renderFirstRun(){
   const actions = {
     refresh:()=>refresh(!currentStatus),
     enable:()=>$("demoToggleBtn").click(),
+    resume:()=>$("resumeBtn").click(),
+    reconnect:()=>connectTunnel(true),
     logs:()=>$("logsHeading").focus(),
     business:()=>$("businessHeading").focus()
   };
@@ -532,6 +548,9 @@ function renderFirstRun(){
   next.textContent = actions[action] ? label : "";
   next.onclick = actions[action] || null;
   next.disabled = busy;
+  const canResume = !!status?.bound && status.state === "PAUSED";
+  $("resumeBtn").classList.toggle("hidden", !canResume);
+  $("resumeBtn").disabled = busy || !canResume;
 
   const canBind = !!status && !status.bound && status.cloud_configured;
   $("bindForm").classList.toggle("hidden", !canBind);
@@ -753,7 +772,7 @@ function renderStageSummary(){
   }else if(currentStatus.frpc_running){
     setStage("tunnel", "连接中", currentStatus.tunnel_detail || "frpc 进程已启动，但中继尚未就绪。", "warn");
   }else if(currentStatus.state === "PAUSED"){
-    setStage("tunnel", "已暂停", "确认可以恢复连接后，点击“保存并连接”。", "warn");
+    setStage("tunnel", "已暂停", "确认可以恢复后，点击“恢复连接”。", "warn");
   }else{
     setStage("tunnel", "尚未连接", currentStatus.bound ? "保存并连接后启动公网隧道。" : "需要先完成企业绑定。", "");
   }
@@ -782,7 +801,9 @@ function renderStatus(status){
   const previous = currentStatus;
   const demo = status.builtin_demo;
   const localPassed = selfTestResult?.stages?.some(stage=>stage.id === "local_mcp" && stage.status === "passed");
-  if(!demo?.enabled || (localPassed && (!demo.running || demo.error_code))){
+  const localSkipped = selfTestResult?.stages?.some(stage=>stage.id === "local_mcp" && stage.status === "skipped");
+  if((!demo?.enabled && !localSkipped) || (demo?.enabled && localSkipped) ||
+     (localPassed && (!demo.running || demo.error_code))){
     selfTestResult = null;
     selfTestError = "";
   }else if((previous?.bound && (!status.bound || previous.connector_id !== status.connector_id)) ||
@@ -1055,69 +1076,38 @@ $("saveConnectBtn").onclick = async ()=>{
   button.disabled = true;
   busy = true;
   try{
-    setMessage("正在保存当前服务器的 MCP 配置…", "warn");
-    const statusBeforeSave = currentStatus || {};
-    if(["READY","CONNECTING","DEGRADED_UPSTREAM","DEGRADED_RELAY","CONFIGURING"].includes(statusBeforeSave.state)){
-      await api("/api/pause", {});
+    setMessage("正在校验 MCP 配置和工具目录，通过后保存…", "warn");
+    const saved = await api("/api/source/save-and-connect", payload);
+    const latest = saved.status;
+    if(saved.local_diagnosis){
+      diagnosisBySource[saved.source.source_id] = saved.local_diagnosis;
+    }else{
+      delete diagnosisBySource[saved.source.source_id];
     }
-    const saved = await api("/api/source/save", payload);
-    delete diagnosisBySource[saved.source.source_id];
-    renderStatus(saved.status);
+    renderStatus(latest);
     $("sourceSelect").value = saved.source.source_id;
     $("bearerToken").value = "";
     $("authHMACKey").value = "";
     formDirty = false;
-    setStage("local", "检测中", "配置已保存，正在检查内网 MCP。", "warn");
-    setMessage("配置已保存。正在执行 MCP 初始化、认证和工具目录检查…", "warn");
+    renderStageSummary();
 
-    const reports = await api("/api/diagnose", {source_id:saved.source.source_id});
-    const report = reports && reports[0];
-    if(report){ diagnosisBySource[saved.source.source_id] = report; }
-    if(!report || !report.ok){
-      const failure = report && (report.checks || []).find(item=>item.status === "fail");
-      const detail = failure ? ((failure.label || failure.name) + "：" + (failure.detail || "检查失败")) : "内网 MCP 检查未通过。";
-      setStage("local", "不可访问", detail, "error");
-      setStage("tunnel", "未建立", "内网 MCP 未通过，未继续启动公网隧道。", "");
-      setStage("platform", "未到平台接入阶段", "请先修正当前服务器的 MCP 配置。", "");
-      setMessage("内网 MCP 检查失败：" + detail + " 请核对地址、访问令牌或动态签名后重试。详细诊断在高级选项。", "err");
-      $("diagnoseOut").textContent = JSON.stringify(reports, null, 2);
-      $("diagnoseOut").classList.remove("hidden");
-      return;
-    }
-    setStage("local", "可访问", "MCP 初始化、认证和工具目录检查通过。", "ready");
-    setMessage("内网 MCP 已通过检查。正在核对公网与企业接入状态…", "ok");
-    let latest = await api("/api/status");
-    renderStatus(latest);
-    if(!latest.cloud_configured){
-      setStage("tunnel", "无法连接", "当前安装包未配置云端控制面。", "error");
-      setStage("platform", "等待管理员配置", "请使用开物管理员提供的正式安装包。", "warn");
-      setMessage("内网 MCP 已验证，但当前安装包未配置云端控制面，无法建立公网隧道。", "err");
-      return;
-    }
-    if(!latest.bound){
-      setStage("tunnel", "尚未建立", "当前服务器尚未绑定企业。", "warn");
-      setMessage("业务服务本机检查已通过。请在页面上方绑定企业，再点击“保存并连接”。", "warn");
-      return;
-    }
-
-    setStage("tunnel", "连接中", "正在启动官方 frpc 来源代理并等待中继状态。", "warn");
-    setMessage("内网检查通过，正在建立公网隧道…", "warn");
-    try{
-      latest = await api("/api/connect", {});
-    }catch(connectError){
-      setStage("tunnel", "连接失败", connectError.message, "error");
-      setStage("platform", "等待公网隧道与平台配置", "公网隧道未就绪，平台接入不能视为完成。", "warn");
-      setMessage("公网隧道连接失败：" + connectError.message + " 请核对公网连接后重试。如提示来源授权或仍失败，请联系开物技术支持。", "err");
-      return;
-    }
-    renderStatus(latest);
-    if(latest.tunnel_connected){
-      setMessage("业务服务本机检查已通过，连接器公网隧道已建立。请开物技术支持确认业务来源和助手授权，再登录开物试问。", "warn");
+    if(saved.connection_error){
+      setMessage("业务配置已保存，公网连接未完成：" + saved.connection_error, "err");
+    }else if(saved.source.disabled){
+      setMessage("业务配置已保存，该来源仍处于停用状态。", "warn");
+    }else if(latest.state === "PAUSED"){
+      setMessage("业务配置已通过本机检查并保存。确认后点击“恢复连接”以启用公网通道。", "warn");
+    }else if(!latest.cloud_configured){
+      setMessage("业务配置已通过本机检查并保存。请开物技术支持提供已配置云端的安装包。", "warn");
+    }else if(!latest.bound){
+      setMessage("业务配置已通过本机检查并保存。请先在页面上方绑定企业。", "warn");
+    }else if(latest.tunnel_connected){
+      setMessage("业务配置已通过本机检查并保存，公网隧道已建立。请开物技术支持确认业务来源和助手授权。", "ok");
     }else{
-      setMessage("内网 MCP 已验证，但公网隧道尚未就绪：" + (latest.tunnel_detail || latest.last_error || "请查看详细诊断。"), "warn");
+      setMessage("业务配置已保存，正在等待公网隧道就绪。", "warn");
     }
   }catch(operationError){
-    setMessage("保存或检测失败：" + operationError.message, "err");
+    setMessage("业务配置未保存：" + operationError.message, "err");
   }finally{
     busy = false;
     button.disabled = false;
@@ -1185,6 +1175,31 @@ $("diagnoseBtn").onclick = async ()=>{
     setMessage("诊断失败：" + error.message, "err");
   }
 };
+async function connectTunnel(reconnect){
+  if(busy || statusUnavailable || !currentStatus?.bound){ return; }
+  const action = reconnect ? "重新连接" : "恢复连接";
+  const question = reconnect
+    ? "确认重新连接公网通道？正在使用的业务连接会短暂中断。"
+    : "确认恢复公网连接？已启用且获准的来源将重新接入开物。";
+  if(!confirm(question)){ return; }
+  busy = true;
+  setFirstRunNotice("正在" + action + "…", "warn");
+  renderFirstRun();
+  try{
+    const status = await api("/api/connect", {});
+    keepLocalSelfTest();
+    renderStatus(status);
+    setFirstRunNotice("公网连接已就绪，可以运行连接测试。", "ok");
+    setMessage("公网连接已就绪。", "ok");
+  }catch(error){
+    setFirstRunNotice(action + "未完成：" + error.message, "err");
+    setMessage(action + "未完成：" + error.message, "err");
+  }finally{
+    busy = false;
+    await refresh(false);
+  }
+}
+$("resumeBtn").onclick = ()=>connectTunnel(false);
 $("pauseBtn").onclick = async ()=>{
   try{ await api("/api/pause", {}); setMessage("当前服务器通道已暂停；来源配置和秘密均已保留。", "warn"); }
   catch(error){ setMessage("暂停失败：" + error.message, "err"); }

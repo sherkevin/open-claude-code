@@ -631,3 +631,74 @@ def test_edge_temporary_k_allows_discovery_but_denies_other_tools(env):
             integration_id,
         )
     assert app.state.service.db.one("SELECT COUNT(*) AS n FROM kaiwu_integrations")["n"] == 0
+
+
+def test_independent_demo_slot_keeps_the_business_cap_and_legacy_route(tmp_path):
+    app = create_app(settings(tmp_path))
+    with TestClient(app) as client:
+        key, public, key_id = key_material()
+        identity = enroll(client, (key, public, key_id))
+        connector_id = identity["connector_id"]
+        demo_id = demo_source_id(connector_id)
+
+        def device_post(route, payload):
+            path = BASE + route
+            body = json_body(payload)
+            return client.post(path, content=body, headers={
+                "Authorization": "Bearer " + identity["device_token"],
+                "Content-Type": "application/json",
+                **signed_headers(key, key_id, "POST", path, body),
+            })
+
+        def register(source_id, tools, binding="3" * 64):
+            return device_post("/v1/sources", {
+                "source_id": source_id,
+                "display_name": "合成来源",
+                "allowed_tools": tools,
+                "tool_schema_sha256": "2" * 64,
+                "target_binding_sha256": binding,
+                "transport": "streamable_http",
+            })
+
+        business = [f"src_{index:032x}" for index in range(1, 17)]
+        for source_id in business:
+            assert register(source_id, ["lookup_order"]).status_code == 200
+        assert register(demo_id, ["lookup_order"]).status_code == 409
+        assert register("src_" + "a" * 32, [PING, ORDER, INVENTORY]).status_code == 409
+        legacy = register(demo_id, [PING, ORDER, INVENTORY])
+        assert legacy.status_code == 200, legacy.text
+        db = app.state.service.db
+
+        def route():
+            return db.one(
+                "SELECT * FROM kaiwu_edge_routes WHERE connector_id=? AND source_id=?",
+                (connector_id, demo_id),
+            )
+
+        original_route = route()
+        stable = hashlib.sha256(f"kaiwu_builtin_demo_v1:{demo_id}".encode()).hexdigest()
+        migrated = register(demo_id, [PING, ORDER, INVENTORY], stable)
+        assert migrated.status_code == 200, migrated.text
+        assert migrated.json()["source"]["target_binding_sha256"] == stable
+        assert migrated.json()["source"]["revision"] == legacy.json()["source"]["revision"]
+        assert route() == original_route
+        assert register(business[0], ["lookup_order"], stable).status_code == 409
+
+        source_ids = business + [demo_id]
+        integration = client.post(
+            BASE + "/v1/integrations",
+            headers={"Authorization": "Bearer " + ADMIN_TOKEN},
+            json={
+                "tenant_id": identity["tenant_id"], "connector_id": connector_id,
+                "display_name": "合成全部来源", "source_ids": source_ids,
+            },
+        )
+        assert integration.status_code == 201, integration.text
+        assert set(integration.json()["integration"]["source_ids"]) == set(source_ids)
+
+        heartbeat = device_post(f"/v1/connectors/{connector_id}/heartbeat", {
+            "state": "READY", "version": "test",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "source_ids": source_ids, "last_error": "",
+        })
+        assert heartbeat.status_code == 200, heartbeat.text

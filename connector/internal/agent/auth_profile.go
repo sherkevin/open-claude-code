@@ -48,6 +48,8 @@ func (a *Agent) SetAuthProfile(sourceID string, profile huaweiauth.Profile, tool
 		return a.Status(), errors.New("至少允许一个只读工具后才能建立动态认证")
 	}
 
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
 	a.mu.Lock()
 	switch a.state.Current() {
 	case state.Ready, state.Connecting, state.DegradedRelay, state.DegradedUpstream:
@@ -106,16 +108,15 @@ func normalizeTools(tools []string) ([]string, error) {
 	return out, nil
 }
 
-func (a *Agent) startAuthProxies() error {
+// prepareAuthProxies leaves the current tunnel's listeners in service while
+// the candidate routes are validated with the control plane.
+func (a *Agent) prepareAuthProxies(sourceList []config.Source) (map[string]*authproxy.Server, error) {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
 	if a.isClosed() {
-		return errAgentClosed
+		return nil, errAgentClosed
 	}
-	a.stopAuthProxies()
-
 	a.mu.RLock()
-	sourceList := a.runtimeSourcesLocked()
 	secrets := make(map[string]map[string]string, len(a.secrets))
 	for sourceID, headers := range a.secrets {
 		secrets[sourceID] = cloneHeaders(headers)
@@ -131,7 +132,7 @@ func (a *Agent) startAuthProxies() error {
 	for _, source := range sourceList {
 		if a.isClosed() {
 			closeProxies(created)
-			return errAgentClosed
+			return nil, errAgentClosed
 		}
 		options := authproxy.Options{
 			SourceID:      source.SourceID,
@@ -157,19 +158,22 @@ func (a *Agent) startAuthProxies() error {
 	}
 	if len(created) == 0 {
 		if len(failures) > 0 {
-			return fmt.Errorf("没有可启动的来源代理: %s", strings.Join(failures, "；"))
+			return nil, fmt.Errorf("没有可启动的来源代理: %s", strings.Join(failures, "；"))
 		}
-		return errors.New("没有可启动的来源代理")
+		return nil, errors.New("没有可启动的来源代理")
 	}
 	a.mu.Lock()
-	if a.closed {
-		a.mu.Unlock()
-		closeProxies(created)
-		return errAgentClosed
-	}
-	a.proxies = created
+	a.preparedProxies = created
 	a.mu.Unlock()
-	return nil
+	return created, nil
+}
+
+func (a *Agent) stopPreparedAuthProxies() {
+	a.mu.Lock()
+	proxies := a.preparedProxies
+	a.preparedProxies = nil
+	a.mu.Unlock()
+	closeProxies(proxies)
 }
 
 // startAuthProxiesForDemo touches only the bundled demo proxy. If that listener
