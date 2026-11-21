@@ -52,7 +52,7 @@ function Write-Events {
 }
 
 function Read-Report {
-  (ConvertTo-Json -InputObject (Get-KaiwuSupportReport $requestedId $fixture) -Depth 6) | ConvertFrom-Json
+  (ConvertTo-KaiwuSupportJson (Get-KaiwuSupportReport $requestedId $fixture)) | ConvertFrom-Json
 }
 
 $assertions = 0
@@ -92,7 +92,7 @@ try {
   Write-Checkpoints $requestedId $checkpointRows
   Write-Events $completeJournal
   $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($journalPath))
-  $json = ConvertTo-Json -InputObject (Get-KaiwuSupportReport $requestedId $fixture) -Depth 6
+  $json = ConvertTo-KaiwuSupportJson (Get-KaiwuSupportReport $requestedId $fixture)
   $report = $json | ConvertFrom-Json
   Assert-Equal $report.install_attempt_id $requestedId 'requested installation ID'
   Assert-Equal $report.package_checkpoints.status 'available' 'valid checkpoints'
@@ -115,11 +115,12 @@ try {
   }
   $longJournal += '{"v":1,"seq":48,"stage":"finish","outcome":"failed","code":"recovery_unconfirmed"}'
   Write-Events (($longJournal -join $LF) + $LF)
-  $json = ConvertTo-Json -InputObject (Get-KaiwuSupportReport $requestedId $fixture) -Depth 6
+  $json = ConvertTo-KaiwuSupportJson (Get-KaiwuSupportReport $requestedId $fixture)
   $report = $json | ConvertFrom-Json
   Assert-Equal $report.install_events.status 'complete' 'journal at event count limit'
   Assert-Equal $report.install_events.rows.Count 48 'all allowed events retained'
   Assert-Equal ($json.Length -lt 10000) $true 'report with 48 events is small'
+  Assert-Equal ($json -notmatch '[\r\n]') $true 'shareable output is one line'
 
   Write-Checkpoints $oldId @($checkpoint)
   [IO.File]::WriteAllText($oldJournalPath, $completeJournal, [Text.Encoding]::ASCII)
@@ -130,7 +131,7 @@ try {
   [IO.File]::Delete($journalPath)
   $report = Read-Report
   Assert-Equal $report.install_events.status 'missing' 'no fallback to older journal'
-  Assert-Equal ((ConvertTo-Json -InputObject $report -Depth 6).Contains($oldId)) $false 'no old ID disclosed'
+  Assert-Equal ((ConvertTo-KaiwuSupportJson $report).Contains($oldId)) $false 'no old ID disclosed'
   $oldReport = Get-KaiwuSupportReport $oldId $fixture
   Assert-Equal $oldReport.install_events.status 'complete' 'old journal readable when specifically requested'
   Assert-Equal $oldReport.package_checkpoints.rows.Count 1 'single genuine row is valid for matching ID'
@@ -167,7 +168,7 @@ try {
     $report = Read-Report
     Assert-Equal $report.package_checkpoints.status 'invalid' 'invalid, incompatible or duplicate checkpoint'
     Assert-Equal $report.package_checkpoints.rows.Count 0 'no rows from invalid checkpoint'
-    Assert-Private (ConvertTo-Json -InputObject $report -Depth 6) 'invalid checkpoint'
+    Assert-Private (ConvertTo-KaiwuSupportJson $report) 'invalid checkpoint'
   }
 
   foreach ($badEvent in @(
@@ -183,7 +184,7 @@ try {
     $report = Read-Report
     Assert-Equal $report.install_events.status 'invalid' 'malformed, duplicated, gapped or injected event'
     Assert-Equal $report.install_events.rows.Count 1 'only validated journal prefix'
-    Assert-Private (ConvertTo-Json -InputObject $report -Depth 6) 'malformed journal'
+    Assert-Private (ConvertTo-KaiwuSupportJson $report) 'malformed journal'
   }
   Write-Events ($completeJournal + 'synthetic-private')
   Assert-Equal (Read-Report).install_events.status 'invalid' 'data after finish'

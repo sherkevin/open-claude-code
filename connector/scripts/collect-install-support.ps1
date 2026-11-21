@@ -223,6 +223,13 @@ function Get-KaiwuSupportReport {
   }
 }
 
+function ConvertTo-KaiwuSupportJson {
+  param($Report)
+  # PowerShell 5.1 indents nested objects more than newer versions by default.
+  # Keep the transport size predictable while preserving every validated row.
+  ConvertTo-Json -InputObject $Report -Depth 6 -Compress
+}
+
 # Dot-sourcing loads functions for the offline fixture test. Normal execution
 # exposes only an attempt ID, never a path to arbitrary files.
 if ($MyInvocation.InvocationName -eq '.') { return }
@@ -232,4 +239,4 @@ if ($AttemptId -cnotmatch '\A[0-9a-f]{32}\z' -or $args.Count -ne 0) {
 }
 
 $report = Get-KaiwuSupportReport $AttemptId (Get-KaiwuSupportLogsDirectory)
-ConvertTo-Json -InputObject $report -Depth 6
+ConvertTo-KaiwuSupportJson $report
