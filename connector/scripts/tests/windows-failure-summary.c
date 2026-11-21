@@ -3,7 +3,7 @@
 #include <assert.h>
 
 static void check_popup(const WCHAR *const args[], size_t count, const WCHAR *reason,
-                        const WCHAR *exit_code, const WCHAR *file) {
+                        const WCHAR *exit_code, const WCHAR *file, BOOL expect_support_note) {
     Stack *stack = NULL;
     for (size_t i = count; i > 0; --i) push(&stack, 1024, args[i - 1]);
     ExplainFailure(NULL, 1024, NULL, &stack, NULL);
@@ -21,6 +21,7 @@ static void check_popup(const WCHAR *const args[], size_t count, const WCHAR *re
     }
     assert(!wcsstr(message, L"private-canary"));
     if (file) assert(wcsstr(message, file));
+    assert((wcsstr(message, L"同一时段涉及该文件的终端防护处置记录") != NULL) == expect_support_note);
 }
 
 int main(void) {
@@ -31,12 +32,15 @@ int main(void) {
                               L"private-canary", L"private-canary"};
     const WCHAR *late[] = {L"pre_change_verification", L"file_missing_after_check", L"frpc.exe",
                            L"result=FAILED_RECOVERY_UNCONFIRMED", L"1"};
-    check_popup(late, 5, L"原因码：file_missing_after_check", L"安装器退出码：1", L"首次校验通过");
-    check_popup(full, 5, L"原因码：file_missing", L"安装器退出码：1", L"涉及文件：frpc.exe");
-    check_popup(full, 4, L"原因码：file_missing", L"安装器退出码：未确认", L"涉及文件：frpc.exe");
-    check_popup(full, 1, L"原因码：unknown", L"安装器退出码：未确认", L"校验解包后的安装文件");
-    check_popup(NULL, 0, L"原因码：unknown", L"安装器退出码：未确认", L"失败阶段：无法确认");
-    check_popup(unknown, 5, L"原因码：unknown", L"安装器退出码：未确认", L"恢复或清理状态无法确认");
+    const WCHAR *missing_unknown_file[] = {L"source_precheck", L"file_missing", L"private-canary",
+                                           L"result=PRECHECK_FAILED", L"1"};
+    check_popup(late, 5, L"原因码：file_missing_after_check", L"安装器退出码：1", L"首次校验通过", TRUE);
+    check_popup(full, 5, L"原因码：file_missing", L"安装器退出码：1", L"涉及文件：frpc.exe", TRUE);
+    check_popup(full, 4, L"原因码：file_missing", L"安装器退出码：未确认", L"涉及文件：frpc.exe", TRUE);
+    check_popup(full, 1, L"原因码：unknown", L"安装器退出码：未确认", L"校验解包后的安装文件", FALSE);
+    check_popup(NULL, 0, L"原因码：unknown", L"安装器退出码：未确认", L"失败阶段：无法确认", FALSE);
+    check_popup(unknown, 5, L"原因码：unknown", L"安装器退出码：未确认", L"恢复或清理状态无法确认", FALSE);
+    check_popup(missing_unknown_file, 5, L"原因码：file_missing", L"安装器退出码：1", NULL, FALSE);
     puts("PASS failure popup: first check, second check, legacy, partial, absent, untrusted input");
     return 0;
 }

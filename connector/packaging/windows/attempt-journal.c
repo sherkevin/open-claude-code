@@ -588,16 +588,19 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
     if (wcscmp(reason_code, L"file_missing") && wcscmp(reason_code, L"file_missing_after_check") &&
         wcscmp(reason_code, L"file_unlisted") &&
         wcscmp(reason_code, L"checksum_mismatch")) file = L"";
+    const WCHAR *support_note = L"";
+    if (*file && (!wcscmp(reason_code, L"file_missing") || !wcscmp(reason_code, L"file_missing_after_check")))
+        support_note = L"排查提示：请提供同一时段涉及该文件的终端防护处置记录（如有）。\r\n";
     SYSTEMTIME utc;
     GetSystemTime(&utc);
     /* The launcher passes its own error level. Never print arbitrary input from the stack. */
     const WCHAR *reported_exit = !wcscmp(exit_code, L"1") ? L"1" : L"未确认";
     int length = _snwprintf(summary, SUMMARY_TEXT_LENGTH,
         L"安装失败\r\n安装编号：%ls\r\n失败阶段：%ls\r\n原因：%ls%ls%ls\r\n恢复结果：%ls\r\n"
-        L"原因码：%ls\r\n安装器退出码：%ls\r\n记录时间（UTC）：%04u-%02u-%02uT%02u:%02u:%02uZ\r\n",
+        L"原因码：%ls\r\n安装器退出码：%ls\r\n记录时间（UTC）：%04u-%02u-%02uT%02u:%02u:%02uZ\r\n%ls",
         *attempt ? attempt : L"未生成", stage, reason, *file ? L" 涉及文件：" : L"", file, recovery,
         known_code, reported_exit, (unsigned)utc.wYear, (unsigned)utc.wMonth, (unsigned)utc.wDay,
-        (unsigned)utc.wHour, (unsigned)utc.wMinute, (unsigned)utc.wSecond);
+        (unsigned)utc.wHour, (unsigned)utc.wMinute, (unsigned)utc.wSecond, support_note);
     return length > 0 && length < SUMMARY_TEXT_LENGTH;
 }
 

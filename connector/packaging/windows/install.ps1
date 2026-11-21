@@ -190,9 +190,13 @@ function Write-InstallFailureDetails {
     "local_page_unready"   { "本机配置页面未在规定时间内就绪" }
     default               { "无法确认具体原因" }
   }
+  $supportNote = ""
+  if ($FailureFile -and $FailureReason -in @("file_missing", "file_missing_after_check")) {
+    $supportNote = "排查提示：请提供同一时段涉及该文件的终端防护处置记录（如有）。`r`n"
+  }
   try {
     [IO.File]::WriteAllText(
-      $FailureDetailsPath, "失败阶段：$phase`r`n原因：$reason`r`n", [Text.UnicodeEncoding]::new($false, $false)
+      $FailureDetailsPath, "失败阶段：$phase`r`n原因：$reason`r`n$supportNote", [Text.UnicodeEncoding]::new($false, $false)
     )
   } catch {
     Write-Host "无法写入安装失败摘要。"
