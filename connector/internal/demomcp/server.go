@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/sherkevin/open-claude-code/connector/internal/version"
 )
 
 const (
@@ -181,7 +183,7 @@ func (s *Server) InstanceID() string {
 func (s *Server) mcpServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "kaiwu-builtin-demo",
-		Version: "1.3.14",
+		Version: version.Version,
 	}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{},
 	})

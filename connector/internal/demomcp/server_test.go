@@ -10,6 +10,7 @@ import (
 	"time"
 
 	connectormcp "github.com/sherkevin/open-claude-code/connector/internal/mcp"
+	"github.com/sherkevin/open-claude-code/connector/internal/version"
 )
 
 func TestServerImplementsFixedMCPTools(t *testing.T) {
@@ -34,8 +35,12 @@ func TestServerImplementsFixedMCPTools(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := client.Initialize(ctx); err != nil {
+	info, err := client.Initialize(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if got := info.ServerInfo.Version; got != version.Version {
+		t.Fatalf("demo handshake version = %q, want connector build version %q", got, version.Version)
 	}
 	tools, err := client.ListTools(ctx)
 	if err != nil {
