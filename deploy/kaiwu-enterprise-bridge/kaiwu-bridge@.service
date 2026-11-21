@@ -1,0 +1,34 @@
+[Unit]
+Description=Kaiwu dedicated FRP bridge for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kaiwu-bridge
+Group=kaiwu-bridge
+EnvironmentFile=/etc/kaiwu-bridge/environment
+Environment=PYTHONPATH=/opt/kaiwu
+WorkingDirectory=/opt/kaiwu
+RuntimeDirectory=kaiwu-bridge/%i
+RuntimeDirectoryMode=0700
+ExecStart=/opt/kaiwu/venv/bin/python -m app.kaiwu_bridge \
+  --data-dir ${AGENT_DATA_DIR} \
+  --connector-id %i \
+  --frps /opt/kaiwu/bin/frps \
+  --frpc /opt/kaiwu/bin/frpc \
+  --runtime-dir /var/lib/kaiwu-bridge/%i \
+  --poll-seconds 2
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kaiwu-bridge
+UMask=0077
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target

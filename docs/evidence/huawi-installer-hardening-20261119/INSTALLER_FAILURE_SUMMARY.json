@@ -1,0 +1,152 @@
+{
+  "task": "huawi installer critical dependency failure and recovery hardening",
+  "worktree": "/media/data3/dengkw/projects/open-claude-code-huawi-installer-transaction-20261119",
+  "branch": "fix/installer-dependency-failure-20261119",
+  "base_commit": "b54e54a18f63b1b8e19f7db374ca4633b5b05ddf",
+  "changed_files": [
+    "connector/packaging/windows/install.ps1",
+    "connector/packaging/windows/installer.nsi",
+    "connector/scripts/installer-fault-injection.ps1"
+  ],
+  "execution_status": "not_run",
+  "reason": "no existing PowerShell runtime on school cloud; no runtime was downloaded, installed, or started",
+  "runtime_probe": {
+    "pwsh": false,
+    "powershell": false,
+    "wine": false,
+    "makensis": false
+  },
+  "test_script": {
+    "path": "/media/data3/dengkw/projects/open-claude-code-huawi-installer-transaction-20261119/connector/scripts/installer-fault-injection.ps1",
+    "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\path\\to\\connector\\scripts\\installer-fault-injection.ps1 -OutputPath C:\\path\\to\\installer-fault-injection-result.json",
+    "requires_elevated_windows_powershell": true,
+    "uses_isolated_directories": true,
+    "packaged_in_customer_payload": false,
+    "platform_doubles": [
+      "Get-Service",
+      "New-Service",
+      "Start-Service",
+      "Stop-Service",
+      "Get-CimInstance",
+      "sc.exe",
+      "Invoke-WebRequest",
+      "Get-WinEvent",
+      "Get-Acl",
+      "Set-Acl",
+      "icacls.exe",
+      "Copy-Item",
+      "Get-KaiwuMachineEnvironmentVariable",
+      "Set-KaiwuMachineEnvironmentVariable"
+    ]
+  },
+  "fault_injection": [
+    {
+      "id": "A",
+      "scenario": "source frpc.exe missing before first validation with an existing running business service and configuration",
+      "status": "not_run",
+      "expected_result": "PRECHECK_FAILED; existing service remains Running; stop/delete count zero; business configuration and old program digests unchanged"
+    },
+    {
+      "id": "B",
+      "scenario": "source frpc.exe disappears during copy after pre-change validation",
+      "status": "not_run",
+      "expected_result": "FAILED_RESTORED; old programs, configuration and running service restored from verified manifest"
+    },
+    {
+      "id": "C",
+      "scenario": "target frpc.exe disappears after copy while service and HTTP doubles report success",
+      "status": "not_run",
+      "expected_result": "final target digest check fails; no INSTALLED result"
+    },
+    {
+      "id": "D1",
+      "scenario": "backup manifest is corrupted before automatic recovery",
+      "status": "not_run",
+      "expected_result": "FAILED_RECOVERY_UNCONFIRMED; no service start from mixed content"
+    },
+    {
+      "id": "D2",
+      "scenario": "backup manifest is corrupted before running the generated restore.ps1",
+      "status": "not_run",
+      "expected_result": "generated restore rejects the manifest; stop/delete/start call counts remain zero"
+    },
+    {
+      "id": "E",
+      "scenario": "first install fails after only the first EXE was copied",
+      "status": "not_run",
+      "expected_result": "FAILED_NO_PRIOR_CLEANED; only files created by this run are removed; pre-existing unrelated file remains"
+    },
+    {
+      "id": "F",
+      "scenario": "normal restore Start-Service double rewrites state.json",
+      "status": "not_run",
+      "expected_result": "FAILED_RESTORED; service remains Running; no extra Stop-Service call"
+    },
+    {
+      "id": "G",
+      "scenario": "target service has a dependent service",
+      "status": "not_run",
+      "expected_result": "FAILED_RECOVERY_UNCONFIRMED; zero Stop-Service calls and zero service deletes"
+    }
+  ],
+  "static_checks": [
+    {
+      "name": "git diff --check",
+      "status": "passed"
+    },
+    {
+      "name": "install.ps1 UTF-8 BOM",
+      "status": "passed"
+    },
+    {
+      "name": "fault injection script UTF-8 BOM",
+      "status": "passed"
+    },
+    {
+      "name": "fault injection script excluded from customer payload",
+      "status": "passed",
+      "detail": "located under connector/scripts; build copies connector/packaging/windows/*.ps1 only"
+    },
+    {
+      "name": "no Stop-Service -Force in install.ps1",
+      "status": "passed",
+      "detail": "static text check"
+    },
+    {
+      "name": "embedded restore manifest and digest validation",
+      "status": "passed",
+      "detail": "code review and static contract check; not a runtime test"
+    },
+    {
+      "name": "state.json excluded after service start",
+      "status": "passed",
+      "detail": "code review and static contract check; not a runtime test"
+    },
+    {
+      "name": "machine environment API test isolation",
+      "status": "passed",
+      "detail": "installer routes Machine scope through helper seam; test script supplies in-memory doubles"
+    }
+  ],
+  "hashes": {
+    "install.ps1": "92748102c6603880b10ef8b794707c5efd8d4c5d2271e029b8b351e219454c31",
+    "installer.nsi": "3366fced3969ee61392741d728d69f5767db4a6a56fb7afb9b754fe48646ef5e",
+    "installer-fault-injection.ps1": "67867d249ded6e15fcba8c80e340ce774a58417e323e77491c0a81a092e2e190"
+  },
+  "not_performed": [
+    "Windows installation",
+    "Windows Server 2019 validation",
+    "UAC",
+    "service and ACL integration",
+    "actual HTTP service integration",
+    "real service, registry, or ProgramFiles operations",
+    "malware or antivirus behavior validation",
+    "version change",
+    "build",
+    "package",
+    "deploy",
+    "commit",
+    "Shervin or customer device operation",
+    "external backup script modification"
+  ]
+}

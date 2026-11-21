@@ -1,0 +1,21 @@
+# Connector checkpoint
+
+- 2026-11-19 15:58 CST：连接器 1.3.7 已完成总控第二轮审查全部 8 项修复；只改 `connector/` 和本目录交接文件。
+- 已完成诊断管理器：固定事件目录、有界持久队列、2 秒批量、3 秒超时、断网退避、重启补传、暂停后恢复补传、换绑/撤销隔离、存储故障可见。
+- 已完成 Agent 接入：绑定、配置导入、来源、认证、诊断、连接、暂停、断开、撤销和 heartbeat 安全分类。
+- 审查第 1 项已完成：并发连接串行化，旧隧道在 Agent 锁外有上限停止，新增“已有隧道再次 Connect 且停止回调”的有限超时回归测试。
+- 审查第 2 项已完成：诊断初始化失败不阻断 MCP，状态以固定 `LOCAL_STORAGE_FAILED` 显示，不泄漏原始错误或路径。
+- 审查第 3 项已完成：诊断上报和 authproxy 的 `rpc_error_code` 都只接受 `-32700..-32000` 规范十进制字符串，枚举错误改用固定事件代码。
+- 审查第 4 项已完成：仅云端已登记来源和已批准工具随事件上传；首次诊断失败仍可上传，登记成功后恢复来源与工具，换绑/撤销清空登记状态。
+- 审查第 5 项已完成：MCP 请求必须有匹配 ID 的有效响应；JSON-RPC error、`result.isError`、空响应和错 ID 均判失败，SSE 进度通知等待真实响应。
+- 审查第 6 项已完成：SSE 末尾先执行 `flushEvent()`，再返回求值后的结果，覆盖末尾无空行的错误事件。
+- 审查第 7 项已完成：设备 `Event`/`EventView` 不新增 `origin`，设备接口拒绝该字段，来源区分仅由服务端在 admin 视图决定。
+- 审查第 8 项已完成：日志时间改为显式年月日时分秒与本地时区名称，避免 `dateStyle/timeStyle` 和 `timeZoneName` 混用导致页面渲染失败。
+- 已完成本地接口：`GET /api/logs`、`GET /api/platform-logs`、`GET /api/logs/download`、`POST /api/diagnostics/settings`，沿用 Host/Origin/session 防护。
+- 已完成页面：连接器日志、开物调用日志、级别筛选、自动刷新、暂停/恢复上报、脱敏下载、同步/待发/丢弃/存储状态；动态内容使用 `textContent`。
+- 平台日志解析只接受 `component=platform` 的 `platform_request_succeeded` / `platform_request_failed`；拒绝设备接口不允许的顶层附加字段，并保留已格式校验的工具名。
+- 已通过：`go test ./... -count=1`、`go vet ./...`、`go test -race ./internal/diagnostics ./internal/authproxy ./internal/agent ./internal/web -count=1`。
+- 已通过：页面脚本 `node --check`；从 `page.go` 提取真实 `formatTime` 在 Node 运行，输出 `2026/11/19 GMT+8 15:57:00`，无效日期回退为 `—`。
+- 已通过：`git diff --check`、普通 UI 旧文案扫描、设备诊断与云客户端 `origin` 字段扫描。
+- 下一函数：无。待总控进行代码审查、正式构建、服务端联调、腾讯云部署和 Windows 现场验收。
+- 本阶段未 commit、未 build、未打包、未部署、未操作 Windows 或 Shervin。

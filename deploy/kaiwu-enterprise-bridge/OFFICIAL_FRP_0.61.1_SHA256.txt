@@ -1,0 +1,10 @@
+Archive:
+bff260b68ca7b1461182a46c4f34e9709ba32764eed30a15dd94ac97f50a2c40  frp_0.61.1_linux_amd64.tar.gz
+
+Binaries extracted from that archive:
+62c2177b6add2f48d01f73578fe130ecbfafd0ed6571ddeba8ef917434ecb607  frp_0.61.1_linux_amd64/frps
+0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b  frp_0.61.1_linux_amd64/frpc
+
+Source: https://github.com/fatedier/frp/releases/tag/v0.61.1
+License: Apache-2.0
+Verified: 2026-11-18

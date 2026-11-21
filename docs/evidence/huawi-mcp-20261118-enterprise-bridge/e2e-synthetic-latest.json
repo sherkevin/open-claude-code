@@ -1,0 +1,96 @@
+{
+  "status": "passed",
+  "started_at": "2026-11-18T12:24:56.401767+00:00",
+  "runtime_dir": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122456Z",
+  "source_commit": "3d0d06cd87268ce61fc2b7c33b18a679a2d12d66",
+  "source_dirty": false,
+  "versions": {
+    "go": "go version go1.27.4 linux/amd64",
+    "frps": "0.61.1",
+    "frpc": "0.61.1"
+  },
+  "checks": [
+    {
+      "check": "connector_configured",
+      "status": "passed",
+      "detail": "bind, import, HMAC profile and frpc start"
+    },
+    {
+      "check": "real_frp_started",
+      "status": "passed",
+      "detail": "dedicated frps and visitor listeners are open"
+    },
+    {
+      "check": "enterprise_integration",
+      "status": "passed",
+      "detail": "K and one-time standard MCP JSON issued"
+    },
+    {
+      "check": "connector_tunnel_status",
+      "status": "passed",
+      "detail": "1 个来源代理已运行"
+    },
+    {
+      "check": "platform_import_discovery",
+      "status": "passed",
+      "detail": "{\"format\": \"mcp_servers\", \"tool_names\": [\"lookup_order\"], \"url\": \"http://127.0.0.1:52187/projects/kaiwu/mcp/sources/src_cb6956046678ad9a43734f1f3c24094e/mcp\"}"
+    },
+    {
+      "check": "mcp_lifecycle",
+      "status": "passed",
+      "detail": "{\"protocol_version\": \"2025-06-18\", \"tools\": [\"lookup_order\"], \"result_text\": \"SYNTHETIC-ORDER-42\"}"
+    },
+    {
+      "check": "negative_authorization",
+      "status": "passed",
+      "detail": "{\"wrong_key_status\": 401, \"unknown_source_status\": 403, \"initialize_status\": 200, \"unapproved_tool_status\": 403}"
+    },
+    {
+      "check": "frp_negative_credentials",
+      "status": "passed",
+      "detail": "{\"wrong_relay_exit_code\": 1, \"wrong_stcp_probe\": \"connection_error\", \"wrong_name_probe\": \"connection_error\"}"
+    },
+    {
+      "check": "sse_incremental",
+      "status": "passed",
+      "detail": "{\"status\": 200, \"first_event_seconds\": 0.149, \"first_event_contains_data\": true, \"content_type\": \"text/event-stream\"}"
+    },
+    {
+      "check": "relay_child_hard_kill_recovery",
+      "status": "passed",
+      "detail": "{\"killed_process\": \"frps\", \"down_seconds\": 0.101, \"recovery_seconds\": 2.427, \"edge_status\": 200}"
+    },
+    {
+      "check": "relay_stop_fail_closed",
+      "status": "passed",
+      "detail": "{\"bridge_stop_exit_code\": 0, \"edge_status\": 503, \"failure_seconds\": 0.183}"
+    },
+    {
+      "check": "connector_status_degrades",
+      "status": "passed",
+      "detail": "来源代理尚未全部运行（0/1）"
+    },
+    {
+      "check": "relay_restart_recovery",
+      "status": "passed",
+      "detail": "Edge initialize status 200"
+    },
+    {
+      "check": "secret_scan",
+      "status": "passed",
+      "detail": "{\"scanned\": [\"logs/*.log\", \"cloud app.sqlite3\", \"connector frpc.toml\"], \"hits\": [], \"frpc_template_secret_free\": true}"
+    },
+    {
+      "check": "revocation_stops_data_plane",
+      "status": "passed",
+      "detail": "{\"bridge_exit_code\": 0, \"stop_seconds\": 0.502, \"edge_status_after_revoke\": 401, \"frps_port_open\": false, \"visitor_port_open\": false, \"visitor_route_released\": true}"
+    }
+  ],
+  "binaries": {
+    "frps_sha256": "62c2177b6add2f48d01f73578fe130ecbfafd0ed6571ddeba8ef917434ecb607",
+    "frpc_sha256": "0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b",
+    "connector_sha256": "fb69f007a590ee345b492abc30e89b833130c6bfc4d2e6d303b92580c0586a06"
+  },
+  "finished_at": "2026-11-18T12:25:18.203359+00:00",
+  "duration_seconds": 21.939
+}

@@ -1,0 +1,2 @@
+0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b  frp_0.61.1_linux_amd64/frpc
+d9a8cf8bc61bd5c8d57a2a4801316a18291f76d45dc5fd8aaf425bd91b57159d  frp_0.61.1_windows_amd64/frpc.exe

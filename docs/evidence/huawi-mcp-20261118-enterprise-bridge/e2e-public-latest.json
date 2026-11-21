@@ -1,0 +1,131 @@
+{
+  "status": "passed",
+  "scope": "public HTTPS/WSS control plane, relay, visitor and Edge; customer Windows not included",
+  "started_at": "2026-11-19T02:58:03.318615+00:00",
+  "runtime_dir": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-public-e2e-20261119T025803Z",
+  "source_commit": "0df1d18a04cccc2fca2438654388ab21a7261a99",
+  "source_dirty": false,
+  "public_api": "https://flintw.com/api/kaiwu",
+  "public_edge": "https://flintw.com/projects/kaiwu/mcp",
+  "checks": [
+    {
+      "check": "public_control_health",
+      "status": "passed",
+      "detail": "HTTPS health returned 200"
+    },
+    {
+      "check": "public_tls",
+      "status": "passed",
+      "detail": "flintw.com TLSv1.3"
+    },
+    {
+      "check": "connector_configured",
+      "status": "passed",
+      "detail": "public cloud bind, source import and HMAC profile"
+    },
+    {
+      "check": "dedicated_frps_started",
+      "status": "passed",
+      "detail": "connector conn_86e1468cb9654892894c44275bacd07e"
+    },
+    {
+      "check": "enterprise_integration",
+      "status": "passed",
+      "detail": "K and standard MCP JSON issued; K not recorded"
+    },
+    {
+      "check": "public_tunnel_connected",
+      "status": "passed",
+      "detail": "1 个来源代理已运行"
+    },
+    {
+      "check": "public_mcp_lifecycle",
+      "status": "passed",
+      "detail": "{\"protocol_version\": \"2025-06-18\", \"tools\": [\"lookup_order\"], \"result_text\": \"SYNTHETIC-ORDER-42\"}"
+    },
+    {
+      "check": "public_authorization_negative",
+      "status": "passed",
+      "detail": "{\"wrong_key_status\": 401, \"unknown_source_status\": 403, \"initialize_status\": 200, \"unapproved_tool_status\": 403}"
+    },
+    {
+      "check": "public_sse_incremental",
+      "status": "passed",
+      "detail": "{\"status\": 200, \"first_event_seconds\": 0.169, \"first_event_contains_data\": true, \"content_type\": \"text/event-stream\"}"
+    },
+    {
+      "check": "public_relay_stop_fail_closed",
+      "status": "passed",
+      "detail": "{\"edge_status\": 503, \"failure_seconds\": 1.369, \"active_state\": \"inactive\", \"sub_state\": \"dead\", \"connector_tunnel_detail\": \"来源代理尚未全部运行（0/1）\"}"
+    },
+    {
+      "check": "public_relay_restart_recovery",
+      "status": "passed",
+      "detail": "Edge initialize and connector tunnel recovered"
+    },
+    {
+      "check": "public_websocket_upgrade",
+      "status": "passed",
+      "detail": "{\"before\": {\"total\": 9, \"upgraded\": 4}, \"after\": {\"total\": 14, \"upgraded\": 6}}"
+    },
+    {
+      "check": "synthetic_hmac_calls",
+      "status": "passed",
+      "detail": "calls=2; valid=2"
+    },
+    {
+      "check": "public_revocation",
+      "status": "passed",
+      "detail": "{\"edge_status_after_revoke\": 401, \"active_state\": \"inactive\", \"sub_state\": \"dead\", \"result\": \"success\", \"exec_main_status\": \"0\"}"
+    }
+  ],
+  "binaries": {
+    "connector_sha256": "1a1e3ab01e7be69ab75c5b99a8c067825f47161a858ba3deb6eed365da324fef",
+    "frpc_sha256": "0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b"
+  },
+  "tls": {
+    "host": "flintw.com",
+    "version": "TLSv1.3",
+    "subject": [
+      [
+        [
+          "commonName",
+          "flintw.com"
+        ]
+      ]
+    ],
+    "issuer": [
+      [
+        [
+          "countryName",
+          "US"
+        ]
+      ],
+      [
+        [
+          "organizationName",
+          "Let's Encrypt"
+        ]
+      ],
+      [
+        [
+          "commonName",
+          "YE1"
+        ]
+      ]
+    ],
+    "not_after": "Feb 13 13:42:14 2027 GMT",
+    "subject_alt_name": [
+      [
+        "DNS",
+        "flintw.com"
+      ],
+      [
+        "DNS",
+        "www.flintw.com"
+      ]
+    ]
+  },
+  "finished_at": "2026-11-19T02:58:28.108262+00:00",
+  "duration_seconds": 24.884
+}

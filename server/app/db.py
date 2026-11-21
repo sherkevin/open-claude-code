@@ -190,6 +190,169 @@ CREATE TABLE IF NOT EXISTS feishu_inbound_events(
     received_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS feishu_inbound_events_received ON feishu_inbound_events(received_at);
+-- Kaiwu intranet connector control plane. These tables intentionally retain
+-- only hashes, public keys and operational metadata; device tokens, enrollment
+-- codes and relay secrets are never stored in plaintext.
+CREATE TABLE IF NOT EXISTS kaiwu_enrollments(
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    tenant_name TEXT NOT NULL,
+    code_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    connector_id TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kaiwu_enrollments_expiry ON kaiwu_enrollments(expires_at,used_at);
+CREATE TABLE IF NOT EXISTS kaiwu_connectors(
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    tenant_name TEXT NOT NULL,
+    device_public_key TEXT NOT NULL,
+    device_key_id TEXT NOT NULL,
+    device_token_hash TEXT NOT NULL UNIQUE,
+    relay_token_hash TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    draining INTEGER NOT NULL DEFAULT 0,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS kaiwu_connectors_tenant ON kaiwu_connectors(tenant_id,created_at);
+CREATE TABLE IF NOT EXISTS kaiwu_sources(
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    tenant_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    allowed_tools TEXT NOT NULL,
+    tool_schema_sha256 TEXT NOT NULL,
+    target_binding_sha256 TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    stcp_secret TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(connector_id,source_id)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_sources_tenant ON kaiwu_sources(tenant_id,connector_id);
+CREATE TABLE IF NOT EXISTS kaiwu_device_nonces(
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    nonce TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(connector_id,nonce)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_device_nonces_expiry ON kaiwu_device_nonces(expires_at);
+CREATE TABLE IF NOT EXISTS kaiwu_heartbeats(
+    connector_id TEXT PRIMARY KEY REFERENCES kaiwu_connectors(id),
+    state TEXT NOT NULL,
+    connector_version TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    source_ids TEXT NOT NULL,
+    last_error TEXT NOT NULL,
+    received_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kaiwu_control_audit(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id TEXT NOT NULL,
+    connector_id TEXT,
+    source_id TEXT,
+    actor_type TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '{}',
+    trace_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kaiwu_control_audit_connector ON kaiwu_control_audit(connector_id,id);
+CREATE INDEX IF NOT EXISTS kaiwu_control_audit_tenant ON kaiwu_control_audit(tenant_id,id);
+-- Enterprise integration credentials are hashed at rest. A route is the
+-- loopback visitor listener paired with one connector source.
+CREATE TABLE IF NOT EXISTS kaiwu_integrations(
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    display_name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    rotated_at TEXT,
+    revoked_at TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kaiwu_integrations_tenant ON kaiwu_integrations(tenant_id,created_at);
+CREATE INDEX IF NOT EXISTS kaiwu_integrations_connector ON kaiwu_integrations(connector_id,created_at);
+CREATE TABLE IF NOT EXISTS kaiwu_integration_sources(
+    integration_id TEXT NOT NULL REFERENCES kaiwu_integrations(id),
+    connector_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    PRIMARY KEY(integration_id,connector_id,source_id),
+    FOREIGN KEY(connector_id,source_id) REFERENCES kaiwu_sources(connector_id,source_id)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_integration_sources_source ON kaiwu_integration_sources(connector_id,source_id);
+CREATE TABLE IF NOT EXISTS kaiwu_edge_routes(
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    source_id TEXT NOT NULL,
+    visitor_host TEXT NOT NULL,
+    visitor_port INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(connector_id,source_id),
+    FOREIGN KEY(connector_id,source_id) REFERENCES kaiwu_sources(connector_id,source_id),
+    UNIQUE(visitor_port)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_edge_routes_source ON kaiwu_edge_routes(source_id);
+-- Customer diagnostics: privacy-bounded operational events. There is no
+-- free-text column; message text is derived from the fixed catalog at read
+-- time and never stored from the wire. Identity columns are always taken from
+-- the authenticated connector, never from the event body.
+CREATE TABLE IF NOT EXISTS kaiwu_diagnostic_events(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id TEXT NOT NULL,
+    connector_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    level TEXT NOT NULL,
+    component TEXT NOT NULL,
+    event_code TEXT NOT NULL,
+    message_code TEXT NOT NULL,
+    operation_id TEXT,
+    trace_id TEXT,
+    source_id TEXT,
+    tool_name TEXT,
+    http_status INTEGER,
+    rpc_error_code TEXT,
+    duration_ms INTEGER,
+    attempt INTEGER,
+    install_attempt_id TEXT,
+    install_seq INTEGER,
+    install_stage TEXT,
+    install_outcome TEXT,
+    install_code TEXT,
+    origin TEXT NOT NULL DEFAULT 'connector' CHECK(origin IN ('connector','edge')),
+    received_at TEXT NOT NULL,
+    UNIQUE(tenant_id,connector_id,event_id)
+);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_connector_time
+    ON kaiwu_diagnostic_events(connector_id,received_at,id);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_tenant_time
+    ON kaiwu_diagnostic_events(tenant_id,received_at,id);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_time
+    ON kaiwu_diagnostic_events(occurred_at,id);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_source
+    ON kaiwu_diagnostic_events(connector_id,source_id,received_at);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_trace
+    ON kaiwu_diagnostic_events(trace_id,received_at);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_level
+    ON kaiwu_diagnostic_events(level,received_at);
+CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_code
+    ON kaiwu_diagnostic_events(event_code,received_at);
 """
 
 
@@ -219,6 +382,31 @@ class Database:
         # migrated schema separately.  executescript() commits a pending
         # transaction before it runs, so COMMIT before every script.
         self.conn.execute("BEGIN IMMEDIATE")
+        diagnostic_columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(kaiwu_diagnostic_events)")
+        }
+        if "origin" not in diagnostic_columns:
+            self.conn.execute(
+                "ALTER TABLE kaiwu_diagnostic_events "
+                "ADD COLUMN origin TEXT NOT NULL DEFAULT 'connector'"
+            )
+        # Create the origin index only after the additive migration above, so
+        # an intermediate database that predates the column still upgrades.
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_origin "
+            "ON kaiwu_diagnostic_events(origin,connector_id,received_at)"
+        )
+        for column, kind in (
+            ("install_attempt_id", "TEXT"), ("install_seq", "INTEGER"),
+            ("install_stage", "TEXT"), ("install_outcome", "TEXT"), ("install_code", "TEXT"),
+        ):
+            if column not in diagnostic_columns:
+                self.conn.execute(f"ALTER TABLE kaiwu_diagnostic_events ADD COLUMN {column} {kind}")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_install_attempt "
+            "ON kaiwu_diagnostic_events(install_attempt_id,id) WHERE install_attempt_id IS NOT NULL"
+        )
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(runs)")}
         if "execution_meta" not in columns:
             self.conn.execute("ALTER TABLE runs ADD COLUMN execution_meta TEXT")

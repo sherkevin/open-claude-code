@@ -1,0 +1,87 @@
+{
+  "status": "passed",
+  "scope": "loopback HTTPS/WSS only; not public DNS, production certificate, Tencent Cloud or customer network",
+  "started_at": "2026-11-18T12:25:24.591441+00:00",
+  "runtime_dir": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122524Z",
+  "source_commit": "3d0d06cd87268ce61fc2b7c33b18a679a2d12d66",
+  "source_dirty": false,
+  "versions": {
+    "go": "go version go1.27.4 linux/amd64",
+    "frps": "0.61.1",
+    "frpc": "0.61.1",
+    "nginx": "nginx version: nginx/1.18.0 (Ubuntu)"
+  },
+  "binaries": {
+    "frps_sha256": "62c2177b6add2f48d01f73578fe130ecbfafd0ed6571ddeba8ef917434ecb607",
+    "frpc_sha256": "0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b",
+    "nginx_sha256": "40ab7ce04f0d0af77e54bc73055131a8f1330c7ec5f4763fb5e8b8bb4fe8a2d8",
+    "connector_sha256": "fb69f007a590ee345b492abc30e89b833130c6bfc4d2e6d303b92580c0586a06"
+  },
+  "checks": [
+    {
+      "check": "tls_wss_edge_started",
+      "status": "passed",
+      "detail": "nginx TLS listener and WSS reverse proxy are open"
+    },
+    {
+      "check": "connector_tunnel_status",
+      "status": "passed",
+      "detail": "1 个来源代理已运行"
+    },
+    {
+      "check": "platform_https_import",
+      "status": "passed",
+      "detail": "{\"format\": \"mcp_servers\", \"url\": \"https://localhost:38129/projects/kaiwu/mcp/sources/src_294688ef6c0ee03fa99e303a9dc2625d/mcp\", \"credential_preserved\": true, \"allowed_hosts\": [\"127.0.0.1\", \"localhost\"], \"service_settings_class\": \"Settings\"}"
+    },
+    {
+      "check": "mcp_lifecycle_https",
+      "status": "passed",
+      "detail": "{\"protocol_version\": \"2025-06-18\", \"tools\": [\"lookup_order\"], \"result_text\": \"SYNTHETIC-ORDER-42\"}"
+    },
+    {
+      "check": "wrong_ca_rejected",
+      "status": "passed",
+      "detail": "{\"rejected\": true, \"exception\": \"ConnectError\"}"
+    },
+    {
+      "check": "https_authorization",
+      "status": "passed",
+      "detail": "{\"wrong_key_status\": 401, \"unknown_source_status\": 403, \"initialize_status\": 200, \"unapproved_tool_status\": 403}"
+    },
+    {
+      "check": "synthetic_mcp_called",
+      "status": "passed",
+      "detail": "calls=1; signatures_valid=1; fixture=SYNTHETIC-ORDER-42"
+    },
+    {
+      "check": "websocket_upgrade",
+      "status": "passed",
+      "detail": "{\"bridge_exit_code\": 0, \"connector_exit_code\": -15, \"websocket_access_lines\": [\"127.0.0.1 - - [18/Nov/2026:20:25:29 +0800] \\\"GET /~!frp HTTP/1.1\\\" 502 166 \\\"-\\\" \\\"-\\\"\", \"127.0.0.1 - - [18/Nov/2026:20:25:31 +0800] \\\"GET /~!frp HTTP/1.1\\\" 502 166 \\\"-\\\" \\\"-\\\"\", \"127.0.0.1 - - [18/Nov/2026:20:25:38 +0800] \\\"GET /~!frp HTTP/1.1\\\" 101 5809 \\\"-\\\" \\\"-\\\"\", \"127.0.0.1 - - [18/Nov/2026:20:25:38 +0800] \\\"GET /~!frp HTTP/1.1\\\" 101 4408 \\\"-\\\" \\\"-\\\"\", \"127.0.0.1 - - [18/Nov/2026:20:25:38 +0800] \\\"GET /~!frp HTTP/1.1\\\" 502 166 \\\"-\\\" \\\"-\\\"\"], \"websocket_101_observed\": true, \"nginx_access_log\": \"/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122524Z/tls/logs/nginx-access.log\"}"
+    }
+  ],
+  "tls": {
+    "subject_alt_name": [
+      "DNS:localhost",
+      "IP:127.0.0.1"
+    ],
+    "server_certificate_sha256": "sha256 Fingerprint=11:23:14:34:3C:8F:AA:7D:F7:5E:DD:CA:92:BD:8E:92:EE:01:A1:F2:BF:7E:AF:C9:EC:A5:15:F5:64:40:46:A8",
+    "trusted_ca_file": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122524Z/tls/ca.crt",
+    "wrong_ca_file": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122524Z/tls/wrong-ca.crt",
+    "certificate_generation": "openssl temporary CA and server certificate"
+  },
+  "tls_log": {
+    "bridge_exit_code": 0,
+    "connector_exit_code": -15,
+    "websocket_access_lines": [
+      "127.0.0.1 - - [18/Nov/2026:20:25:29 +0800] \"GET /~!frp HTTP/1.1\" 502 166 \"-\" \"-\"",
+      "127.0.0.1 - - [18/Nov/2026:20:25:31 +0800] \"GET /~!frp HTTP/1.1\" 502 166 \"-\" \"-\"",
+      "127.0.0.1 - - [18/Nov/2026:20:25:38 +0800] \"GET /~!frp HTTP/1.1\" 101 5809 \"-\" \"-\"",
+      "127.0.0.1 - - [18/Nov/2026:20:25:38 +0800] \"GET /~!frp HTTP/1.1\" 101 4408 \"-\" \"-\"",
+      "127.0.0.1 - - [18/Nov/2026:20:25:38 +0800] \"GET /~!frp HTTP/1.1\" 502 166 \"-\" \"-\""
+    ],
+    "websocket_101_observed": true,
+    "nginx_access_log": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122524Z/tls/logs/nginx-access.log"
+  },
+  "finished_at": "2026-11-18T12:25:39.967207+00:00",
+  "duration_seconds": 15.501
+}

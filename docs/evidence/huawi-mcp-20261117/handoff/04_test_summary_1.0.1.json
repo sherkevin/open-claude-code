@@ -1,0 +1,190 @@
+{
+  "test": "Windows 内网 MCP 连接器本地验收（修复版 1.0.1）",
+  "date": "2026-11-17",
+  "host": "SHERVIN",
+  "environment": {
+    "windows_product": "Windows 10 Home China",
+    "windows_version": "2009",
+    "windows_build": "26200",
+    "architecture": "64-bit",
+    "user": "SHERVIN\\shers",
+    "interactive_session_elevated": false,
+    "elevated_session_used_for_install_restart_uninstall": true,
+    "powershell": "5.1.26100.9818"
+  },
+  "package": {
+    "file": "kaiwu-connector-1.0.1-windows-amd64.zip",
+    "sha256": "9305E142580CE3908B1B5C334F6F3FEA160F0767BE23702AAAB99C2C46FE5E1F",
+    "version": "1.0.1",
+    "commit": "89c38b2",
+    "built": "2026-11-17T05:51:52Z",
+    "frpc": "0.61.1"
+  },
+  "results": {
+    "A_local_install": {
+      "status": "pass",
+      "service_registered_by_installer": true,
+      "service_name": "KaiwuConnector",
+      "service_state": "Running",
+      "service_start_type": "Automatic",
+      "service_account": "LocalSystem",
+      "listen": "127.0.0.1:17872",
+      "page_http": 200,
+      "restart_service": "pass",
+      "uninstall_removed_service": true,
+      "uninstall_removed_program_dir": true,
+      "uninstall_purged_data_dir": true,
+      "listener_after_uninstall": "none (only TIME_WAIT entries)"
+    },
+    "B_local_mcp": {
+      "status": "pass",
+      "mock_server": "kaiwu-mock-inventory",
+      "mock_server_version": "1.0.0",
+      "protocol_version": "2025-06-18",
+      "tools": [
+        "get_inventory"
+      ],
+      "mock_initialize": true,
+      "import": true,
+      "diagnosis": true,
+      "tool_probe": true,
+      "wrong_credential_rejected": true,
+      "wrong_credential_code": "UPSTREAM_AUTH_FAILED",
+      "wrong_credential_http": 401,
+      "restore_after_wrong_credential": true,
+      "service_restart_recovery": true,
+      "state_after_restart": "CONFIGURING",
+      "sources_after_restart": 1,
+      "diagnosis_after_restart": true
+    },
+    "C_cloud_bridge": {
+      "status": "blocked",
+      "executed": false,
+      "reason": "缺少真实一次性平台接入码；云端控制面/中继未闭环"
+    }
+  },
+  "diagnostics": {
+    "source_id": "928b0c97",
+    "normal": {
+      "config": "pass",
+      "network": "pass",
+      "tls": "skip",
+      "protocol": "pass",
+      "auth": "pass",
+      "tool": "pass",
+      "ok": true
+    },
+    "wrong_credential": {
+      "config": "pass",
+      "network": "pass",
+      "tls": "skip",
+      "protocol": "fail",
+      "code": "UPSTREAM_AUTH_FAILED",
+      "http": 401,
+      "ok": false
+    },
+    "restored": {
+      "ok": true,
+      "tool": "pass"
+    },
+    "after_service_restart": {
+      "ok": true,
+      "tool": "pass"
+    }
+  },
+  "network": {
+    "listen_17872": "127.0.0.1",
+    "listen_28765": "127.0.0.1",
+    "firewall_profiles_enabled": {
+      "Domain": true,
+      "Private": true,
+      "Public": true
+    },
+    "inbound_allow_rules_matching_test_ports": 0,
+    "lan_ip": [
+      "172.20.128.1",
+      "10.81.17.189"
+    ],
+    "lan_probe_17872": false,
+    "lan_probe_28765": false,
+    "loopback_probe_17872": true,
+    "loopback_probe_28765": true,
+    "external_device_probe": "not executed, no second device",
+    "outbound_443_from_service": false,
+    "export_edge_url": "https://flintw.com/projects/kaiwu/mcp/sources/928b0c97/mcp",
+    "export_token_placeholder": "Bearer <EDGE_ACCESS_TOKEN>",
+    "export_contains_windows_address": false,
+    "env_vars": {
+      "KAIWU_CLOUD_BASE": "https://flintw.com/projects/kaiwu/api",
+      "KAIWU_EDGE_BASE": "https://flintw.com/projects/kaiwu/mcp"
+    }
+  },
+  "fixes": [
+    {
+      "id": "F01",
+      "title": "增加 Windows 服务入口（svc.Run）和优雅停止",
+      "files": [
+        "connector/cmd/connector/service_windows.go",
+        "connector/cmd/connector/service_other.go",
+        "connector/cmd/connector/main.go",
+        "connector/internal/web/server.go"
+      ]
+    },
+    {
+      "id": "F02",
+      "title": "install.ps1 改用 New-Service，避免 sc.exe binPath 被空格拆分",
+      "files": [
+        "connector/packaging/windows/install.ps1"
+      ]
+    },
+    {
+      "id": "F03",
+      "title": "安装脚本使用 UTF-8 BOM，模板改为 ASCII，环境变量按 UTF-8 原文解析",
+      "files": [
+        "connector/packaging/windows/install.ps1",
+        "connector/packaging/windows/uninstall.ps1",
+        "connector/packaging/config/connector.env.example"
+      ]
+    },
+    {
+      "id": "F04",
+      "title": "数据目录 ACL 收紧为 Administrators + SYSTEM",
+      "files": [
+        "connector/packaging/windows/install.ps1"
+      ]
+    },
+    {
+      "id": "F05",
+      "title": "卸载 -Purge 删除数据目录并校验",
+      "files": [
+        "connector/packaging/windows/uninstall.ps1"
+      ]
+    },
+    {
+      "id": "F06",
+      "title": "未绑定但已导入来源时，重启恢复 CONFIGURING",
+      "files": [
+        "connector/internal/agent/agent.go"
+      ]
+    }
+  ],
+  "evidence": {
+    "diagnose_json": "evidence/diagnose.json",
+    "diagnose_tool_probe_json": "evidence/diagnose-tool-probe.json",
+    "diagnose_wrong_credential_json": "evidence/diagnose-wrong-token.json",
+    "diagnose_restored_json": "evidence/diagnose-restored.json",
+    "diagnose_after_restart_json": "evidence/diagnose-after-restart.json",
+    "status_after_restart_json": "evidence/status-after-restart.json",
+    "export_json": "evidence/export-with-env.json",
+    "screenshots": [
+      "evidence/screenshot-01-service-running.png",
+      "evidence/screenshot-02-import-ok.png",
+      "evidence/screenshot-03-diagnose-ok.png",
+      "evidence/screenshot-04-diagnose-tool-probe.png",
+      "evidence/screenshot-05-wrong-token.png",
+      "evidence/screenshot-06-restored-ok.png",
+      "evidence/screenshot-07-after-service-restart.png",
+      "evidence/screenshot-08-diagnose-after-restart.png"
+    ]
+  }
+}

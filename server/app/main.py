@@ -176,9 +176,11 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             if too_large:
                 return JSONResponse(status_code=413, content={"error": {"code": "UPLOAD_TOO_LARGE", "message": "上传内容超过大小限制"}})
         response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "same-origin"
-        response.headers["Cache-Control"] = "no-store"
+        # Route-specific hardening (for example the operator page) may be
+        # stricter than these defaults; never overwrite it here.
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     # Added last so trial route rejection wraps the CORS preflight responder,
@@ -233,6 +235,10 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     app.include_router(create_artifact_router(svc, authenticated))
     from .workflows import create_workflow_router
     app.include_router(create_workflow_router(svc, authenticated, enabled=settings.workflows_enabled))
+    from .kaiwu_control import create_kaiwu_control_router
+    app.include_router(create_kaiwu_control_router(svc))
+    from .kaiwu_edge import create_kaiwu_edge_router
+    app.include_router(create_kaiwu_edge_router(svc, settings))
 
     prefix = "/api/v1"
 

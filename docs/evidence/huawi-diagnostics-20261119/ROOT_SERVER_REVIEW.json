@@ -1,0 +1,18 @@
+{
+  "at": "2026-11-19T08:08:49.581543+00:00",
+  "command": [
+    "python3.10",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/test_kaiwu_control.py",
+    "tests/test_kaiwu_enterprise.py",
+    "tests/test_kaiwu_bridge.py",
+    "tests/test_kaiwu_diagnostics.py",
+    "-p",
+    "no:cacheprovider",
+    "--basetemp=/media/data3/dengkw/tmp/pytest-root-diag137-final"
+  ],
+  "exit_code": 0,
+  "log": "ROOT_SERVER_REVIEW.log"
+}

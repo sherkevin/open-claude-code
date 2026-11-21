@@ -1,0 +1,250 @@
+{
+  "status": "passed",
+  "started_at": "2026-11-18T12:25:45.954029+00:00",
+  "runtime_dir": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z",
+  "workspace": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118",
+  "source_commit": "3d0d06cd87268ce61fc2b7c33b18a679a2d12d66",
+  "source_dirty": false,
+  "browser_mode": "actual_product_ui",
+  "checks": [
+    {
+      "check": "isolated_admin_initialized",
+      "status": "passed",
+      "detail": "owner-only password file; password not recorded"
+    },
+    {
+      "check": "isolated_bridge_ready",
+      "status": "passed",
+      "detail": "official frps/frpc, visitor, Edge and synthetic MCP are running"
+    },
+    {
+      "check": "actual_client_started",
+      "status": "passed",
+      "detail": "http://127.0.0.1:33267"
+    },
+    {
+      "check": "actual_web_chat_called_mcp",
+      "status": "passed",
+      "detail": "synthetic MCP calls increased 0->1; valid HMAC tool calls=1"
+    },
+    {
+      "check": "secret_boundary",
+      "status": "passed",
+      "detail": "K, customer bearer, HMAC key, administrator password and provider token absent from public artifacts"
+    }
+  ],
+  "provider": {
+    "route": "loopback_test_adapter",
+    "host": "127.0.0.1:3425",
+    "model_id": "dano-v2.1",
+    "upstream_model": "tencent-cloud/deepseek-v4.1-flash-1017[1m]",
+    "provider_test_mode": true,
+    "production_route": false
+  },
+  "limitations": [
+    "The business MCP and order are deterministic synthetic fixtures.",
+    "The model call traverses the school-cloud loopback adapter; this is not a Tencent Cloud TokenHub production deployment.",
+    "This proves the actual product web UI and model tool loop, not customer Windows Server 2019 or real public DNS/TLS."
+  ],
+  "versions": {
+    "go": "go version go1.27.4 linux/amd64",
+    "frps": "0.61.1",
+    "frpc": "0.61.1",
+    "node": "v20.20.2",
+    "vite": "vite/6.1.0 linux-x64 node-v20.20.2"
+  },
+  "browser_output": "PASS login_to_actual_product\nPASS import_standard_mcp_json_without_secret_leak\nPASS discover_filtered_tool_and_bind_assistant\nPASS create_web_conversation_with_explicit_model\nPASS real_model_calls_mcp_and_returns_fixture\nPASS no_unexpected_browser_errors\nReport: /media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-report.json\n",
+  "browser_report": {
+    "status": "passed",
+    "started_at": "2026-11-18T12:26:12.446Z",
+    "base_url": "http://127.0.0.1:33267",
+    "browser_mode": "actual_product_ui",
+    "connection_name": "华微业务查询",
+    "model_id": "dano-v2.1",
+    "model_label": "Dano-v2.1",
+    "checks": [
+      {
+        "name": "login_to_actual_product",
+        "status": "passed",
+        "seconds": 0.942
+      },
+      {
+        "name": "import_standard_mcp_json_without_secret_leak",
+        "status": "passed",
+        "seconds": 0.983
+      },
+      {
+        "name": "discover_filtered_tool_and_bind_assistant",
+        "status": "passed",
+        "seconds": 2.253
+      },
+      {
+        "name": "create_web_conversation_with_explicit_model",
+        "status": "passed",
+        "seconds": 1.162
+      },
+      {
+        "name": "real_model_calls_mcp_and_returns_fixture",
+        "status": "passed",
+        "seconds": 11.593
+      },
+      {
+        "name": "no_unexpected_browser_errors",
+        "status": "passed",
+        "seconds": 0
+      }
+    ],
+    "screenshots": [
+      {
+        "name": "01-mcp-import-masked-preview",
+        "path": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/01-mcp-import-masked-preview.png"
+      },
+      {
+        "name": "02-mcp-tool-discovery",
+        "path": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/02-mcp-tool-discovery.png"
+      },
+      {
+        "name": "03-web-chat-answer",
+        "path": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/03-web-chat-answer.png"
+      },
+      {
+        "name": "04-web-chat-tool-trace",
+        "path": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/04-web-chat-tool-trace.png"
+      },
+      {
+        "name": "05-web-chat-tool-events",
+        "path": "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/05-web-chat-tool-events.png"
+      }
+    ],
+    "model_messages": 1,
+    "console_errors": [],
+    "page_errors": [],
+    "http_errors": [],
+    "network_errors": [],
+    "resources": {
+      "connection_id": "f708ff32bfbf4d95b45b76a7e834131a",
+      "assistant_id": "ffefcc7688cd489cbab8f5f03646f0d3",
+      "conversation_id": "94d51be90b9b4470943c42f74bbf93cd",
+      "run_id": "5048caa0da304328ae639ba84745b061"
+    },
+    "limitations": [
+      "Business MCP and order data are deterministic synthetic fixtures.",
+      "The model is reached through the school-cloud loopback provider adapter, not a production Tencent Cloud TokenHub deployment."
+    ],
+    "discovered_tools": [
+      "lookup_order"
+    ],
+    "conversation_model_id": "dano-v2.1",
+    "conversation_model_label": "Dano-v2.1",
+    "conversation_runtime": "harness",
+    "chat": {
+      "prompt": "请必须实际调用 lookup_order 工具查询 SKU-1001 的订单状态，不要猜测。工具返回后，请原样输出订单状态。",
+      "answer_text": "已实际调用订单查询工具查询 SKU-1001，工具返回内容原样如下：\n\n```\nSYNTHETIC-ORDER-42\n```\n\n说明：该返回只有上述一个值，未包含独立的“订单状态”字段，因此无法据此给出具体状态；另外该结果为合成示例数据，不是客户实际订单记录。如需进一步确认，需要数据源提供带状态字段的订单查询结果。",
+      "answer_contains_fixture": true,
+      "answer_length": 158,
+      "run_status": "succeeded",
+      "run_model_id": "dano-v2.1",
+      "usage": {
+        "input_tokens": 2095,
+        "output_tokens": 349,
+        "cache_read_input_tokens": 8192,
+        "cache_creation_input_tokens": 0,
+        "estimated_cost_usd": null,
+        "currency": "USD",
+        "cost_is_estimate": true,
+        "source": "harness_provider",
+        "token_accounting": {
+          "stages": [
+            {
+              "stage": "answer",
+              "source": "harness_provider",
+              "provider_call": true,
+              "provider_usage": {
+                "input_tokens": 975,
+                "output_tokens": 131,
+                "cache_read_input_tokens": 4096,
+                "cache_write_input_tokens": 0,
+                "unknown_fields": [],
+                "invalid_fields": []
+              },
+              "note": ""
+            },
+            {
+              "stage": "answer",
+              "source": "harness_provider",
+              "provider_call": true,
+              "provider_usage": {
+                "input_tokens": 1120,
+                "output_tokens": 218,
+                "cache_read_input_tokens": 4096,
+                "cache_write_input_tokens": 0,
+                "unknown_fields": [],
+                "invalid_fields": []
+              },
+              "note": ""
+            }
+          ],
+          "provider_totals": {
+            "input_tokens": 2095,
+            "output_tokens": 349,
+            "cache_read_input_tokens": 8192,
+            "cache_write_input_tokens": 0
+          },
+          "known_subtotals": {
+            "input_tokens": 2095,
+            "output_tokens": 349,
+            "cache_read_input_tokens": 8192,
+            "cache_write_input_tokens": 0
+          },
+          "provider_usage_complete": true,
+          "unknown_stages": [],
+          "provider_stages_with_complete_usage": [
+            "answer",
+            "answer"
+          ],
+          "cache_hit_ratio": 3.910263,
+          "warnings": [],
+          "measured_at": "2026-11-18T12:26:29.301068+00:00",
+          "cost_is_authoritative": false
+        }
+      },
+      "trace_tool_names": [
+        "mcp__cf708ff32bfbf4d95b45b76a7e834131a__lookup_order"
+      ],
+      "tool_call_events": [
+        {
+          "tool_name": "mcp__cf708ff32bfbf4d95b45b76a7e834131a__lookup_order",
+          "tool_call_id": "e5917a46c5af4260a708fa04c68bb7a7",
+          "arguments": {
+            "sku": "SKU-1001"
+          },
+          "started_event_id": 22,
+          "completed_event_id": 26,
+          "success": true,
+          "duration_ms": 771
+        }
+      ]
+    },
+    "completed_at": "2026-11-18T12:26:30.949Z"
+  },
+  "secret_scan": {
+    "scanned": [
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-report.json",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/logs/bridge.log",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/logs/cloud.log",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/logs/connector.log",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/logs/vite.log",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/cloud-data/app.sqlite3",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/01-mcp-import-masked-preview.png",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/02-mcp-tool-discovery.png",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/03-web-chat-answer.png",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/04-web-chat-tool-trace.png",
+      "/media/data3/dengkw/projects/open-claude-code-huawi-enterprise-20261118/.runtime/huawi-enterprise-e2e-20261118T122545Z/browser-screenshots/05-web-chat-tool-events.png"
+    ],
+    "hits": [],
+    "browser_storage_checked": true,
+    "note": "PNG metadata bytes were scanned; visual masking is separately captured in screenshots."
+  },
+  "finished_at": "2026-11-18T12:26:31.922993+00:00",
+  "duration_seconds": 45.969
+}

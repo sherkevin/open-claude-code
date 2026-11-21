@@ -1,0 +1,25 @@
+# Same private file used by the main server process. Keep this file root-owned
+# and mode 0600. Do not commit deployed values.
+AGENT_DATA_DIR=/srv/kaiwu/data
+AGENT_KAIWU_CONTROL_ENABLED=true
+AGENT_KAIWU_CONTROL_ADMIN_TOKEN_FILE=/etc/kaiwu-bridge/admin-token
+AGENT_KAIWU_CONTROL_RELAY_ADDRESS=relay.example.com
+AGENT_KAIWU_CONTROL_RELAY_PORT=443
+AGENT_KAIWU_CONTROL_RELAY_PROTOCOL=wss
+AGENT_KAIWU_CONTROL_RELAY_TLS_ENABLED=true
+AGENT_KAIWU_CONTROL_RELAY_TLS_SERVER_NAME=relay.example.com
+# Optional private-CA path used by the cloud visitor on this Linux host. Leave
+# empty for a public CA. This path is never sent to the Windows connector.
+AGENT_KAIWU_CONTROL_RELAY_TLS_TRUSTED_CA_FILE=
+# Optional private-CA path as it exists on the customer Windows host. Leave
+# empty for a public CA. Example:
+# C:\ProgramData\Kaiwu\Connector\relay-ca.crt
+AGENT_KAIWU_CONTROL_RELAY_TLS_CLIENT_TRUSTED_CA_FILE=
+AGENT_KAIWU_CONTROL_RELAY_BIND_ADDRESS=127.0.0.1
+AGENT_KAIWU_CONTROL_RELAY_BIND_PORT=37443
+AGENT_KAIWU_CONTROL_EDGE_USER=kaiwu-edge
+AGENT_KAIWU_EDGE_PUBLIC_BASE=https://flintw.com/projects/kaiwu/mcp
+AGENT_KAIWU_EDGE_MOUNT_PATH=/projects/kaiwu/mcp
+AGENT_KAIWU_EDGE_VISITOR_HOST=127.0.0.1
+AGENT_KAIWU_EDGE_VISITOR_PORT_START=31000
+AGENT_KAIWU_EDGE_VISITOR_PORT_END=31999

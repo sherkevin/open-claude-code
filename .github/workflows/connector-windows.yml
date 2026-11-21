@@ -1,0 +1,94 @@
+name: connector-windows
+
+on:
+  push:
+    branches:
+      - feature/intranet-mcp-connector-20261116
+    paths:
+      - ".github/workflows/connector-windows.yml"
+      - "connector/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-smoke:
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.12"
+
+      - name: Set up frpc 0.61.1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $release = "frp_0.61.1_windows_amd64.zip"
+          $url = "https://github.com/fatedier/frp/releases/download/v0.61.1/$release"
+          $archive = Join-Path $env:RUNNER_TEMP $release
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = "e0094cd0baf03d5ff9ce9739199406871ad8788cf51e766f00ad3a9e7a836f3a"
+          if ($actual -ne $expected) {
+            throw "frpc archive checksum mismatch: $actual"
+          }
+          Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP -Force
+          Copy-Item (Join-Path $env:RUNNER_TEMP "frp_0.61.1_windows_amd64\frpc.exe") `
+            "connector\packaging\bin\frpc-windows-amd64.exe" -Force
+
+      - name: Unit tests and static checks
+        working-directory: connector
+        shell: pwsh
+        run: |
+          go test ./... -count=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Windows package
+        working-directory: connector
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\windows\bin, dist\windows\docs, dist\windows\config | Out-Null
+          go build -trimpath -o dist\windows\bin\kaiwu-connector.exe .\cmd\connector
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item packaging\bin\frpc-windows-amd64.exe dist\windows\bin\frpc.exe -Force
+          Copy-Item packaging\windows\*.ps1 dist\windows\ -Force
+          Copy-Item packaging\config\connector.env.example dist\windows\config\ -Force
+          Copy-Item docs\*.md dist\windows\docs\ -Force
+          Copy-Item README.md dist\windows\docs\ -Force
+
+      - name: Windows install and service smoke test
+        shell: pwsh
+        run: |
+          .\connector\scripts\windows-smoke.ps1 `
+            -PackageRoot (Resolve-Path ".\connector\dist\windows") `
+            -EvidencePath (Resolve-Path ".\connector\dist").Path\windows-smoke-evidence.json
+
+      - name: Publish evidence branch
+        if: always()
+        shell: pwsh
+        env:
+          EVIDENCE_BRANCH: ci-evidence/connector-windows-${{ github.run_id }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $evidence = "connector\dist\windows-smoke-evidence.json"
+          if (-not (Test-Path $evidence)) {
+            '{"status":"missing_evidence_file"}' | Set-Content $evidence -Encoding UTF8
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan $env:EVIDENCE_BRANCH
+          git rm -rf . | Out-Null
+          New-Item -ItemType Directory -Force ci-evidence | Out-Null
+          Copy-Item $evidence "ci-evidence/windows-${{ github.run_id }}.json" -Force
+          git add "ci-evidence/windows-${{ github.run_id }}.json"
+          git commit -m "ci: windows connector smoke ${{ github.run_id }}"
+          git push origin "HEAD:refs/heads/$env:EVIDENCE_BRANCH"
