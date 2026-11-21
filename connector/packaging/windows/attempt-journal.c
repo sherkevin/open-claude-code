@@ -547,7 +547,7 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
         {L"unsupported_host", L"安装脚本需要 64 位 Windows PowerShell。"},
         {L"lock_busy", L"已有开物安装或卸载任务正在运行。"},
         {L"lock_unavailable", L"无法取得或确认安装事务锁。"},
-        {L"workspace_unavailable", L"无法建立安全的安装临时目录。"},
+        {L"workspace_unavailable", L"无法建立安全的安装临时目录。请确认 C:\\ProgramData\\Kaiwu 未被替换或占用，且当前安装账号可以创建子目录。"},
         {L"extract_write_failed", L"无法完整解包安装文件。"},
         {L"install_script_missing", L"解包后找不到安装脚本。"},
         {L"manifest_missing", L"缺少校验清单 SHA256SUMS。"},
@@ -759,8 +759,17 @@ EXPORT(Workspace) {
     WCHAR name[36];
     if (*attempt && admins && system_account && trusted_installer) {
         wsprintfW(name, L"kw-%ls", attempt);
-        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_PROGRAM_FILES, NULL, SHGFP_TYPE_CURRENT, workspace)) &&
-            wcslen(workspace) < MAX_PATH - 128 && pin_known_path(&workspace_dirs, workspace, 0) &&
+        /* Program Files roots cannot be excluded by endpoint protection policies
+           that refuse to trust those roots, so stage under the product's
+           ProgramData directory instead. Kaiwu may already exist: journal setup
+           creates it, and site operators pre-create it to register the trust
+           zone. Accept the same create-child rights the journal directory
+           accepts; safe_permissions still requires an administrator-owned
+           directory, so a user-planted Kaiwu is rejected. Private SDDL and
+           reparse-point checks are unchanged. */
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, SHGFP_TYPE_CURRENT, workspace)) &&
+            append_path(workspace, L"Kaiwu") && wcslen(workspace) < MAX_PATH - 128 &&
+            pin_known_path(&workspace_dirs, workspace, COMMON_DATA_WRITES) &&
             create_workspace(&workspace_dirs, workspace, name)) {
             push(stack, size, workspace);
             return;

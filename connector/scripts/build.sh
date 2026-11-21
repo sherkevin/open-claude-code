@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.3.17}"
+VERSION="${VERSION:-1.3.18}"
 COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 # Bind package metadata and ZIP timestamps to the source commit unless the
 # release operator supplies an explicit epoch. Rebuilding the same commit then
@@ -329,7 +329,10 @@ done
 
 (
   cd "$DIST/linux"
-  TZ=UTC LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -czf "$DIST/kaiwu-connector-${VERSION}-linux-amd64.tar.gz" .
+  # gzip -n keeps the archive header free of the build timestamp; without it the
+  # tarball hash changes on every rebuild even though the contents are identical.
+  TZ=UTC LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -cf - . \
+    | gzip -n > "$DIST/kaiwu-connector-${VERSION}-linux-amd64.tar.gz"
 )
 (
   cd "$DIST/windows"

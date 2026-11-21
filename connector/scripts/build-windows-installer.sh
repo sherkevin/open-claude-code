@@ -24,6 +24,11 @@ if [[ ! "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
 fi
 
 MAKENSIS="${MAKENSIS:-$(command -v makensis || true)}"
+
+if [[ ! -f "$PAYLOAD_DIR/connector.ico" ]]; then
+  echo "缺少安装器图标: $PAYLOAD_DIR/connector.ico" >&2
+  exit 1
+fi
 if [[ -z "$MAKENSIS" || ! -x "$MAKENSIS" ]]; then
   echo "缺少 NSIS makensis；请通过 MAKENSIS 指定可执行文件" >&2
   exit 1
@@ -51,9 +56,14 @@ fi
 # makensis 3.08 hardcodes /tmp for its large compression scratch file. Keep
 # that file on the project data volume through a private mount namespace so a
 # full root filesystem cannot turn the final mmap into SIGBUS.
+# Linux CI keeps the private mount namespace so a full root filesystem cannot
+# turn the final mmap into SIGBUS. Hosts without unshare (macOS cross builds)
+# fall back to a plain invocation with every temp variable pointed at the same
+# data volume; the produced installer is identical.
+ISOLATE_NSIS=1
 if ! command -v unshare >/dev/null 2>&1; then
-  echo "缺少 unshare，无法把 makensis 临时目录隔离到数据盘" >&2
-  exit 1
+  ISOLATE_NSIS=0
+  echo "提示：当前主机没有 unshare，直接调用 makensis（临时目录见下）" >&2
 fi
 NSIS_TMPDIR="${NSIS_TMPDIR:-${TMPDIR:-$ROOT/dist}/nsis-work}"
 mkdir -p "$NSIS_TMPDIR"
@@ -73,22 +83,43 @@ touch -d "@$SOURCE_DATE_EPOCH" "$plugin_dir/KaiwuJournal.dll"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 export SOURCE_DATE_EPOCH NSIS_SHARE_DIR
-unshare -Urmpf --propagation private bash -c '
-  set -euo pipefail
-  mount --bind "$1" /tmp
-  if [[ -n "${NSIS_SHARE_DIR:-}" ]]; then
-    mount --bind "$NSIS_SHARE_DIR" /usr/share
+
+run_makensis_plain() {
+  echo "makensis 临时目录：$NSIS_TMPDIR" >&2
+  TMPDIR="$NSIS_TMPDIR" TMP="$NSIS_TMPDIR" TEMP="$NSIS_TMPDIR" \
+    "$MAKENSIS" -V2 -NOCD -INPUTCHARSET UTF8 \
+      -DPAYLOAD_DIR="$PAYLOAD_DIR" \
+      -DJOURNAL_PLUGIN_DIR="$plugin_dir" \
+      -DVERSION="$VERSION" \
+      -DVERSION_QUAD="$VERSION_QUAD" \
+      -DCOMMIT="$COMMIT" \
+      -DOUTPUT_FILE="$OUTPUT_FILE" \
+      "$ROOT/packaging/windows/installer.nsi"
+}
+
+if [[ "$ISOLATE_NSIS" == 1 ]]; then
+  if ! unshare -Urmpf --propagation private bash -c '
+    set -euo pipefail
+    mount --bind "$1" /tmp
+    if [[ -n "${NSIS_SHARE_DIR:-}" ]]; then
+      mount --bind "$NSIS_SHARE_DIR" /usr/share
+    fi
+    shift
+    exec "$@"
+  ' bash "$NSIS_TMPDIR" "$MAKENSIS" -V2 -NOCD -INPUTCHARSET UTF8 \
+    -DPAYLOAD_DIR="$PAYLOAD_DIR" \
+    -DJOURNAL_PLUGIN_DIR="/tmp/${plugin_dir##*/}" \
+    -DVERSION="$VERSION" \
+    -DVERSION_QUAD="$VERSION_QUAD" \
+    -DCOMMIT="$COMMIT" \
+    -DOUTPUT_FILE="$OUTPUT_FILE" \
+    "$ROOT/packaging/windows/installer.nsi"; then
+    echo "提示：私有挂载命名空间不可用，改用直接调用 makensis" >&2
+    run_makensis_plain
   fi
-  shift
-  exec "$@"
-' bash "$NSIS_TMPDIR" "$MAKENSIS" -V2 -NOCD \
-  -DPAYLOAD_DIR="$PAYLOAD_DIR" \
-  -DJOURNAL_PLUGIN_DIR="/tmp/${plugin_dir##*/}" \
-  -DVERSION="$VERSION" \
-  -DVERSION_QUAD="$VERSION_QUAD" \
-  -DCOMMIT="$COMMIT" \
-  -DOUTPUT_FILE="$OUTPUT_FILE" \
-  "$ROOT/packaging/windows/installer.nsi"
+else
+  run_makensis_plain
+fi
 
 if [[ ! -s "$OUTPUT_FILE" ]]; then
   echo "NSIS 未生成安装包: $OUTPUT_FILE" >&2

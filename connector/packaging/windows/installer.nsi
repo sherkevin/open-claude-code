@@ -57,10 +57,12 @@ InstallDir "$PROGRAMFILES64\Kaiwu\Connector"
 RequestExecutionLevel admin
 CRCCheck on
 XPStyle on
-!if /FileExists "${PAYLOAD_DIR}/connector.ico"
-  !define MUI_ICON "${PAYLOAD_DIR}/connector.ico"
-  !define MUI_UNICON "${PAYLOAD_DIR}/connector.ico"
-!endif
+; The icon is always staged by scripts/build.sh. A conditional here turned a
+; missing file into a silent default icon, and !if /FileExists after MUI2
+; crashes makensis 3.08 on POSIX hosts, so the build script asserts the file
+; instead and this stays unconditional.
+!define MUI_ICON "${PAYLOAD_DIR}/connector.ico"
+!define MUI_UNICON "${PAYLOAD_DIR}/connector.ico"
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 ShowInstDetails show
@@ -279,6 +281,18 @@ Section "安装" SecInstall
     !insertmacro Attempt "extract" "failed" "access_denied"
     StrCpy $FailureReason "workspace_unavailable"
     Goto attempt_failed
+  ${EndIf}
+  ; Journal events use a fixed schema enforced by two parsers, so the resolved
+  ; staging path is recorded as a small key=value file next to the journal and
+  ; printed into the installer detail pane.
+  DetailPrint "解包目录：$WorkDir"
+  ReadEnvStr $R9 "ProgramData"
+  ClearErrors
+  FileOpen $9 "$R9\Kaiwu\Connector\logs\install-workspace.txt" w
+  ${IfNot} ${Errors}
+    FileWrite $9 "workspace=$WorkDir$\r$\n"
+    FileWrite $9 "version=${VERSION}$\r$\n"
+    FileClose $9
   ${EndIf}
   ClearErrors
   SetOutPath "$WorkDir"

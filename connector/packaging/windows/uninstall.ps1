@@ -61,6 +61,23 @@ function Remove-KaiwuUninstallPath {
   if (Test-Path -LiteralPath $Path) { throw "卸载后路径仍然存在: $Path" }
 }
 
+function Remove-KaiwuStaleWorkspaces {
+  # Setup staging directories are kw-<32 hex> under %ProgramData%\Kaiwu. Normal
+  # installs delete them on completion; a crashed or cancelled install leaves
+  # them behind. Only that exact name shape is removed, so the Connector data
+  # directory, logs and journal evidence stay untouched.
+  $workspaceRoot = Join-Path $env:ProgramData "Kaiwu"
+  if (-not (Test-Path -LiteralPath $workspaceRoot -PathType Container)) { return }
+  foreach ($item in @(Get-ChildItem -LiteralPath $workspaceRoot -Directory -Force -ErrorAction SilentlyContinue)) {
+    if ($item.Name -notmatch '^kw-[0-9a-f]{32}$') { continue }
+    try {
+      Remove-Item -LiteralPath $item.FullName -Recurse -Force -Confirm:$false -ErrorAction Stop
+    } catch {
+      Write-Warning "无法删除遗留解包目录：$($item.FullName)（$($_.Exception.Message)）"
+    }
+  }
+}
+
 function Remove-KaiwuSetupShortcuts {
   $desktop = [Environment]::GetFolderPath("CommonDesktopDirectory")
   $programs = [Environment]::GetFolderPath("CommonPrograms")
@@ -123,6 +140,7 @@ try {
 
   Assert-KaiwuLegacyIdle $legacyDir
   Assert-KaiwuQuiescent $null
+  Remove-KaiwuStaleWorkspaces
   if ($Purge) {
     foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE", "KAIWU_CONNECTOR_DATA")) {
       Clear-KaiwuMachineEnvironmentVariable $name
