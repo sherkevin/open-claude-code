@@ -28,8 +28,12 @@
 | 安装包 PE 结构 | makensis 3.08（Debian bookworm 容器） | PE32 i386，版本 1.3.18，含图标组 |
 | `frpc.exe` 未改动 | 包内文件哈希 | `d9a8cf8bc61bd5c8d57a2a4801316a18291f76d45dc5fd8aaf425bd91b57159d`，等于上游 FRP 0.61.1 |
 | 打包完整性 | `unzip -t` / `tar tzf` | 无错误 |
+| PowerShell 语法解析（8 个 `.ps1`） | pwsh 7.5.4 | 全部通过 |
+| `scripts/tests/windows-missing-file-summary.ps1` | pwsh 7.5.4，合成文件 | 3 项通过 |
+| `scripts/tests/uninstall-stale-workspace.ps1` | pwsh 7.5.4，合成目录 | 通过（残留删除，数据目录与无关目录保留） |
+| 可复现性 | 干净检出 + 补丁重建、同工作区重复构建 | 三个产物 SHA-256 完全一致 |
 
-本机没有 Windows 目标机：图形安装器、服务注册、17872 监听和内置示例的实机结果仍需按交付说明在目标机验证；`install.ps1` / `uninstall.ps1` 的 PowerShell 测试同样只在 Windows 上可跑，本次改动保持最小并沿用现有函数结构。
+本机没有 Windows 目标机：图形安装器、服务注册、17872 监听和内置示例的实机结果仍需按交付说明在目标机验证。PowerShell 侧已用 pwsh 7.5.4 完成语法解析、清单校验测试与卸载残留清理测试，但涉及 Windows 服务、注册表与终端防护的路径只能在目标机验证。
 
 ## 验收步骤
 
