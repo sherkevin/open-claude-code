@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 构建开物内网连接器的交付包。
 #
-# 依赖：Go 1.25+、frpc 二进制（packaging/bin/ 下）、zip。
+# 依赖：Go 1.25+、Python 3、frpc 二进制（packaging/bin/ 下）、zip。
 # 产物：dist/kaiwu-connector-<版本>-linux-amd64.tar.gz
 #       dist/kaiwu-connector-<版本>-windows-amd64.zip
+# 仅构建 Windows 主程序：bash scripts/build.sh --windows-exe <输出文件>
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,6 +40,44 @@ if [ -n "$GO_TOOL" ] && [ -x "$GO_TOOL" ]; then
   export PATH="$(cd "$(dirname "$GO_TOOL")" && pwd):$PATH"
 fi
 
+if [ -z "$GO_TOOL" ] || [ ! -x "$GO_TOOL" ]; then
+  echo "缺少 Go 工具链，无法构建连接器" >&2
+  exit 1
+fi
+if [ -z "$PYTHON_TOOL" ] || [ ! -x "$PYTHON_TOOL" ]; then
+  echo "缺少 python3，无法生成 Windows 主程序版本资源" >&2
+  exit 1
+fi
+
+build_windows_executable() (
+  local output="$1" work
+  work="$(mktemp -d "${TMPDIR:-/tmp}/kaiwu-connector-windows.XXXXXXXX")"
+  trap 'rm -rf -- "$work"' EXIT
+
+  # Keep the generated object private to this build. The staged module retains
+  # the original package paths so -trimpath produces the same build identity.
+  mkdir -p "$work/cmd"
+  cp -R "$ROOT/cmd/connector" "$work/cmd/connector"
+  "$PYTHON_TOOL" "$ROOT/scripts/windows-exe-version-resource.py" "$VERSION" \
+    "$work/cmd/connector/kaiwu_version_windows_amd64.syso"
+  cp -R "$ROOT/go.mod" "$ROOT/go.sum" "$ROOT/internal" "$work/"
+
+  mkdir -p "$(dirname "$output")"
+  output="$(cd "$(dirname "$output")" && pwd)/$(basename "$output")"
+  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-trimpath GOWORK=off \
+    "$GO_TOOL" -C "$work" build -trimpath -buildvcs=false -ldflags "$LDFLAGS" \
+    -o "$output" ./cmd/connector
+)
+
+if [[ $# -eq 2 && "$1" == --windows-exe ]]; then
+  build_windows_executable "$2"
+  exit 0
+fi
+if [[ $# -ne 0 ]]; then
+  echo "用法: $0 [--windows-exe <输出文件>]" >&2
+  exit 2
+fi
+
 for file in "$FRPC_LINUX" "$FRPC_WINDOWS"; do
   if [ ! -f "$file" ]; then
     echo "缺少 frpc 二进制: $file" >&2
@@ -52,14 +91,6 @@ if [ -z "$SBOM_TOOL" ] || [ ! -x "$SBOM_TOOL" ]; then
 fi
 if [ -z "$VULN_TOOL" ] || [ ! -x "$VULN_TOOL" ]; then
   echo "缺少 govulncheck，无法执行依赖漏洞扫描" >&2
-  exit 1
-fi
-if [ -z "$GO_TOOL" ] || [ ! -x "$GO_TOOL" ]; then
-  echo "缺少 Go 工具链，无法构建连接器" >&2
-  exit 1
-fi
-if [ -z "$PYTHON_TOOL" ] || [ ! -x "$PYTHON_TOOL" ]; then
-  echo "缺少 python3，无法规范化 SBOM 许可证声明" >&2
   exit 1
 fi
 
@@ -116,7 +147,7 @@ echo "构建 Linux 版本..."
 GOOS=linux GOARCH=amd64 "$GO_TOOL" build -trimpath -buildvcs=false -ldflags "$LDFLAGS" -o "$DIST/linux/bin/kaiwu-connector" "$ROOT/cmd/connector"
 
 echo "构建 Windows 版本..."
-GOOS=windows GOARCH=amd64 "$GO_TOOL" build -trimpath -buildvcs=false -ldflags "$LDFLAGS" -o "$DIST/windows/bin/kaiwu-connector.exe" "$ROOT/cmd/connector"
+build_windows_executable "$DIST/windows/bin/kaiwu-connector.exe"
 
 cp "$FRPC_LINUX" "$DIST/linux/bin/frpc"
 cp "$FRPC_WINDOWS" "$DIST/windows/bin/frpc.exe"
