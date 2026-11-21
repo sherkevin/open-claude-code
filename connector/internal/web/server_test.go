@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,6 +61,8 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 		t.Fatal("页面内容不完整")
 	}
 	for _, expected := range []string{
+		"燧石开物",
+		`rel="icon" href="/flintworks-mark.png"`,
 		"连接器首次使用",
 		"先检查本机示例，绑定企业后再验证公网",
 		"一次性企业绑定码",
@@ -92,6 +95,28 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "第 1 步") {
 		t.Fatal("页面不应继续把本机配置展示成六步技术向导")
+	}
+}
+
+func TestFlintworksMarkIsServedLocally(t *testing.T) {
+	handler := newTestServer(t).Handler()
+	request := httptest.NewRequest(http.MethodGet, "/flintworks-mark.png", nil)
+	request.Host = loopbackHost
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("brand image response: %d %q", recorder.Code, recorder.Header().Get("Content-Type"))
+	}
+	decoded, err := png.DecodeConfig(recorder.Body)
+	if err != nil || decoded.Width != 128 || decoded.Height != 128 {
+		t.Fatalf("brand image has unexpected format or dimensions: %+v, %v", decoded, err)
+	}
+
+	request.Host = "external.example"
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("nonlocal Host may not fetch the image: %d", recorder.Code)
 	}
 }
 

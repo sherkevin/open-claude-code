@@ -1,4 +1,4 @@
-"""Generate the AMD64 COFF version resource for kaiwu-connector.exe."""
+"""Generate AMD64 COFF Windows resources for kaiwu-connector.exe."""
 
 import argparse
 import re
@@ -58,49 +58,86 @@ def version_info(version):
     return version_block("VS_VERSION_INFO", fixed, children=(string_info, var_info))
 
 
-def resource_object(version_data):
-    # One integer entry per resource directory, in type / name / language order.
-    directory_entry = struct.Struct("<IIHHHHII")
-    directory_size = directory_entry.size
-    leaf_offset = 3 * directory_size
-    data_offset = leaf_offset + 16  # IMAGE_RESOURCE_DATA_ENTRY
-    subdirectory = 0x80000000
-    section = b"".join(
-        directory_entry.pack(0, 0, 0, 0, 0, 1, resource_id, target)
-        for resource_id, target in (
-            (16, subdirectory | directory_size),  # RT_VERSION
-            (1, subdirectory | (2 * directory_size)),
-            (LANGUAGE, leaf_offset),
-        )
-    )
-    section += struct.pack("<IIII", data_offset, len(version_data), CODEPAGE, 0) + version_data
+def icon_resources(data):
+    header = struct.Struct("<HHH")
+    entry = struct.Struct("<BBBBHHII")
+    if len(data) < header.size:
+        raise ValueError("Incomplete Windows icon header")
+    reserved, kind, count = header.unpack_from(data)
+    table_size = header.size + count * entry.size
+    if reserved != 0 or kind != 1 or count == 0 or table_size > len(data):
+        raise ValueError("Invalid Windows icon directory")
 
-    # The linker relocates the data entry's address from a section offset to an RVA.
-    relocation = struct.pack("<IIH", leaf_offset, 0, 0x0003)  # IMAGE_REL_AMD64_ADDR32NB
+    images = {}
+    group = [header.pack(reserved, kind, count)]
+    for index in range(count):
+        *attributes, size, offset = entry.unpack_from(data, header.size + index * entry.size)
+        if size == 0 or offset < table_size or offset + size > len(data):
+            raise ValueError("Invalid Windows icon image")
+        resource_id = index + 1
+        images[resource_id] = {LANGUAGE: (data[offset:offset + size], 0)}
+        # A group icon references each image by resource ID, not ICO file offset.
+        group.append(struct.pack("<BBBBHHIH", *attributes, size, resource_id))
+    return {3: images, 14: {1: {LANGUAGE: (b"".join(group), 0)}}}  # RT_ICON, RT_GROUP_ICON
+
+
+def resource_object(version_data, icon_data=None):
+    tree = {16: {1: {LANGUAGE: (version_data, CODEPAGE)}}}  # RT_VERSION
+    if icon_data is not None:
+        tree.update(icon_resources(icon_data))
+    section = bytearray()
+    leaves = []
+
+    def directory(entries):
+        offset = len(section)
+        section.extend(struct.pack("<IIHHHH", 0, 0, 0, 0, 0, len(entries)))
+        table = len(section)
+        section.extend(bytes(8 * len(entries)))
+        for index, (resource_id, child) in enumerate(sorted(entries.items())):
+            if isinstance(child, dict):
+                target = directory(child) | 0x80000000
+            else:
+                target = len(section)
+                section.extend(bytes(16))  # IMAGE_RESOURCE_DATA_ENTRY
+                leaves.append((target, *child))
+            struct.pack_into("<II", section, table + 8 * index, resource_id, target)
+        return offset
+
+    directory(tree)
+    relocations = bytearray()
+    for offset, payload, codepage in leaves:
+        section.extend(bytes(-len(section) % 4))
+        struct.pack_into("<IIII", section, offset, len(section), len(payload), codepage, 0)
+        section.extend(payload)
+        # Relocate the address in the data entry from a section offset to an RVA.
+        relocations.extend(struct.pack("<IIH", offset, 0, 0x0003))  # IMAGE_REL_AMD64_ADDR32NB
+
     section_offset = 20 + 40  # COFF file and section headers
     relocation_offset = section_offset + len(section)
-    symbol_offset = relocation_offset + len(relocation)
+    symbol_offset = relocation_offset + len(relocations)
     name = b".rsrc\0\0\0"
     header = struct.pack("<HHIIIHH", 0x8664, 1, 0, symbol_offset, 1, 0, 0)
     section_header = struct.pack(
         "<8sIIIIIIHHI", name, 0, 0, len(section), section_offset,
-        relocation_offset, 0, 1, 0, 0x40300040,  # Initialized read-only data, aligned to 4 bytes.
+        relocation_offset, 0, len(leaves), 0, 0x40300040,  # Initialized read-only data, aligned to 4 bytes.
     )
     symbol = struct.pack("<8sIhHBB", name, 0, 1, 0, 3, 0)  # Static section symbol.
-    return header + section_header + section + relocation + symbol + struct.pack("<I", 4)
+    return header + section_header + section + relocations + symbol + struct.pack("<I", 4)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version")
     parser.add_argument("output", type=Path)
+    parser.add_argument("--icon", type=Path)
     args = parser.parse_args()
     try:
-        data = version_info(args.version)
-    except ValueError as exc:
+        icon = args.icon.read_bytes() if args.icon else None
+        data = resource_object(version_info(args.version), icon)
+    except (OSError, ValueError) as exc:
         parser.error(str(exc))
     with args.output.open("xb") as output:
-        output.write(resource_object(data))
+        output.write(data)
 
 
 if __name__ == "__main__":

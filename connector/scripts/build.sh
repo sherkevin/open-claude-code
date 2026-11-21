@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.3.16}"
+VERSION="${VERSION:-1.3.17}"
 COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 # Bind package metadata and ZIP timestamps to the source commit unless the
 # release operator supplies an explicit epoch. Rebuilding the same commit then
@@ -59,6 +59,7 @@ build_windows_executable() (
   mkdir -p "$work/cmd"
   cp -R "$ROOT/cmd/connector" "$work/cmd/connector"
   "$PYTHON_TOOL" "$ROOT/scripts/windows-exe-version-resource.py" "$VERSION" \
+    --icon "$ROOT/packaging/windows/connector.ico" \
     "$work/cmd/connector/kaiwu_version_windows_amd64.syso"
   cp -R "$ROOT/go.mod" "$ROOT/go.sum" "$ROOT/internal" "$work/"
 
@@ -156,6 +157,7 @@ chmod 0755 "$DIST/linux/bin/kaiwu-connector" "$DIST/linux/bin/frpc"
 cp "$ROOT/packaging/linux/"*.sh "$DIST/linux/"
 cp "$ROOT/packaging/linux/"*.service "$DIST/linux/systemd/"
 cp "$ROOT/packaging/windows/"*.ps1 "$DIST/windows/"
+cp "$ROOT/packaging/windows/connector.ico" "$DIST/windows/"
 cp "$ROOT/scripts/windows-smoke.ps1" "$DIST/windows/"
 cp "$ROOT/packaging/config/connector.env.example" "$DIST/linux/config/"
 cp "$ROOT/packaging/config/connector.env.example" "$DIST/windows/config/"

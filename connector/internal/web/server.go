@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,11 @@ import (
 	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 )
+
+// The tracked Flintworks mark is embedded so the local UI works offline.
+//
+//go:embed flintworks-mark.png
+var flintworksMark []byte
 
 // Server 是本机配置界面。
 type Server struct {
@@ -88,6 +94,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("GET /flintworks-mark.png", s.guard(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(flintworksMark)
+	}))
 	mux.HandleFunc("/api/status", s.guard(s.handleStatus))
 	mux.HandleFunc("/api/bind", s.guard(postOnly(s.handleBind)))
 	mux.HandleFunc("/api/import", s.guard(postOnly(s.handleImport)))

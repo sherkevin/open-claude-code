@@ -57,6 +57,10 @@ InstallDir "$PROGRAMFILES64\Kaiwu\Connector"
 RequestExecutionLevel admin
 CRCCheck on
 XPStyle on
+!if /FileExists "${PAYLOAD_DIR}/connector.ico"
+  Icon "${PAYLOAD_DIR}/connector.ico"
+  UninstallIcon "${PAYLOAD_DIR}/connector.ico"
+!endif
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 ShowInstDetails show
@@ -371,9 +375,9 @@ Section "安装" SecInstall
   IfErrors maintenance_failed
 
   CreateDirectory "$SMPROGRAMS\开物内网连接器"
-  CreateShortCut "$SMPROGRAMS\开物内网连接器\打开本机配置页面.lnk" "$INSTDIR\open-config.cmd"
+  CreateShortCut "$SMPROGRAMS\开物内网连接器\打开本机配置页面.lnk" "$INSTDIR\open-config.cmd" "" "$INSTDIR\kaiwu-connector.exe" 0
   CreateShortCut "$SMPROGRAMS\开物内网连接器\交付与运维说明.lnk" "$INSTDIR\docs\交付与运维说明.md"
-  CreateShortCut "$DESKTOP\开物内网连接器配置.lnk" "$INSTDIR\open-config.cmd"
+  CreateShortCut "$DESKTOP\开物内网连接器配置.lnk" "$INSTDIR\open-config.cmd" "" "$INSTDIR\kaiwu-connector.exe" 0
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateShortCut "$SMPROGRAMS\开物内网连接器\卸载开物内网连接器.lnk" "$INSTDIR\uninstall.exe"
 

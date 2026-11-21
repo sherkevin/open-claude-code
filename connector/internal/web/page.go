@@ -6,13 +6,18 @@ const page = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>开物 · 内网连接器</title>
+<title>燧石开物 · 内网连接器</title>
+<link rel="icon" href="/flintworks-mark.png" type="image/png">
 <style>
 :root{--ink:#17223b;--muted:#5b6785;--line:#dfe4ef;--bg:#f5f7fb;--card:#fff;--brand:#1f4fd8;--brand-soft:#eef2ff;--ok:#0f7a4f;--warn:#a86a00;--err:#b3261e}
 *{box-sizing:border-box}
 body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.55}
 header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 24px;background:var(--card);border-bottom:1px solid var(--line)}
-.brand{font-weight:650;font-size:18px}.brand small{margin-left:8px;color:var(--muted);font-weight:400;font-size:12px}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand-icon{width:40px;height:40px;display:grid;place-items:center;border:1px solid #dbe6fa;border-radius:12px;background:#f1f6ff;flex:none}
+.brand-icon img{display:block;width:25px;height:25px}
+.brand-name{display:block;font-size:16px;font-weight:700;line-height:1.25}
+.brand small{display:block;margin-top:3px;color:var(--muted);font-size:12px;line-height:1.25}
 main{max-width:920px;margin:0 auto;padding:20px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:14px}
 .intro{border-left:4px solid var(--brand);background:linear-gradient(135deg,#fff 0%,#f8faff 100%)}
@@ -94,7 +99,13 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
 </style>
 </head>
 <body>
-<header><div class="brand">开物<small>内网连接器</small></div><span class="pill" id="statePill">读取中…</span></header>
+<header>
+  <div class="brand">
+    <span class="brand-icon"><img src="/flintworks-mark.png" width="25" height="25" alt=""></span>
+    <div><span class="brand-name">燧石开物</span><small>内网连接器</small></div>
+  </div>
+  <span class="pill" id="statePill">读取中…</span>
+</header>
 <main>
 <section class="card intro">
   <h1>连接器首次使用</h1>
