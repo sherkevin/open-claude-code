@@ -58,8 +58,8 @@ RequestExecutionLevel admin
 CRCCheck on
 XPStyle on
 !if /FileExists "${PAYLOAD_DIR}/connector.ico"
-  Icon "${PAYLOAD_DIR}/connector.ico"
-  UninstallIcon "${PAYLOAD_DIR}/connector.ico"
+  !define MUI_ICON "${PAYLOAD_DIR}/connector.ico"
+  !define MUI_UNICON "${PAYLOAD_DIR}/connector.ico"
 !endif
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
