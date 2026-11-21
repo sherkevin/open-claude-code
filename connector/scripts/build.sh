@@ -334,10 +334,11 @@ done
   TZ=UTC LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -cf - . \
     | gzip -n > "$DIST/kaiwu-connector-${VERSION}-linux-amd64.tar.gz"
 )
-(
-  cd "$DIST/windows"
-  LC_ALL=C find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort | TZ=UTC zip -X -q "$DIST/kaiwu-connector-${VERSION}-windows-amd64.zip" -@
-)
+# Zip entry names must carry the UTF-8 flag, otherwise Windows Explorer decodes
+# docs/交付与运维说明.md and 版本信息.txt with the local ANSI codepage and shows
+# garbled names. The writer also pins timestamps for reproducible archives.
+"$PYTHON_TOOL" "$ROOT/scripts/make-zip.py" \
+  "$DIST/windows" "$DIST/kaiwu-connector-${VERSION}-windows-amd64.zip" "$SOURCE_DATE_EPOCH"
 
 "$ROOT/scripts/build-windows-installer.sh" \
   "$DIST/windows" \
