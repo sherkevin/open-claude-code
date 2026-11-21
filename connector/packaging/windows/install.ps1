@@ -128,7 +128,7 @@ function Enter-InstallPhase {
 function Fail-InstallPhase {
   param([System.Management.Automation.ErrorRecord]$ErrorRecord)
   $code = switch ($FailureReason) {
-    { $_ -in @('manifest_missing', 'file_missing') } { 'file_missing' }
+    { $_ -in @('manifest_missing', 'file_missing', 'file_missing_after_check') } { 'file_missing' }
     { $_ -in @('manifest_invalid', 'file_unlisted', 'checksum_mismatch') } { 'checksum_mismatch' }
     { $_ -in @('access_denied', 'unsupported_host', 'service_registration', 'service_start', 'local_page_unready') } { $_ }
     default {
@@ -180,6 +180,7 @@ function Write-InstallFailureDetails {
     "manifest_missing"     { "缺少校验清单 SHA256SUMS" }
     "manifest_invalid"     { "校验清单 SHA256SUMS 含非法路径" }
     "file_missing"         { if ($FailureFile) { "未找到文件 $FailureFile" } else { "未找到安装包清单中的文件" } }
+    "file_missing_after_check" { "$FailureFile 首次校验通过，替换前再次校验时未找到。移除原因尚未确认。" }
     "file_unlisted"        { "校验清单 SHA256SUMS 缺少 $FailureFile 的记录" }
     "checksum_mismatch"    { if ($FailureFile) { "$FailureFile 未通过 SHA256 校验" } else { "安装包中的文件未通过 SHA256 校验" } }
     "access_denied"        { if ($FailureFile) { "系统拒绝读取文件 $FailureFile" } else { "系统拒绝本次操作所需的访问" } }
@@ -299,6 +300,11 @@ function Assert-PackageSourceFile {
   $key = "$Stage|$($Item.SourceRelative)"
   $PackageChecks[$key] = "$key|$state|$code"
   if ($code -ne 'ok') {
+    $initial = "source_precheck|$($Item.SourceRelative)"
+    if ($Stage -eq 'pre_change_verification' -and $code -eq 'file_missing' -and
+        $PackageChecks[$initial] -ceq "$initial|present|ok") {
+      $reason = 'file_missing_after_check'
+    }
     Set-InstallFailure $reason $Item.SourceRelative
     throw "安装包文件 $($Item.SourceRelative) 校验失败（$state / $code）"
   }

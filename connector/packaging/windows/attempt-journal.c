@@ -525,7 +525,7 @@ static const WCHAR *failure_label(const WCHAR *key, const FailureLabel *labels, 
 }
 
 static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR *reason_code,
-                           const WCHAR *file_code, const WCHAR *result_code) {
+                           const WCHAR *file_code, const WCHAR *result_code, const WCHAR *exit_code) {
     static const FailureLabel stages_zh[] = {
         {L"precheck", L"检查系统和 Windows PowerShell"},
         {L"lock", L"取得安装事务锁"},
@@ -553,6 +553,7 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
         {L"manifest_missing", L"缺少校验清单 SHA256SUMS。"},
         {L"manifest_invalid", L"校验清单 SHA256SUMS 含非法路径。"},
         {L"file_missing", L"未找到安装包清单中的文件。"},
+        {L"file_missing_after_check", L"该文件首次校验通过，替换前再次校验时未找到。移除原因尚未确认。"},
         {L"file_unlisted", L"校验清单 SHA256SUMS 缺少安装文件的记录。"},
         {L"checksum_mismatch", L"安装包中的文件未通过 SHA256 校验。"},
         {L"service_registration", L"无法注册连接器服务。"},
@@ -579,14 +580,24 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
         {L"service-handoff.ps1", L"service-handoff.ps1"},
     };
     const WCHAR *stage = failure_label(stage_code, stages_zh, ARRAY_SIZE(stages_zh), L"无法确认");
-    const WCHAR *reason = failure_label(reason_code, reasons_zh, ARRAY_SIZE(reasons_zh), L"无法确认具体原因。");
+    const WCHAR *reason = failure_label(reason_code, reasons_zh, ARRAY_SIZE(reasons_zh), NULL);
+    const WCHAR *known_code = reason ? reason_code : L"unknown";
+    if (!reason) reason = L"无法确认具体原因。";
     const WCHAR *recovery = failure_label(result_code, results_zh, ARRAY_SIZE(results_zh), L"恢复或清理状态无法确认。");
     const WCHAR *file = failure_label(file_code, files, ARRAY_SIZE(files), L"");
-    if (wcscmp(reason_code, L"file_missing") && wcscmp(reason_code, L"file_unlisted") &&
+    if (wcscmp(reason_code, L"file_missing") && wcscmp(reason_code, L"file_missing_after_check") &&
+        wcscmp(reason_code, L"file_unlisted") &&
         wcscmp(reason_code, L"checksum_mismatch")) file = L"";
+    SYSTEMTIME utc;
+    GetSystemTime(&utc);
+    /* The launcher passes its own error level. Never print arbitrary input from the stack. */
+    const WCHAR *reported_exit = !wcscmp(exit_code, L"1") ? L"1" : L"未确认";
     int length = _snwprintf(summary, SUMMARY_TEXT_LENGTH,
-        L"安装失败\r\n安装编号：%ls\r\n失败阶段：%ls\r\n原因：%ls%ls%ls\r\n恢复结果：%ls\r\n",
-        *attempt ? attempt : L"未生成", stage, reason, *file ? L" 涉及文件：" : L"", file, recovery);
+        L"安装失败\r\n安装编号：%ls\r\n失败阶段：%ls\r\n原因：%ls%ls%ls\r\n恢复结果：%ls\r\n"
+        L"原因码：%ls\r\n安装器退出码：%ls\r\n记录时间（UTC）：%04u-%02u-%02uT%02u:%02u:%02uZ\r\n",
+        *attempt ? attempt : L"未生成", stage, reason, *file ? L" 涉及文件：" : L"", file, recovery,
+        known_code, reported_exit, (unsigned)utc.wYear, (unsigned)utc.wMonth, (unsigned)utc.wDay,
+        (unsigned)utc.wHour, (unsigned)utc.wMinute, (unsigned)utc.wSecond);
     return length > 0 && length < SUMMARY_TEXT_LENGTH;
 }
 
@@ -723,13 +734,18 @@ static void failure_message(WCHAR *message, size_t capacity, const WCHAR *summar
 }
 
 EXPORT(ExplainFailure) {
-    WCHAR stage[64], reason[64], file[64], recovery[64];
+    WCHAR stage[64] = L"", reason[64] = L"", file[64] = L"", recovery[64] = L"", exit_code[16] = L"";
     WCHAR summary[SUMMARY_TEXT_LENGTH], message[SUMMARY_TEXT_LENGTH + 512];
-    if (!pop(stack, stage, ARRAY_SIZE(stage)) || !pop(stack, reason, ARRAY_SIZE(reason)) ||
-        !pop(stack, file, ARRAY_SIZE(file)) || !pop(stack, recovery, ARRAY_SIZE(recovery)) ||
-        !format_failure(summary, stage, reason, file, recovery)) {
-        push(stack, size, L"安装失败。未能生成本次摘要，请复制此窗口内容并转发给技术支持（Ctrl+C）。");
-        return;
+    pop(stack, stage, ARRAY_SIZE(stage));
+    pop(stack, reason, ARRAY_SIZE(reason));
+    pop(stack, file, ARRAY_SIZE(file));
+    pop(stack, recovery, ARRAY_SIZE(recovery));
+    pop(stack, exit_code, ARRAY_SIZE(exit_code));
+    if (!format_failure(summary, stage, reason, file, recovery, exit_code)) {
+        /* Keep the locally generated ID available even if rich formatting fails. */
+        lstrcpyW(summary, L"安装失败\r\n安装编号：");
+        lstrcatW(summary, *attempt ? attempt : L"未生成");
+        lstrcatW(summary, L"\r\n失败阶段：无法确认\r\n原因：无法生成完整摘要。\r\n恢复结果：无法确认。\r\n");
     }
     SummaryResult result = save_summary(summary);
     failure_message(message, ARRAY_SIZE(message), summary, result);

@@ -33,6 +33,7 @@ Unicode true
 !define POWERSHELL64 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
 !define POWERSHELL_SYSTEM32 "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
 
+Var InstallerWindowMutex
 Var SetupMutex
 Var AttemptDone
 Var AttemptStage
@@ -90,12 +91,13 @@ Function ShowAttemptFailure
   ${If} $FailureStage == ""
     StrCpy $FailureStage "$AttemptStage"
   ${EndIf}
-  KaiwuJournal::ExplainFailure /NOUNLOAD "$FailureStage" "$FailureReason" "$FailureFile" "$FailureRecovery"
+  GetErrorLevel $0
+  KaiwuJournal::ExplainFailure /NOUNLOAD "$FailureStage" "$FailureReason" "$FailureFile" "$FailureRecovery" "$0"
   Pop $6
   KaiwuJournal::Close
   ${If} $WorkerExit != ""
     ; The worker launcher returns a numeric exit code or the literal "error".
-    StrCpy $6 "$6$\r$\n状态：$FailureRecovery$\r$\n退出码：$WorkerExit"
+    StrCpy $6 "$6$\r$\n状态：$FailureRecovery$\r$\n安装子进程退出码：$WorkerExit"
   ${EndIf}
   MessageBox MB_ICONSTOP "$6" /SD IDOK
 FunctionEnd
@@ -172,8 +174,33 @@ Function .onInit
   ${EndIf}
   !insertmacro Attempt "precheck" "ok" "ok"
   StrCpy $AttemptStage "lock"
+  ; Hold a handle for the lifetime of the launcher, including its welcome and
+  ; finish pages. No thread takes ownership of this instance marker.
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\KaiwuConnector.InstallWindow") p .r0 ?e'
+  Pop $1
+  StrCpy $InstallerWindowMutex $0
+  ${If} $InstallerWindowMutex == 0
+    StrCpy $AttemptCode "unknown"
+    StrCpy $FailureReason "lock_unavailable"
+    ${If} $1 == 5
+      StrCpy $AttemptCode "access_denied"
+    ${EndIf}
+    Goto window_unavailable
+  ${EndIf}
+  ${If} $1 == 183
+    StrCpy $AttemptCode "busy"
+    StrCpy $FailureReason "lock_busy"
+    Goto window_unavailable
+  ${EndIf}
   SetShellVarContext all
   Return
+
+  window_unavailable:
+    StrCpy $FailureRecovery "not_started"
+    !insertmacro Attempt "lock" "failed" "$AttemptCode"
+    Call CompleteAttempt
+    Call ShowAttemptFailure
+    Abort
 
   unsupported_host:
     StrCpy $AttemptCode "unsupported_host"
@@ -243,16 +270,6 @@ Section "安装" SecInstall
   !insertmacro Attempt "extract" "started" "ok"
   KaiwuJournal::Workspace /NOUNLOAD
   Pop $WorkDir
-  ${If} $WorkDir == ""
-    ; NSIS creates the elevated plugin directory with restricted permissions.
-    InitPluginsDir
-    ${If} $PLUGINSDIR != ""
-      StrLen $1 "$PLUGINSDIR"
-      ${If} $1 < 164
-        StrCpy $WorkDir "$PLUGINSDIR\p"
-      ${EndIf}
-    ${EndIf}
-  ${EndIf}
   ${If} $WorkDir == ""
     StrCpy $AttemptCode "access_denied"
     !insertmacro Attempt "extract" "failed" "access_denied"
