@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.3.14}"
+VERSION="${VERSION:-1.3.15}"
 COMMIT="${COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 # Bind package metadata and ZIP timestamps to the source commit unless the
 # release operator supplies an explicit epoch. Rebuilding the same commit then
