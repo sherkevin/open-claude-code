@@ -1,6 +1,6 @@
 # Windows 连接器安装诊断验证
 
-2026 年 11 月 21 日（UTC+08:00），开物内网连接器 1.3.15 的内部试装在首次校验时找不到隧道组件 `frpc.exe`，安装在注册服务前退出。归档中的组件与 [FRP 0.61.1 官方 Windows 发布](https://github.com/fatedier/frp/releases/tag/v0.61.1) 一致。内部 Windows 11 试装的记录显示，终端防护启用时，文件在提取后、执行前消失。现场报告给出的腾讯电脑管家检测名称是 `Win64.Risktool.Frp.Zimw`，厂商尚未确认检测依据。
+2026 年 11 月 21 日（UTC+08:00），开物内网连接器 1.3.15 的内部试装在首次校验时找不到隧道组件 `frpc.exe`，安装在注册服务前退出。归档中的组件与 [FRP 0.61.1 官方 Windows 发布](https://github.com/fatedier/frp/releases/tag/v0.61.1) 一致。现场报告记录了同一时段的终端防护告警。仅凭安装日志无法确定哪个进程移除了文件。
 
 公开上游 `frpc.exe` 为 15,627,776 字节，SHA-256 为 `d9a8cf8bc61bd5c8d57a2a4801316a18291f76d45dc5fd8aaf425bd91b57159d`。
 
