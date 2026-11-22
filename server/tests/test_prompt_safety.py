@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import DEFAULT_PROMPT_SAFETY_MODEL, Settings
+from app.db import dump, now, uid
 from app.main import create_app
 from app.prompt_safety import UNAVAILABLE_MESSAGE, PromptSafety
 from app.security import AppError
@@ -137,8 +138,8 @@ def test_queue_rejects_a_stale_review_when_a_draft_changes(client, monkeypatch):
     safety = client.app.state.service.prompt_safety
     actual_review = safety.require_allowed
 
-    def hold_original_review(text):
-        actual_review(text)
+    def hold_original_review(text, user_id=None):
+        actual_review(text, user_id)
         if text == SAFE:
             reviewed.set()
             assert release.wait(5)
@@ -312,6 +313,72 @@ def test_prompt_policy_api_requires_admin_and_accepts_first_save_without_file(cl
     assert_no_run(client, cid)
     assert client.put(path, json=revision).status_code == 200
     assert poll(client, send(client, cid, SAFE, "admin-first-save")["run_id"])["status"] == "succeeded"
+
+
+def test_user_policy_applies_only_to_selected_member_and_can_resume_inheritance(client):
+    service = client.app.state.service
+    ids = {name: service.create_user({"username": name, "display_name": name, "password": PASSWORD, "role": "member"})["id"]
+           for name in ("member-one", "member-two")}
+    paths = {name: f"/api/v1/admin/prompt-safety?user_id={user_id}" for name, user_id in ids.items()}
+    initial = client.get(paths["member-one"]).json()
+    assert initial["source"] == "inherited"
+    initial["policy"]["rules"].append({"category": "example", "terms": [SAFE]})
+    update = {"version": initial["version"], "policy": initial["policy"]}
+    assert client.put(paths["member-two"], json=update).status_code == 409
+    saved = client.put(paths["member-one"], json=update)
+    assert saved.status_code == 200 and saved.json()["source"] == "user"
+    assert client.put(paths["member-one"], json=update).status_code == 409
+
+    login(client, "member-one")
+    first = conversation(client)["id"]
+    denied = client.post(f"/api/v1/conversations/{first}/messages", json={"client_request_id": "user-scope-001", "text": SAFE})
+    assert denied.status_code == 403
+    assert client.post("/api/v1/models/complete", json={"text": SAFE}).status_code == 403
+    assert client.post(f"/api/v1/conversations/{first}/queue", json={"client_request_id": "user-queue-001", "text": SAFE}).status_code == 403
+    assert client.get(paths["member-one"]).status_code == 403
+    assert client.get("/api/v1/admin/activity").status_code == 403
+    assert_no_run(client, first)
+
+    login(client, "member-two")
+    second = conversation(client)["id"]
+    assert poll(client, send(client, second, SAFE, "user-scope-002")["run_id"])["status"] == "succeeded"
+
+    login(client)
+    restored = client.put(paths["member-one"], json={"version": saved.json()["version"], "policy": None})
+    assert restored.status_code == 200 and restored.json()["source"] == "inherited"
+    login(client, "member-one")
+    assert poll(client, send(client, first, SAFE, "user-scope-001")["run_id"])["status"] == "succeeded"
+
+
+def test_admin_activity_shows_scoped_metadata_and_omits_raw_payloads(client):
+    service = client.app.state.service
+    cid = conversation(client)["id"]
+    model_request = send(client, cid, "raw-synthetic-chat-marker", "activity-chat-001")
+    run_id = model_request["run_id"]
+    assert poll(client, run_id)["status"] == "succeeded"
+    row = service.require("runs", run_id)
+    service.db.execute("UPDATE runs SET usage=? WHERE id=?", (dump({"input_tokens": 8, "output_tokens": 4,
+        "cache_read_input_tokens": 2, "cache_creation_input_tokens": 0}), run_id))
+    service.db.event(run_id, "tool.completed", {"tool_name": "mock_tool", "success": True,
+        "arguments": {"api_key": "raw-synthetic-tool-marker"}, "result": "raw-synthetic-result-marker"})
+    service.db.execute("INSERT INTO model_usage_calls VALUES(?,?,?,?,?,?,?,?,?)",
+        (uid(), row["user_id"], "completion", "mock", "测试模型", "succeeded", dump({"reported_prompt_tokens": 12, "output_tokens": 5}), now(), now()))
+    bad = client.post(f"/api/v1/conversations/{cid}/messages", json={"client_request_id": "activity-block-001", "text": POLICY_BLOCK})
+    assert bad.status_code == 403
+
+    path = "/api/v1/admin/activity"
+    response = client.get(path, params={"user_id": row["user_id"], "limit": 2})
+    first = response.json()
+    second = client.get(path, params={"user_id": row["user_id"], "limit": 2, "before": first["next_cursor"]}).json()
+    items = {item["operation"]: item for item in first["items"] + second["items"]}
+    assert second["next_cursor"] is None and len(items) == 4
+    assert items["chat"]["input_tokens"] == 10 and items["chat"]["output_tokens"] == 4
+    assert items["completion"]["model_label"] == "测试模型" and items["completion"]["input_tokens"] == 12
+    assert items["tool.completed"]["tool_name"] == "mock_tool"
+    assert items["prompt_review"]["code"] == "PROMPT_BLOCKED"
+    assert "raw-synthetic" not in json.dumps(items) and POLICY_BLOCK not in json.dumps(items, ensure_ascii=False)
+    assert client.get(path, params={"user_id": "some-other-user"}).json()["items"] == []
+    assert client.get(path, params={"before": "not-a-cursor"}).status_code == 422
 
 
 def test_reviewer_timeout_does_not_start_run(client, settings, caplog):

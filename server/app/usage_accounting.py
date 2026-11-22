@@ -111,7 +111,7 @@ async def metered_post(http, endpoint, *, service, kind, selection, payload, use
                 (status, dump(receipt) if receipt is not None else None, now(), call_id))
 
 
-def _entry(row, *, auxiliary=False):
+def usage_entry(row, *, auxiliary=False):
     usage = _object(row.get("usage"))
     metadata = _object(row.get("execution_meta"))
     selection = _object(metadata.get("selection"))
@@ -218,7 +218,7 @@ def usage_summary(service, user, *, scope="self", model_id=None, date_from=None,
     entries = []
     for table, auxiliary in (("runs", False), ("model_usage_calls", True)):
         rows = service.db.all(f"SELECT t.*,users.display_name FROM {table} t JOIN users ON users.id=t.user_id" + predicate, tuple(values))
-        entries.extend(_entry(row, auxiliary=auxiliary) for row in rows)
+        entries.extend(usage_entry(row, auxiliary=auxiliary) for row in rows)
     available = {item["model_id"]: item["model_label"] for item in entries}
     if model_id:
         entries = [item for item in entries if item["model_id"] == model_id]

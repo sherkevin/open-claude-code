@@ -35,4 +35,5 @@
 .prompt-safety-rule { border: 1px solid var(--border, #d8dedb); border-radius: 8px; margin: 12px 0 0; min-width: 0; padding: 12px; }
 .prompt-safety-rule legend { font-weight: 600; overflow-wrap: anywhere; padding: 0 4px; }
 .prompt-safety-words { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.prompt-safety-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 @media (max-width: 760px) { .prompt-safety-words { gap: 0; grid-template-columns: 1fr; } }

@@ -239,7 +239,7 @@ class Service:
         if prior:
             return data
         if self.prompt_safety.enabled:
-            await offload(self.prompt_safety.require_allowed, data["text"])
+            await offload(self.prompt_safety.require_allowed, data["text"], user["id"])
         if provider_routing and not self.policy.is_trial and not data.get("model_id"):
             route_enabled = data.get("auto_route")
             if route_enabled is None:

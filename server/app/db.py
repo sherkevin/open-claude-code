@@ -93,6 +93,10 @@ CREATE TABLE IF NOT EXISTS capability_settings(id INTEGER PRIMARY KEY CHECK(id=1
 CREATE TABLE IF NOT EXISTS capability_settings_audit(revision INTEGER PRIMARY KEY, config TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS prompt_safety_policy(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, config TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS prompt_safety_user_policy(user_id TEXT PRIMARY KEY REFERENCES users(id), revision INTEGER NOT NULL, config TEXT, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id));
+CREATE TABLE IF NOT EXISTS prompt_safety_activity(id INTEGER PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), actor_id TEXT REFERENCES users(id), operation TEXT NOT NULL, status TEXT NOT NULL, code TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS prompt_safety_activity_time ON prompt_safety_activity(created_at,id);
+CREATE INDEX IF NOT EXISTS prompt_safety_activity_owner ON prompt_safety_activity(user_id,created_at,id);
 CREATE TABLE IF NOT EXISTS registration_attempts(id TEXT PRIMARY KEY, source_hash TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS registration_attempts_time ON registration_attempts(created_at);
 CREATE INDEX IF NOT EXISTS registration_attempts_source ON registration_attempts(source_hash,created_at);
@@ -113,6 +117,9 @@ CREATE TABLE IF NOT EXISTS raw_events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_
 CREATE INDEX IF NOT EXISTS conversations_owner ON conversations(user_id,updated_at);
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
 CREATE INDEX IF NOT EXISTS runs_owner ON runs(user_id,created_at);
+CREATE INDEX IF NOT EXISTS runs_time ON runs(created_at,id);
+CREATE INDEX IF NOT EXISTS model_usage_time ON model_usage_calls(created_at,id);
+CREATE INDEX IF NOT EXISTS tool_events_time ON events(created_at,run_id,id) WHERE type IN ('tool.started','tool.completed','tool.discarded');
 CREATE TABLE IF NOT EXISTS memory_scopes(user_id TEXT NOT NULL REFERENCES users(id),assistant_id TEXT NOT NULL REFERENCES assistants(id),revision INTEGER NOT NULL DEFAULT 0,digest TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(user_id,assistant_id));
 CREATE TABLE IF NOT EXISTS subagent_children(
     child_id TEXT PRIMARY KEY,

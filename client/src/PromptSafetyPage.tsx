@@ -4,7 +4,6 @@ import { api, errorText, timeText } from './api';
 import { Button, ErrorNotice, Field, Loader, PageHeader, SuccessNotice } from './components';
 import './prompt-safety.css';
 
-const endpoint = '/admin/prompt-safety';
 const categoryLabels = {
   'Violent': '暴力',
   'Non-violent Illegal Acts': '非暴力违法行为',
@@ -17,7 +16,7 @@ const categoryLabels = {
 };
 const levelLabels = { Unsafe: '不安全', Controversial: '有争议' };
 const modeLabels = { off: '审核关闭', rules: '仅主题规则', qwen: '主题规则与通用审核', invalid: '审核模式配置无效' };
-const sourceLabels = { administrator: '后台保存的策略', file: '服务端 JSON 策略', unconfigured: '尚未保存策略' };
+const sourceLabels = { administrator: '后台保存的全局策略', file: '服务端 JSON 策略', unconfigured: '尚未保存策略', user: '用户专用策略', inherited: '继承全局策略' };
 const savedMessages = { off: '策略已保存，审核开启后生效。', invalid: '策略已保存，请修正服务端审核模式。',
   rules: '策略已保存，后续提交将使用新规则。', qwen: '策略已保存，后续提交将使用新规则。' };
 type Category = keyof typeof categoryLabels;
@@ -37,7 +36,8 @@ function WordList({label, hint, words, onChange}: {label: string; hint: string; 
   </Field>;
 }
 
-export default function PromptSafetyPage() {
+export default function PromptSafetyPage({userId}: {userId: string}) {
+  const endpoint = '/admin/prompt-safety' + (userId ? `?user_id=${encodeURIComponent(userId)}` : '');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [loading, setLoading] = useState(true);
@@ -57,7 +57,7 @@ export default function PromptSafetyPage() {
     try { apply(await api<Snapshot>(endpoint, {signal})); }
     catch (cause) { if (!signal?.aborted) setError(errorText(cause)); }
     finally { if (!signal?.aborted) setLoading(false); }
-  }, [apply]);
+  }, [apply, endpoint]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -78,6 +78,18 @@ export default function PromptSafetyPage() {
     edit({rules: [...draft.rules, {editorKey: ++nextRuleKey.current, category: '', enabled: true, terms: [], require_any: [], except_exact: [], message: null}]});
   };
 
+  const submit = async (policy: Policy | null) => {
+    if (!snapshot || saving || loading) return;
+    setSaving(true);
+    setError('');
+    setSaved(false);
+    try {
+      apply(await api<Snapshot>(endpoint, {method: 'PUT', body: JSON.stringify({version: snapshot.version, policy})}));
+      setSaved(true);
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setSaving(false); }
+  };
+
   const save = async () => {
     if (!snapshot || !draft || saving || loading) return;
     setError('');
@@ -95,18 +107,12 @@ export default function PromptSafetyPage() {
       setError('请填写默认拒绝提示，并至少选择一个通用审核级别和一个类别。');
       return;
     }
-    setSaving(true);
-    try {
-      const policy = {...draft, blocked_message: draft.blocked_message.trim(), rules};
-      apply(await api<Snapshot>(endpoint, {method: 'PUT', body: JSON.stringify({version: snapshot.version, policy})}));
-      setSaved(true);
-    } catch (cause) { setError(errorText(cause)); }
-    finally { setSaving(false); }
+    await submit({...draft, blocked_message: draft.blocked_message.trim(), rules});
   };
 
   const busy = loading || saving;
   return <div className="page prompt-safety-page">
-    <PageHeader eyebrow="工作空间管理" title="内容审核" description="管理用户消息进入模型前的审核规则。"
+    <PageHeader eyebrow="用户规范" title={userId ? '用户审核策略' : '全局审核策略'} description={userId ? '保存后将为该用户使用专用规则。' : '未单独配置的用户使用此策略。'}
       actions={<Button variant="secondary" disabled={busy} onClick={() => void load()}><RefreshCw size={16}/>重新加载</Button>}/>
     <ErrorNotice message={error}/>
     <SuccessNotice message={saved && snapshot ? savedMessages[snapshot.mode] : ''}/>
@@ -146,7 +152,10 @@ export default function PromptSafetyPage() {
             </fieldset>)}
           </section>
         </fieldset>
-        <Button type="submit" busy={saving}>保存策略</Button>
+        <div className="prompt-safety-actions">
+          <Button type="submit" busy={saving}>{userId ? '保存用户策略' : '保存全局策略'}</Button>
+          {snapshot.source === 'user' && <Button variant="secondary" disabled={busy} onClick={() => void submit(null)}>恢复继承全局</Button>}
+        </div>
       </form>
     </>}
   </div>;

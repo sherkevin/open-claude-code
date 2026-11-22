@@ -72,7 +72,7 @@ class MessageQueue:
             self._authorize(conversation_id, user)
             prior = self.db.one("SELECT id FROM message_queue WHERE conversation_id=? AND id=?", (conversation_id, payload["client_request_id"]))
             if not prior:
-                self.service.prompt_safety.require_allowed(payload["text"])
+                self.service.prompt_safety.require_allowed(payload["text"], user["id"])
         with self.db.transaction():
             conversation = self._authorize(conversation_id, user)
             if conversation["archived"]:
@@ -96,7 +96,7 @@ class MessageQueue:
     def change(self, conversation_id, item_id, revision, user, text=None):
         if text is not None and self.service.prompt_safety.enabled:
             self._authorize(conversation_id, user)
-            self.service.prompt_safety.require_allowed(text)
+            self.service.prompt_safety.require_allowed(text, user["id"])
         with self.db.transaction():
             self._authorize(conversation_id, user)
             self._reconcile(conversation_id)
@@ -139,7 +139,7 @@ class MessageQueue:
             if response:
                 return response
             try:
-                self.service.prompt_safety.require_allowed(json.loads(row["payload"])["text"])
+                self.service.prompt_safety.require_allowed(json.loads(row["payload"])["text"], user["id"])
             except AppError as exc:
                 rejection = exc
 

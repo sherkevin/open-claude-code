@@ -271,12 +271,19 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         return {"enabled": available, "invite_code": settings.registration_invite_code if available else None}
 
     @app.get(prefix + "/admin/prompt-safety")
-    def read_prompt_safety(user=Depends(admin), service: Service = Depends(svc)):
-        return service.prompt_safety.admin_view()
+    def read_prompt_safety(user_id: str | None = Query(default=None, min_length=1, max_length=100), user=Depends(admin), service: Service = Depends(svc)):
+        return service.prompt_safety.admin_view(user_id)
 
     @app.put(prefix + "/admin/prompt-safety")
-    def save_prompt_safety(data: PromptPolicyUpdate, user=Depends(admin), service: Service = Depends(svc)):
-        return service.prompt_safety.save_policy(data, user["id"])
+    def save_prompt_safety(data: PromptPolicyUpdate, user_id: str | None = Query(default=None, min_length=1, max_length=100), user=Depends(admin), service: Service = Depends(svc)):
+        return service.prompt_safety.save_policy(data, user["id"], user_id)
+
+    @app.get(prefix + "/admin/activity")
+    def admin_activity(user_id: str | None = Query(default=None, max_length=100),
+                       before: str | None = Query(default=None, max_length=220),
+                       limit: int = Query(default=50, ge=1, le=100), user=Depends(admin), service: Service = Depends(svc)):
+        from .admin_activity import activity_page
+        return activity_page(service, user_id=user_id, before=before, limit=limit)
 
     @app.get(prefix + "/models")
     def models(user=Depends(authenticated), service: Service = Depends(svc)):
@@ -285,7 +292,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     @app.post(prefix + "/models/recommend")
     async def recommend_model(data: ModelRecommendationRequest, user=Depends(authenticated), service: Service = Depends(svc)):
         """Return an advisory model recommendation without changing a session."""
-        await offload(service.prompt_safety.require_allowed, data.task_summary)
+        await offload(service.prompt_safety.require_allowed, data.task_summary, user["id"])
         from .model_recommendation import provider_router, public_router_result
         return public_router_result(await provider_router(service, data.task_summary, data.candidate_model_ids, user_id=user["id"]))
 
@@ -314,7 +321,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         coded phrase. If the authorized router route is unavailable, the
         response carries an evidence gap and a null suggestion.
         """
-        await offload(service.prompt_safety.require_allowed, data.text)
+        await offload(service.prompt_safety.require_allowed, data.text, user["id"])
         from .model_recommendation import provider_completion, public_router_result
         return public_router_result(await provider_completion(service, data.text, user_id=user["id"]))
 

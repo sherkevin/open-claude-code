@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 import time
 import unicodedata
 from functools import cached_property
@@ -90,7 +91,7 @@ class PromptPolicyUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: str = Field(min_length=1, max_length=70)
-    policy: PromptPolicy
+    policy: PromptPolicy | None
 
 
 class ReviewFailure(Exception):
@@ -146,6 +147,11 @@ class PromptSafety:
     def _saved_policy(self):
         return self.db.one("SELECT revision,config,updated_at FROM prompt_safety_policy WHERE id=1") if self.db is not None else None
 
+    def _user_policy(self, user_id: str | None):
+        if self.db is None or user_id is None:
+            return None
+        return self.db.one("SELECT revision,config,updated_at FROM prompt_safety_user_policy WHERE user_id=?", (user_id,))
+
     def _read_file_policy(self) -> bytes:
         try:
             with Path(self.settings.prompt_safety_policy).open("rb") as file:
@@ -163,43 +169,77 @@ class PromptSafety:
         except ValueError:
             raise ReviewFailure("policy") from None
 
-    def _read_policy(self) -> PromptPolicy:
-        saved = self._saved_policy()
+    def _read_policy(self, user_id: str | None) -> PromptPolicy:
+        override = self._user_policy(user_id)
+        saved = override if override and override["config"] is not None else self._saved_policy()
         return self._parse_policy(saved["config"] if saved else self._read_file_policy())
 
-    def admin_view(self) -> dict:
-        saved = self._saved_policy()
+    def admin_view(self, target_id: str | None = None) -> dict:
         mode = self.settings.prompt_safety_mode
         try:
-            if saved:
-                version, source, updated_at = f"db-{saved['revision']}", "administrator", saved["updated_at"]
-                policy = self._parse_policy(saved["config"])
-            elif self.settings.prompt_safety_policy:
-                data = self._read_file_policy()
-                version, source, updated_at = "file-" + hashlib.sha256(data).hexdigest(), "file", None
-                policy = self._parse_policy(data)
+            if target_id is None:
+                version, source, updated_at, policy = self._global_policy_view()
             else:
-                version, source, updated_at = "default", "unconfigured", None
-                policy = PromptPolicy(rules=[])
+                if not self.db.one("SELECT id FROM users WHERE id=?", (target_id,)):
+                    raise AppError(404, "NOT_FOUND", "用户不存在。")
+                override = self._user_policy(target_id)
+                revision = override["revision"] if override else 0
+                if override and override["config"] is not None:
+                    version = "user-" + hashlib.sha256(f"{target_id}:{revision}".encode()).hexdigest()
+                    source, updated_at, policy = "user", override["updated_at"], self._parse_policy(override["config"])
+                else:
+                    global_version, _, updated_at, policy = self._global_policy_view()
+                    version = "base-" + hashlib.sha256(f"{target_id}:{revision}:{global_version}".encode()).hexdigest()
+                    source = "inherited"
         except ReviewFailure:
             raise AppError(503, "PROMPT_POLICY_UNAVAILABLE", "无法读取审核策略，请检查服务端配置后重试。") from None
         return {"version": version, "source": source, "updated_at": updated_at,
                 "mode": mode if mode in MODES else "invalid", "policy": policy.model_dump()}
 
-    def save_policy(self, update: PromptPolicyUpdate, user_id: str) -> dict:
-        config = update.policy.model_dump_json()
-        if len(config.encode("utf-8")) > MAX_POLICY_BYTES:
+    def _global_policy_view(self):
+        saved = self._saved_policy()
+        if saved:
+            return f"db-{saved['revision']}", "administrator", saved["updated_at"], self._parse_policy(saved["config"])
+        if self.settings.prompt_safety_policy:
+            data = self._read_file_policy()
+            return "file-" + hashlib.sha256(data).hexdigest(), "file", None, self._parse_policy(data)
+        return "default", "unconfigured", None, PromptPolicy(rules=[])
+
+    def save_policy(self, update: PromptPolicyUpdate, actor_id: str, target_id: str | None = None) -> dict:
+        config = update.policy.model_dump_json() if update.policy is not None else None
+        if config is None and target_id is None:
+            raise AppError(422, "PROMPT_POLICY_REQUIRED", "全局策略必须填写。")
+        if config is not None and len(config.encode("utf-8")) > MAX_POLICY_BYTES:
             raise AppError(422, "PROMPT_POLICY_TOO_LARGE", "审核策略超过大小上限，请缩减词表后保存。")
         with self.db.transaction():
-            user = self.db.one("SELECT role,enabled FROM users WHERE id=?", (user_id,))
-            if not user or not user["enabled"] or user["role"] != "admin":
+            actor = self.db.one("SELECT role,enabled FROM users WHERE id=?", (actor_id,))
+            if not actor or not actor["enabled"] or actor["role"] != "admin":
                 raise AppError(403, "ADMIN_REQUIRED", "此操作需要管理员权限")
-            if update.version != self.admin_view()["version"]:
+            if update.version != self.admin_view(target_id)["version"]:
                 raise AppError(409, "PROMPT_POLICY_CONFLICT", "审核策略已更新，请重新加载后再保存。")
-            self.db.execute("""INSERT INTO prompt_safety_policy(id,revision,config,updated_at,updated_by) VALUES(1,1,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET revision=prompt_safety_policy.revision+1,
-                config=excluded.config,updated_at=excluded.updated_at,updated_by=excluded.updated_by""", (config, now(), user_id))
-            return self.admin_view()
+            timestamp = now()
+            if target_id is None:
+                self.db.execute("""INSERT INTO prompt_safety_policy(id,revision,config,updated_at,updated_by) VALUES(1,1,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET revision=prompt_safety_policy.revision+1,
+                    config=excluded.config,updated_at=excluded.updated_at,updated_by=excluded.updated_by""", (config, timestamp, actor_id))
+            else:
+                self.db.execute("""INSERT INTO prompt_safety_user_policy(user_id,revision,config,updated_at,updated_by) VALUES(?,1,?,?,?)
+                    ON CONFLICT(user_id) DO UPDATE SET revision=prompt_safety_user_policy.revision+1,
+                    config=excluded.config,updated_at=excluded.updated_at,updated_by=excluded.updated_by""", (target_id, config, timestamp, actor_id))
+            code = "PROMPT_POLICY_INHERITED" if config is None else "PROMPT_POLICY_SAVED"
+            self.db.execute("""INSERT INTO prompt_safety_activity(user_id,actor_id,operation,status,code,created_at)
+                VALUES(?,?,'prompt_policy','succeeded',?,?)""", (target_id or actor_id, actor_id, code, timestamp))
+            return self.admin_view(target_id)
+
+    def _record_rejection(self, user_id: str | None, error: AppError) -> None:
+        if user_id is None or self.db is None:
+            return
+        status = "failed" if error.code == UNAVAILABLE else "blocked"
+        try:
+            self.db.execute("""INSERT INTO prompt_safety_activity(user_id,operation,status,code,created_at)
+                VALUES(?,'prompt_review',?,?,?)""", (user_id, status, error.code, now()))
+        except sqlite3.Error:
+            log.warning("Prompt safety audit unavailable category=storage")
 
     def classify(self, text: str) -> tuple[str, frozenset[str]]:
         """Use the classifier's native chat template and two-line response."""
@@ -234,14 +274,21 @@ class PromptSafety:
             raise ReviewFailure("transport") from None
         return _parse_qwen_response(raw)
 
-    def require_allowed(self, text: str) -> None:
+    def require_allowed(self, text: str, user_id: str | None = None) -> None:
         if not self.enabled or not text.strip():
             return
+        try:
+            self._check(text, user_id)
+        except AppError as error:
+            self._record_rejection(user_id, error)
+            raise
+
+    def _check(self, text: str, user_id: str | None) -> None:
         try:
             mode = self.settings.prompt_safety_mode
             if mode not in MODES:
                 raise ReviewFailure("configuration")
-            policy = self._read_policy()
+            policy = self._read_policy(user_id)
             if policy.rules:
                 normalized = normalize(text)
                 for rule in policy.rules:
