@@ -1,0 +1,29 @@
+[Unit]
+Description=Kaiwu PostgreSQL user archives
+After=local-fs.target
+
+[Service]
+Type=exec
+User=kaiwu-user-archives
+DynamicUser=yes
+StateDirectory=kaiwu-user-archives
+StateDirectoryMode=0700
+RuntimeDirectory=kaiwu-user-archives
+RuntimeDirectoryMode=0700
+Environment=LD_LIBRARY_PATH=/opt/kaiwu-user-archives/runtime/usr/lib/x86_64-linux-gnu
+ExecStartPre=/opt/kaiwu-user-archives/initialize.sh
+ExecStart=/opt/kaiwu-user-archives/runtime/usr/lib/postgresql/17/bin/postgres -D /var/lib/kaiwu-user-archives/postgres -c listen_addresses= -c unix_socket_directories=/run/kaiwu-user-archives -c unix_socket_permissions=0700 -c port=55444 -c max_connections=32 -c shared_buffers=64MB -c log_statement=none -c log_error_verbosity=terse
+KillSignal=SIGINT
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

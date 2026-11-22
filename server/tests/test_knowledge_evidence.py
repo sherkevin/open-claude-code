@@ -11,12 +11,13 @@ from app.config import Settings
 from app.db import dump, now, uid
 from app.main import create_app
 from app.security import AppError
+from test_api import FakeRuntime
 
 
 @pytest.fixture
 def system(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL", "local-lexical-v1")
-    app = create_app(Settings(data_dir=tmp_path, provider_settings="", model="test"))
+    app = create_app(Settings(data_dir=tmp_path, provider_settings="", model="test"), runtime_factory=FakeRuntime)
     with TestClient(app) as client:
         service = app.state.service
         users = {}

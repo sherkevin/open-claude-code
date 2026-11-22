@@ -59,6 +59,9 @@ def create_schedule_router(svc, authenticated):
         current = datetime.now(timezone.utc)
         if not body.text.strip() or not current < stamp <= current + timedelta(days=365):
             raise AppError(422, "SCHEDULE_INVALID", "请输入任务内容，并选择未来一年内的执行时间")
+        if service.prompt_safety.enabled:
+            service.require("conversations", conversation_id, user)
+            service.prompt_safety.require_allowed(body.text, user["id"])
         identity = f"schedule-{uid()}"
         with service.db.transaction():
             conversation = service.require("conversations", conversation_id, user)

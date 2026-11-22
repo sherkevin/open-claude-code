@@ -1,7 +1,7 @@
 """Durable admission and delivery receipts for current-turn text steering."""
 from pydantic import Field
 
-from .db import now, offload_write, shielded, uid
+from .db import now, offload, offload_write, shielded, uid
 from .models import InputModel
 from .security import AppError
 
@@ -83,6 +83,13 @@ def expire_steers(service, run_id):
 
 
 async def dispatch_steer(service, run_id, body, user):
+    if service.prompt_safety.enabled:
+        await service.require_async("runs", run_id, user)
+        existing = await offload(service.db.one, "SELECT id FROM run_steers WHERE run_id=? AND request_id=?",
+                                 (run_id, body.client_request_id))
+        if not existing:
+            await offload(service.prompt_safety.require_allowed, body.text.strip(), user["id"])
+
     async def dispatch():
         run, row, created = await offload_write(reserve, service, run_id, body, user)
         if not created:
