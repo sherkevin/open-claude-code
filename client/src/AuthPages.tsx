@@ -28,7 +28,7 @@ function AuthFrame({ name, children }: { name: string; children: ReactNode }) {
   </div>;
 }
 
-export function Login({ config, onLogin }: { config: AppConfig; onLogin: (user: User) => void }) {
+export function Login({ config, onLogin, sessionExpired = false }: { config: AppConfig; onLogin: (user: User) => void; sessionExpired?: boolean }) {
   const [registering, setRegistering] = useState(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('register') === '1');
   const [success, setSuccess] = useState('');
   const passwordInput = useRef<HTMLInputElement>(null);
@@ -52,7 +52,7 @@ export function Login({ config, onLogin }: { config: AppConfig; onLogin: (user: 
       finally { submitting.current = false; setBusy(false); }
     }}>
       <h1 id="auth-title">登录工作空间</h1>
-      <p className="auth-description">使用你的工作账号继续。</p>
+      <p className="auth-description" role={sessionExpired ? 'status' : undefined}>{sessionExpired ? '登录已过期，请重新登录后返回会话。' : '使用你的工作账号继续。'}</p>
       <ErrorNotice message={error}/>
       <SuccessNotice message={success}/>
       <div className="auth-field"><label htmlFor="auth-username">账号</label>

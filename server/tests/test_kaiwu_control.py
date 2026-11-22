@@ -346,6 +346,55 @@ def test_source_conflict_credentials_are_separated_and_audit_has_no_secret(env):
     assert identity["relay"]["token"] not in serialized
 
 
+def test_bundled_demo_upgrade_preserves_business_registration_policy(env):
+    client, app = env
+    keys = key_material()
+    key, _, key_id = keys
+    identity = enroll(env, keys)
+    connector_id = identity["connector_id"]
+    path = BASE + "/v1/sources"
+    old_schema = "02b1de23a81613bf6295fc5a937e70eba07032e1b5d064c9a4837f22437e675e"
+    new_schema = "b7e05ec9b71d8f583eaed02655592e99938303931e2594969fbc5e60df9b3123"
+    profile = "kaiwu_builtin_demo_v1:"
+    source_id = "src_" + hashlib.sha256((profile + connector_id).encode()).hexdigest()[:32]
+    demo = {
+        "source_id": source_id,
+        "display_name": "开物内置测试服务（示例数据）",
+        "allowed_tools": ["kaiwu_demo_inventory_query", "kaiwu_demo_order_summary", "kaiwu_demo_ping"],
+        "tool_schema_sha256": old_schema,
+        "target_binding_sha256": hashlib.sha256((profile + source_id).encode()).hexdigest(),
+    }
+
+    def register(source):
+        body = json_body(source)
+        return client.post(path, content=body, headers={
+            "Authorization": "Bearer " + identity["device_token"],
+            "Content-Type": "application/json",
+            **signed_headers(key, key_id, "POST", path, body),
+        })
+
+    assert register(demo).status_code == 200
+    upgraded = register({**demo, "tool_schema_sha256": new_schema})
+    assert upgraded.status_code == 200
+    assert upgraded.json()["source"]["tool_schema_sha256"] == new_schema
+    assert upgraded.json()["source"]["revision"] == 1
+    assert register({**demo, "tool_schema_sha256": "7" * 64}).status_code == 409
+    assert register({**demo, "allowed_tools": ["kaiwu_demo_ping", "other_tool"]}).status_code == 409
+    assert register(demo).status_code == 200  # Existing rollback packages still work.
+
+    business = {**demo, "source_id": "src_" + "8" * 32, "display_name": "业务来源", "allowed_tools": ["read_stock"]}
+    assert register(business).status_code == 200
+    conflict = register({**business, "tool_schema_sha256": new_schema})
+    assert conflict.status_code == 409 and conflict.json()["error"]["code"] == "SOURCE_CONFIG_CONFLICT"
+    row = app.state.service.db.one("SELECT * FROM kaiwu_sources WHERE connector_id=? AND source_id=?", (connector_id, business["source_id"]))
+    assert row["tool_schema_sha256"] == old_schema
+    events = client.get(BASE + "/v1/diagnostics/events", params={"connector_id": connector_id, "event_code": "connection_source_conflict"}, headers=admin_headers()).json()["events"]
+    assert len(events) == 3
+    assert all(event["origin"] == "edge" and event["component"] == "connector" and event["http_status"] == 409
+               and event["trace_id"].startswith("kwtr_") for event in events)
+    assert {event["source_id"] for event in events} == {source_id, business["source_id"]}
+
+
 def test_heartbeat_drain_resume_and_revoke(env):
     client, app = env
     material = key_material()

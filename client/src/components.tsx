@@ -88,14 +88,30 @@ export function FileChip({ file, onRemove, onPreview }: { file: StoredFile; onRe
 }
 export function FilePreview({ file, onClose }: { file: StoredFile; onClose: () => void }) {
   const [text, setText] = useState(''); const [error, setError] = useState(''); const [url, setURL] = useState(''); const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState<{ total_pages: number; label: string } | null>(null);
   const image = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'].includes(file.mime_type);
   const markdown = isMarkdownFile(file);
   const plain = markdown || file.mime_type.startsWith('text/plain') || ['text/csv', 'application/json'].includes(file.mime_type);
   const pdf = file.mime_type === 'application/pdf';
+  const paged = /\.(docx|xlsx)$/i.test(file.name) || (plain && file.size > 1048576);
   useEffect(() => {
     const controller = new AbortController(); let objectURL = ''; setText(''); setError(''); setURL(''); setLoading(true);
+    if (paged) {
+      api<{ text: string; total_pages: number; label: string }>(
+        `/files/${encodeURIComponent(file.id)}/preview?page=${page}`, { signal: controller.signal },
+      ).then(result => {
+        if (controller.signal.aborted) return;
+        setText(result.text);
+        setPages(result);
+      }).catch(e => {
+        if (!controller.signal.aborted) setError(errorText(e));
+      }).finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+      return () => controller.abort();
+    }
     if (!(image || plain || pdf)) return;
-    if (plain && file.size > 1048576) { setError('文本较大，请下载后查看。'); return; }
     fetch(fileURL(file.id), { credentials: 'include', signal: controller.signal }).then(async response => {
       if (!response.ok) throw new Error('附件暂时无法预览，请重试或下载。');
       const blob = await response.blob();
@@ -103,8 +119,13 @@ export function FilePreview({ file, onClose }: { file: StoredFile; onClose: () =
       if (plain) { const value = await blob.text(); if (!controller.signal.aborted) setText(value); } else { objectURL = URL.createObjectURL(blob); setURL(objectURL); }
     }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); if (objectURL) URL.revokeObjectURL(objectURL); };
-  }, [file.id, file.size, image, plain, pdf]);
-  return <Modal title={file.name} description={`${file.mime_type} · ${sizeText(file.size)}`} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{image && url ? <img src={url} alt={file.name} className="image-preview"/> : pdf && url ? <iframe title={file.name} src={url} className="pdf-preview" sandbox="allow-same-origin"/> : plain && !error ? loading ? <Loader text="正在读取…"/> : markdown ? <MarkdownDocument key={file.id} text={text} label={file.name}/> : <pre className="text-preview">{text || '文件内容为空'}</pre> : !(image || plain || pdf) ? <EmptyState icon={<FileText/>} title="下载后查看此附件" description="这个文件类型暂不提供在线预览。"/> : !error ? <Loader/> : null}</div><footer className="modal-footer"><a className="button primary" href={fileURL(file.id)} download={file.name}><Download size={16}/>下载原文件</a></footer></Modal>;
+  }, [file.id, image, plain, pdf, paged, page]);
+  return <Modal title={file.name} description={`${file.mime_type} · ${sizeText(file.size)}`} wide onClose={onClose}><div className="modal-body"><ErrorNotice message={error}/>{image && url ? <img src={url} alt={file.name} className="image-preview"/> : pdf && url ? <iframe title={file.name} src={url} className="pdf-preview" sandbox="allow-same-origin"/> : (plain || paged) && !error ? loading ? <Loader text="正在读取…"/> : <>
+    {paged && pages?.label && <p>{pages.label}</p>}
+    {markdown ? <MarkdownDocument key={file.id} text={text} label={file.name}/> : <pre className="text-preview">{text || '文件内容为空'}</pre>}
+  </> : !(image || plain || pdf || paged) ? <EmptyState icon={<FileText/>} title="下载后查看此附件" description="这个文件类型暂不提供在线预览。"/> : !error ? <Loader/> : null}</div><footer className="modal-footer">
+    {paged && pages && <><Button type="button" variant="secondary" disabled={loading || page === 1} onClick={() => setPage(page - 1)}>上一页</Button><span>{page} / {pages.total_pages}</span><Button type="button" variant="secondary" disabled={loading || page >= pages.total_pages} onClick={() => setPage(page + 1)}>下一页</Button></>}
+    <a className="button primary" href={fileURL(file.id)} download={file.name}><Download size={16}/>下载原文件</a></footer></Modal>;
 }
 export function Attachment({ id, onPreview }: { id: string; onPreview: (file: StoredFile) => void }) {
   const [file, setFile] = useState<StoredFile | null>(null); const [error, setError] = useState(false);

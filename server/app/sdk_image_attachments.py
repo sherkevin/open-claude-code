@@ -49,7 +49,7 @@ def preflight_images(service, conversation_id, user, file_ids, *, model_id, assi
         if _ocr_allowed(assistant):
             return []
         require_image_capability(service, model_id)
-    return preflight(service, conversation_id, user, image_ids, model_id=model_id)
+    return preflight(service, conversation_id, user, image_ids, model_id=model_id, legacy=True)
 
 
 def _read_image(service, row):
@@ -156,7 +156,7 @@ class SDKImagePrompt:
             user = self.authorize()
             for snapshot in self.history + self.snapshots:
                 row = preflight(self.service, self.runtime.conversation_id, user, [snapshot["id"]],
-                                model_id=_frozen_model_id(self.run))[0]
+                                model_id=_frozen_model_id(self.run), legacy=True)[0]
                 if row["mime_type"] not in IMAGE_MIMES.values() or _binding(row) != snapshot["binding"]:
                     raise _error()
                 if row["id"] in checked:

@@ -9,11 +9,12 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .db import dump, uid
+from .db import dump, offload_write, uid
 from .external_capabilities import ExternalCapabilities, ToolContext
 from .file_tools import WorkspaceFiles
 from .security import AppError
@@ -115,6 +116,34 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
         except Exception:
             return {"is_error": True, "content": [{"type": "text", "text": "资料读取暂时失败，请调整检索范围或稍后重试"}]}
 
+    if runtime.config.get("runtime_type") == "harness" and (policy is None or not policy.is_trial):
+        from .conversation_interactions import request_interaction
+
+        async def ask_user(arguments):
+            return await invoke("ask_user", arguments, lambda _assistant, _user, run_id:
+                request_interaction(runtime, run_id, "question", arguments))
+
+        async def review_plan(arguments):
+            return await invoke("review_plan", arguments, lambda _assistant, _user, run_id:
+                request_interaction(runtime, run_id, "plan", arguments))
+
+        tools.extend([
+            WorkspaceTool("ask_user", "需求有关键歧义时向当前用户提问，暂停本轮并等待明确回答。可提供最多六个短选项，用户也可自由输入。", {"question": str, "options": list}, True, ask_user),
+            WorkspaceTool("review_plan", "当用户希望先审阅计划时展示计划并等待确认或修改。计划确认不授予业务工具权限。", {"plan": str}, True, review_plan),
+        ])
+        if service.settings.max_active_sessions >= 2:
+            async def delegate_tasks(arguments):
+                async def delegate(_assistant, current_user, run_id):
+                    owner = current_user["id"]
+                    await offload_write(service.subagents.create_plan, run_id, owner, arguments.get("tasks"), "harness")
+                    plan = await service.subagents.start_plan(run_id, owner)
+                    runtime.check_tool("mcp__workspace__delegate_tasks", arguments)
+                    return {"children": [{"id": child["child_id"], "status": child["status"], "result": child.get("result")}
+                                         for child in plan["children"]]}
+                return await invoke("delegate_tasks", arguments, delegate)
+
+            tools.append(WorkspaceTool("delegate_tasks", "并行分配最多四项彼此独立的纯文字分析，等待结论后汇总。每个子任务只能看到所分配的文字，没有文件、MCP 或历史权限；不要附上凭据。", {"tasks": list}, True, delegate_tasks))
+
     # Spreadsheet export is local-only but still a write, so the service's
     # normal approval path is required before the file is produced.
     async def generate_xlsx(arguments):
@@ -186,7 +215,16 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
             {"mode": str, "query": str, "file_id": str, "limit": int}, True, image_search))
 
     async def file_read(arguments):
-        async def read(_active, _current_user, _run_id):
+        async def read(_active, _current_user, run_id):
+            path = arguments.get("path")
+            if runtime.config.get("runtime_type") == "harness" and isinstance(path, str):
+                attached = re.fullmatch(r"attachment:([0-9a-f]{32}):([0-9]{1,8})", path)
+                if attached:
+                    from .harness_attachments import read_attachment_chunk
+
+                    result = await asyncio.to_thread(read_attachment_chunk, runtime, run_id, attached[1], int(attached[2]))
+                    runtime.check_tool("mcp__workspace__file_read", arguments)
+                    return result
             return files.read(arguments)
         return await invoke("file_read", arguments, read)
 
@@ -203,7 +241,7 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
     tools.extend([
         WorkspaceTool(
             "file_read",
-            "读取当前会话工作区内已登记的 UTF-8 文本文件，返回版本号、哈希和内容。",
+            "读取当前会话工作区内已登记的 UTF-8 文本文件。大附件可使用消息提供的 attachment: 引用，按返回的 next_path 继续读取。",
             {"path": str},
             True,
             file_read,

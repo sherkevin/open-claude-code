@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BookOpen, Archive, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Circle, Clock3, Download, FileText, Gauge, ListTree, LoaderCircle, Minimize2, Paperclip, Pencil, Radio, RefreshCw, ShieldCheck, Sparkles, Square, X, XCircle } from 'lucide-react';
-import { api, API_BASE, ApiError, clientRequestId, errorText, fileURL, patch, post, timeText } from './api';
+import { BookOpen, Archive, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Circle, Clock3, Download, FileText, Gauge, ListTree, LoaderCircle, Minimize2, Paperclip, Pencil, Radio, ShieldCheck, Sparkles, Square, X, XCircle } from 'lucide-react';
+import { api, API_BASE, ApiError, clientRequestId, errorText, fileURL, patch, post, remove, timeText } from './api';
 import { configAllows, type AppConfig, type Approval, type Assistant, type Conversation, type Message, type ModelOption, type ModelRecommendation, type ModelSelection, type Run, type RunStatus, type Skill, type StoredFile, type StreamEvent } from './types';
 import { isActive, statusLabels } from './types';
 import { appendEvent, eventTypes, pendingApprovalIds, streamText } from './stream';
@@ -8,8 +8,10 @@ import { Attachment, Button, ErrorNotice, Field, FileChip, FilePreview, Loader, 
 import { compactionStatus, compactionStatusLabel, toolLabel } from './display';
 import ContextDialog, { compactionLabel } from './ContextDialog';
 import SessionTrajectory from './SessionTrajectory';
+import ConversationExport from './ConversationExport';
 import ModelSelector from './ModelSelector';
 import { ModelRoutingControl, ModelSettingsDisclosure, RunModelIdentity } from './ModelRouting';
+import SessionPermissionMode, { MCPAvailabilityNotice } from './SessionPermissionMode';
 import { conversationHasModelHistory, modelSwitchRequiresNewConversation, saveModelRouting, saveModelSelection } from './models';
 import ModelRecovery from './ModelRecovery';
 import AiIdentity from './AiIdentity';
@@ -21,8 +23,20 @@ import SkillPicker, { mentionQuery, selectedSkillIds, SkillChips } from './Skill
 import { ComposerCompletion, ComposerFollowups, composerInputMaxHeight, composerShortcut, useComposerAssistance } from './ComposerAssistance';
 import MessageQueue, { useMessageQueue } from './MessageQueue';
 import { CHAT_ATTACHMENT_ACCEPT, chatAttachmentProblem } from './attachmentPolicy';
+import { clipboardFiles } from './clipboardAttachments';
+import { useComposerDraft } from './composerDraft';
+import { useComposerUploads } from './composerUploads';
 import { MemoryWorkspace } from './MemoryPage';
+import { pendingRun, retryRead, transientReadError } from './runReadback';
+import RunOutcome from './RunOutcome';
+import RunInteractions from './RunInteractions';
+import ConversationTasks from './ConversationTasks';
+import ComposerReferences from './ComposerReferences';
+import { readChatHistory, useChatHistory } from './chatHistory';
+import './chat-history.css';
 import './composer.css';
+
+type SteeringReceipt = { id: string; text: string; status: 'pending' | 'queued' | 'applied' | 'rejected' | 'uncertain' };
 
 // Keep routing input bounded while deriving it from the current task context.
 export const fitnessTaskSummary=(input:string,messages:Message[],assistantDescription='')=>{
@@ -31,18 +45,25 @@ export const fitnessTaskSummary=(input:string,messages:Message[],assistantDescri
   const context=[...recent, ...(direct?[direct]:[])].join('\n').slice(-2000);
   return context || assistantDescription.trim().slice(0,1900) || '根据当前会话上下文选择最合适的模型。';
 };
-export const loadChatBootstrap=async(conversationId:string)=>{
-  const [messages,detail]=await Promise.all([
-    api<Message[]>(`/conversations/${conversationId}/messages`),
-    api<Conversation>(`/conversations/${conversationId}`),
+export const loadChatBootstrap=async(conversationId:string,signal?:AbortSignal,targetMessageId?:string)=>{
+  let missingTarget = false;
+  const [history,detail]=await Promise.all([
+    readChatHistory(conversationId, targetMessageId ? {around:targetMessageId} : undefined, signal).catch(error => {
+      if (targetMessageId && error instanceof ApiError && error.code === 'MESSAGE_NOT_FOUND') {
+        missingTarget = true;
+        return readChatHistory(conversationId, undefined, signal);
+      }
+      throw error;
+    }),
+    api<Conversation>(`/conversations/${conversationId}`, { signal }),
   ]);
-  const runId=detail.active_run_id||[...messages].reverse().find(message=>message.run_id)?.run_id;
+  const runId=detail.active_run_id||history.latest_run_id;
   let run:Run|null=null;let runError:unknown=null;
   if(runId){
-    try{run=await api<Run>(`/runs/${runId}`);}
+    try{run=await api<Run>(`/runs/${runId}`, { signal });}
     catch(error){runError=error;}
   }
-  return {messages,detail,run,runError};
+  return {history,detail,run,runError,runId,missingTarget};
 };
 export const loadChatSkills=async(enabled:boolean,assistantId:string,signal?:AbortSignal):Promise<Skill[]>=>enabled?api<Skill[]>(`/assistants/${assistantId}/skills`,{signal}):[];
 export const chatMessagePayload=(input:{requestId:string;text:string;fileIds:string[];skillIds:string[];trial:boolean;autoModelRouting:boolean})=>({
@@ -52,12 +73,8 @@ export const chatMessagePayload=(input:{requestId:string;text:string;fileIds:str
   skill_ids:input.skillIds,
   auto_route:input.trial?false:input.autoModelRouting,
 });
-export const retryMessagePayload=(message:Pick<Message,'text'|'file_ids'|'skills'>)=>({
-  text:message.text.trim() || (message.file_ids.length?'请阅读我上传的附件。':message.skills?.length?'请执行所选 Skill。':''),
-  fileIds:[...message.file_ids],
-  skillIds:(message.skills||[]).map(skill=>skill.id),
-});
-export const sendChatMessage=(conversationId:string,payload:ReturnType<typeof chatMessagePayload>)=>post<{message:Message;run_id:string}>(`/conversations/${conversationId}/messages`,payload);
+export const recoveryMessagePayload=(runId:string,requestId:string)=>({client_request_id:requestId,recovery_run_id:runId});
+export const sendChatMessage=(conversationId:string,payload:ReturnType<typeof chatMessagePayload> | ReturnType<typeof recoveryMessagePayload>)=>post<{message:Message;run_id:string}>(`/conversations/${conversationId}/messages`,payload);
 export const chatTrialFeatures=(trial:boolean, config?:AppConfig)=>({
   canUseAttachments:!trial,
   canUseSkills:!trial,
@@ -69,13 +86,18 @@ export const chatTrialFeatures=(trial:boolean, config?:AppConfig)=>({
   canRecommend:!trial,
 });
 
-export default function ChatPage({ conversation, assistant, config, models, modelsLoading, initialDraft, onChanged, onArchived, onNewConversation, onMemoryDirtyChange, onMemorySavingChange }: { conversation: Conversation; assistant?: Assistant; config: AppConfig; models: ModelOption[]; modelsLoading: boolean; initialDraft?: string; onChanged: () => void; onArchived: () => void; onNewConversation?: (selection:ModelSelection,draft:string)=>void; onMemoryDirtyChange?: (dirty:boolean)=>void; onMemorySavingChange?: (saving:boolean)=>void }) {
+export default function ChatPage({ conversation, assistant, config, models, modelsLoading, initialDraft, draftOwnerId, targetMessageId, onOpenConversation, onChanged, onArchived, onNewConversation, onMemoryDirtyChange, onMemorySavingChange }: { conversation: Conversation; assistant?: Assistant; config: AppConfig; models: ModelOption[]; modelsLoading: boolean; initialDraft?: string; draftOwnerId?: string; targetMessageId?: string; onOpenConversation?: (conversation: Conversation) => void; onChanged: () => void; onArchived: () => void; onNewConversation?: (selection:ModelSelection,draft:string)=>void; onMemoryDirtyChange?: (dirty:boolean)=>void; onMemorySavingChange?: (saving:boolean)=>void }) {
   const trial = config.deployment_mode === 'trial'; const canSend = configAllows(config, 'messages.send'); const {canUseAttachments,canUseSkills,canUseCompletion,canUseContext,canRecommend} = chatTrialFeatures(trial,config);
-  const [messages, setMessages] = useState<Message[]>([]); const [run, setRun] = useState<Run | null>(null); const [events, setEvents] = useState<StreamEvent[]>([]);
+  const history = useChatHistory(conversation.id);
+  const { messages } = history.page;
+  const [run, setRun] = useState<Run | null>(null); const [events, setEvents] = useState<StreamEvent[]>([]);
   const [archived,setArchived]=useState(conversation.archived);const [restoring,setRestoring]=useState(false);
   const [showContext, setShowContext] = useState(false);
   const [showTrajectory,setShowTrajectory]=useState(false);
-  const [skills, setSkills] = useState<Skill[]>([]); const [selectedSkills, setSelectedSkills] = useState<string[]>([]); const [skillQuery, setSkillQuery] = useState<string|null>(null);const [skillHighlight,setSkillHighlight]=useState(0); const mention = useRef<ReturnType<typeof mentionQuery>>(null); const [runStage,setRunStage]=useState('');
+  const [showTasks,setShowTasks]=useState(false);
+  const [forkBoundary, setForkBoundary] = useState<string>();
+  const [showReferences,setShowReferences]=useState(false);
+  const [skills, setSkills] = useState<Skill[]>([]); const [skillQuery, setSkillQuery] = useState<string|null>(null);const [skillHighlight,setSkillHighlight]=useState(0); const mention = useRef<ReturnType<typeof mentionQuery>>(null); const [runStage,setRunStage]=useState('');
   useEffect(()=>{let current=true;loadChatSkills(canUseSkills,conversation.assistant_id).then(result=>{if(current)setSkills(result);}).catch(()=>{});return()=>{current=false;};},[conversation.assistant_id,canUseSkills]);
   const [selection, setSelection] = useState<ModelSelection>({ model_id: conversation.model_id, reasoning_level: conversation.reasoning_level });
   const [autoModelRouting, setAutoModelRouting] = useState(!trial && Boolean(conversation.auto_model_routing));
@@ -84,12 +106,30 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const [hasNativeSession, setHasNativeSession] = useState(conversation.has_native_session);
   const [modelReconnectRequired, setModelReconnectRequired] = useState(false);
   const [refreshingRun, setRefreshingRun] = useState(false);
-  const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [input, setInput] = useState(initialDraft || ''); const [sending, setSending] = useState(false); const [retrying, setRetrying] = useState(false); const [uploading, setUploading] = useState(false);
-  const [files, setFiles] = useState<StoredFile[]>([]); const [preview, setPreview] = useState<StoredFile | null>(null); const [title, setTitle] = useState(conversation.title); const [titleDraft, setTitleDraft] = useState(conversation.title); const titleVersion = useRef(0); const [rename, setRename] = useState(false); const [archive, setArchive] = useState(false); const [savingTitle, setSavingTitle] = useState(false); const [connectionState, setConnectionState] = useState<'connected' | 'reconnecting'>('connected'); const [stopping, setStopping] = useState(false); const [decisionBusy, setDecisionBusy] = useState('');
+  const [readbackIssue, setReadbackIssue] = useState('');
+  const retryReadback = useRef<(() => void) | null>(null);
+  const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [sending, setSending] = useState(false); const [retrying, setRetrying] = useState(false);
+  const steeringRequest = useRef<{ runId: string; text: string; id: string } | null>(null);
+  const [steeringReceipt, setSteeringReceipt] = useState<{ runId: string; value: SteeringReceipt } | null>(null);
+  const { draft: { text: input, files, skills: selectedSkills, preview }, readDraft, setText: setInput, setFiles,
+    setSkills: setSelectedSkills, setPreview, setSubmission, finishSubmission } = useComposerDraft(draftOwnerId, conversation.id, initialDraft || '');
+  const saveAttachment = useCallback((saved: StoredFile, selectionOrder: number) => setFiles(previous => {
+    if (previous.some(file => file.id === saved.id)) return previous;
+    const position = previous.findIndex(file => file.selectionOrder !== undefined && file.selectionOrder > selectionOrder);
+    const next = previous.slice();
+    next.splice(position === -1 ? next.length : position, 0, { ...saved, selectionOrder });
+    return next;
+  }), [setFiles]);
+  const { queue: attachmentQueue, jobs: attachmentJobs, uploading, restoring: restoringUploads, restorationError } = useComposerUploads(canUseAttachments ? draftOwnerId : undefined, conversation.id, saveAttachment);
+  const failedAttachments = attachmentJobs.some(job => job.status === 'failed');
+  const [title, setTitle] = useState(conversation.title); const [titleDraft, setTitleDraft] = useState(conversation.title); const titleVersion = useRef(0); const [rename, setRename] = useState(false); const [archive, setArchive] = useState(false); const [savingTitle, setSavingTitle] = useState(false); const [connectionState, setConnectionState] = useState<'connected' | 'reconnecting'>('connected'); const [stopping, setStopping] = useState(false); const [decisionBusy, setDecisionBusy] = useState('');
   const composerForm = useRef<HTMLFormElement>(null); const composing = useRef(false); const inputVersion = useRef(0);
+  const recall = useRef(-1);
   const submissionPending = useRef(false);
+  const uploadPending = useRef(false);
+  uploadPending.current = uploading;
   const retryRequest = useRef<{ signature: string; id: string } | null>(null);
-  const scroll = useRef<HTMLDivElement>(null); const shouldFollow = useRef(true); const [showScroll, setShowScroll] = useState(false); const fileInput = useRef<HTMLInputElement>(null); const textInput = useRef<HTMLTextAreaElement>(null); const request = useRef<{ signature: string; id: string } | null>(null); const mounted = useRef(true); const onChangedRef = useRef(onChanged); onChangedRef.current = onChanged;
+  const scroll = useRef<HTMLDivElement>(null); const shouldFollow = useRef(true); const [showScroll, setShowScroll] = useState(false); const fileInput = useRef<HTMLInputElement>(null); const textInput = useRef<HTMLTextAreaElement>(null); const mounted = useRef(true); const onChangedRef = useRef(onChanged); onChangedRef.current = onChanged;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const applyRunReadback = useCallback((next: Run) => {
     if (!mounted.current) return;
@@ -97,39 +137,99 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     // A read refreshes the selected run; it cannot select an old run or revive it.
     setRun(current => !current || current.id !== next.id || (!isActive(current.status) && isActive(next.status)) ? current : next);
   }, []);
-  const reloadMessages = useCallback(async () => { const next = await api<Message[]>(`/conversations/${conversation.id}/messages`); if (mounted.current) setMessages(next); return next; }, [conversation.id]);
   useEffect(() => {
+    const controller = new AbortController();
     let current = true;
     const requestedTitleVersion = titleVersion.current;
     const requestedSelectionVersion = selectionVersion.current;
     const load = async () => {
       try {
-        const {messages:next,detail,run:loadedRun,runError} = await loadChatBootstrap(conversation.id);
+        const {history:startingPage,detail,run:loadedRun,runError,runId,missingTarget} = await retryRead(() => loadChatBootstrap(conversation.id, controller.signal, targetMessageId), controller.signal);
         if (!current) return;
-        setMessages(next);
+        shouldFollow.current = !targetMessageId || missingTarget;
+        history.setPage(startingPage);
+        if (missingTarget) setError('该消息不可用，已为你打开最新消息。');
+        setForkBoundary(detail.fork_inherited_through_id);
         setHasNativeSession(detail.has_native_session);setArchived(detail.archived);
         // A rename can finish before this initial GET. Its older snapshot must not undo it.
         if (titleVersion.current === requestedTitleVersion) setTitle(detail.title);
         if (selectionVersion.current === requestedSelectionVersion) { setSelection({ model_id: detail.model_id, reasoning_level: detail.reasoning_level }); setAutoModelRouting(!trial && Boolean(detail.auto_model_routing)); }
         if (loadedRun) setRun(loadedRun);
+        else if (runId && transientReadError(runError)) setRun(pendingRun(runId, conversation.id));
         else if (runError) setError(errorText(runError));
       } catch (e) { if (current) setError(errorText(e)); }
       finally { if (current) setLoading(false); }
     };
     void load();
-    return () => { current = false; };
-  }, [conversation.id]);
+    return () => { current = false; controller.abort(); };
+  }, [conversation.id, targetMessageId]);
   useEffect(() => {
     if (!run?.id) return;
-    const runId = run.id; const runTitleVersion=titleVersion.current; let current = true; let finalizing = false; const seen = new Set<number>(); setEvents([]); setConnectionState('connected');
-    const source = new EventSource(`${API_BASE}/runs/${encodeURIComponent(runId)}/events?after=0`, { withCredentials: true });
-    const finalize = async () => { if (finalizing || !current) return; finalizing = true; setRefreshingRun(true); source.close(); try { const [nextRun, , detail] = await Promise.all([api<Run>(`/runs/${runId}`), reloadMessages(), api<Conversation>(`/conversations/${conversation.id}`)]); if (current) { applyRunReadback(nextRun); if(titleVersion.current===runTitleVersion) setTitle(detail.title); setHasNativeSession(detail.has_native_session); setSelection({ model_id: detail.model_id, reasoning_level: detail.reasoning_level }); setAutoModelRouting(!trial && Boolean(detail.auto_model_routing)); setConnectionState('connected'); onChangedRef.current(); } } catch (e) { if (current) setError(errorText(e)); } finally { finalizing = false; if (current) setRefreshingRun(false); } };
+    const runId = run.id;
+    const runTitleVersion = titleVersion.current, runSelectionVersion = selectionVersion.current;
+    const controller = new AbortController(), { signal } = controller;
+    const seen = new Set<number>();
+    let current = true, finalizing = false, terminal = false, statusPending = false, sawTerminalEvent = false, after = 0;
+    let source: EventSource | undefined, timer: number | undefined;
+    setEvents([]); setConnectionState('connected'); setReadbackIssue('');
+    const readRun = () => api<Run>(`/runs/${runId}`, { signal });
+    const finalize = async () => {
+      if (finalizing || !current) return;
+      terminal = true; finalizing = true;
+      source?.close(); window.clearTimeout(timer); window.clearInterval(watchStatus);
+      setRefreshingRun(true); setReadbackIssue('');
+      try {
+        const [nextRun, nextMessages, detail] = await retryRead(async () => {
+          const result = await Promise.all([readRun(), readChatHistory(conversation.id, undefined, signal), api<Conversation>(`/conversations/${conversation.id}`, { signal })]);
+          if (isActive(result[0].status)) throw new ApiError('任务结果尚未就绪。', 503, 'RUN_READBACK_PENDING');
+          return result;
+        }, signal);
+        if (!current) return;
+        applyRunReadback(nextRun); history.reconcileLatest(nextMessages);
+        if (titleVersion.current === runTitleVersion) setTitle(detail.title);
+        setHasNativeSession(detail.has_native_session);
+        if (selectionVersion.current === runSelectionVersion) {
+          setSelection({ model_id: detail.model_id, reasoning_level: detail.reasoning_level });
+          setAutoModelRouting(!trial && Boolean(detail.auto_model_routing));
+        }
+        setConnectionState('connected'); onChangedRef.current();
+        if (!sawTerminalEvent && configAllows(config, 'runs.read')) {
+          // If HTTP polling observed completion before EventSource, replace
+          // its missing final tool/artifact events from the durable trace.
+          void api<{events: StreamEvent[]}>(`/runs/${runId}/trace`, { signal }).then(trace => {
+            if (!current || !Array.isArray(trace.events)) return;
+            setEvents(previous => trace.events.reduce(appendEvent, previous));
+          }).catch(() => {});
+        }
+      } catch (e) {
+        if (current) { setConnectionState('reconnecting'); setReadbackIssue(`暂未读取到完整任务结果。${errorText(e)}`); }
+      } finally {
+        finalizing = false;
+        if (current) setRefreshingRun(false);
+      }
+    };
+    const readStatus = async () => {
+      if (!current || terminal || statusPending) return;
+      statusPending = true;
+      try {
+        const snapshot = await retryRead(readRun, signal);
+        if (!current || terminal) return;
+        applyRunReadback(snapshot); setReadbackIssue('');
+        if (!isActive(snapshot.status)) await finalize();
+      } catch (e) {
+        if (current && !terminal) setReadbackIssue(`暂未读取到任务状态。${errorText(e)}`);
+      } finally { statusPending = false; }
+    };
+    const watchStatus = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void readStatus();
+    }, 8000);
     const receive = (raw: Event) => {
       if (!current) return;
       let event: StreamEvent;
       try { event = JSON.parse((raw as MessageEvent).data) as StreamEvent; } catch { setError('收到无法识别的执行事件，请刷新会话重新读取。'); return; }
-      if (event.run_id !== runId || seen.has(event.id)) return; seen.add(event.id);
+      if (event.run_id !== runId || seen.has(event.id)) return; seen.add(event.id); after = Math.max(after, event.id);
       setEvents(prev => appendEvent(prev, event));
+      if (event.type === 'steer.applied') history.addAccepted(event.data as unknown as Message, false);
       if (event.type === 'timing.updated') setRun(prev => prev ? {...prev,timings:{...prev.timings,...event.data}} : prev);
       if (event.type === 'run.stage') setRunStage(String(event.data.stage||''));
       if (event.type === 'usage.updated') setRun(prev => prev ? { ...prev, usage: event.data } : prev);
@@ -138,17 +238,40 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       if (event.type === 'approval.required') { setRun(prev => prev ? { ...prev, status: 'awaiting_approval' } : prev); }
       if (event.type === 'approval.resolved') setRun(prev => prev ? { ...prev, status: 'running', approvals: prev.approvals.filter(a => a.id !== event.data.approval_id) } : prev);
       if (['context.compaction_started', 'context.compacted', 'context.compaction_result'].includes(event.type)) setRun(prev => prev ? { ...prev, compaction: { trigger: null, pre_tokens: null, before: null, after: null, ...prev.compaction, status: event.type === 'context.compaction_started' ? 'started' : event.type === 'context.compacted' ? 'completed' : compactionStatus(event.data.status), error: typeof event.data.error === 'string' ? event.data.error : null, followup_status: typeof event.data.followup_status === 'string' ? event.data.followup_status : prev.compaction?.followup_status } } : prev);
-      if (event.type === 'run.completed') { setRun(prev => prev ? { ...prev, status: event.data.status as RunStatus, error: typeof event.data.error === 'string' ? event.data.error : null, error_code: typeof event.data.error_code === 'string' ? event.data.error_code : null } : prev); void finalize(); }
+      if (event.type === 'run.completed') { sawTerminalEvent = true; setRun(prev => prev ? { ...prev, status: event.data.status as RunStatus, error: typeof event.data.error === 'string' ? event.data.error : null, error_code: typeof event.data.error_code === 'string' ? event.data.error_code : null } : prev); void finalize(); }
     };
-    eventTypes.forEach(type => source.addEventListener(type, receive));
-    source.onopen = () => { if (current) setConnectionState('connected'); };
-    source.onerror = () => { if (!current) return; setConnectionState('reconnecting'); void api<Run>(`/runs/${runId}`).then(next => { if (!current) return; if (!isActive(next.status)) void finalize(); else applyRunReadback(next); }).catch(() => {}); };
-    return () => { current = false; source.close(); };
+    const openEvents = () => {
+      if (!current || terminal) return;
+      const connection = new EventSource(`${API_BASE}/runs/${encodeURIComponent(runId)}/events?after=${after}`, { withCredentials: true });
+      source = connection;
+      eventTypes.forEach(type => connection.addEventListener(type, receive));
+      connection.onopen = () => { if (current && !terminal) { setConnectionState('connected'); void readStatus(); } };
+      connection.onerror = () => {
+        if (!current || terminal) return;
+        setConnectionState('reconnecting'); void readStatus();
+        // Browsers retry transient disconnects. A terminal HTTP error closes
+        // EventSource, so reopen it from the last processed event ourselves.
+        if (connection.readyState === 2) {
+          window.clearTimeout(timer);
+          timer = window.setTimeout(openEvents, 1500);
+        }
+      };
+    };
+    retryReadback.current = () => { if (terminal) void finalize(); else void readStatus(); };
+    openEvents();
+    // Restore approval and cancel controls even if the initial status GET or
+    // the stream's own handshake fails before reporting the first event.
+    if (isActive(run.status)) void readStatus();
+    return () => { current = false; controller.abort(); window.clearTimeout(timer); window.clearInterval(watchStatus); source?.close(); retryReadback.current = null; };
   // Only a different run starts a different event subscription.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [run?.id, reloadMessages]);
+  }, [run?.id, conversation.id, applyRunReadback]);
   const historyResultIds = configAllows(config, 'runs.read') ? historicalResultMessages(messages, conversation.id, run?.id) : new Set<string>();
   const liveText = streamText(events); const active = !!run && isActive(run.status); const pendingIds = pendingApprovalIds(events);
+  const currentSteeringEvent = [...events].reverse().find(event => event.type === 'steer.updated' && event.run_id === run?.id);
+  const localSteering = steeringReceipt?.runId === run?.id ? steeringReceipt?.value : null;
+  const remoteSteering = currentSteeringEvent?.data as SteeringReceipt | undefined;
+  const steering = localSteering && localSteering.id !== remoteSteering?.id ? localSteering : remoteSteering || localSteering;
   const aiWorking = run?.status === 'running' && run.execution_kind !== 'product_metadata' && connectionState === 'connected';
   const selectedModel = models.find(model => model.id === selection.model_id);
   const selectedReasoningLabel = selectedModel?.reasoning_levels.find(level => level.id === selection.reasoning_level)?.label;
@@ -164,7 +287,40 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const liveCitations=events.filter(e=>e.type==='message.updated').at(-1)?.data.citations as Message['citations'];
   const showStream = !!run && (active || !canonicalHasAnswer) && !!liveText;
   const artifacts = events.filter(e => e.type === 'artifact.created').map(e => e.data as unknown as StoredFile);
-  useEffect(() => { if (shouldFollow.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [messages, liveText, loading, events.length]);
+  const locatedTarget = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const viewport = scroll.current;
+    if (!viewport || loading) return;
+    if (!targetMessageId) locatedTarget.current = null;
+    const target = viewport.querySelector<HTMLElement>('[data-search-target]');
+    if (target && locatedTarget.current !== targetMessageId) {
+      locatedTarget.current = targetMessageId || null;
+      target.scrollIntoView({ block: 'center', behavior: 'instant' });
+      shouldFollow.current = false;
+      return;
+    }
+    const anchor = history.keepScroll.current;
+    if (anchor) {
+      history.keepScroll.current = null;
+      const row = Array.from(viewport.querySelectorAll<HTMLElement>('[data-message-id]')).find(item => item.dataset.messageId === anchor.id);
+      if (row) viewport.scrollTo({ top: viewport.scrollTop + row.getBoundingClientRect().top - anchor.top, behavior: 'instant' });
+      return;
+    }
+    if (shouldFollow.current && !history.page.after) viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' });
+  }, [messages, liveText, loading, events.length, targetMessageId, history.page.after, history.keepScroll]);
+  const readHistory = (direction: 'older' | 'newer') => void history.read(direction, () => {
+    const viewport = scroll.current;
+    if (!viewport) return;
+    const viewportTop = viewport.getBoundingClientRect().top;
+    const row = Array.from(viewport.querySelectorAll<HTMLElement>('[data-message-id]')).find(item => item.getBoundingClientRect().bottom > viewportTop);
+    shouldFollow.current = false;
+    if (row?.dataset.messageId) history.keepScroll.current = { id: row.dataset.messageId, top: row.getBoundingClientRect().top };
+  });
+  const returnToLatest = () => {
+    if (history.page.after) { void history.read('latest', () => { shouldFollow.current = true; setShowScroll(false); }); return; }
+    if (scroll.current) scroll.current.scrollTo({ top: scroll.current.scrollHeight, behavior: 'smooth' });
+    shouldFollow.current = true;
+  };
   useLayoutEffect(() => {
     const node = textInput.current; if (!node) return;
     const resize = () => {
@@ -190,6 +346,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     disabled: archived || sending || loading || savingModel || showContext || !canSend,
     settled: !loading && !refreshingRun && !sending, run, messages, onDraft: fillDraft });
   const changeDraft = (value: string, caret: number) => {
+    recall.current = -1;
     assistance.invalidate(); inputVersion.current += 1; setInput(value);
     if (canUseSkills) { mention.current = mentionQuery(value, caret); setSkillQuery(mention.current?.query ?? null); if (mention.current) closeModelSettings(); }
     else { mention.current = null; setSkillQuery(null); }
@@ -200,25 +357,124 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     if (mention.current) { const { start, end } = mention.current; setInput(prev => prev.slice(0, start) + prev.slice(end)); }
     setSkillQuery(null); mention.current = null; textInput.current?.focus();
   };
+  const openReferences = () => { closeModelSettings(); setSkillQuery(null); setShowReferences(true); };
+  const insertReference = (value: string) => {
+    const match = mention.current;
+    const caret = textInput.current?.selectionStart ?? input.length;
+    const start = match?.start ?? caret;
+    const end = match?.end ?? textInput.current?.selectionEnd ?? caret;
+    fillDraft(input.slice(0, start) + value + input.slice(end));
+    setShowReferences(false);
+    requestAnimationFrame(() => { textInput.current?.focus(); textInput.current?.setSelectionRange(start + value.length, start + value.length); });
+  };
+  const referenceFile = (file: StoredFile) => {
+    const runtimeType = conversation.runtime_type || 'claude';
+    const maximum = runtimeType === 'harness' ? config.chat_attachment_upload_max_bytes || config.upload_max_bytes : config.upload_max_bytes;
+    const inlineLegacy = runtimeType === 'claude' && models.find(model => model.id === selection.model_id)?.capabilities?.includes('multimodal');
+    const next = files.some(item => item.id === file.id) ? files : [...files, file];
+    const problem = chatAttachmentProblem([...next, ...attachmentQueue.read().map(job => job.file)], runtimeType, maximum, config.chat_attachment_limits,
+      inlineLegacy ? config.legacy_chat_image_max_bytes : undefined);
+    if (problem) { setError(problem); setShowReferences(false); return; }
+    setFiles(next);
+    insertReference(`「${file.name}」 `);
+  };
+  const commands = [
+    ...(canUseContext ? [{ name: '/上下文', alias: '/context', open: () => setShowContext(true) }] : []),
+    { name: '/引用', alias: '/reference', open: openReferences },
+    { name: '/计划任务', alias: '/schedule', open: () => setShowTasks(true) },
+  ];
+  const slash = !trial && /^\/[^\s/]*$/.test(input) && !sending && !archived
+    ? commands.filter(command => command.name.startsWith(input) || command.alias.startsWith(input.toLowerCase())) : [];
+  const runCommand = (open: () => void) => { fillDraft(''); open(); };
+  const recallDraft = (direction: 'ArrowUp' | 'ArrowDown') => {
+    if (trial || archived || loading || sending || files.length || selectedSkills.length || (recall.current < 0 && (input || direction === 'ArrowDown'))) return false;
+    const previous = [...new Set(messages.slice().reverse().filter(message => message.role === 'user' && message.text.trim()).map(message => message.text))];
+    if (!previous.length) return false;
+    recall.current = Math.max(-1, Math.min(previous.length - 1, recall.current + (direction === 'ArrowUp' ? 1 : -1)));
+    assistance.invalidate();
+    fillDraft(previous[recall.current] || '');
+    return true;
+  };
+  const [forking, setForking] = useState<string | null>(null);
+  const forkRequest = useRef<{ messageId: string; requestId: string } | null>(null);
+  const forkMessage = async (message: Message) => {
+    if (forking || active || !onOpenConversation) return;
+    if (forkRequest.current?.messageId !== message.id) forkRequest.current = { messageId: message.id, requestId: clientRequestId() };
+    setForking(message.id); setError('');
+    try {
+      const child = await post<Conversation>(`/conversations/${conversation.id}/fork`, {
+        message_id: message.id, client_request_id: forkRequest.current.requestId,
+      });
+      if (mounted.current) { onOpenConversation(child); onChanged(); }
+    } catch (cause) {
+      if (mounted.current) setError(errorText(cause));
+    } finally {
+      if (mounted.current) setForking(null);
+    }
+  };
+  const canSteer = !trial && conversation.runtime_type === 'harness' && run?.status === 'running'
+    && (!run.kind || run.kind === 'chat') && !archived && !loading && !showContext && canSend;
+  const steer = async () => {
+    const text = input.trim();
+    if (!run || !canSteer || submissionPending.current || !text || text.length > 4000 || files.length || selectedSkills.length || uploading) return;
+    const runId = run.id;
+    if (steeringRequest.current?.runId !== runId || steeringRequest.current.text !== text) {
+      steeringRequest.current = { runId, text, id: clientRequestId() };
+    }
+    const version = inputVersion.current;
+    submissionPending.current = true;
+    setSending(true);
+    setError('');
+    try {
+      const value = await post<SteeringReceipt>(`/runs/${runId}/steering`, { text, client_request_id: steeringRequest.current.id });
+      if (!mounted.current) return;
+      setSteeringReceipt({ runId, value });
+      if (value.status === 'queued' || value.status === 'applied') {
+        if (inputVersion.current === version) fillDraft('');
+        steeringRequest.current = null;
+      }
+    } catch (failure) {
+      if (mounted.current) setError(errorText(failure));
+    } finally {
+      submissionPending.current = false;
+      if (mounted.current) setSending(false);
+    }
+  };
   const send = async () => {
-    if (!canSend || (!input.trim() && files.length === 0 && selectedSkills.length===0) || archived || sending || submissionPending.current || uploading || loading || refreshingRun || savingModel || showContext || !modelReady) return;
+    if (failedAttachments) { setError('有附件未上传成功，请重试或移除后再发送。'); return; }
+    if (!canSend || (!input.trim() && files.length === 0 && selectedSkills.length===0) || archived || sending || submissionPending.current || uploadPending.current || uploading || restoringUploads || loading || refreshingRun || savingModel || showContext || !modelReady) return;
+    const snapshot = readDraft();
     const text = input.trim() || (files.length?'请阅读我上传的附件。':'请执行所选 Skill。'); const fileIds = files.map(f => f.id); const skillIds = selectedSkillIds(selectedSkills,skills); const signature = JSON.stringify([text, fileIds,skillIds]);
-    if (!request.current || request.current.signature !== signature) request.current = { signature, id: clientRequestId() };
+    if (skillIds.length !== selectedSkills.length) { setError('所选 Skill 仍在加载或已不可用，请检查后再发送。'); return; }
+    const submission = snapshot.submission?.signature === signature ? snapshot.submission
+      : { signature, id: clientRequestId(), queued: Boolean(active || queue.state?.items.length) };
+    setSubmission(submission);
     const sentInputVersion = inputVersion.current; assistance.invalidate();
     submissionPending.current = true;
     setSending(true); setError(''); shouldFollow.current = true;
     try {
-      if (active || queue.state?.items.length) {
-        await queue.enqueue({ ...chatMessagePayload({requestId:request.current.id,text,fileIds,skillIds,trial,autoModelRouting}), model_id: selection.model_id, reasoning_level: selection.reasoning_level });
+      if (submission.queued) {
+        await queue.enqueue({ ...chatMessagePayload({requestId:submission.id,text,fileIds,skillIds,trial,autoModelRouting}), model_id: selection.model_id, reasoning_level: selection.reasoning_level });
+        finishSubmission(submission.id, snapshot);
         if (!mounted.current) return;
-        if (inputVersion.current === sentInputVersion) setInput(''); setFiles([]); setSelectedSkills([]); setSkillQuery(null); request.current = null; return;
+        if (inputVersion.current === sentInputVersion) setSkillQuery(null);
+        return;
       }
-      const result = await sendChatMessage(conversation.id,chatMessagePayload({requestId:request.current.id,text,fileIds,skillIds,trial,autoModelRouting}));
+      const result = await sendChatMessage(conversation.id,chatMessagePayload({requestId:submission.id,text,fileIds,skillIds,trial,autoModelRouting}));
+      finishSubmission(submission.id, snapshot);
       if (!mounted.current) return;
-      setMessages(previous => previous.some(m => m.id === result.message.id) ? previous : [...previous, result.message]); if (inputVersion.current === sentInputVersion) setInput(''); setFiles([]); setSelectedSkills([]); setSkillQuery(null);setRunStage('initializing'); request.current = null;
+      recall.current = -1;
+      history.addAccepted(result.message); if (inputVersion.current === sentInputVersion) setSkillQuery(null);setRunStage('initializing');
       setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null });
       const next = await api<Run>(`/runs/${result.run_id}`); if (!mounted.current) return; applyRunReadback(next); onChangedRef.current();
-    } catch (e) { if (mounted.current) { setError(errorText(e)); if (e instanceof ApiError && e.code === 'MODEL_SELECTION_REQUIRED') setModelReconnectRequired(true); } } finally { submissionPending.current = false; if (mounted.current) setSending(false); }
+    } catch (e) {
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 401
+          && readDraft().submission?.id === submission.id) setSubmission(undefined);
+      if (mounted.current) {
+        setError(errorText(e));
+        if (e instanceof ApiError && e.code === 'MODEL_SELECTION_REQUIRED') setModelReconnectRequired(true);
+      }
+    } finally { submissionPending.current = false; if (mounted.current) setSending(false); }
   };
   const queueReadVersion = useRef(0);
   const queue = useMessageQueue(conversation.id, canSend && !loading && !active && !sending && !savingModel && !showContext && !archived && !refreshingRun && modelReady, `${run?.id || ''}:${run?.status || ''}`, async runId => {
@@ -226,54 +482,85 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     // Select an accepted task immediately. Later HTTP reads use the same
     // terminal-state guard as normal sends and cannot revive a finished run.
     setRun(current => current?.id === runId || current && isActive(current.status) ? current : { id: runId, conversation_id: conversation.id, status: 'queued', assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null });
-    const [next, nextMessages] = await Promise.all([api<Run>(`/runs/${runId}`), api<Message[]>(`/conversations/${conversation.id}/messages`)]);
+    const [next, nextMessages] = await Promise.all([api<Run>(`/runs/${runId}`), readChatHistory(conversation.id)]);
     if (!mounted.current || version !== queueReadVersion.current) return;
-    setMessages(nextMessages); applyRunReadback(next); onChangedRef.current();
+    history.reconcileLatest(nextMessages); applyRunReadback(next); onChangedRef.current();
   });
   const [showMemory, setShowMemory] = useState(false), [memoryDirty, setMemoryDirty] = useState(false), [memorySaving, setMemorySaving] = useState(false), [confirmCloseMemory, setConfirmCloseMemory] = useState(false);
   const memoryDirtyChanged = useCallback((dirty:boolean) => { setMemoryDirty(dirty); onMemoryDirtyChange?.(dirty); }, [onMemoryDirtyChange]);
   const memorySavingChanged = useCallback((saving:boolean) => { setMemorySaving(saving); onMemorySavingChange?.(saving); }, [onMemorySavingChange]);
   const closeMemory = () => { if (memorySaving) return; if (memoryDirty) setConfirmCloseMemory(true); else setShowMemory(false); };
   const retryLastMessage = async () => {
-    if (!canSend || archived || active || sending || submissionPending.current || uploading || loading || refreshingRun || savingModel || showContext || !modelReady) return;
-    const lastUserMessage = [...messages].reverse().find(message => message.role === 'user');
-    if (!lastUserMessage) { setError('找不到可重试的用户消息，请重新输入任务。'); return; }
-    const { text, fileIds, skillIds } = retryMessagePayload(lastUserMessage);
-    if (!text) { setError('上一条任务没有可重试的内容，请重新输入任务。'); return; }
-    if (fileIds.length && !canUseAttachments) { setError('当前部署不支持重试原任务附件，请重新发送文字任务。'); return; }
-    if (skillIds.length && !canUseSkills) { setError('当前部署不支持重试原任务 Skill，请重新发送文字任务。'); return; }
-    // A deliberate retry starts a new task. If its response is lost, repeating
-    // that same retry must resolve the pending request, not execute tools again.
-    const signature = JSON.stringify([run?.id, lastUserMessage.id, text, fileIds, skillIds]);
+    if (!run || !canSend || archived || active || sending || submissionPending.current || uploadPending.current || uploading || loading || refreshingRun || savingModel || showContext || !modelReady) return;
+    // The server reconstructs the original inputs, or continues with tools
+    // disabled, using the recorded effects of this exact source run.
+    const signature = run.id;
     if (!retryRequest.current || retryRequest.current.signature !== signature) retryRequest.current = { signature, id: clientRequestId() };
     submissionPending.current = true;
     // Keep the previous result and its CSV available until a new run is accepted.
     // The run subscription resets events only after the run ID changes.
     assistance.invalidate(); setRetrying(true); setSending(true); setError(''); shouldFollow.current = true;
     try {
-      const result = await sendChatMessage(conversation.id, chatMessagePayload({ requestId: retryRequest.current.id, text, fileIds, skillIds, trial, autoModelRouting }));
+      const result = await sendChatMessage(conversation.id, recoveryMessagePayload(run.id, retryRequest.current.id));
       if (!mounted.current) return;
-      setMessages(previous => previous.some(message => message.id === result.message.id) ? previous : [...previous, result.message]);
+      history.addAccepted(result.message);
       retryRequest.current = null; setRunStage('initializing');
       setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null });
       const next = await api<Run>(`/runs/${result.run_id}`); if (!mounted.current) return; applyRunReadback(next); onChangedRef.current();
     } catch (e) { if (mounted.current) { setError(errorText(e)); if (e instanceof ApiError && e.code === 'MODEL_SELECTION_REQUIRED') setModelReconnectRequired(true); } }
     finally { submissionPending.current = false; if (mounted.current) { setRetrying(false); setSending(false); } }
   };
-  const upload = async (selectedFiles: FileList | null) => {
-    if (!canUseAttachments || !selectedFiles || uploading) return;
+  const upload = (selectedFiles: FileList | File[] | null) => {
+    if (!canUseAttachments || !selectedFiles?.length) return;
+    if (archived || loading || sending || submissionPending.current) {
+      setError(archived ? '恢复会话后可以添加附件。' : loading ? '会话正在加载，附件尚未添加。加载后请重试。' : '正在提交消息，附件尚未添加。请稍后重试。');
+      return;
+    }
     const selected = Array.from(selectedFiles);
-    const problem = chatAttachmentProblem([...files, ...selected], conversation.runtime_type || 'claude', config.upload_max_bytes);
+    const runtimeType = conversation.runtime_type || 'claude';
+    const binaryMaxBytes = config.chat_attachment_upload_max_bytes ?? 0;
+    const useBinaryUpload = runtimeType === 'harness' && Number.isSafeInteger(binaryMaxBytes) && binaryMaxBytes > 0;
+    const maxBytes = useBinaryUpload ? binaryMaxBytes : config.upload_max_bytes;
+    const inlineLegacy = runtimeType === 'claude' && models.find(model => model.id === selection.model_id)?.capabilities?.includes('multimodal');
+    const problem = chatAttachmentProblem(
+      [...files, ...attachmentQueue.read().map(job => job.file), ...selected],
+      runtimeType, maxBytes, config.chat_attachment_limits, inlineLegacy ? config.legacy_chat_image_max_bytes : undefined,
+    );
     if (problem) { setError(problem); if (fileInput.current) fileInput.current.value = ''; return; }
-    assistance.invalidate(); setUploading(true); setError('');
+    uploadPending.current = true;
+    assistance.invalidate();
+    setError('');
+    if (fileInput.current) fileInput.current.value = '';
+    attachmentQueue.add(selected, useBinaryUpload, saveAttachment);
+  };
+  const pasteUpload = useRef(upload);
+  pasteUpload.current = upload;
+  useEffect(() => {
+    if (!canUseAttachments) return;
+    const paste = (event: ClipboardEvent) => {
+      if (event.defaultPrevented || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      const target = event.target instanceof Element ? event.target : document.activeElement;
+      if (target !== textInput.current &&
+          target?.closest('input, textarea, select, [role="textbox"], [contenteditable="true"], [contenteditable=""]')) return;
+      const selected = clipboardFiles(event.clipboardData);
+      if (!selected.length) return;
+      if (!event.clipboardData?.getData('text/plain')) event.preventDefault();
+      void pasteUpload.current(selected);
+    };
+    window.addEventListener('paste', paste);
+    return () => window.removeEventListener('paste', paste);
+  }, [canUseAttachments]);
+  const removeDraftFile = async (file: StoredFile) => {
+    assistance.invalidate();
+    setFiles(previous => previous.filter(item => item.id !== file.id));
+    if (!config.chat_attachment_discard) return;
     try {
-      for (const file of selected) {
-        const body = new FormData(); body.append('file', file);
-        const saved = await api<StoredFile>('/files', { method: 'POST', body });
-        if (mounted.current) setFiles(prev => [...prev, saved]);
-      }
-    } catch (e) { if (mounted.current) setError(errorText(e)); }
-    finally { if (mounted.current) setUploading(false); if (fileInput.current) fileInput.current.value = ''; }
+      await remove(`/files/${encodeURIComponent(file.id)}`);
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === 'UPLOAD_IN_USE') return;
+      setFiles(previous => previous.some(item => item.id === file.id) ? previous : [...previous, file]);
+      if (mounted.current) setError(errorText(reason));
+    }
   };
   const decide = async (approval: Approval, decision: 'allow' | 'deny', memoryDigest?: string):Promise<boolean> => {
     setDecisionBusy(approval.id); setError('');
@@ -315,7 +602,6 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       setAutoModelRouting(!trial && Boolean(saved.auto_model_routing));
       setHasNativeSession(saved.has_native_session);
       setModelReconnectRequired(false); setError('');
-      request.current = null;
       onChangedRef.current();
       return true;
     } catch (e) { if (mounted.current) { setError(errorText(e)); if (e instanceof ApiError && e.code === 'MODEL_SELECTION_REQUIRED') setModelReconnectRequired(true); } return false; }
@@ -348,29 +634,55 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       if (!mounted.current) return;
       setAutoModelRouting(Boolean(saved.auto_model_routing));
       setSelection({ model_id: saved.model_id, reasoning_level: saved.reasoning_level });
-      request.current = null; onChangedRef.current();
+      onChangedRef.current();
     } catch (error) { if (mounted.current) setError(errorText(error)); }
     finally { if (mounted.current) setSavingModel(false); }
   };
   const openRecommendation = () => { const summary = fitnessTaskSummary(input,messages,assistant?.description||''); setRecommendSummary(summary); setRecommendation(null); setRecommendOpen(true); void recommend(summary); };
-  return <div className="chat-page"><header className="chat-header"><div className="chat-heading"><AiIdentity active={aiWorking}/><div><h1>{title || '新会话'}</h1><span>{assistant?.name || '业务助手'}{active && <><i/> {statusLabels[run.status]}</>}</span></div></div><div className="chat-actions">{!trial&&<button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={()=>setShowTrajectory(true)}><ListTree size={17}/></button>}{!trial&&<button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={()=>setShowMemory(true)}><BookOpen size={17}/></button>}<button className="icon-button" title="重命名会话" aria-label="重命名会话" onClick={() => { setTitleDraft(title); setRename(true); }}><Pencil size={16}/></button>{canUseContext&&<button type="button" className="icon-button" title="上下文" aria-label="上下文" disabled={savingModel || loading} onClick={() => setShowContext(true)}><Gauge size={17}/></button>}<button className="icon-button" title="归档会话" aria-label="归档会话" disabled={active} onClick={() => setArchive(true)}><Archive size={17}/></button></div></header>
+  return <div className="chat-page"><header className="chat-header"><div className="chat-heading"><AiIdentity active={aiWorking}/><div><h1>{title || '新会话'}</h1><span>{assistant?.name || '业务助手'}{active && <><i/> {statusLabels[run.status]}</>}</span></div></div><div className="chat-actions">{!trial&&<button type="button" className="icon-button" title="计划与子任务" aria-label="计划与子任务" onClick={()=>setShowTasks(true)}><Clock3 size={17}/></button>}{!trial&&<ConversationExport conversationId={conversation.id}/>}{!trial&&<button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={()=>setShowTrajectory(true)}><ListTree size={17}/></button>}{!trial&&<button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={()=>setShowMemory(true)}><BookOpen size={17}/></button>}<button className="icon-button" title="重命名会话" aria-label="重命名会话" onClick={() => { setTitleDraft(title); setRename(true); }}><Pencil size={16}/></button>{canUseContext&&<button type="button" className="icon-button" title="上下文" aria-label="上下文" disabled={savingModel || loading} onClick={() => setShowContext(true)}><Gauge size={17}/></button>}<button className="icon-button" title="归档会话" aria-label="归档会话" disabled={active} onClick={() => setArchive(true)}><Archive size={17}/></button></div></header>
     <div className="chat-proof-bar" aria-label="会话能力状态"><span><FileText size={14}/>业务会话</span><span>{assistant?.connections.length||0} 个已配置 MCP</span><span className="run-status-pill" data-state={run?.status || 'idle'}>{run?.status === 'succeeded' ? <CheckCircle2 size={14}/> : run?.status === 'failed' ? <XCircle size={14}/> : run?.status === 'awaiting_approval' ? <ShieldCheck size={14}/> : <Clock3 size={14}/>} {run?statusLabels[run.status]:'等待开始'}</span>{run&&<RunModelIdentity run={run} models={models}/>}{connectionState === 'reconnecting' && <strong>连接恢复中</strong>}</div>
     <div className="chat-layout"><section className="conversation-column"><div className="message-scroll" ref={scroll} onScroll={() => { const el = scroll.current; if (!el) return; shouldFollow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; setShowScroll(!shouldFollow.current); }}>
-      {loading ? <Loader text="正在恢复会话…"/> : messages.length === 0 && !liveText ? <div className="chat-intro"><AiIdentity size="large"/><h2>向{assistant?.name || '业务助手'}提问</h2><p>{assistant?.description || '描述你的问题或目标，也可以上传相关资料。'}</p><div className="chat-intro-note"><ShieldCheck size={16}/>调用需审批的业务工具时，你会先看到操作内容。</div></div> : <div className="messages">{messages.filter(m => !(active && m.role === 'assistant' && m.run_id === run?.id) && (m.role !== 'assistant' || !!m.text || m.file_ids.length > 0 || historyResultIds.has(m.id))).map(message => <article className={`message ${message.role}`} key={message.id}><div className="message-label">{message.role === 'assistant' ? <><AiIdentity size="inline"/>{assistant?.name || '助手'}</> : <>你<span>{timeText(message.created_at)}</span></>}</div><div className="message-content">{message.role === 'assistant' ? <AnswerMarkdown text={message.text} citations={message.citations}/> : <p className="user-text">{run?.kind === 'compact' && message.run_id === run.id ? '请求原生上下文压缩' : message.text}</p>}{message.role==='user'&&!!message.skills?.length&&<div className="message-skill-record">{message.skills.map(skill=><span key={skill.id}>@{skill.name}</span>)}</div>}{canUseAttachments && message.file_ids.length > 0 && <div className="attachment-row">{message.file_ids.map(id => <Attachment key={id} id={id} onPreview={setPreview}/>)}</div>}{message.run_id && historyResultIds.has(message.id) && <HistoricalBusinessResults conversationId={conversation.id} runId={message.run_id} messageId={message.id} question={questionForRun(messages,message.run_id)}/>}</div></article>)}{showStream && <article className="message assistant"><div className="message-label"><AiIdentity size="inline"/>{assistant?.name || '助手'}{active && <span className="typing-indicator"><i/><i/><i/></span>}</div><div className="message-content"><AnswerMarkdown text={liveText} citations={liveCitations}/></div></article>}{run&&<BusinessResults events={events} runId={run.id} status={run.status} question={questionForRun(messages,run.id)}/>}{active && <LiveActivity run={run} events={events} stage={runStage} connectionState={connectionState}/>}<div className="compaction-message-container">{run?.kind === 'compact' && <div className="compaction-message"><Minimize2 size={17}/><div><strong>{compactionLabel(run)}</strong><p>历史消息与附件仍保留，可在“上下文”中查看原生统计。</p></div></div>}</div>{run && !active && ['failed', 'interrupted', 'cancelled'].includes(run.status) && <div className="run-outcome"><span className={`badge ${run.status === 'failed' ? 'amber' : ''}`}>{statusLabels[run.status]}</span><p>{run.error || (run.status === 'interrupted' ? '服务重启或连接中断。你可以继续发送消息恢复会话，之前的业务操作不会自动重做。' : '你可以继续发送消息。已执行的业务操作不会自动撤销。')}</p><div className="run-outcome-actions">{run.error_code === 'MCP_RESULT_TOO_LARGE' ? <><Button variant="secondary" onClick={() => textInput.current?.focus()}><Pencil size={15}/>调整查询条件</Button><small>先缩小查询范围，或请业务系统提供聚合结果；直接重复原请求仍可能超限。</small></> : <><Button variant="secondary" busy={retrying} disabled={retrying || sending || active || refreshingRun} onClick={() => void retryLastMessage()}><RefreshCw size={15}/>重试本次任务</Button><small>使用原问题、附件和 Skill 重新执行。业务工具可能再次被调用。</small></>}</div></div>}{!trial && artifacts.length > 0 && <div className="artifact-section"><span className="eyebrow">生成的文件</span><div className="attachment-row">{artifacts.map(file => <FileChip key={file.id} file={file} onPreview={() => setPreview(file)}/>)}</div></div>}</div>}
-    </div>{showScroll && <button className="scroll-latest" onClick={() => { if (scroll.current) scroll.current.scrollTo({ top: scroll.current.scrollHeight, behavior: 'smooth' }); shouldFollow.current = true; }}><ArrowDown size={15}/>回到最新消息</button>}
-    <div className="composer-area composer-refined">{archived&&<div className="archive-banner"><span>此会话已归档，恢复后可以继续工作。</span><Button variant="secondary" busy={restoring} onClick={async()=>{setRestoring(true);try{await patch(`/conversations/${conversation.id}`,{archived:false});setArchived(false);onChangedRef.current();}catch(e){setError(errorText(e));}finally{setRestoring(false);}}}>恢复会话</Button></div>}<ErrorNotice message={error} onDismiss={() => setError('')}/>{modelReconnectRequired && <ModelRecovery currentAvailable={modelReady} busy={active || loading || sending || savingModel || uploading || showContext || refreshingRun} pending={savingModel} onReconnect={() => void changeModel(selection, true)}/>}<PendingApprovals conversationId={conversation.id} approvals={approvals} busyId={decisionBusy} onDecision={(approval,decision,digest)=>decide(approval,decision,digest)}/>
+      {loading ? <Loader text="正在恢复会话…"/> : messages.length === 0 && !liveText ? <div className="chat-intro"><AiIdentity size="large"/><h2>向{assistant?.name || '业务助手'}提问</h2><p>{assistant?.description || '描述你的问题或目标，也可以上传相关资料。'}</p><div className="chat-intro-note"><ShieldCheck size={16}/>调用需审批的业务工具时，你会先看到操作内容。</div></div> : <div className="messages">{history.page.before && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('older')}>加载更早消息</Button></div>}{messages.filter(m => !(active && m.role === 'assistant' && m.run_id === run?.id) && (m.role !== 'assistant' || !!m.text || m.file_ids.length > 0 || historyResultIds.has(m.id))).map(message => <article className={`message ${message.role}`} key={message.id} data-message-id={message.id} data-search-target={message.id === targetMessageId ? true : undefined}><div className="message-label">{message.role === 'assistant' ? <><AiIdentity size="inline"/>{assistant?.name || '助手'}</> : <>你<span>{timeText(message.created_at)}</span></>}</div><div className="message-content">{message.role === 'assistant' ? <AnswerMarkdown text={message.text} citations={message.citations}/> : <p className="user-text">{run?.kind === 'compact' && message.run_id === run.id ? '请求原生上下文压缩' : message.text}</p>}{message.role==='user'&&!!message.skills?.length&&<div className="message-skill-record">{message.skills.map(skill=><span key={skill.id}>@{skill.name}</span>)}</div>}{canUseAttachments && message.file_ids.length > 0 && <div className="attachment-row">{message.file_ids.map(id => <Attachment key={id} id={id} onPreview={setPreview}/>)}</div>}{!trial && conversation.runtime_type === 'harness' && onOpenConversation && message.role === 'assistant' && message.run_id && message.text && <Button variant="ghost" disabled={active || !!forking} busy={forking === message.id} onClick={() => void forkMessage(message)}>从这条消息创建分支</Button>}{message.run_id && historyResultIds.has(message.id) && <HistoricalBusinessResults conversationId={conversation.id} runId={message.run_id} messageId={message.id} question={questionForRun(messages,message.run_id)}/>}</div>{message.id === forkBoundary && <div className="chat-fork-boundary" role="separator" aria-label="分支从这里开始"><span>分支从这里开始</span></div>}</article>)}{history.page.after && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('newer')}>加载更新消息</Button></div>}{!history.page.after && showStream && <article className="message assistant"><div className="message-label"><AiIdentity size="inline"/>{assistant?.name || '助手'}{active && <span className="typing-indicator"><i/><i/><i/></span>}</div><div className="message-content"><AnswerMarkdown text={liveText} citations={liveCitations}/></div></article>}{!history.page.after&&run&&<BusinessResults events={events} runId={run.id} status={run.status} question={questionForRun(messages,run.id)}/>}{!history.page.after && active && <LiveActivity run={run} events={events} stage={runStage} connectionState={connectionState}/>}<div className="compaction-message-container">{!history.page.after && run?.kind === 'compact' && <div className="compaction-message"><Minimize2 size={17}/><div><strong>{compactionLabel(run)}</strong><p>历史消息与附件仍保留，可在“上下文”中查看原生统计。</p></div></div>}</div>{!history.page.after && run && !active && ['failed', 'interrupted', 'cancelled'].includes(run.status) && <RunOutcome run={run} busy={retrying} disabled={retrying || sending || refreshingRun || !modelReady} onRetry={() => void retryLastMessage()} onAdjust={() => textInput.current?.focus()} onContext={() => setShowContext(true)}/>}{!history.page.after && !trial && artifacts.length > 0 && <div className="artifact-section"><span className="eyebrow">生成的文件</span><div className="attachment-row">{artifacts.map(file => <FileChip key={file.id} file={file} onPreview={() => setPreview(file)}/>)}</div></div>}</div>}
+    </div>{(showScroll || history.page.after) && <button type="button" className="scroll-latest" disabled={history.reading} onClick={returnToLatest}><ArrowDown size={15}/>回到最新消息</button>}
+    <div className="composer-area composer-refined">{archived&&<div className="archive-banner"><span>此会话已归档，恢复后可以继续工作。</span><Button variant="secondary" busy={restoring} onClick={async()=>{setRestoring(true);try{await patch(`/conversations/${conversation.id}`,{archived:false});setArchived(false);onChangedRef.current();}catch(e){setError(errorText(e));}finally{setRestoring(false);}}}>恢复会话</Button></div>}<ErrorNotice message={error} onDismiss={() => setError('')}/><ErrorNotice message={history.error}/>{readbackIssue && <div role="status" className="run-outcome"><p>{readbackIssue}</p><Button variant="secondary" busy={refreshingRun} onClick={() => retryReadback.current?.()}>重新读取任务结果</Button></div>}{modelReconnectRequired && <ModelRecovery currentAvailable={modelReady} busy={active || loading || sending || savingModel || uploading || showContext || refreshingRun} pending={savingModel} onReconnect={() => void changeModel(selection, true)}/>}{!trial && active && run && <RunInteractions key={run.id} runId={run.id}/>}<PendingApprovals conversationId={conversation.id} approvals={approvals} busyId={decisionBusy} onDecision={(approval,decision,digest)=>decide(approval,decision,digest)}/>
       <MessageQueue queue={queue}/>
+      <MCPAvailabilityNotice events={events}/>
       <ComposerFollowups key={assistance.followups.runId || 'pending'} value={assistance.followups} onChoose={assistance.chooseFollowup}/>
-      <form ref={composerForm} className="composer fw-composer" data-working={active || sending || assistance.completion.busy || undefined} onSubmit={e => { e.preventDefault(); void send(); }} onClickCapture={e => { if ((e.target as Element).closest('.chat-model-settings > summary')) { setSkillQuery(null); mention.current = null; } }}>
+      <form ref={composerForm} className="composer fw-composer" data-working={active || sending || assistance.completion.busy || undefined} onSubmit={e => { e.preventDefault(); void send(); }} onClickCapture={e => { if ((e.target as Element).closest('.chat-model-settings > summary')) { setSkillQuery(null); mention.current = null; } }}
+        onDragOver={e => {
+          if (!e.dataTransfer.types.includes('Files')) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = canUseAttachments && !archived && !loading && !sending && !uploading ? 'copy' : 'none';
+        }}
+        onDrop={e => {
+          if (!e.dataTransfer.files.length) return;
+          e.preventDefault();
+          void upload(e.dataTransfer.files);
+        }}>
         {canUseSkills && skillQuery !== null && <SkillPicker skills={skills} selected={selectedSkills} query={skillQuery} highlighted={skillHighlight} onSelect={addSkill} onClose={() => { setSkillQuery(null); mention.current = null; textInput.current?.focus(); }}/>}
         {canUseSkills && selectedSkills.length > 0 && <SkillChips selected={selectedSkills} skills={skills} onRemove={id => { assistance.invalidate(); setSelectedSkills(prev => prev.filter(item => item !== id)); }} disabled={sending}/>}
-        {canUseAttachments && files.length > 0 && <div className="attachment-row composer-files">{files.map(file => <FileChip key={file.id} file={file} onPreview={() => setPreview(file)} onRemove={() => { assistance.invalidate(); setFiles(prev => prev.filter(f => f.id !== file.id)); }}/>)}</div>}
+        {canUseAttachments && files.length > 0 && <div className="attachment-row composer-files">{files.map(file => <FileChip key={file.id} file={file} onPreview={() => setPreview(file)} onRemove={() => void removeDraftFile(file)}/>)}</div>}
+        {canUseAttachments && restoringUploads && <small role="status">正在恢复未完成的上传…</small>}
+        {canUseAttachments && restorationError && <small role="status">{restorationError}</small>}
+        {canUseAttachments && attachmentJobs.length > 0 && <ul className="attachment-row composer-uploads" aria-label="附件上传">{attachmentJobs.map(job =>
+          <li key={job.id} className="file-chip composer-upload">
+            <span>{job.file.name}</span>
+            {job.status === 'uploading' && <progress aria-label={`上传 ${job.file.name}`} value={job.progress} max={1}/>}
+            {job.status === 'queued' && <small>等待上传</small>}
+            {job.error && <small role="alert">{job.error} 请重试或移除。</small>}
+            {job.storageWarning && <small role="status">浏览器空间不足，刷新前请等待此文件上传完成。</small>}
+            {job.status === 'failed' && <button type="button" onClick={() => attachmentQueue.retry(job.id)}>重试上传</button>}
+            <button type="button" aria-label={`${job.status === 'failed' ? '移除' : '取消上传'} ${job.file.name}`} onClick={() => attachmentQueue.cancel(job.id)}><X size={14}/></button>
+          </li>)}</ul>}
         <textarea ref={textInput} aria-label="输入消息" aria-describedby="composer-shortcuts" placeholder={active ? '输入下一条问题，加入队列…' : '描述你的问题或工作…'} value={input}
           onChange={e => changeDraft(e.target.value, e.target.selectionStart)}
           onCompositionStart={() => { composing.current = true; assistance.invalidate(); }} onCompositionEnd={() => { composing.current = false; }}
           onKeyDown={e => {
             const inComposition = composing.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229;
             if (inComposition) return;
+            if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && slash.length === 1) {
+              e.preventDefault(); runCommand(slash[0].open); return;
+            }
             if (skillQuery !== null && ['ArrowDown', 'ArrowUp', 'Enter'].includes(e.key)) {
               e.preventDefault();
               if (e.key === 'Enter') { const choice = matchingSkills[skillHighlight]; if (choice) addSkill(choice); else setSkillQuery(null); }
@@ -382,13 +694,17 @@ export default function ChatPage({ conversation, assistant, config, models, mode
               else if (assistance.completion.busy || assistance.completion.suggestion || assistance.completion.notice) { e.preventDefault(); assistance.invalidate(); }
               return;
             }
+            if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && recallDraft(e.key)) {
+              e.preventDefault(); return;
+            }
             const action = composerShortcut({ key: e.key, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, repeat: e.repeat, isComposing: e.nativeEvent.isComposing, keyCode: e.nativeEvent.keyCode }, { composing: composing.current, draft: input, canComplete: canUseCompletion && !archived && !sending && !loading && !savingModel && !showContext && canSend, completionBusy: assistance.completion.busy, suggestion: !!assistance.completion.suggestion, skillsOpen: skillQuery !== null });
             if (action !== 'none') { e.preventDefault(); if (action === 'complete') void assistance.complete(); else if (action === 'accept') assistance.accept(); else void send(); }
           }} rows={1}/>
+        {slash.length > 0 && <div className="composer-commands" aria-label="会话命令">{slash.map(command => <Button key={command.name} variant="ghost" onClick={() => runCommand(command.open)}>{command.name}</Button>)}</div>}
         <ComposerCompletion value={assistance.completion} onAccept={assistance.accept} onDismiss={assistance.invalidate}/>
         <div className="composer-toolbar composer-actions">
           <div className="composer-utilities">
-            {canUseAttachments && <><input ref={fileInput} type="file" multiple hidden accept={CHAT_ATTACHMENT_ACCEPT} onChange={e => void upload(e.target.files)}/><button className="attach-button composer-icon" type="button" aria-label={uploading ? '正在上传附件' : '添加附件'} title="添加附件" disabled={uploading || sending || loading || archived} onClick={() => fileInput.current?.click()}>{uploading ? <LoaderCircle className="spin" size={18}/> : <Paperclip size={18}/>}</button></>}
+            {canUseAttachments && <><input ref={fileInput} type="file" multiple hidden accept={CHAT_ATTACHMENT_ACCEPT} onChange={e => void upload(e.target.files)}/><button className="attach-button composer-icon" type="button" aria-label={uploading ? '正在上传附件' : '添加附件'} title="添加附件，也可粘贴或拖放文件到输入框" disabled={uploading || sending || loading || archived} onClick={() => fileInput.current?.click()}>{uploading ? <LoaderCircle className="spin" size={18}/> : <Paperclip size={18}/>}</button></>}
             {canUseSkills && <button type="button" className="attach-button composer-icon" aria-label="选择 Skill" title="选择 Skill" aria-expanded={skillQuery !== null} disabled={sending || loading || archived} onClick={() => { closeModelSettings(); mention.current = null; setSkillQuery(previous => previous === null ? '' : null); }}><Sparkles size={17}/></button>}
           </div>
           <ModelSettingsDisclosure automatic={autoModelRouting} selection={selection} models={models} loading={loading||modelsLoading} pending={savingModel}>
@@ -400,18 +716,35 @@ export default function ChatPage({ conversation, assistant, config, models, mode
               onNewConversation={onNewConversation ? next => { closeModelSettings(); onNewConversation(next, input); } : undefined}
               onChange={next => void changeModel(next)}/>
           </ModelSettingsDisclosure>
+          {!trial && <SessionPermissionMode key={conversation.id} conversation={conversation} disabled={active || archived || loading || sending || refreshingRun}/>}
           {canUseCompletion&&<span className="composer-input-hint"><kbd>Tab</kbd> 补全</span>}<span className="composer-action-space"/>
+          {canSteer && <Button variant="secondary" onClick={() => void steer()} title="追加文字到正在执行的这轮任务，发送按钮仍用于下一轮" disabled={!input.trim() || input.trim().length > 4000 || !!files.length || !!selectedSkills.length || sending || uploading || failedAttachments}>追加到本轮</Button>}
           {active && <Button type="button" variant="secondary" busy={stopping} onClick={() => void stop()} disabled={run.status === 'cancelling'}><Square size={13}/>{run.status === 'cancelling' ? '停止中' : '停止'}</Button>}
-          <button className="send-button" type="submit" aria-label={active || queue.state?.items.length ? '加入消息队列' : '发送消息'} title={active || queue.state?.items.length ? '加入消息队列' : '发送消息'} disabled={!canSend || archived || sending || uploading || loading || refreshingRun || savingModel || showContext || !modelReady || (!input.trim() && !files.length && !selectedSkills.length)}>{sending ? <LoaderCircle size={18} className="spin"/> : <ArrowUp size={20}/>}</button>
+          <button className="send-button" type="submit" aria-label={active || queue.state?.items.length ? '加入消息队列' : '发送消息'} title={failedAttachments ? '请重试或移除上传失败的附件' : active || queue.state?.items.length ? '加入消息队列' : '发送消息'} disabled={!canSend || archived || sending || uploading || restoringUploads || failedAttachments || loading || refreshingRun || savingModel || showContext || !modelReady || (!input.trim() && !files.length && !selectedSkills.length)}>{sending ? <LoaderCircle size={18} className="spin"/> : <ArrowUp size={20}/>}</button>
         </div>
       </form>
+      {steering && <div className="composer-steering" role="status">
+        {steering.status === 'applied' ? '追加指令已进入本轮。' : steering.status === 'queued' || steering.status === 'pending' ? '等待本轮接收追加指令。' : steering.status === 'rejected' ? '本轮未接收追加指令，文字仍保存在草稿中。' : '未确认本轮是否收到这条追加指令。'}
+        {steering.status === 'uncertain' && !input.trim() && <Button variant="ghost" onClick={() => fillDraft(steering.text)}>放回草稿</Button>}
+      </div>}
       <div className="composer-footnote"><span id="composer-shortcuts"><kbd>Enter</kbd> 发送 · <kbd>Shift + Enter</kbd> 换行</span><span>重要信息请核对来源</span></div>
     </div></section>
+    {showReferences && <ComposerReferences messages={messages} fileIds={canUseAttachments ? [...new Set(messages.flatMap(message => message.file_ids))] : []}
+      onMessage={message => insertReference(`> ${message.text.trim().slice(0, 4000).replaceAll('\n', '\n> ')}\n\n`)}
+      onFile={referenceFile} onClose={() => setShowReferences(false)}/>}
+    {showTasks&&<ConversationTasks conversationId={conversation.id} runId={run?.id} canDelegate={!!config.harness_subagents && canSteer} onSummarize={results => {
+      const summary = `请汇总以下子任务结果，并注明尚未验证的结论。\n\n${results}`;
+      const next = input.trim() ? `${input.trimEnd()}\n\n${summary}` : summary;
+      if (next.length > 50000) { setError('子任务结果无法加入当前草稿，输入会超过 50000 字。'); }
+      else fillDraft(next);
+      setShowTasks(false);
+      requestAnimationFrame(() => textInput.current?.focus());
+    }} onClose={()=>setShowTasks(false)}/>}
     {showTrajectory&&<SessionTrajectory conversationId={conversation.id} title={title} onClose={()=>setShowTrajectory(false)}/>}
     {showMemory && <Modal title="会话记忆" wide onClose={closeMemory}><div className="modal-body conversation-memory-panel"><MemoryWorkspace conversation={conversation} onDirtyChange={memoryDirtyChanged} onSavingChange={memorySavingChanged}/></div></Modal>}
     {confirmCloseMemory && <Modal title="放弃未保存的记忆修改" onClose={()=>setConfirmCloseMemory(false)}><div className="modal-body"><p>未保存的草稿将丢失。已经发送的修改仍会继续处理。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={()=>setConfirmCloseMemory(false)}>继续编辑</Button><Button variant="danger" disabled={memorySaving} onClick={()=>{setConfirmCloseMemory(false);setShowMemory(false);}}>放弃修改并关闭</Button></footer></Modal>}
 
-    </div>{!trial && showContext && <ContextDialog conversationId={conversation.id} models={models} busy={active || sending || uploading || savingModel || loading} run={run} onClose={() => setShowContext(false)} onCompact={result => { setShowContext(false); setMessages(previous => previous.some(message => message.id === result.message.id) ? previous : [...previous, result.message]); setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', kind: 'compact', compaction: null, assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null }); void api<Run>(`/runs/${result.run_id}`).then(applyRunReadback).catch(e => { if (mounted.current) setError(errorText(e)); }); onChangedRef.current(); }}/>} {preview && <FilePreview key={preview.id} file={preview} onClose={() => setPreview(null)}/>}{rename && <Modal title="重命名会话" onClose={() => { if (!savingTitle) setRename(false); }}><form onSubmit={e => { e.preventDefault(); void saveTitle(); }}><div className="modal-body"><Field label="会话名称"><input value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={savingTitle} maxLength={200} required autoFocus/></Field></div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={savingTitle} onClick={() => setRename(false)}>取消</Button><Button busy={savingTitle} disabled={!titleDraft.trim()} type="submit">保存名称</Button></footer></form></Modal>}{archive && <Modal title="归档此会话" onClose={() => setArchive(false)}><div className="modal-body"><p>归档后，会话会从最近列表中移除。会话和附件仍保存在服务端。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={() => setArchive(false)}>取消</Button><Button onClick={async () => { try { await patch(`/conversations/${conversation.id}`, { archived: true }); onChangedRef.current(); onArchived(); } catch (e) { setError(errorText(e)); setArchive(false); } }}>归档会话</Button></footer></Modal>}{recommendOpen && <Modal title="为当前任务推荐模型" onClose={() => { if (!recommendBusy) setRecommendOpen(false); }}><div className="modal-body"><p>根据当前问题、最近消息和助手职责推荐模型，只使用任务摘要。推荐生效后将固定使用该模型，可随时改回自动选择。</p><div className="fitness-context" role="status"><span className="eyebrow">当前会话上下文</span><p>{recommendSummary}</p></div>{recommendation && <div className="recommendation-result"><strong>推荐模型：{recommendation.model_label} · {recommendation.reasoning_level}</strong><p>{recommendation.reason}</p><small>路由器：{recommendation.router.model_id} · 输入 {recommendation.router.input_chars} 字符 · {recommendation.router.mode === 'provider' || recommendation.router.mode === 'provider_fallback' ? '已使用授权模型路由' : recommendation.router.target_status === 'unavailable' ? `目标线路不可用（${recommendation.router.target_model_id}）` : '本地备用规则'}</small></div>}</div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={recommendBusy} onClick={() => setRecommendOpen(false)}>{recommendation ? '完成' : '关闭'}</Button></footer></Modal>}</div>;
+    </div>{!trial && showContext && <ContextDialog conversationId={conversation.id} models={models} busy={active || sending || uploading || savingModel || loading} run={run} onClose={() => setShowContext(false)} onCompact={result => { setShowContext(false); history.addAccepted(result.message); setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', kind: 'compact', compaction: null, assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null }); void api<Run>(`/runs/${result.run_id}`).then(applyRunReadback).catch(e => { if (mounted.current) setError(errorText(e)); }); onChangedRef.current(); }}/>} {preview && <FilePreview key={preview.id} file={preview} onClose={() => setPreview(null)}/>}{rename && <Modal title="重命名会话" onClose={() => { if (!savingTitle) setRename(false); }}><form onSubmit={e => { e.preventDefault(); void saveTitle(); }}><div className="modal-body"><Field label="会话名称"><input value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={savingTitle} maxLength={200} required autoFocus/></Field></div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={savingTitle} onClick={() => setRename(false)}>取消</Button><Button busy={savingTitle} disabled={!titleDraft.trim()} type="submit">保存名称</Button></footer></form></Modal>}{archive && <Modal title="归档此会话" onClose={() => setArchive(false)}><div className="modal-body"><p>归档后，会话会从最近列表中移除。会话和附件仍保存在服务端。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={() => setArchive(false)}>取消</Button><Button onClick={async () => { try { await patch(`/conversations/${conversation.id}`, { archived: true }); onChangedRef.current(); onArchived(); } catch (e) { setError(errorText(e)); setArchive(false); } }}>归档会话</Button></footer></Modal>}{recommendOpen && <Modal title="为当前任务推荐模型" onClose={() => { if (!recommendBusy) setRecommendOpen(false); }}><div className="modal-body"><p>根据当前问题、最近消息和助手职责推荐模型，只使用任务摘要。推荐生效后将固定使用该模型，可随时改回自动选择。</p><div className="fitness-context" role="status"><span className="eyebrow">当前会话上下文</span><p>{recommendSummary}</p></div>{recommendation && <div className="recommendation-result"><strong>推荐模型：{recommendation.model_label} · {recommendation.reasoning_level}</strong><p>{recommendation.reason}</p><small>路由器：{recommendation.router.model_id} · 输入 {recommendation.router.input_chars} 字符 · {recommendation.router.mode === 'provider' || recommendation.router.mode === 'provider_fallback' ? '已使用授权模型路由' : recommendation.router.target_status === 'unavailable' ? `目标线路不可用（${recommendation.router.target_model_id}）` : '本地备用规则'}</small></div>}</div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={recommendBusy} onClick={() => setRecommendOpen(false)}>{recommendation ? '完成' : '关闭'}</Button></footer></Modal>}</div>;
 }
 
 export function LiveActivity({ run, events, stage, connectionState }: { run: Run; events: StreamEvent[]; stage: string; connectionState: 'connected' | 'reconnecting' }) {
@@ -447,7 +780,7 @@ export function LiveActivity({ run, events, stage, connectionState }: { run: Run
     title = `${toolResultLabels[state]} · ${toolLabel(String(latestTool.data.tool_name || '业务工具'))}`;
     detail = state === 'failed' ? (typeof latestTool?.data.error_message==='string' ? latestTool.data.error_message : '本次工具调用失败，正在整理已有信息。') : state === 'unknown' ? '未收到明确的调用结果，暂不报告业务结果。' : typeof sourceCount === 'number' && sourceCount > 0 ? `已登记 ${sourceCount} 个来源，内容仍需核对。` : '工具已返回，但未提供来源。';
     icon = state === 'failed' ? <XCircle size={16}/> : state === 'succeeded' ? <CheckCircle2 size={16}/> : <Circle size={16}/>;
-  } else if (['scoping', 'routing', 'evidence'].includes(stage)) {
+  } else if (['scoping', 'routing', 'evidence', 'preparing_attachments', 'delivering_attachments'].includes(stage)) {
     const presentation = latestStage ? evidenceStagePresentation(latestStage, events) : runStagePresentation({ stage });
     title = presentation.label; detail = presentation.detail;
     icon = presentation.confirmed ? <CheckCircle2 size={16}/> : <Circle size={16}/>;
@@ -460,7 +793,7 @@ export function LiveActivity({ run, events, stage, connectionState }: { run: Run
   } else if (stage === 'answering' || events.some(event => event.type === 'message.delta')) {
     title = '正在生成回答'; detail = '回答将逐步显示，可在轨迹中查看工具与来源。';
   }
-  const visible = [...events].filter(event => ['run.stage', 'tool.started', 'tool.completed', 'approval.required', 'approval.resolved', 'approval.model_decided', 'approval.dual_vote', 'memory.pending', 'memory.updated', 'memory.aborted', 'subagent.plan.created', 'subagent.started', 'subagent.progress', 'subagent.completed', 'subagent.failed', 'subagent.cancelled', 'subagent.plan.completed', 'subagent.approval.required', 'subagent.approval.denied', 'subagent.approval.resolved', 'context.compaction_started', 'context.compacted'].includes(event.type)).slice(-4);
+  const visible = [...events].filter(event => ['run.stage', 'tool.started', 'tool.completed', 'approval.required', 'approval.resolved', 'approval.model_decided', 'approval.session_decided', 'approval.dual_vote', 'memory.pending', 'memory.updated', 'memory.aborted', 'subagent.plan.created', 'subagent.started', 'subagent.progress', 'subagent.completed', 'subagent.failed', 'subagent.cancelled', 'subagent.plan.completed', 'subagent.approval.required', 'subagent.approval.denied', 'subagent.approval.resolved', 'context.compaction_started', 'context.compacted'].includes(event.type)).slice(-4);
   const eventLabel = (event: StreamEvent) => {
     if (event.type === 'run.stage') return evidenceStagePresentation(event, events).label;
     if (event.type === 'memory.pending') return '记忆已暂存，等待任务成功后保存';
@@ -471,8 +804,9 @@ export function LiveActivity({ run, events, stage, connectionState }: { run: Run
     if (event.type === 'approval.required') return '等待操作确认';
     if (event.type === 'approval.resolved') return event.data.decision === 'allow' ? '已允许操作' : '未获授权';
     if (event.type === 'approval.model_decided') return event.data.decision === 'allow' ? '模型代审允许低风险操作' : '模型代审拒绝操作';
+    if (event.type === 'approval.session_decided') return event.data.mode === 'full' ? '会话完全权限已允许操作' : '会话自动审批已允许操作';
     if (event.type === 'approval.dual_vote') return `双人审批投票 ${String(event.data.votes || 0)}/${String(event.data.required || 2)}`;
-    if (event.type === 'subagent.plan.created') return `已拆分 ${String(event.data.max_children || '若干')} 个子任务`;
+    if (event.type === 'subagent.plan.created') return `已拆分 ${Array.isArray(event.data.children) ? event.data.children.length : '若干'} 个子任务`;
     if (event.type === 'subagent.started') return '子任务开始执行';
     if (event.type === 'subagent.progress') return `子任务进度 ${String(event.data.progress || 0)}%`;
     if (event.type === 'subagent.completed') return '子任务已完成';
@@ -512,6 +846,8 @@ export const runStagePresentation = (data: Record<string, unknown>): { label: st
   if (stage === 'scoping') return { label: '记录调用范围', detail: '调用前阶段记录；实际筛选范围以工具返回为准。', confirmed: false };
   if (stage === 'routing') return { label: '记录工具选择', detail: '调用前阶段记录；不代表已完成业务路由或知识检索。', confirmed: false };
   if (stage === 'model_retry') return { label: '模型连接中断，正在重试', detail: '已取得的业务数据会保留，你仍可以停止本次任务。', confirmed: false };
+  if (stage === 'preparing_attachments') return { label: '正在准备附件', detail: '检查原件并转换模型可读内容。', confirmed: false };
+  if (stage === 'delivering_attachments') return { label: '正在载入附件', detail: '模型开始处理后会在这里显示进度。', confirmed: false };
   if (stage === 'evidence') {
     const count = data.source_count;
     const reported = data.status === 'reported' && typeof count === 'number' && Number.isFinite(count) && count > 0;
@@ -664,6 +1000,7 @@ export function EventRow({ event, events = [] }: { event: StreamEvent; events?: 
   if (event.type === 'tool.started') { label = toolLabel(String(event.data.tool_name || '调用工具')); icon = <ArrowUpRightIcon/>; }
   if (event.type === 'tool.completed') { const state = toolResultState(event); const sourceCount = reportedSourceCount(event); label = `${toolResultLabels[state]} · ${toolLabel(String(event.data.tool_name || '工具调用'))}`; detail = state === 'failed' ? (typeof event.data.error_message==='string' ? event.data.error_message : '未取得成功的工具结果。') : state === 'unknown' ? '未收到明确的调用结果，暂不报告业务结果。' : typeof sourceCount === 'number' && sourceCount > 0 ? `已登记 ${sourceCount} 个来源，内容仍需核对。` : '未提供来源。'; icon = state === 'succeeded' ? <CheckCircle2 size={14}/> : state === 'failed' ? <XCircle size={14}/> : <Circle size={14}/>; }
   if (event.type === 'approval.resolved') { label = event.data.decision === 'allow' ? '已允许操作' : '已拒绝操作'; const source = String(event.data.decision_source || ''); detail = source && source !== 'user' ? `决策来源：${source === 'timeout' ? '超时' : source === 'cancelled' ? '任务取消' : source === 'restart' ? '服务重启' : source === 'interrupted' ? '执行中断' : '运行结束'}` : ''; icon = <ShieldCheck size={14}/>; }
+  if (event.type === 'approval.session_decided') { label = event.data.mode === 'full' ? '会话完全权限已允许操作' : '会话自动审批已允许操作'; detail = String(event.data.reason || ''); icon = <ShieldCheck size={14}/>; }
   if (event.type === 'memory.pending') { label = '记忆已暂存，尚未保存'; icon = <Clock3 size={14}/>; }
   if (event.type === 'memory.updated') { label = '记忆已正式保存'; detail = event.data.context_reset===true?'下一轮将使用新的上下文，不再自动带入旧消息、旧记忆和旧附件。':'记忆内容已确认。'; icon = <CheckCircle2 size={14}/>; }
   if (event.type === 'memory.aborted') { label = '记忆未保存，暂存已废弃'; icon = <XCircle size={14}/>; }

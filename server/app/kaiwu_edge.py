@@ -2,8 +2,7 @@
 
 The Edge authenticates the one-time enterprise integration credential K,
 binds it to an approved source, creates an Edge-owned MCP session, and streams
-the request through the loopback visitor into the dedicated FRP tunnel. It
-never sees or adds the customer's internal bearer or HMAC material.
+the request to that source's registered connector.
 """
 from __future__ import annotations
 
@@ -211,9 +210,11 @@ def _authenticated_integration(
         raise AppError(401, "INTEGRATION_UNAUTHENTICATED", "企业集成凭据无效")
     digest = token_hash(raw_token)
     row = db.one(
-        "SELECT i.*, c.revoked AS connector_revoked, c.draining AS connector_draining "
+        "SELECT i.*, c.revoked AS connector_revoked, c.draining AS connector_draining, "
+        "n.connector_id IS NOT NULL AS connector_native_relay "
         "FROM kaiwu_integrations i "
         "JOIN kaiwu_connectors c ON c.id=i.connector_id "
+        "LEFT JOIN kaiwu_native_relay_devices n ON n.connector_id=c.id "
         "WHERE i.token_hash=?",
         (digest,),
     )
@@ -238,7 +239,7 @@ def _authenticated_integration(
         raise AppError(403, "SOURCE_ACCESS_DENIED", "当前企业集成无权访问该来源")
     if row["connector_draining"]:
         raise AppError(503, "SOURCE_UNAVAILABLE", "来源暂不可用")
-    if not source["visitor_host"] or not source["visitor_port"]:
+    if not row["connector_native_relay"] and (not source["visitor_host"] or not source["visitor_port"]):
         raise AppError(503, "SOURCE_UNAVAILABLE", "来源的中继路由尚未就绪")
     return row, source, {}, raw_token
 
@@ -360,7 +361,8 @@ def create_kaiwu_edge_router(service_getter: Callable, settings: Settings) -> AP
             )
             return _error(status, code, message, trace_id)
 
-        if source["visitor_host"] != settings.kaiwu_edge_visitor_host:
+        native = bool(integration["connector_native_relay"])
+        if not native and source["visitor_host"] != settings.kaiwu_edge_visitor_host:
             return fail(503, "SOURCE_UNAVAILABLE", "来源的中继路由未通过本机策略校验")
         incoming_session = request.headers.get("mcp-session-id", "").strip()
         try:
@@ -402,30 +404,55 @@ def create_kaiwu_edge_router(service_getter: Callable, settings: Settings) -> AP
         if upstream_session:
             headers["Mcp-Session-Id"] = upstream_session
 
-        target = f"http://{source['visitor_host']}:{int(source['visitor_port'])}/mcp"
-        timeout = httpx.Timeout(
-            settings.kaiwu_edge_request_timeout_seconds,
-            connect=min(10.0, settings.kaiwu_edge_request_timeout_seconds),
-        )
-        client = httpx.AsyncClient(
-            timeout=timeout,
-            trust_env=False,
-            follow_redirects=False,
-        )
+        client = None
+
+        async def close_client() -> None:
+            if client is not None:
+                await client.aclose()
+
         try:
-            outgoing = client.build_request("POST", target, content=body, headers=headers)
-            upstream = await client.send(outgoing, stream=True)
+            if native:
+                if not settings.kaiwu_native_relay_enabled:
+                    return fail(503, "SOURCE_UNAVAILABLE", "来源暂不可用", body=body)
+                upstream = await request.app.state.kaiwu_native_relay.forward(
+                    integration["connector_id"], source_id, headers, body,
+                    settings.kaiwu_edge_request_timeout_seconds,
+                )
+            else:
+                target = f"http://{source['visitor_host']}:{int(source['visitor_port'])}/mcp"
+                timeout = httpx.Timeout(
+                    settings.kaiwu_edge_request_timeout_seconds,
+                    connect=min(10.0, settings.kaiwu_edge_request_timeout_seconds),
+                )
+                client = httpx.AsyncClient(
+                    timeout=timeout,
+                    trust_env=False,
+                    follow_redirects=False,
+                )
+                outgoing = client.build_request("POST", target, content=body, headers=headers)
+                upstream = await client.send(outgoing, stream=True)
+        except AppError as exc:
+            await close_client()
+            return fail(exc.status, exc.code, exc.message, body=body)
         except httpx.TimeoutException:
-            await client.aclose()
+            await close_client()
             return fail(504, "UPSTREAM_TIMEOUT", "来源响应超时", body=body)
         except httpx.RequestError:
-            await client.aclose()
+            await close_client()
             return fail(503, "SOURCE_UNAVAILABLE", "来源暂不可用", body=body)
+        except asyncio.CancelledError:
+            await close_client()
+            raise
+
+        async def close_upstream() -> None:
+            try:
+                await upstream.aclose()
+            finally:
+                await close_client()
 
         if 300 <= upstream.status_code < 400:
             status = upstream.status_code
-            await upstream.aclose()
-            await client.aclose()
+            await close_upstream()
             return fail(
                 502,
                 "UPSTREAM_REDIRECT_DENIED",
@@ -507,8 +534,7 @@ def create_kaiwu_edge_router(service_getter: Callable, settings: Settings) -> AP
                         recorded = True
                         await record(False, "")
                 finally:
-                    await upstream.aclose()
-                    await client.aclose()
+                    await close_upstream()
 
             response_headers["Content-Type"] = upstream_type
             return StreamingResponse(
@@ -536,8 +562,9 @@ def create_kaiwu_edge_router(service_getter: Callable, settings: Settings) -> AP
                 http_status=upstream.status_code,
             )
         finally:
-            await upstream.aclose()
-            await client.aclose()
+            await close_upstream()
+        if native and not _integration_still_active(service_obj.db, integration["id"]):
+            return fail(401, "INTEGRATION_UNAUTHENTICATED", "企业集成凭据无效", body=body)
         response_headers["Content-Type"] = upstream_type
         outcome, code = inspect_jsonrpc(payload)
         if upstream.status_code >= 300 or outcome is False:

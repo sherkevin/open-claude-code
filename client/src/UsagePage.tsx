@@ -12,7 +12,7 @@ export const usageQuery=(filters:UsageFilters,admin:boolean)=>{
 };
 const emptyFilters:UsageFilters={scope:'self',model_id:'',date_from:'',date_to:''};
 const calls=(item:UsageTotals)=>item.model_call_count==null?`已知 ${item.known_model_calls??0}`:String(item.model_call_count);
-const kinds:Record<string,string>={chat:'业务问答',compact:'上下文压缩',completion:'输入补全',routing:'自动选模',followups:'后续问题',knowledge_vision:'知识图片解析'};
+const kinds:Record<string,string>={chat:'业务问答',compact:'上下文压缩',completion:'输入补全',routing:'自动选模',followups:'后续问题',knowledge_vision:'知识图片解析',subagent:'分析子任务'};
 const tokenFields:UsageField[]=['total_input_tokens','input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'];
 export function usageDisplay(item:UsageTotals,field:UsageField):string {
   const coverage=field==='total_input_tokens'?item.total_input_coverage:item.field_coverage?.[field];

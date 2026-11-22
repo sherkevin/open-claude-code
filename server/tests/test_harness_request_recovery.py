@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,12 +28,17 @@ def recovery_provider():
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             state["requests"].append(body)
             attempt, case = len(state["requests"]), state["case"]
-            if case.startswith("http-"):
+            if case == "once-timeout" and attempt == 1:
+                time.sleep(0.6)
+                return
+            if case.startswith("http-") or case.startswith("once-") and attempt == 1:
                 status = int(case.split("-")[1])
                 payload = json.dumps({"error": {"type": "synthetic", "message": "private-provider-diagnostic"}}).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
+                if status == 429:
+                    self.send_header("Retry-After", "1")
                 self.end_headers()
                 self.wfile.write(payload)
                 return
@@ -91,7 +97,8 @@ def recovery_provider():
     ("first", "succeeded", 2), ("after-tool", "succeeded", 3),
     ("always", "failed", 2), ("two-steps", "failed", 3),
     ("partial", "failed", 1), ("cancel", "cancelled", 1),
-    ("http-401", "failed", 1), ("http-403", "failed", 1), ("http-429", "failed", 1),
+    ("http-401", "failed", 1), ("http-403", "failed", 1), ("http-429", "failed", 2),
+    ("once-429", "succeeded", 2), ("once-503", "succeeded", 2), ("once-timeout", "succeeded", 2),
 ])
 def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_cancel(
     tmp_path, monkeypatch, recovery_provider, case, expected_status, expected_requests,
@@ -104,6 +111,19 @@ def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_ca
     monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL", "local-lexical-v1")
     base, state = recovery_provider
     state["case"] = case
+    if case == "once-timeout":
+        from harness import profile
+        write_profile = profile.write_profile
+
+        def short_timeout(**arguments):
+            result = write_profile(**arguments)
+            path = Path(result["profile_dir"]) / "cordis.patch.yml"
+            entries = json.loads(path.read_text())
+            next(plugin for plugin in entries[0]["insert"] if plugin["id"] == "llm-deepseek")["config"]["streamIdleTimeoutMs"] = 200
+            path.write_text(json.dumps(entries))
+            return result
+
+        monkeypatch.setattr(profile, "write_profile", short_timeout)
     catalog = tmp_path / "catalog.json"
     catalog.write_text(json.dumps({"default_model_id": "fixture", "models": [{"id": "fixture", "label": "Local recovery fixture", "upstream_model": "fixture",
         "reasoning_levels": {"default": None}, "provider_env": {"ANTHROPIC_API_KEY": "synthetic-only", "ANTHROPIC_BASE_URL": base}}]}))
@@ -136,9 +156,11 @@ def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_ca
         assert len({stage['attempt_id'] for stage in usage['token_accounting']['stages']}) == expected_requests
         events = service.db.events(run_id, 0)
         retries = [e["data"] for e in events if e["type"] == "model.retry"]
-        expected_retries = 1 if case in {"first", "after-tool", "always", "two-steps", "cancel"} else 0
+        expected_retries = 1 if expected_requests > 1 or case == "cancel" else 0
         assert len(retries) == expected_retries
-        assert all(e == {"retry": 1, "max_retries": 1, "delay_ms": 500, "code": "MODEL_TRANSPORT_ERROR"} for e in retries)
+        code = ("MODEL_REQUEST_TIMEOUT" if case == "once-timeout" else
+                {"429": "MODEL_RATE_LIMITED", "503": "MODEL_PROVIDER_ERROR"}.get(case[-3:], "MODEL_TRANSPORT_ERROR"))
+        assert all(e == {"retry": 1, "max_retries": 1, "delay_ms": 1000 if case.endswith("429") else 500, "code": code} for e in retries)
         tool_events = [e for e in events if e["type"] == "tool.completed"]
         assert len(tool_events) == (1 if case in {"after-tool", "two-steps"} else 0)
         if tool_events:

@@ -162,28 +162,29 @@ class ImportRequest(BaseModel):
     scope: Literal["private", "team"] = "private"
 
 
+def plan_mcp_import(body: ImportRequest, service, user) -> ImportPlan:
+    if body.scope == "team":
+        service.require_admin(user)
+    plan = parse_mcp_config(body.config, service.settings.mcp_hosts)
+    names = {item.name for item in plan.connections}
+    if any(row["name"] in names and row.get("scope") == body.scope for row in service.db.all("SELECT * FROM connections WHERE deleted=0") if service.resource_access(row, user)):
+        raise AppError(409, "MCP_IMPORT_NAME_EXISTS", "已有同名连接，请修改导入名称或在原连接中编辑；批量导入不会覆盖既有配置")
+    return plan
+
+
 def create_import_router(service_dependency, authenticated):
     router = APIRouter(prefix="/api/v1/connections/import", tags=["MCP configuration"])
 
-    def planned(body, service, user):
-        if body.scope == "team":
-            service.require_admin(user)
-        plan = parse_mcp_config(body.config, service.settings.mcp_hosts)
-        names = {item.name for item in plan.connections}
-        if any(row["name"] in names and row.get("scope") == body.scope for row in service.db.all("SELECT * FROM connections WHERE deleted=0") if service.resource_access(row, user)):
-            raise AppError(409, "MCP_IMPORT_NAME_EXISTS", "已有同名连接，请修改导入名称或在原连接中编辑；批量导入不会覆盖既有配置")
-        return plan
-
     @router.post("/preview")
     def preview(body: ImportRequest, service=Depends(service_dependency), user=Depends(authenticated)):
-        return {**planned(body, service, user).preview(), "scope": body.scope}
+        return {**plan_mcp_import(body, service, user).preview(), "scope": body.scope}
 
     @router.post("", status_code=201)
     def create(body: ImportRequest, service=Depends(service_dependency), user=Depends(authenticated)):
         # No awaits while holding the SQLite transaction. Validate again so stale
         # browser previews cannot overwrite an existing authorized connection.
         with service.db.transaction():
-            plan = planned(body, service, user)
+            plan = plan_mcp_import(body, service, user)
             connections = [service.save_connection({**item.create_fields(), "scope": body.scope}, user=user) for item in plan.connections]
         return {"connections": connections, "warnings": plan.warnings, "binding_required": True}
 

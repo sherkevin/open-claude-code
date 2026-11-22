@@ -45,7 +45,7 @@ export class ApiError extends Error {
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
+  if (init.body && !headers.has('Content-Type') && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   headers.set('Accept', 'application/json');
   let response: Response;
   try { response = await fetch(apiURL(path), { ...init, headers, credentials: 'include' }); }

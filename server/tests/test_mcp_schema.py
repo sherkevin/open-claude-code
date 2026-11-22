@@ -12,12 +12,12 @@ from app.mcp_tools import MCPBusinessTool, schema_validator, transport_logs
 from app.security import AppError
 
 
-def business_tool(credential, schema):
+def business_tool(credential, schema, *, connection_name="业务连接"):
     runtime = SimpleNamespace(
         config={"mcp_servers": {"c1": {"url": "https://example.invalid/mcp"}}},
         service=SimpleNamespace(secrets=SimpleNamespace(decrypt=lambda _: credential)),
     )
-    return MCPBusinessTool(runtime, {"id": "1", "secret": "encrypted-fixture"}, {
+    return MCPBusinessTool(runtime, {"id": "1", "name": connection_name, "secret": "encrypted-fixture"}, {
         "name": "read_record", "description": "Synthetic business tool", "inputSchema": schema,
     })
 
@@ -61,6 +61,19 @@ def test_schema_business_field_names_and_constants_remain_unchanged():
     assert tool.definition()["input_schema"] == expected
     arguments = {"token": "public-record-identifier", "kind": "production-record"}
     assert tool.arguments(arguments) == arguments
+
+
+def test_model_tool_description_preserves_safe_source_label_and_raw_name():
+    credential = "synthetic-connection-secret"
+    url = "https://example.invalid/mcp"
+    tool = business_tool(credential, {"type": "object"}, connection_name=f"MCP 3000\n{url} {credential}")
+    alias = business_tool(credential, {"type": "object"}, connection_name="Renamed MCP")
+    description = tool.definition()["description"]
+    assert '"MCP 3000 [redacted] [redacted]"' in description
+    assert '"read_record"' in description and "Synthetic business tool" in description
+    assert credential not in description and url not in description
+    assert description.count("\n") == 1
+    assert tool.definition()["name"] == alias.definition()["name"]
 
 
 @pytest.mark.parametrize("credential", ['synthetic"quoted-secret', "synthetic\\slash-secret"])

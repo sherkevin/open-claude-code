@@ -32,7 +32,7 @@ class ConnectionCreate(InputModel):
     name: str = Field(min_length=1, max_length=100)
     transport: Literal["http"] = "http"
     url: str = Field(max_length=2048)
-    auth_type: Literal["none", "bearer"] = "none"
+    auth_type: Literal["none", "bearer", "oauth"] = "none"
     credential: str | None = Field(default=None, max_length=8192)
     enabled: bool = True
     scope: Scope = "private"
@@ -43,7 +43,7 @@ class ConnectionPatch(InputModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     transport: Literal["http"] | None = None
     url: str | None = Field(default=None, max_length=2048)
-    auth_type: Literal["none", "bearer"] | None = None
+    auth_type: Literal["none", "bearer", "oauth"] | None = None
     credential: str | None = Field(default=None, max_length=8192)
     clear_credential: bool = False
     enabled: bool | None = None
@@ -127,6 +127,7 @@ class ConversationCreate(InputModel):
     category: str = Field(default="", max_length=100)
     tags: list[Tag] = Field(default_factory=list, max_length=10)
     auto_model_routing: bool | None = None
+    permission_mode: Literal["manual", "auto", "full"] | None = None
 
 
 class ConversationPatch(InputModel):
@@ -137,6 +138,7 @@ class ConversationPatch(InputModel):
     category: str | None = Field(default=None, max_length=100)
     tags: list[Tag] | None = Field(default=None, max_length=10)
     auto_model_routing: bool | None = None
+    permission_mode: Literal["manual", "auto", "full"] | None = None
 
 
 class ModelRecommendationRequest(InputModel):
@@ -180,12 +182,13 @@ class ImageGenerationRequest(InputModel):
 class SendMessage(InputModel):
     client_request_id: str = Field(min_length=8, max_length=100)
     text: str = Field(default="", max_length=50000)
-    file_ids: list[str] = Field(default_factory=list, max_length=10)
+    file_ids: list[str] = Field(default_factory=list, max_length=20)
     skill_ids: list[str] = Field(default_factory=list, max_length=5)
     # A one-shot model override is explicit and never invokes the router.
     model_id: str | None = Field(default=None, min_length=1, max_length=100)
     reasoning_level: str | None = Field(default=None, min_length=1, max_length=30)
     auto_route: bool | None = None
+    recovery_run_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class ApprovalDecision(InputModel):
@@ -216,9 +219,7 @@ class HighRiskApprovalPolicy(InputModel):
 
 
 class SubagentPlanRequest(InputModel):
-    """Protected local orchestration contract; model/network modes are absent."""
-
-    mode: Literal["synthetic"] = "synthetic"
+    mode: Literal["synthetic", "harness"] = "synthetic"
     tasks: list[str | dict] = Field(min_length=1, max_length=4)
 
 

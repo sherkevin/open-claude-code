@@ -15,10 +15,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .db import dump, now, offload, offload_write, uid
+from .db import dump, now, offload, offload_write, shielded, uid
 from .context import cached_context, context_snapshot, fresh, save_context
 from .identity import build_system_prompt, identity_reply_for_message
 from .provider_policy import provider_route
+from .run_recovery import record_dispatch, recovery_prompt
 from .security import AppError, redact
 from .service import TERMINAL, approval_view
 from .token_savings import TokenAccounting
@@ -220,6 +221,8 @@ class WorkspaceRuntime:
             return []
 
     def check_tool(self, tool, arguments):
+        if self.config.get("recovery_only"):
+            raise AppError(403, "RECOVERY_TOOLS_DISABLED", "继续整理上轮结果时不会执行工具")
         # Tool identity and deployment allowlisting are pure policy checks and
         # must fail closed before refreshing mutable runtime configuration.
         self.service.policy.require_tool(tool)
@@ -346,8 +349,11 @@ class SDKRuntime(WorkspaceRuntime):
                 # Record only the actual tool attempt. Scope enforcement and
                 # domain routing need their own verified implementation.
                 await self.emit("run.stage", {"stage": "tool", "tool_name": tool})
-                await self.emit("tool.started", {"tool_call_id": tool_use_id or uid(), "tool_name": tool, "arguments": redact(arguments), "requires_approval": not automatic or model_review})
+                await self.emit("tool.started", {"tool_call_id": tool_use_id or uid(), "tool_name": tool, "arguments": redact(arguments),
+                                                "requires_approval": not automatic or model_review, "dispatch_tracked": True})
                 decision = "allow" if automatic and not model_review and tool not in CAPABILITY_TOOL_NAMES else "ask"
+                if decision == "allow":
+                    await offload_write(record_dispatch, service, self.tool_run_ids[tool_use_id], tool_use_id, tool)
                 return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision}}
             except Exception:
                 return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "应用权限校验拒绝此工具调用"}}
@@ -385,8 +391,10 @@ class SDKRuntime(WorkspaceRuntime):
                             tool, arguments, context, receipt_id)
                         if ticket is None:
                             return PermissionResultDeny(message="工具调用上下文无效，已拒绝执行")
+                        await offload_write(record_dispatch, service, run["id"], context.tool_use_id, tool)
                         return PermissionResultAllow(updated_input={
                             **arguments, CAPABILITY_TICKET_FIELD: ticket})
+                    await offload_write(record_dispatch, service, run["id"], getattr(context, "tool_use_id", None), tool)
                     return PermissionResultAllow(updated_input=arguments)
             except Exception:
                 pass
@@ -567,10 +575,11 @@ class SDKRuntime(WorkspaceRuntime):
             provider[key] = self.config["upstream_model"]
         from .capabilities import create_workspace_tools
         servers = dict(self.config["mcp_servers"])
-        workspace_tools = create_workspace_tools(self)
+        recovery_only = self.config.get("recovery_only")
+        workspace_tools = None if recovery_only else create_workspace_tools(self)
         if workspace_tools:
             servers["workspace"] = workspace_tools
-        native_tools = [] if self.service.policy.is_trial else ["Read", "Write", "Edit", "Glob", "Grep"]
+        native_tools = [] if self.service.policy.is_trial or recovery_only else ["Read", "Write", "Edit", "Glob", "Grep"]
         from .tool_constraint_context import sdk_constraint_context
         constraint_context = await offload(sdk_constraint_context, self)
         options = ClaudeAgentOptions(
@@ -704,7 +713,7 @@ class SDKRuntime(WorkspaceRuntime):
                 raise AppError(422, "ATTACHMENT_UNSUPPORTED", "当前支持文本、CSV、JSON、DOCX、XLSX 和可提取文字的 PDF；图片需在知识库中进行本地 OCR")
             else:
                 references.append(f"文本附件：{destination.relative_to(root)}")
-        prompt = message["text"] + ("\n\n已上传附件（需要时使用 Read 读取）：\n" + "\n".join(references) if references else "")
+        prompt = recovery_prompt(run, message["text"]) + ("\n\n已上传附件（需要时使用 Read 读取）：\n" + "\n".join(references) if references else "")
         metadata = json.loads(run.get("execution_meta") or "{}")
         skills = json.loads(run.get("skill_snapshots") or "[]") or metadata.get("skill_snapshots") or self.config.get("skill_snapshots") or []
         if skills and not compact:
@@ -835,6 +844,7 @@ class SessionActor:
         self.current_run_id = None
         self.cancelled = False
         self.fingerprint = None
+        self.mcp_inventory = []
         # Items are counted from the synchronous enqueue until this actor has
         # taken them off the queue.  On Python 3.10 ``wait_for`` runs
         # ``queue.get()`` in a helper task, so a dequeued item spends one loop
@@ -865,14 +875,21 @@ class SessionActor:
         # Configuration validation rereads conversations, runs, connections,
         # assistants and skills.  Off-loop keeps that burst of SQLite reads
         # from stalling SSE and other sessions.
+        if self.current_run_id:
+            await self.service.mcp_availability.refresh(self.conversation_id)
         config = await offload(self.service.runtime_config, self.conversation_id)
-        if self.runtime and config["fingerprint"] != self.fingerprint:
+        inventory = config.get("mcp_inventory", [])
+        if self.runtime and (config["fingerprint"] != self.fingerprint or inventory != self.mcp_inventory):
             await self.runtime.close()
             self.runtime = None
         if self.runtime is None:
             self.runtime = self.manager.runtime_factory(self.service, self.conversation_id, config, self.approve, self.emit)
             self.fingerprint = config["fingerprint"]
+            self.mcp_inventory = inventory
             await self.runtime.connect()
+        if self.current_run_id:
+            for source in config.get("mcp_unavailable", []):
+                await self.emit("mcp.unavailable", source)
 
     async def context_command(self, future):
         kind = (await offload(self.service.require, "conversations", self.conversation_id)).get("runtime_type")
@@ -897,6 +914,45 @@ class SessionActor:
             self.manager.context_requests.pop(self.conversation_id, None)
             if not future.done():
                 future.set_result(value)
+
+    async def fork_command(self, child_id, boundary, body, user, future):
+        from .conversation_fork import clear_fork_home, fork_boundary, save_fork
+
+        attempted = False
+        try:
+            # A submit or authorization change can race the API-edge check.
+            # Prove the same bound turn again after reserving the actor.
+            _, existing, current = await offload(fork_boundary, self.service, self.conversation_id, body, user)
+            if existing:
+                future.set_result(existing)
+                return
+            if current != boundary:
+                raise AppError(409, "FORK_BOUNDARY_CHANGED", "源会话的原生分支位置已变化")
+            attempted = True
+            await offload(clear_fork_home, self.service, child_id)
+            await self.ensure_runtime()
+            await self.runtime.fork_session(child_id, boundary)
+            await self.runtime.close()
+            self.runtime = None
+            value = await offload_write(save_fork, self.service, self.conversation_id, child_id, body, user)
+            attempted = False
+            future.set_result(value)
+        except AppError as error:
+            future.set_exception(error)
+        except Exception as error:
+            log.warning("Native Harness fork failed (%s)", type(error).__name__)
+            future.set_exception(AppError(502, "NATIVE_FORK_FAILED", "原生会话分支创建失败，请稍后重试"))
+        finally:
+            if self.runtime:
+                try:
+                    await self.runtime.close()
+                finally:
+                    self.runtime = None
+            if attempted:
+                await offload(clear_fork_home, self.service, child_id)
+            self.manager.fork_requests.pop(self.conversation_id, None)
+            if not future.done():
+                future.set_exception(AppError(503, "EXECUTION_STOPPED", "执行服务停止，稍后可重新创建分支"))
 
     async def emit(self, kind, data):
         run_id = self.current_run_id
@@ -1132,7 +1188,10 @@ class SessionActor:
                     break
                 self.pending -= 1
                 if isinstance(run_id, tuple):
-                    await self.context_command(run_id[1])
+                    if run_id[0] == "fork":
+                        await self.fork_command(*run_id[1:])
+                    else:
+                        await self.context_command(run_id[1])
                     continue
                 self.queued_run_ids.discard(run_id)
                 self.current_run_id, self.cancelled = run_id, False
@@ -1189,6 +1248,7 @@ class SessionActor:
                         continue
                     await offload_write(self.service.db.execute, "UPDATE runs SET status='running' WHERE id=?", (run_id,))
                     await self.emit("run.started", {})
+                    artifact_baseline = await offload(self.service.artifact_snapshot, self.conversation_id)
                     await self.runtime.execute(run, message)
                     completed_runtime = self.runtime
                     if getattr(self.runtime, "close_after_run", False):
@@ -1196,7 +1256,8 @@ class SessionActor:
                         self.runtime = None
                     if self.cancelled:
                         status = "cancelled"
-                    await offload_write(self.service.collect_artifacts, self.conversation_id, run_id)
+                    if status == "succeeded":
+                        await offload_write(self.service.collect_artifacts, self.conversation_id, run_id, artifact_baseline)
                     if (status == "succeeded" and getattr(completed_runtime, "config", {}).get("runtime_type") == "harness"):
                         pending = await offload(self.service.memory.pending_for_run, run_id)
                         if pending and pending["status"] == "approved_pending_commit":
@@ -1239,6 +1300,9 @@ class SessionActor:
             if future and not future.done():
                 kind = (await offload(self.service.require, "conversations", self.conversation_id)).get("runtime_type")
                 future.set_result(context_snapshot(error="执行服务已停止，稍后可重新刷新", runtime_type=kind))
+            fork = self.manager.fork_requests.pop(self.conversation_id, None)
+            if fork and not fork.done():
+                fork.set_exception(AppError(503, "EXECUTION_STOPPED", "执行服务停止，稍后可重新创建分支"))
             if self.runtime:
                 try:
                     await self.runtime.close()
@@ -1296,6 +1360,8 @@ class RunManager:
         self.service, self.runtime_factory = service, runtime_factory or configured_runtime
         self.actors, self.approvals = {}, {}
         self.context_requests = {}
+        self.fork_requests = {}
+        self.queue_worker = None
         # Actors removed from ``actors`` may still be closing a native runtime
         # in their ``finally`` block.  They must stay tracked: shutdown has to
         # wait for them before the lifespan closes the database, and a new
@@ -1321,9 +1387,63 @@ class RunManager:
     def recover(self):
         self.service.subagents.recover()
         for row in self.service.db.all("SELECT * FROM runs WHERE status NOT IN ('succeeded','failed','cancelled','interrupted')"):
-            self.finish(row["id"], "interrupted", "服务已重启，任务未自动重放；可继续发送消息", approval_source="restart")
+            with self.service.db.transaction():
+                metadata = json.loads(row.get("execution_meta") or "{}")
+                metadata["interrupted_from"] = row["status"]
+                self.service.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump(metadata), row["id"]))
+                self.finish(row["id"], "interrupted", "服务重启中断了本轮任务，请先查看操作记录和恢复选项。",
+                            approval_source="restart", error_code="SERVICE_RESTARTED")
         self.service.db.execute("UPDATE approvals SET status='expired',decided_at=COALESCE(decided_at,?),decided_by=NULL,decision_source=COALESCE(decision_source,'restart') WHERE status='pending'", (now(),))
         self.service.memory.recover()
+
+    def start_queue_worker(self):
+        if not self.service.policy.is_trial:
+            self.queue_worker = asyncio.create_task(self._advance_message_queues())
+
+    async def _advance_message_queues(self):
+        from .conversation_schedules import enqueue_due_schedules
+        from .draft_uploads import sweep_expired_draft_uploads
+        from .message_queue import MessageQueue
+        queue = MessageQueue(self.service)
+        next_sweep = 0.0
+        # Periodic reconciliation covers a queued draft added just as a run
+        # settles, transient actor capacity, and startup after process loss.
+        while True:
+            if time.monotonic() >= next_sweep:
+                next_sweep = time.monotonic() + 3600
+                try:
+                    await offload_write(sweep_expired_draft_uploads, self.service)
+                except Exception:
+                    log.warning("Draft attachment cleanup failed", exc_info=True)
+            try:
+                await offload_write(enqueue_due_schedules, self.service)
+                for candidate in await offload(queue.ready):
+                    try:
+                        actor = self.actor_for(candidate["conversation_id"])
+                    except AppError:
+                        continue
+
+                    async def advance():
+                        # Keep the reserved actor alive across the durable
+                        # claim. Enqueue runs before releasing the reservation.
+                        actor.pending += 1
+                        try:
+                            run_id = await offload_write(queue.advance, candidate)
+                            if run_id:
+                                actor.enqueue(run_id)
+                        finally:
+                            actor.pending -= 1
+
+                    try:
+                        await shielded(advance())
+                    except AppError:
+                        continue
+            except AppError:
+                # Ownership or conversation state changed during this scan.
+                pass
+            except Exception:
+                log.warning("Message queue advancement failed", exc_info=True)
+            await asyncio.sleep(1)
 
     def actor_for(self, conversation_id):
         retiring = self.retiring_by_conversation.get(conversation_id)
@@ -1345,7 +1465,7 @@ class RunManager:
             actor = None
         if not actor:
             if len(self.actors) >= self.service.settings.max_active_sessions:
-                idle = next((value for value in self.actors.values() if not value.closing and not value.current_run_id and not value.pending and value.queue.empty() and value.conversation_id not in self.context_requests), None)
+                idle = next((value for value in self.actors.values() if not value.closing and not value.current_run_id and not value.pending and value.queue.empty() and not self.maintenance_busy(value.conversation_id)), None)
                 if idle:
                     idle.queue.put_nowait(None)
                     self.actors.pop(idle.conversation_id, None)
@@ -1392,8 +1512,22 @@ class RunManager:
             return
         actor.enqueue(run_id)
 
+    def maintenance_busy(self, conversation_id):
+        return conversation_id in self.context_requests or conversation_id in self.fork_requests
+
+    async def fork(self, conversation_id, child_id, boundary, body, user):
+        if self.maintenance_busy(conversation_id):
+            raise AppError(409, "CONVERSATION_BUSY", "此会话正在处理其他操作，请稍后再创建分支")
+        actor = self.actor_for(conversation_id)
+        future = asyncio.get_running_loop().create_future()
+        self.fork_requests[conversation_id] = future
+        actor.enqueue(("fork", child_id, boundary, body, user, future))
+        return await asyncio.shield(future)
+
     async def context(self, conversation_id):
         conversation = await offload(self.service.require, "conversations", conversation_id)
+        if conversation_id in self.fork_requests:
+            raise AppError(409, "CONTEXT_BUSY", "会话正在创建分支，请稍后刷新")
         if conversation["active_run_id"]:
             raise AppError(409, "CONTEXT_BUSY", "此会话仍有任务执行中，请完成或停止任务后刷新")
         cached = await offload(cached_context, self.service, conversation_id)
@@ -1425,6 +1559,8 @@ class RunManager:
         run = self.service.require("runs", run_id)
         if run["status"] in TERMINAL:
             return
+        from .run_steering import expire_steers
+        expire_steers(self.service, run_id)
         timings = save_timing(self.service, run_id, "total_ms", elapsed_ms(run))
         if run.get("kind", "chat") == "chat" and run.get("assistant_message_id"):
             message = self.service.require("messages", run["assistant_message_id"])
@@ -1501,7 +1637,7 @@ class RunManager:
         run, marked = await offload_write(mark_cancelling)
         if not marked:
             return
-        # A parent cancellation must stop every synthetic child before the
+        # A parent cancellation must stop every child before the
         # parent actor is interrupted.  The operation is idempotent and emits
         # only redacted child lifecycle summaries on the parent event stream.
         await self.service.subagents.cancel_plan(run_id, run["user_id"])
@@ -1512,6 +1648,9 @@ class RunManager:
             await self.finish_async(run_id, "cancelled")
 
     async def close(self):
+        if self.queue_worker:
+            self.queue_worker.cancel()
+            await asyncio.gather(self.queue_worker, return_exceptions=True)
         await self.service.subagents.close()
         actors = list(self.actors.values())
         self.actors.clear()

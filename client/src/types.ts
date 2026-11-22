@@ -1,6 +1,19 @@
+export interface ChatAttachmentLimits {
+  max_files: number;
+  max_file_bytes: number;
+  max_image_bytes: number;
+  max_total_bytes: number;
+  max_image_total_bytes: number;
+}
+
 export interface AppConfig {
   registration_enabled?: boolean; registration_min_password_length?: number;
   brand_name: string; upload_max_bytes: number; auth_types: string[]; model_label: string;
+  chat_attachment_upload_max_bytes?: number;
+  chat_attachment_limits?: ChatAttachmentLimits;
+  legacy_chat_image_max_bytes?: number;
+  chat_attachment_discard?: boolean;
+  harness_subagents?: boolean;
   default_model_id?: string; default_reasoning_level?: string;
   deployment_mode?: 'normal' | 'trial'; capabilities?: string[]; allowed_retrieval_modes?: KnowledgeRetrievalMode[];
   feishu_h5?: { enabled: boolean; app_id: string; path: string };
@@ -33,7 +46,7 @@ export interface MCPTool {
 }
 export interface ScopedResource { owner_id?: string | null; scope?: 'private' | 'team'; can_edit?: boolean }
 export interface Connection extends ScopedResource {
-  id: string; name: string; transport: 'http'; url: string; auth_type: 'none' | 'bearer';
+  id: string; name: string; transport: 'http'; url: string; auth_type: 'none' | 'bearer' | 'oauth';
   credential_present: boolean; enabled: boolean; status: 'untested' | 'connected' | 'needs_auth' | 'failed';
   source_metadata?: Record<string,string>; tools: MCPTool[]; last_error: string | null; last_tested_at: string | null; revision: number;
 }
@@ -84,7 +97,8 @@ export interface WorkflowTemplate { template_id: string; name: string; descripti
 export interface WorkflowApproval { id: string; workflow_run_id: string; workflow_id: string; node_id: string; status: 'pending' | 'deciding' | 'approved' | 'rejected'; decision: 'approve' | 'reject' | null; comment: string; created_at: string; decided_at: string | null; decided_by?: string | null }
 export interface WorkflowRunSummary { id: string; workflow_id: string; version: number; status: string; synthetic: boolean; execution_mode?: 'synthetic' | 'model' | 'tool'; trace_count: number; approval_node_id?: string | null; error?: string | null; created_at: string; completed_at: string | null }
 export interface WorkflowRun { id: string; workflow_id: string; conversation_id?: string | null; version: number; graph_hash: string; permission_digest: string; permission_snapshot?: Record<string, unknown>; status: string; synthetic: boolean; execution_mode?: 'synthetic' | 'model' | 'tool'; approval?: WorkflowApproval | null; approvals?: WorkflowApproval[]; output: Record<string, unknown>; error?: string | null; tool_evidence_records?: Array<{ node_id: string; connection_id: string; tool_name: string; evidence: Array<Record<string, unknown>>; digest: string; created_at: string }>; trace: Array<{ sequence: number; node_id: string; node_type: WorkflowNodeType; status: string; external_call: boolean; approval_required: boolean; branch_skipped?: boolean; condition_result?: boolean; selected_targets?: string[]; model_id?: string; model_label?: string; reasoning_level?: string; role?: string; model_attempts?: number; model_retries?: number; model_retry_trace?: Array<{ attempt: number; status: string; error_code?: string; duration_ms?: number; retry_backoff_ms?: number }>; duration_ms?: number; input_bindings?: Array<{ key: string; source: string }>; structured_output?: boolean; structured_fields?: string[]; tool_call?: boolean; tool_name?: string; connection_id?: string; evidence_count?: number; output_preview?: string; error_code?: string }>; created_at: string; completed_at: string | null }
-export interface Conversation { id: string; assistant_id: string; title: string; archived: boolean; active_run_id: string | null; created_at: string; updated_at: string; model_id: string; model_label: string; reasoning_level: string; runtime_type?: 'claude' | 'harness'; auto_model_routing?: boolean; has_native_session?: boolean; category?: string; tags?: string[] }
+export type PermissionMode = 'manual' | 'auto' | 'full';
+export interface Conversation { id: string; fork_inherited_through_id?: string; assistant_id: string; title: string; archived: boolean; active_run_id: string | null; created_at: string; updated_at: string; model_id: string; model_label: string; reasoning_level: string; runtime_type?: 'claude' | 'harness'; auto_model_routing?: boolean; has_native_session?: boolean; category?: string; tags?: string[]; search_hit?: {message_id:string; before:string; match:string; after:string}; permission_mode?: PermissionMode; permission_modes?: PermissionMode[] }
 export interface Message { id: string; conversation_id: string; role: 'user' | 'assistant'; text: string; file_ids: string[]; run_id: string | null; created_at: string; citations?: EvidenceSource[]; skills?: Array<{id:string;name:string;revision:number}> }
 export interface Skill extends ScopedResource { id: string; name: string; description: string; instructions: string; enabled: boolean; revision: number; required_tools: string[]; resources?: Record<string,string> }
 export type PluginPermission = 'workspace.files.read' | 'workspace.files.write' | 'knowledge.read' | 'web.read' | 'mcp.connection.read' | 'artifact.write' | 'memory.read';
@@ -153,11 +167,12 @@ export interface NativeContext {
   stale?: boolean; stale_reason?: 'route_changed' | 'request_unobserved' | 'snapshot_expired' | null;
   projection_seq?: number | null; manual_compact_available?: boolean;
   breakdown?: { system_tokens: number | null; tools_tokens: number | null; message_tokens: number | null } | null;
-  last_compaction?: { run_id: string; status: CompactionStatus; trigger: string | null; pre_tokens: number | null; created_at: string; error?: string | null; followup_status?: string | null } | null;
+  last_compaction?: { run_id: string; status: CompactionStatus; trigger: string | null; pre_tokens: number | null; post_tokens?: number | null; shadowed_items?: number | null; created_at: string; error?: string | null; followup_status?: string | null } | null;
 }
 export type CompactionStatus = 'started' | 'completed' | 'not_needed' | 'failed' | 'cancelled' | 'interrupted' | 'unknown';
 export interface CompactionInfo { status: CompactionStatus; trigger: string | null; pre_tokens: number | null; before: NativeContext | null; after: NativeContext | null; error?: string | null; followup_status?: string | null }
-export interface Run { model_id?: string; model?: string; reasoning_level?: string | null; id: string; conversation_id: string; status: RunStatus; execution_kind?: 'product_metadata' | 'model'; identity_source?: 'run_selection' | null; model_call_count?: number | null; kind?: 'chat' | 'compact'; compaction?: CompactionInfo | null; assistant_message_id: string | null; error: string | null; error_code?: string | null; usage: Record<string, unknown> | null; approvals: Approval[]; created_at: string; completed_at: string | null; timings?:RunTimings }
+export interface RunRecovery { mode: 'retry' | 'answer_only'; operations: { tool_name: string; state: 'completed' | 'unknown' }[]; operations_truncated: boolean; interrupted_from: RunStatus | null }
+export interface Run { model_id?: string; model?: string; reasoning_level?: string | null; id: string; conversation_id: string; status: RunStatus; execution_kind?: 'product_metadata' | 'model'; identity_source?: 'run_selection' | null; model_call_count?: number | null; kind?: 'chat' | 'compact'; compaction?: CompactionInfo | null; assistant_message_id: string | null; error: string | null; error_code?: string | null; usage: Record<string, unknown> | null; approvals: Approval[]; created_at: string; completed_at: string | null; timings?:RunTimings; recovery?: RunRecovery | null }
 export type UsageField = 'total_input_tokens' | 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'estimated_cost_usd';
 export interface UsageTotals {
   total_input_tokens?: number | null; known_total_input_tokens?: number;

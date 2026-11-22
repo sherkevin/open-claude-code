@@ -71,6 +71,8 @@ class Settings:
     default_model_id: str = field(default_factory=lambda: os.getenv("AGENT_DEFAULT_MODEL_ID", ""))
     origins: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().rstrip("/") for x in os.getenv("AGENT_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if x.strip()))
     mcp_hosts: tuple[str, ...] = field(default_factory=lambda: tuple(x.strip().lower() for x in os.getenv("AGENT_MCP_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if x.strip()))
+    mcp_oauth_profiles: str = field(default_factory=lambda: os.getenv("AGENT_MCP_OAUTH_PROFILES", "").strip())
+    mcp_oauth_loopback: bool = field(default_factory=lambda: os.getenv("AGENT_MCP_OAUTH_LOOPBACK", "false").lower() == "true")
     cookie_secure: bool = field(default_factory=lambda: os.getenv("AGENT_COOKIE_SECURE", "false").lower() == "true")
     session_cookie_name: str = field(default_factory=lambda: os.getenv("AGENT_SESSION_COOKIE_NAME", "zhixing_session"))
     cookie_path: str = field(default_factory=lambda: os.getenv("AGENT_COOKIE_PATH", "/"))
@@ -85,6 +87,7 @@ class Settings:
     # client-supplied Host header alone.
     capability_local_dev: bool = field(default_factory=lambda: os.getenv("AGENT_CAPABILITY_LOCAL_DEV", "false").lower() == "true")
     upload_max_bytes: int = 20 * 1024 * 1024
+    chat_attachment_upload_max_bytes: int = field(default_factory=lambda: int(os.getenv("AGENT_CHAT_ATTACHMENT_UPLOAD_MAX_BYTES", str(50 * 1024 * 1024))))
     session_hours: int = 24
     idle_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_IDLE_SECONDS", "600")))
     approval_seconds: int = field(default_factory=lambda: int(os.getenv("AGENT_APPROVAL_SECONDS", "600")))
@@ -181,6 +184,11 @@ class Settings:
     # token is intentionally separate from user sessions and connector device
     # tokens; none of these values is returned by /config or status APIs.
     kaiwu_control_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ENABLED", "false").lower() == "true")
+    kaiwu_native_relay_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_KAIWU_NATIVE_RELAY_ENABLED", "false").lower() == "true")
+    # Only these tenants' signed devices may issue their own MCP integration.
+    kaiwu_device_export_tenants: tuple[str, ...] = field(default_factory=lambda: tuple(
+        value.strip() for value in os.getenv("AGENT_KAIWU_DEVICE_EXPORT_TENANTS", "").split(",") if value.strip()
+    ))
     kaiwu_control_admin_token: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ADMIN_TOKEN", "").strip(), repr=False)
     kaiwu_control_admin_token_file: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ADMIN_TOKEN_FILE", "").strip())
     kaiwu_control_relay_address: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_ADDRESS", "").strip())
@@ -212,6 +220,8 @@ class Settings:
     kaiwu_control_edge_public_key: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_EDGE_PUBLIC_KEY", "").strip())
 
     def __post_init__(self) -> None:
+        if type(self.chat_attachment_upload_max_bytes) is not int or self.chat_attachment_upload_max_bytes <= 0:
+            raise ValueError("AGENT_CHAT_ATTACHMENT_UPLOAD_MAX_BYTES must be a positive integer")
         if not isinstance(self.session_cookie_name, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}", self.session_cookie_name):
             raise ValueError("AGENT_SESSION_COOKIE_NAME must be a safe cookie token")
         if self.session_cookie_name.lower() in {"expires", "path", "comment", "domain", "max-age", "secure", "httponly", "version", "samesite", "partitioned"}:
@@ -272,6 +282,11 @@ class Settings:
             raise ValueError("AGENT_KAIWU_EDGE_REQUEST_TIMEOUT_SECONDS must be between 1 and 300")
         if type(self.kaiwu_integration_default_ttl_seconds) is not int or not 60 <= self.kaiwu_integration_default_ttl_seconds <= 31536000:
             raise ValueError("AGENT_KAIWU_INTEGRATION_DEFAULT_TTL_SECONDS must be between 60 and 31536000")
+        if not isinstance(self.kaiwu_device_export_tenants, tuple) or any(
+            not isinstance(tenant, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", tenant)
+            for tenant in self.kaiwu_device_export_tenants
+        ):
+            raise ValueError("AGENT_KAIWU_DEVICE_EXPORT_TENANTS must be a comma-separated list of tenant IDs")
 
     def deployment_policy(self) -> DeploymentPolicy:
         return DeploymentPolicy(self.deployment_mode, self.trial_capabilities)

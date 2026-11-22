@@ -1,9 +1,4 @@
-"""Private, durable FIFO drafts. Dispatch reuses the normal run idempotency key.
-
-The open client advances the queue; closing it never implies background work.
-Only successful predecessor runs advance automatically. Unknown/failed/stopped
-outcomes require an explicit continuation, never replay of an accepted run.
-"""
+"""Private, durable FIFO drafts with host-owned dispatch and recovery."""
 import json
 
 from fastapi import APIRouter, Depends
@@ -67,7 +62,11 @@ class MessageQueue:
                 **{key: payload.get(key) for key in ("text", "file_ids", "skill_ids", "model_id", "reasoning_level")}}
 
     def add(self, conversation_id, payload, user):
+        if payload.get("recovery_run_id"):
+            raise AppError(422, "QUEUE_RECOVERY_UNSUPPORTED", "请打开未完成的任务，直接选择恢复")
         self.service.require_trial_fields(auto_route=payload.get("auto_route"), file_ids=payload.get("file_ids"), skill_ids=payload.get("skill_ids"))
+        if payload["client_request_id"].startswith("schedule-"):
+            raise AppError(409, "SCHEDULE_NOT_DUE", "此任务由计划队列启动")
         with self.db.transaction():
             conversation = self._authorize(conversation_id, user)
             if conversation["archived"]:
@@ -126,12 +125,31 @@ class MessageQueue:
             if (row["error"] or latest and latest["status"] != "succeeded") and not data["resume"]:
                 return {"status": "paused", "queue": state}
             try:
-                result, _created = self.service.prepare_run(conversation_id, json.loads(row["payload"]), user)
+                result, _created = self.service.prepare_run(conversation_id, json.loads(row["payload"]), user,
+                                                            queue_sequence=row["sequence"])
             except AppError as exc:
+                if exc.code in {"CONTEXT_BUSY", "MEMORY_BUSY", "CONVERSATION_BUSY"}:
+                    return {"status": "waiting", "queue": state}
                 self.db.execute("UPDATE message_queue SET error=?,updated_at=? WHERE sequence=?", (exc.message, now(), row["sequence"]))
                 return {"status": "paused", "queue": self.snapshot(conversation_id, user)}
-            self.db.execute("UPDATE message_queue SET status='accepted',run_id=?,error=NULL,updated_at=? WHERE sequence=?", (result["run_id"], now(), row["sequence"]))
             return {"status": "accepted", **result, "queue": self.snapshot(conversation_id, user)}
+
+    def ready(self):
+        return self.db.all("""SELECT q.conversation_id, q.id, q.revision, r.id AS after_run_id, c.user_id
+            FROM message_queue q JOIN conversations c ON c.id=q.conversation_id
+            JOIN users u ON u.id=c.user_id AND u.enabled=1
+            LEFT JOIN runs r ON r.rowid=(SELECT rr.rowid FROM runs rr WHERE rr.conversation_id=c.id
+                ORDER BY rr.created_at DESC,rr.rowid DESC LIMIT 1)
+            WHERE q.status='pending' AND q.error IS NULL AND c.archived=0 AND c.active_run_id IS NULL
+            AND (r.id IS NULL OR r.status='succeeded') AND q.sequence=(SELECT MIN(qq.sequence) FROM message_queue qq
+                WHERE qq.conversation_id=c.id AND qq.status='pending') ORDER BY q.sequence LIMIT 50""")
+
+    def advance(self, candidate):
+        user = self.service.require("users", candidate["user_id"])
+        result = self.dispatch(candidate["conversation_id"], candidate["id"], {
+            "revision": candidate["revision"], "after_run_id": candidate["after_run_id"], "resume": False,
+        }, user)
+        return result.get("run_id")
 
 
 def create_message_queue_router(svc, authenticated):

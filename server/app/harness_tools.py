@@ -12,14 +12,16 @@ import subprocess
 import threading
 import time
 
-from .db import uid
+from .db import offload_write, uid
 from .business_results import presentation_receipt
 from .external_capabilities import CAPABILITY_TOOL_SHORT_NAMES, record_approval_receipt
 from .harness_bridge import _arguments as knowledge_arguments
 from .harness_memory import HarnessMemoryTools, MEMORY_NAMES
 from .mcp_tools import build_mcp_tools, enforce_model_result_budget
 from .runtime import result_fact_metadata
+from .run_recovery import record_dispatch, require_tool_execution
 from .security import AppError, redact
+from .session_permissions import automatic_decision
 from .workspace_tools import APPROVAL_ID, TOOL_CALL_ID, build_workspace_tools
 
 OCR_PURPOSES = frozenset({"text_recognition", "rich_layout_recognition"})
@@ -66,13 +68,16 @@ def bounded_respond(client, request_id, result):
 class HarnessToolBridge:
     def __init__(self, runtime):
         self.runtime = runtime
-        self.tools = {tool.name: tool for tool in build_workspace_tools(runtime)}
-        self.business_tools = build_mcp_tools(runtime)
+        recovery_only = runtime.config.get("recovery_only")
+        self.tools = {} if recovery_only else {tool.name: tool for tool in build_workspace_tools(runtime)}
+        self.business_tools = {} if recovery_only else build_mcp_tools(runtime)
         self.memory = HarnessMemoryTools(self)
         self.calls = set()
         self.response_guards = {}
 
     def definitions(self):
+        if self.runtime.config.get("recovery_only"):
+            return []
         types = {str: "string", int: "integer", list: "array"}
         policy = self.runtime.service.policy
         workspace = [{"name": tool.name, "description": tool.description,
@@ -98,6 +103,7 @@ class HarnessToolBridge:
                 or run["conversation_id"] != runtime.conversation_id
                 or run["user_id"] != conversation["user_id"]):
             raise AppError(409, "HARNESS_RUN_INACTIVE", "此任务不再允许执行工具")
+        require_tool_execution(run)
 
     def arguments(self, name, arguments):
         if name in self.business_tools:
@@ -110,6 +116,9 @@ class HarnessToolBridge:
         if name in {"knowledge_search", "knowledge_read"}:
             return knowledge_arguments(name, arguments)
         required = {
+            "ask_user": {"question"},
+            "review_plan": {"plan"},
+            "delegate_tasks": {"tasks"},
             "generate_xlsx": {"filename", "sheets"},
             "generate_image": {"prompt"},
             "web_search": {"query"},
@@ -245,14 +254,16 @@ class HarnessToolBridge:
             run = service.require("runs", run_id)
             review_required = service.model_approval.requires_review(runtime.conversation_id, tool_name)
             dual = service.high_risk_approval.requires_dual(run, tool_name, arguments)
+            session_decision = None if automatic or review_required or dual else automatic_decision(service, run, tool_name)
             # This is an attempt before approval, not completed business
             # routing or scope enforcement. Report evidence after completion.
             await runtime.emit("run.stage", {"stage": "tool", "tool_name": tool_name})
             await runtime.emit("tool.started", {"tool_call_id": event_id, "tool_name": tool_name,
-                               "arguments": redact(arguments), "requires_approval": not automatic or review_required or dual})
+                               "arguments": redact(arguments), "requires_approval": not (automatic or session_decision) or review_required or dual,
+                               "dispatch_tracked": True})
             review = await service.model_approval.review(run, tool_name, arguments)
             allowed = (await runtime.approve(tool_name, arguments, review=review, review_checked=True)
-                       if review is not None or not automatic or dual else True)
+                       if review is not None or dual or not (automatic or session_decision) else True)
             # An approval authorizes this exact operation only. It never makes
             # a revoked account, changed policy, or cancelled run executable.
             self.active(run_id)
@@ -274,8 +285,18 @@ class HarnessToolBridge:
                 if business:
                     business.current()
                 self.active(run_id)
+                if session_decision and automatic_decision(service, run, tool_name) != session_decision:
+                    raise AppError(403, "SESSION_APPROVAL_CHANGED", "会话权限或只读核验已变化，请重新执行")
+
+            if session_decision:
+                recheck.definition_digest = session_decision.get("definition_digest")
+                recheck()
+                await runtime.emit("approval.session_decided", {**session_decision, "tool_name": tool_name,
+                                   "tool_call_id": event_id, "decision": "allow"})
 
             self.response_guards[(run_id, call_id)] = recheck
+            await offload_write(record_dispatch, service, run_id, event_id, tool_name)
+            recheck()
 
             if business:
                 result = await business.invoke(arguments, recheck)

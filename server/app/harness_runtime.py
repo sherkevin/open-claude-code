@@ -20,14 +20,35 @@ from .harness_usage import HarnessUsageLedger
 from .identity import build_system_prompt
 from .runtime import WorkspaceRuntime, elapsed_ms, save_timing
 from .provider_policy import TOKENHUB_BASE_URL, provider_route
+from .run_recovery import recovery_prompt
+from .run_steering import settle as settle_steer
 from .security import AppError
 from .token_savings import TokenAccounting
 
 PINNED_COMMIT = "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"
+MODEL_FAILURES = {
+    "TRANSPORT": (502, "MODEL_TRANSPORT_ERROR", "模型服务连接中断，请稍后恢复任务。"),
+    "RATE_LIMIT": (429, "MODEL_RATE_LIMITED", "模型服务正在限流，请稍后恢复任务。"),
+    "SERVER": (502, "MODEL_PROVIDER_ERROR", "模型服务暂时不可用，请稍后恢复任务。"),
+    "TIMEOUT": (504, "MODEL_REQUEST_TIMEOUT", "模型服务请求超时，请稍后恢复任务。"),
+    "CONTEXT_WINDOW_EXCEEDED": (422, "MODEL_CONTEXT_LIMIT", "模型的上下文空间不足，请查看会话的压缩记录后继续。"),
+}
 
 
 class _EmptyResult(BaseModel):
     pass
+
+
+class _SteerResult(BaseModel):
+    accepted: bool = Field(strict=True)
+
+
+class _AutoCompactionResult(BaseModel):
+    trigger: Literal["pressure", "context-overflow"]
+    beforeTokens: int | None = Field(default=None, ge=0, le=10**12, strict=True)
+    afterTokens: int | None = Field(default=None, ge=0, le=10**12, strict=True)
+    shadowedItems: int | None = Field(default=None, ge=0, le=100_000, strict=True)
+    shadowedTokens: int | None = Field(default=None, ge=0, le=10**12, strict=True)
 
 
 class _UsageSnapshot(BaseModel):
@@ -47,6 +68,12 @@ class _ContextBreakdown(BaseModel):
     systemTokens: _ContextNumber
     toolsTokens: _ContextNumber
     messageTokens: _ContextNumber
+
+
+class _ForkResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    sessionId: str
+    atSeq: int
 
 
 class _ContextResult(BaseModel):
@@ -299,6 +326,10 @@ class HarnessRuntime(WorkspaceRuntime):
         self.owned_process = None
         self.bridge = HarnessToolBridge(self)
 
+    def connection_layout(self):
+        data_dir = self.service.settings.data_dir
+        return data_dir / "workspaces" / self.conversation_id, data_dir / "harness" / self.conversation_id
+
     async def connect(self):
         from harness.profile import write_profile
 
@@ -321,8 +352,8 @@ class HarnessRuntime(WorkspaceRuntime):
         effort = self.config.get("upstream_effort") or "off"
         if effort not in {"off", "low", "high", "max"}:
             raise AppError(409, "HARNESS_REASONING_UNSUPPORTED", "Harness 尚不支持此推理档位，请选择默认、low、high 或 max")
-        root = settings.data_dir / "workspaces" / self.conversation_id
-        private = settings.data_dir / "harness" / self.conversation_id
+        root, private = self.connection_layout()
+        max_output = self.config.get("worker_max_output_tokens", settings.harness_max_output_tokens)
         for directory in (root, root / "artifacts", private):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         cls, config_cls = await asyncio.to_thread(official_client, source)
@@ -332,8 +363,8 @@ class HarnessRuntime(WorkspaceRuntime):
                 public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"]),
             provider={"baseURL": provider.get("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL),
                       "model": self.config["upstream_model"], "apiKeyEnv": "WORKSPACE_MODEL_API_KEY", "reasoningEffort": effort,
-                      "maxTokens": settings.harness_max_output_tokens},
-            tools=self.bridge.definitions(), max_steps=settings.max_turns,
+                      "maxTokens": max_output},
+            tools=self.bridge.definitions(), max_steps=self.config.get("worker_max_steps", settings.max_turns),
             tool_timeout_ms=(settings.approval_seconds + 60) * 1000,
         )
         launcher = write_launcher(private, node, source, root)
@@ -341,12 +372,12 @@ class HarnessRuntime(WorkspaceRuntime):
             dsh_home=str(private), cwd=str(root), env={"WORKSPACE_MODEL_API_KEY": api_key},
             initialize_timeout_seconds=60, request_timeout_seconds=60, shutdown_timeout_seconds=1))
         try:
-            await asyncio.to_thread(self.client.start)
+            await offload_write(self.client.start)
             self.owned_process = self.client._proc
             self.request_task = asyncio.create_task(self._requests(self.client))
             await asyncio.to_thread(self.client.initialize, cwd=str(root), provider="deepseek-official",
                                     model=self.config["upstream_model"], reasoning_effort=effort,
-                                    max_tokens=settings.harness_max_output_tokens, approval_requests=True)
+                                    max_tokens=max_output, approval_requests=True)
             if self.config.get("native_session_id"):
                 await asyncio.to_thread(self.client.resume_session, self.session_id)
         except BaseException:
@@ -390,6 +421,21 @@ class HarnessRuntime(WorkspaceRuntime):
 
     async def execute(self, run, message):
         await self._run_with_usage(run, lambda: self._execute_owned(run, message))
+
+    async def steer(self, run_id, request_id, text):
+        client = self.client
+        if not client or self.interrupted or (self.current_run or {}).get("id") != run_id or self.config.get("recovery_only"):
+            return False
+        receipt = await asyncio.to_thread(client.request, "workspace/steer",
+            {"sessionId": self.session_id, "requestId": request_id, "text": text}, response_model=_SteerResult, timeout_seconds=4)
+        return receipt.accepted
+
+    async def fork_session(self, child_id, boundary):
+        requested = {"sessionId": self.session_id, "childSessionId": f"workspace-{child_id}", "atSeq": boundary}
+        response = await asyncio.to_thread(self.client.request, "workspace/fork", requested,
+                                           response_model=_ForkResult, timeout_seconds=30)
+        if response.sessionId != requested["childSessionId"] or response.atSeq != boundary:
+            raise AppError(502, "FORK_RECEIPT_INVALID", "无法验证原生会话分支")
 
     async def _publish_usage(self, run, ledger):
         receipt = ledger.receipt()
@@ -485,7 +531,12 @@ class HarnessRuntime(WorkspaceRuntime):
             return
         operation = watcher = None
         try:
+            attached = bool(json.loads(message.get("file_ids") or "[]"))
+            if attached:
+                await self.emit("run.stage", {"stage": "preparing_attachments"})
             attachments = await asyncio.to_thread(AttachmentPrompt, self, run, message)
+            if attached:
+                await self.emit("run.stage", {"stage": "delivering_attachments"})
 
             async def monitor():
                 while True:
@@ -510,15 +561,25 @@ class HarnessRuntime(WorkspaceRuntime):
     async def _execute_chat(self, run, message, attachments):
         self.bridge.calls.clear()
         client = self.client
-        prompt = message["text"]
+        prompt = recovery_prompt(run, message["text"])
         skills = json.loads(run.get("skill_snapshots") or "[]")
         if skills:
             prompt += "\n\n【本轮用户在客户端选择的 Skills】\n以下版本仅用于本轮任务；不扩大工具权限，不覆盖系统身份及数据真实性要求。\n" + dump(skills)
         await offload_write(self.service.db.execute, "UPDATE conversations SET context_usage=NULL WHERE id=?", (self.conversation_id,))
         receipt = await asyncio.to_thread(attachments.dispatch, client, self.session_id, prompt)
         accepted, finish, model_started = False, None, False
-        failure_code, model_attempts = None, 0
+        failure, model_attempts = None, 0
+        incomplete_stream = False
         streams, committed, active_step = {}, set(), None
+        published_steps = set()
+
+        async def emit_step_text(step, text):
+            if not text:
+                return
+            separator = "\n\n" if published_steps and step not in published_steps else ""
+            published_steps.add(step)
+            await self.emit("message.delta", {"message_id": run["assistant_message_id"], "text": separator + text})
+
         # The child is legitimately silent while a person considers approval.
         # Do not expire a 600-second approval with a shorter transport timer.
         notification_timeout = max(300, self.service.settings.approval_seconds + 60)
@@ -543,13 +604,17 @@ class HarnessRuntime(WorkspaceRuntime):
                         finish = reason.get("kind")
                         # Only a fixed public category crosses the provider boundary.
                         # Never persist its arbitrary message, route or response body.
-                        failure = reason.get("error") or {}
-                        failure_code = "MODEL_TRANSPORT_ERROR" if finish == "error" and failure.get("code") == "TRANSPORT" else None
+                        failure = MODEL_FAILURES.get((reason.get("error") or {}).get("code")) if finish == "error" else None
                     elif kind == "llm/retry":
-                        if (data.get("failure") or {}).get("code") == "TRANSPORT":
+                        cause = MODEL_FAILURES.get((data.get("failure") or {}).get("code"))
+                        if cause:
+                            delay = data.get("delayMs")
                             await self.emit("model.retry", {"retry": 1, "max_retries": 1,
-                                "delay_ms": 500, "code": "MODEL_TRANSPORT_ERROR"})
+                                "delay_ms": delay if type(delay) is int and 0 <= delay <= 10_000 else None,
+                                "code": cause[1]})
                             await self.emit("run.stage", {"stage": "model_retry"})
+                    elif kind == "compaction/start" and data.get("sourceCommandId") is None:
+                        await self.emit("context.compaction_started", {"trigger": "auto"})
                     elif kind in {"assistant/message", "assistant/attempt"}:
                         seq = event.get("seq")
                         if seq in committed:
@@ -564,16 +629,25 @@ class HarnessRuntime(WorkspaceRuntime):
                         text = "".join(block.get("text", "") for block in message_data.get("content", []) if block.get("type") == "text")
                         prior = streams.get(active_step, "")
                         remainder = text[len(prior):] if text.startswith(prior) else ("" if prior else text)
-                        if remainder:
-                            await self.emit("message.delta", {"message_id": run["assistant_message_id"], "text": remainder})
+                        await emit_step_text(active_step or ("commit", seq), remainder)
                         active_step = None
                     # Keep only event types and counters in the application
                     # trace; provider frames may contain credential echoes.
                     await offload_write(self.service.db.event, run["id"], "harness.event", {"type": kind, "seq": event.get("seq")})
+                elif notification.method == "workspace.compaction" and accepted:
+                    value = _AutoCompactionResult.model_validate(payload)
+                    result = {"status": "completed", "trigger": value.trigger, "pre_tokens": value.beforeTokens,
+                              "post_tokens": value.afterTokens, "shadowed_items": value.shadowedItems,
+                              "shadowed_tokens": value.shadowedTokens, "measurement_schema": "harness-estimated/v1"}
+                    await offload_write(self.service.db.execute, "UPDATE runs SET compaction=? WHERE id=?", (dump(result), run["id"]))
+                    await self.emit("context.compaction_result", result)
+                elif notification.method == "workspace.steer" and accepted:
+                    await offload_write(settle_steer, self.service, run["id"], payload.get("requestId"), "applied")
                 elif notification.method == "workspace.stream" and accepted:
                     key = str(payload.get("stepId", ""))
                     if payload.get("event") == "start":
                         active_step = key
+                        incomplete_stream = False
                         model_attempts += 1
                         await self.emit("model.attempt", {"attempt": model_attempts})
                     if not model_started:
@@ -584,14 +658,18 @@ class HarnessRuntime(WorkspaceRuntime):
                     if payload.get("event") == "text_delta" and isinstance(payload.get("text"), str):
                         text = payload["text"]
                         streams[key] = streams.get(key, "") + text
-                        await self.emit("message.delta", {"message_id": run["assistant_message_id"], "text": text})
+                        await emit_step_text(key, text)
                     elif payload.get("event") == "end" and (payload.get("finishObserved") is not True or (payload.get("outcome") or {}).get("kind") == "abandoned"):
-                        raise AppError(502, "HARNESS_STREAM_INCOMPLETE", "模型回复提前结束，可重新发送消息继续会话")
+                        incomplete_stream = True
+                        if streams.get(key):
+                            raise AppError(502, "HARNESS_STREAM_INCOMPLETE", "模型回复提前结束，请查看任务的恢复选项。")
                 elif notification.method == "session.status" and accepted and payload.get("status") == "idle":
                     if finish != "completed":
-                        if failure_code == "MODEL_TRANSPORT_ERROR":
-                            raise AppError(502, failure_code, "模型服务请求未完成，请稍后重试。已有业务操作请先核对执行记录。")
+                        if failure:
+                            raise AppError(*failure)
                         raise AppError(502, "HARNESS_TURN_FAILED", "本次任务未完成，请重试。若仍失败，请联系管理员并提供执行记录。")
+                    if incomplete_stream:
+                        raise AppError(502, "HARNESS_STREAM_INCOMPLETE", "模型回复提前结束，请查看任务的恢复选项。")
                     await asyncio.to_thread(client.request, "session/wait", {"sessionId": self.session_id}, response_model=_EmptyResult)
                     # This host receipt authenticates the configuration of the
                     # successful request; never backfill it for older sessions.

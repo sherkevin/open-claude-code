@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ from PIL import Image
 
 from app.config import Settings
 from app.db import now, uid
-from app.harness_attachments import AttachmentPrompt, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, preflight
+from app.harness_attachments import AttachmentPrompt, MAX_FILES, MAX_IMAGE_TOTAL, MAX_SOURCE_IMAGE_BYTES, MAX_TEXT_BYTES, preflight, read_attachment_chunk
 from app.security import AppError
 from app.service import Service
 
@@ -103,6 +104,61 @@ def test_mobile_normalization_still_rejects_animated_images():
     assert error.value.code == "ATTACHMENT_INVALID"
 
 
+def test_large_image_is_normalized_without_changing_uploaded_bytes(system):
+    size = (2400, 1800)
+    original = io.BytesIO()
+    with Image.frombytes("RGB", size, random.Random(32).randbytes(size[0] * size[1] * 3)) as image:
+        image.save(original, format="PNG")
+    data = original.getvalue()
+    assert len(data) > 5 * 1024 * 1024
+    row = system.upload(data, "large.png", "image/png")
+    run, message = system.prepare([row])
+    prompt = AttachmentPrompt(system.runtime, run, message)
+    peer, calls = client()
+    prompt.dispatch(peer, "owned", "read")
+
+    block = next(item for item in calls[0][1] if item["type"] == "image")
+    normalized = base64.b64decode(block["data"])
+    with Image.open(io.BytesIO(normalized)) as image:
+        assert image.width * image.height <= 2048 * 2048
+        assert Image.MIME[image.format] == block["mimeType"]
+        image.load()
+    assert len(normalized) <= 4 * 1024 * 1024
+    assert Path(row["path"]).read_bytes() == data
+    assert prompt.snapshots[0]["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_twenty_images_fit_in_one_harness_message(system):
+    rows = [system.upload(png(), f"image-{index}.png", "image/png") for index in range(MAX_FILES)]
+    run, message = system.prepare(rows)
+    prompt = AttachmentPrompt(system.runtime, run, message)
+    blocks = [block for block in prompt.blocks if block["type"] == "image"]
+    assert len(blocks) == 20
+    assert sum(len(base64.b64decode(block["data"])) for block in blocks) <= MAX_IMAGE_TOTAL
+
+
+def test_long_attachment_read_uses_admitted_snapshot_and_revalidates(system):
+    data = b"start " + b"a" * MAX_TEXT_BYTES + b" unique end"
+    row = system.upload(data)
+    run, message = system.prepare([row])
+    prompt = AttachmentPrompt(system.runtime, run, message)
+    peer, calls = client()
+    prompt.dispatch(peer, "owned", "read")
+    assert f"attachment:{row['id']}:0" in json.dumps(calls)
+    assert "unique end" not in json.dumps(calls)
+    system.service.db.execute("UPDATE runs SET status='running' WHERE id=?", (run["id"],))
+    start = read_attachment_chunk(system.runtime, run["id"], row["id"], 0)
+    assert start["text"].startswith("start ") and start["next_path"]
+    end = read_attachment_chunk(system.runtime, run["id"], row["id"], len(data) - 11)
+    assert end["text"] == " unique end" and end["next_path"] is None
+    with pytest.raises(AppError) as denied:
+        read_attachment_chunk(system.runtime, run["id"], system.upload()["id"], 0)
+    assert denied.value.code == "ATTACHMENT_NOT_AVAILABLE"
+    Path(row["path"]).write_bytes(data[:-1] + b"x")
+    with pytest.raises(AppError):
+        read_attachment_chunk(system.runtime, run["id"], row["id"], 0)
+
+
 @pytest.mark.parametrize("case,code", [("owner", "NOT_FOUND"), ("conversation", "ATTACHMENT_SCOPE"), ("unsupported", "ATTACHMENT_UNSUPPORTED"), ("duplicate", "ATTACHMENT_LIMIT"), ("too_many", "ATTACHMENT_LIMIT"), ("image_mime", "ATTACHMENT_INVALID"), ("image_large", "ATTACHMENT_LIMIT")])
 def test_metadata_rejection_precedes_run_creation(system, case, code):
     row = system.upload()
@@ -110,7 +166,7 @@ def test_metadata_rejection_precedes_run_creation(system, case, code):
     updates = {
         "owner": ("user_id", "someone-else"), "conversation": ("conversation_id", "other-conversation"),
         "unsupported": ("name", "archive.zip"), "image_mime": ("name", "fake.png"),
-        "image_large": ("size", MAX_IMAGE_BYTES + 1),
+        "image_large": ("size", MAX_SOURCE_IMAGE_BYTES + 1),
     }
     if case in updates:
         if case == "image_large":
@@ -120,14 +176,14 @@ def test_metadata_rejection_precedes_run_creation(system, case, code):
     elif case == "duplicate":
         rows *= 2
     else:
-        rows = [system.upload() for _ in range(11)]
+        rows = [system.upload() for _ in range(MAX_FILES + 1)]
     with pytest.raises(AppError) as error:
         system.prepare(rows)
     assert error.value.code == code
     assert system.service.db.one("SELECT COUNT(*) n FROM runs")["n"] == 0
 
 
-@pytest.mark.parametrize("case", ["outside", "symlink", "parent_symlink", "hardlink", "fifo", "size", "binary", "false_image", "animated", "empty", "too_much_text"])
+@pytest.mark.parametrize("case", ["outside", "symlink", "parent_symlink", "hardlink", "fifo", "size", "binary", "false_image", "animated", "empty"])
 def test_bytes_fail_closed_before_any_model_dispatch(system, tmp_path, case):
     row = system.upload()
     path = Path(row["path"])
@@ -163,9 +219,7 @@ def test_bytes_fail_closed_before_any_model_dispatch(system, tmp_path, case):
         system.service.db.execute("UPDATE files SET name='animated.gif',mime_type='image/gif' WHERE id=?", (row["id"],))
     elif case == "empty":
         path.write_bytes(b" \n ")
-    else:
-        path.write_bytes(b"a" * (MAX_TEXT_BYTES + 1))
-    if case in {"binary", "animated", "empty", "too_much_text"}:
+    if case in {"binary", "animated", "empty"}:
         system.service.db.execute("UPDATE files SET size=? WHERE id=?", (path.stat().st_size, row["id"]))
     run, message = system.prepare([row])
     with pytest.raises(AppError):
@@ -284,7 +338,7 @@ def test_repeated_history_is_deduplicated_and_disk_reads_do_not_hold_db_lock(sys
     metadata = system.service.require("runs", run["id"])["execution_meta"]
     for _ in range(205):
         system.service.db.execute("INSERT INTO runs(id,conversation_id,user_id,client_request_id,message_id,status,created_at,execution_meta) VALUES(?,?,?,?,?,'succeeded',?,?)", (uid(), system.runtime.conversation_id, system.user["id"], uid(), uid(), now(), metadata))
-    real_read = module._read_upload
+    real_read = module._upload_chunks
     reads = []
 
     def read(service, record):
@@ -292,7 +346,7 @@ def test_repeated_history_is_deduplicated_and_disk_reads_do_not_hold_db_lock(sys
         reads.append(record["id"])
         return real_read(service, record)
 
-    monkeypatch.setattr(module, "_read_upload", read)
+    monkeypatch.setattr(module, "_upload_chunks", read)
     prompt = AttachmentPrompt(system.runtime, run, message)
     assert len(prompt.history) == 1
     prompt.dispatch(peer, "native", "read")

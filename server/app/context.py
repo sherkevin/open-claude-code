@@ -127,12 +127,15 @@ def cached_context(service, conversation_id):
         value.pop("_binding", None)
         # Older cached projections also lack raw provider field-presence evidence.
         value["observed_prompt_tokens"] = None
+        value["auto_compact_enabled"] = True
         value["manual_compact_available"] = harness_manual_compact_available(service, conversation_id)
     last = service.db.one("SELECT events.* FROM events JOIN runs ON runs.id=events.run_id WHERE runs.conversation_id=? AND events.type IN ('context.compacted','context.compaction_result') ORDER BY events.created_at DESC,events.id DESC LIMIT 1", (conversation_id,))
     last_compaction = None
     if last:
         data = json.loads(last["data"])
-        last_compaction = {"run_id": last["run_id"], "status": data.get("status", "completed"), "trigger": data.get("trigger"), "pre_tokens": data.get("pre_tokens"), "created_at": last["created_at"], "error": data.get("error"), "followup_status": data.get("followup_status")}
+        last_compaction = {"run_id": last["run_id"], "status": data.get("status", "completed"), "trigger": data.get("trigger"),
+                           "pre_tokens": data.get("pre_tokens"), "post_tokens": data.get("post_tokens"), "shadowed_items": data.get("shadowed_items"),
+                           "created_at": last["created_at"], "error": data.get("error"), "followup_status": data.get("followup_status")}
     return {**value, "model": row.get("model_label"), "cached": bool(value.get("measured_at")), "last_compaction": last_compaction}
 
 

@@ -28,8 +28,24 @@ describe('composer attachment admission', () => {
   });
   it('honors a smaller server limit and preserves the older runtime limit', () => {
     expect(chatAttachmentProblem([file('a.png', 2049)], 'harness', 2048)).toContain('2 KiB');
+    expect(chatAttachmentProblem([file('a.png', 2050)], 'harness', 2049)).toContain('2049 B');
     expect(chatAttachmentProblem([file('a.png', 6 * MiB)], 'claude', 20 * MiB)).toBeNull();
     expect(chatAttachmentProblem([file('a.pdf', 20 * MiB + 1)], 'claude', 20 * MiB)).toContain('上限');
+  });
+  it('uses advertised Harness limits while respecting the upload transport cap', () => {
+    const limits = {
+      max_files: 3, max_file_bytes: 50 * MiB, max_image_bytes: 40 * MiB,
+      max_total_bytes: 100 * MiB, max_image_total_bytes: 70 * MiB,
+    };
+    const advertised = (files: Array<{ name: string; size: number }>) => chatAttachmentProblem(files, 'harness', 50 * MiB, limits);
+    expect(advertised([file('a.pdf', 50 * MiB), file('b.png', 40 * MiB), file('c.png', 10 * MiB)])).toBeNull();
+    expect(advertised([file('a.pdf', 50 * MiB), file('b.png', 40 * MiB), file('c.png', 10 * MiB + 1)])).toContain('合计最多 100 MiB');
+    expect(advertised([file('a.png', 40 * MiB), file('b.png', 30 * MiB + 1)])).toContain('图片合计最多 70 MiB');
+    expect(advertised([file('a.png', 40 * MiB + 1)])).toContain('单张图片上限（40 MiB）');
+    expect(advertised([file('a.pdf', 50 * MiB + 1)])).toContain('单个附件上限（50 MiB）');
+    expect(advertised(Array.from({ length: 4 }, (_, i) => file(`${i}.txt`, 1)))).toContain('3 个');
+    expect(chatAttachmentProblem([file('a.pdf', 20 * MiB + 1)], 'harness', 20 * MiB, limits)).toContain('单个附件');
+    expect(chatAttachmentProblem([file('a.png', 20 * MiB + 1)], 'claude', 20 * MiB, limits)).toContain('单张图片');
   });
   it('rejects empty files and unknown limits without pretending to inspect bytes', () => {
     expect(check([file('empty.txt', 0)])).toContain('为空');

@@ -1,6 +1,5 @@
 import asyncio
 import json
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,7 +9,7 @@ from app.context import cached_context, save_context
 from app.db import dump
 from app.main import create_app
 from app.model_catalog import ModelCatalog
-from app.runtime import SDKRuntime
+from app.runtime import RunManager, SDKRuntime
 from app.security import AppError
 from app.service import Service
 from test_api import FakeRuntime, poll, send
@@ -73,7 +72,8 @@ def test_selection_switch_resets_context_preserves_native_session(catalog_servic
 def test_active_run_snapshot_and_context_switch_barrier(catalog_service):
     service, user, _, conversation = catalog_service
     cid = conversation["id"]
-    service.manager = SimpleNamespace(context_requests={cid: True})
+    service.manager = RunManager(service)
+    service.manager.context_requests[cid] = True
     with pytest.raises(AppError, match="上下文"):
         service.patch_conversation(cid, {"model_id": "deepseek-v4.1-flash"}, user)
     service.manager.context_requests.clear()

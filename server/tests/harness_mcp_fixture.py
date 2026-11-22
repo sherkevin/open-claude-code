@@ -104,6 +104,7 @@ def local_mcp_server():
 def local_model_server():
     """Stream selected calls through actual Harness model HTTP handling."""
     actions, requests = {}, []
+    faults = {"disconnect_after_result": False, "overflow_after_result": False}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -120,8 +121,20 @@ def local_model_server():
             result = next((item for item in blocks if item["type"] == "tool_result"), None)
             text = " ".join(item.get("text", "") for item in blocks)
             action = next((value for case, value in actions.items() if case in text), None)
+            if result and not action and faults["overflow_after_result"]:
+                payload = json.dumps({"error": {"type": "invalid_request_error", "code": "context_length_exceeded",
+                    "message": "This model maximum context length is 128000 tokens; your input exceeds that limit."}}).encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            disconnect = bool(result and not action and faults["disconnect_after_result"])
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
+            if disconnect:
+                self.send_header("Content-Length", "99999")
             self.end_headers()
 
             def event(kind, data):
@@ -148,6 +161,11 @@ def local_model_server():
                     answer = "已核实压力为 7 bar " + marker.group(0) if marker else "工具请求已处理，未提供可引用来源。"
                     event("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}})
                     event("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": answer}})
+                    if disconnect:
+                        faults["disconnect_after_result"] = False
+                        self.close_connection = True
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        return
                     reason = "end_turn"
                 event("content_block_stop", {"index": 0})
                 event("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None}, "usage": {"output_tokens": 8}})
@@ -159,7 +177,7 @@ def local_model_server():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield SimpleNamespace(url=f"http://127.0.0.1:{server.server_port}/v1", actions=actions, requests=requests)
+        yield SimpleNamespace(url=f"http://127.0.0.1:{server.server_port}/v1", actions=actions, requests=requests, faults=faults)
     finally:
         server.shutdown()
         server.server_close()

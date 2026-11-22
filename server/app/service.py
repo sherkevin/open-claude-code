@@ -5,7 +5,9 @@ import hashlib
 import json
 import math
 import mimetypes
-import shutil
+import os
+import re
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,6 +22,8 @@ from .provider_policy import TOKENHUB_BASE_URL, provider_route
 from .subagents import SubagentOrchestrator
 from .model_approval import ModelApprovalService
 from .high_risk_approval import HighRiskApprovalService
+from .mcp_availability import MCPAvailability
+from .mcp_oauth import MCPOAuth
 
 
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
@@ -50,8 +54,15 @@ def native_session_id(row):
     return row.get(key)
 
 
-def conversation_view(row):
-    return {**{key: bool(row[key]) if key in {"archived", "auto_model_routing"} else row[key] for key in ("id", "assistant_id", "title", "archived", "active_run_id", "created_at", "updated_at", "model_id", "model_label", "reasoning_level", "auto_model_routing")}, "runtime_type": conversation_runtime_type(row), "has_native_session": bool(native_session_id(row)), "category": row.get("category", ""), "tags": json.loads(row.get("tags") or "[]")}
+def conversation_view(row, user=None):
+    runtime = conversation_runtime_type(row)
+    modes = ["manual"] if runtime != "harness" else ["manual", "auto"]
+    if runtime == "harness" and user and user.get("role") == "admin":
+        modes.append("full")
+    mode = row.get("permission_mode", "manual")
+    if user and mode not in modes:
+        mode = "manual"
+    return {**{key: bool(row[key]) if key in {"archived", "auto_model_routing"} else row[key] for key in ("id", "assistant_id", "title", "archived", "active_run_id", "created_at", "updated_at", "model_id", "model_label", "reasoning_level", "auto_model_routing")}, "runtime_type": runtime, "has_native_session": bool(native_session_id(row)), "category": row.get("category", ""), "tags": json.loads(row.get("tags") or "[]"), "permission_mode": mode, "permission_modes": modes}
 
 
 def message_view(row):
@@ -122,12 +133,12 @@ class Service:
         from .knowledge import KnowledgeService
         self.evidence = EvidenceService(self)
         self.knowledge = KnowledgeService(self)
-        # The first sub-agent slice is local synthetic fan-out only.  It does
-        # not share the parent SDK session and cannot access models, MCP or
-        # network tools.
+        # Child runs have independent Harness sessions and no business tools.
         self.subagents = SubagentOrchestrator(self)
         self.model_approval = ModelApprovalService(self)
         self.high_risk_approval = HighRiskApprovalService(self)
+        self.mcp_availability = MCPAvailability(self)
+        self.mcp_oauth = MCPOAuth(self)
 
     def model_approval_policy(self, assistant_id: str) -> dict:
         return self.model_approval.policy_view(assistant_id)
@@ -195,6 +206,8 @@ class Service:
         # remain usable for deterministic local tests; they cannot be treated
         # as a production readiness signal by the preflight API.
         test_mode = bool(getattr(self.settings, "provider_test_mode", False))
+        if self.catalog.require_credentials and not (provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN")):
+            raise AppError(503, "MODEL_UNAVAILABLE", "模型服务尚未配置凭据，请联系管理员")
         if (provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN")) and not (route.production_ready or (test_mode and route.allowed)):
             raise AppError(503, "TOKENHUB_ROUTE_REQUIRED", "模型服务线路未满足安全部署策略，请联系管理员")
         return provider
@@ -332,6 +345,16 @@ class Service:
             if data.get(key) is not None:
                 merged[key] = data[key]
         validate_mcp_url(merged["url"], self.settings.mcp_hosts)
+        if old and old["auth_type"] != "oauth" and merged["auth_type"] == "oauth":
+            raise AppError(409, "MCP_OAUTH_CONFIG_IMMUTABLE", "请为 OAuth 授权重新接入 MCP")
+        if old and old["auth_type"] == "oauth" and (merged["auth_type"] != "oauth" or merged["url"] != old["url"]):
+            raise AppError(409, "MCP_OAUTH_CONFIG_IMMUTABLE", "请为其他地址或认证方式重新接入 MCP")
+        if merged["auth_type"] == "oauth":
+            self.mcp_oauth.profile(merged["url"])
+            if not user or scope != "private" or data.get("credential") is not None or data.get("clear_credential"):
+                raise AppError(422, "MCP_OAUTH_PRIVATE_REQUIRED", "OAuth MCP 连接须使用个人配置和账号授权")
+            if not old or old["auth_type"] != "oauth":
+                merged["secret"] = None
         if data.get("clear_credential"):
             merged["secret"] = None
         elif data.get("credential") is not None:
@@ -347,10 +370,10 @@ class Service:
             connection_changed = any(merged[k] != old[k] for k in ("url", "auth_type", "secret"))
             self.db.execute("UPDATE connections SET name=?,url=?,auth_type=?,secret=?,enabled=?,scope=?,owner_id=?,source_metadata=?,revision=revision+1 WHERE id=?", (merged["name"], merged["url"], merged["auth_type"], merged["secret"], merged["enabled"], scope, owner_id, dump(metadata), item_id))
             if connection_changed:
-                self.db.execute("UPDATE connections SET status='untested',tools='[]',last_error=NULL WHERE id=?", (item_id,))
+                self.db.execute("UPDATE connections SET status=?,tools='[]',last_error=NULL WHERE id=?", ("needs_auth" if merged["auth_type"] == "oauth" else "untested", item_id))
         else:
             item_id = uid()
-            self.db.execute("INSERT INTO connections(id,name,url,auth_type,secret,enabled,status,scope,owner_id,source_metadata) VALUES(?,?,?,?,?,?,'untested',?,?,?)", (item_id, merged["name"], merged["url"], merged["auth_type"], merged["secret"], merged["enabled"], scope, owner_id, dump(metadata)))
+            self.db.execute("INSERT INTO connections(id,name,url,auth_type,secret,enabled,status,scope,owner_id,source_metadata) VALUES(?,?,?,?,?,?,?,?,?,?)", (item_id, merged["name"], merged["url"], merged["auth_type"], merged["secret"], merged["enabled"], "needs_auth" if merged["auth_type"] == "oauth" else "untested", scope, owner_id, dump(metadata)))
         return connection_view(self.require("connections", item_id), user)
 
     async def discover(self, row):
@@ -360,7 +383,8 @@ class Service:
 
         validate_mcp_url(row["url"], self.settings.mcp_hosts)
         headers = {}
-        credential = self.secrets.decrypt(row["secret"])
+        oauth = row["auth_type"] == "oauth"
+        credential = await self.mcp_oauth.access_token(row) if oauth else self.secrets.decrypt(row["secret"])
         if credential:
             headers["Authorization"] = f"Bearer {credential}"
 
@@ -377,25 +401,44 @@ class Service:
                             break
                     if cursor or len(tools) > 1000:
                         raise ValueError("Too many tools")
+                    if oauth:
+                        from .mcp_tools import contains_credential
+                        if credential and contains_credential(tools, credential):
+                            raise AppError(502, "MCP_OAUTH_CREDENTIAL_EXPOSED", "远端工具定义包含认证信息")
                     return tools
 
     async def test_connection(self, item_id, user=None):
         row = self.require_resource("connections", item_id, user, edit=True) if user else self.require("connections", item_id)
         if not row["enabled"]:
             raise AppError(409, "CONNECTION_DISABLED", "请先启用此连接")
+        await self.probe_connection(row, timeout=35)
+        current = await offload(self.require_resource, "connections", item_id, user) if user else await offload(self.require, "connections", item_id)
+        return connection_view(current, user)
+
+    async def probe_connection(self, row, *, timeout):
+        from .mcp_tools import transport_logs
+
         status, error, tools = "connected", None, []
         try:
-            tools = await asyncio.wait_for(self.discover(row), timeout=35)
+            with transport_logs():
+                tools = await asyncio.wait_for(self.discover(row), timeout=timeout)
         except Exception as exc:
             # Never persist remote exception strings: URLs/headers can include secrets.
             def unauthorized(error):
+                if isinstance(error, AppError):
+                    return error.code in {"MCP_OAUTH_RELINK_REQUIRED", "MCP_OAUTH_PROFILE_REQUIRED"}
                 if isinstance(error, httpx.HTTPStatusError):
                     return error.response.status_code in (401, 403)
                 return any(unauthorized(child) for child in getattr(error, "exceptions", []))
             status = "needs_auth" if unauthorized(exc) else "failed"
-            error = "认证失败，请检查凭据和业务权限" if status == "needs_auth" else "连接失败，请检查执行服务器到 MCP 的网络、地址及协议"
-        await offload_write(self.db.execute, "UPDATE connections SET status=?,tools=?,last_error=?,last_tested_at=? WHERE id=? AND revision=?", (status, dump(tools), error, now(), item_id, row["revision"]))
-        return connection_view(await offload(self.require, "connections", item_id), user)
+            error = ("OAuth 授权未通过，请在连接页面重新授权" if row["auth_type"] == "oauth" else "认证失败，请检查凭据和业务权限") if status == "needs_auth" else "连接失败，请检查执行服务器到 MCP 的网络、地址及协议"
+        await offload_write(
+            self.db.execute,
+            "UPDATE connections SET status=?,tools=COALESCE(?,tools),last_error=?,last_tested_at=? "
+            "WHERE id=? AND revision=? AND enabled=1 AND deleted=0 AND status=? AND last_tested_at IS ?",
+            (status, dump(tools) if status == "connected" else None, error, now(), row["id"],
+             row["revision"], row["status"], row["last_tested_at"]),
+        )
 
     def save_assistant(self, data, item_id=None, user=None):
         old_row = (self.require_resource("assistants", item_id, user, edit=True) if user else self.require("assistants", item_id)) if item_id else None
@@ -468,7 +511,10 @@ class Service:
         # Return exactly the authorized version written by this request. A
         # global reread could expose a subsequent editor's now-private version.
         written = dict(zip(("name", "description", "instructions", "enabled", "access", "connections", "scope", "owner_id", "knowledge_base_ids", "skill_ids", "web_search_enabled", "capabilities", "default_model_id", "default_reasoning_level"), values))
-        return assistant_view({**written, "id": item_id, "revision": old_row["revision"] + 1 if old_row else 1,
+        revision = old_row["revision"] + 1 if old_row else 1
+        from .session_permissions import record_certifications
+        record_certifications(self, item_id, revision, merged["connections"], user)
+        return assistant_view({**written, "id": item_id, "revision": revision,
                                "editor_user_ids": old_row.get("editor_user_ids", "[]") if old_row else "[]"}, user)
 
     def run_view(self, row):
@@ -485,6 +531,8 @@ class Service:
         result["execution_kind"] = "product_metadata" if product_metadata else "model"
         result["identity_source"] = "run_selection" if product_metadata else None
         result["model_call_count"] = 0 if product_metadata else None
+        from .run_recovery import recovery_view
+        result["recovery"] = recovery_view(self, row)
         return result
 
     def require_trial_fields(self, *, auto_model_routing=False, auto_route=False, skill_ids=None, file_ids=None):
@@ -507,19 +555,21 @@ class Service:
         with self.db.transaction():
             return self._create_conversation(data, user)
 
-    def _create_conversation(self, data, user):
+    def _create_conversation(self, data, user, *, item_id=None, runtime_type=None):
         assistant = self.usable_assistant(data["assistant_id"], user)
         model_id = data.get("model_id") or assistant.get("default_model_id")
         level = data.get("reasoning_level") or (assistant.get("default_reasoning_level") if not data.get("model_id") or data.get("model_id") == assistant.get("default_model_id") else None)
         selection = self.pin_provider(self.catalog.select(model_id, level))
-        item_id, timestamp = uid(), now()
+        item_id, timestamp = item_id or uid(), now()
         # Keep API clients that predate task-submit routing deterministic; the
         # current client opts in explicitly on the create request.
         auto_route = bool(data.get("auto_model_routing"))
-        self.db.execute("INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,model_id,model_label,reasoning_level,model_snapshot,auto_model_routing,runtime_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, user["id"], data["assistant_id"], data["title"], timestamp, timestamp, selection["model_id"], selection["model_label"], selection["reasoning_level"], dump(selection), int(auto_route), self.settings.runtime_type))
+        self.db.execute("INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,model_id,model_label,reasoning_level,model_snapshot,auto_model_routing,runtime_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, user["id"], data["assistant_id"], data["title"], timestamp, timestamp, selection["model_id"], selection["model_label"], selection["reasoning_level"], dump(selection), int(auto_route), runtime_type or self.settings.runtime_type))
+        from .session_permissions import change as change_permission_mode
+        change_permission_mode(self, self.require("conversations", item_id, user), user, data.get("permission_mode"), creating=True)
         self.memory.initialize_empty(item_id)
         self.db.execute("UPDATE conversations SET category=?,tags=? WHERE id=?", (data.get("category", ""), dump(list(dict.fromkeys(data.get("tags", [])))), item_id))
-        return conversation_view(self.require("conversations", item_id, user))
+        return conversation_view(self.require("conversations", item_id, user), user)
 
     def list_conversations(self, user, q=None, assistant_id=None, archived=None, category=None):
         clauses, values = ["c.user_id=?"], [user["id"]]
@@ -527,22 +577,49 @@ class Service:
             if value is not None:
                 clauses.append(f"c.{key}=?")
                 values.append(value)
-        if q and q.strip():
-            query = "%" + q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            clauses.append("(c.title LIKE ? ESCAPE '\\' OR c.category LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(c.tags) tag WHERE tag.value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND m.text LIKE ? ESCAPE '\\'))")
-            values.extend([query, query, query, query])
-        return [conversation_view(row) for row in self.db.all("SELECT c.* FROM conversations c WHERE " + " AND ".join(clauses) + " ORDER BY c.updated_at DESC LIMIT 1000", values)]
+        query = (q or "").strip()
+        scope = " AND ".join(clauses)
+        if not query:
+            rows = self.db.all(f"SELECT c.* FROM conversations c WHERE {scope} ORDER BY c.updated_at DESC LIMIT 1000", values)
+            return [conversation_view(row, user) for row in rows]
+
+        literal = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        rows = self.db.all(f"""
+            WITH matched AS (
+                SELECT c.id AS conversation_id, c.updated_at, hit.id AS hit_id, hit.text AS hit_text,
+                       instr(lower(hit.text), lower(?)) AS hit_position
+                FROM conversations c LEFT JOIN messages hit ON hit.id = (
+                    SELECT id FROM messages m WHERE m.conversation_id=c.id AND m.text LIKE ? ESCAPE '\\'
+                    ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
+                )
+                WHERE {scope} AND (hit.id IS NOT NULL OR c.title LIKE ? ESCAPE '\\' OR c.category LIKE ? ESCAPE '\\'
+                    OR EXISTS (SELECT 1 FROM json_each(c.tags) tag WHERE tag.value LIKE ? ESCAPE '\\'))
+                ORDER BY c.updated_at DESC LIMIT 1000
+            )
+            SELECT c.*, hit_id, CASE WHEN hit_position>0 THEN
+                (CASE WHEN hit_position>55 THEN '…' ELSE '' END)
+                    || substr(hit_text, max(hit_position-54,1), min(hit_position-1,54)) END AS hit_before,
+                substr(hit_text, hit_position, ?) AS hit_match,
+                substr(hit_text, hit_position+?, 70)
+                    || (CASE WHEN length(hit_text)>=hit_position+?+70 THEN '…' ELSE '' END) AS hit_after
+            FROM matched JOIN conversations c ON c.id=matched.conversation_id ORDER BY matched.updated_at DESC
+        """, (query, literal, *values, literal, literal, literal, len(query), len(query), len(query)))
+        return [{**conversation_view(row, user), **({"search_hit": {
+            "message_id": row["hit_id"], "before": row["hit_before"], "match": row["hit_match"], "after": row["hit_after"],
+        }} if row["hit_before"] is not None else {})} for row in rows]
 
     def patch_conversation(self, item_id, data, user):
         self.require_trial_fields(auto_model_routing=data.get("auto_model_routing"))
         with self.db.transaction():
             row = self.require("conversations", item_id, user)
+            from .session_permissions import change as change_permission_mode
+            change_permission_mode(self, row, user, data.get("permission_mode"))
             if row["active_run_id"] and data.get("archived"):
                 raise AppError(409, "CONVERSATION_BUSY", "请先停止当前任务再归档")
             if data.get("model_id") is not None or data.get("reasoning_level") is not None:
                 if row["active_run_id"]:
                     raise AppError(409, "CONVERSATION_BUSY", "请先等待或停止当前任务再切换模型")
-                if self.manager and item_id in self.manager.context_requests:
+                if self.manager and self.manager.maintenance_busy(item_id):
                     raise AppError(409, "CONTEXT_BUSY", "正在读取上下文，请稍后切换模型")
                 model_id = data.get("model_id") or row["model_id"]
                 level = data.get("reasoning_level")
@@ -566,9 +643,9 @@ class Service:
                 # override. It can be re-enabled with the explicit flag.
                 self.db.execute("UPDATE conversations SET auto_model_routing=0 WHERE id=?", (item_id,))
             self.db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), item_id))
-            return conversation_view(self.require("conversations", item_id, user))
+            return conversation_view(self.require("conversations", item_id, user), user)
 
-    def prepare_run(self, conversation_id, data, user):
+    def prepare_run(self, conversation_id, data, user, *, queue_sequence=None):
         # Trial boundary applies at the Service layer too: advanced routing,
         # skills and attachments are refused before the run transaction can
         # create runs/messages or call a provider.
@@ -584,10 +661,10 @@ class Service:
             return {"message": message_view(self.require("messages", prior["message_id"])), "run_id": prior["id"]}, False
         if conversation_runtime_type(initial) == "harness":
             with self.memory.verified_for_run(user["id"], conversation_id):
-                return self._prepare_run(conversation_id, data, user)
-        return self._prepare_run(conversation_id, data, user)
+                return self._prepare_run(conversation_id, data, user, queue_sequence=queue_sequence)
+        return self._prepare_run(conversation_id, data, user, queue_sequence=queue_sequence)
 
-    def _prepare_run(self, conversation_id, data, user):
+    def _prepare_run(self, conversation_id, data, user, *, queue_sequence=None):
         with self.db.transaction():
             conversation = self.require("conversations", conversation_id, user)
             prior = self.db.one("SELECT * FROM runs WHERE conversation_id=? AND client_request_id=?", (conversation_id, data["client_request_id"]))
@@ -598,7 +675,14 @@ class Service:
                 raise AppError(409, "CONVERSATION_ARCHIVED", "请先恢复此对话")
             if conversation["active_run_id"]:
                 raise AppError(409, "CONVERSATION_BUSY", "当前任务仍在执行，请等待或停止后重试")
-            if self.manager and conversation_id in self.manager.context_requests:
+            scheduled = self.db.one("SELECT id FROM conversation_schedules WHERE id=? AND conversation_id=?",
+                                    (data["client_request_id"], conversation_id))
+            if scheduled and not queue_sequence:
+                raise AppError(409, "SCHEDULE_NOT_DUE", "此任务由计划队列启动")
+            from .run_recovery import prepare_recovery
+            data, recovery = prepare_recovery(self, conversation, data, user)
+            self.require_trial_fields(auto_route=data.get("auto_route"), skill_ids=data.get("skill_ids"), file_ids=data.get("file_ids"))
+            if self.manager and self.manager.maintenance_busy(conversation_id):
                 raise AppError(409, "CONTEXT_BUSY", "正在读取原生上下文，请稍后重试")
             if conversation_runtime_type(conversation) == "harness":
                 scope = self.db.one("SELECT mutation_id FROM conversation_memory_scopes WHERE conversation_id=?", (conversation_id,))
@@ -620,13 +704,15 @@ class Service:
             elif route_enabled:
                 route_decision = {"enabled": True, "applied": False, "mode": "bounded_local", "reason": None}
                 try:
-                    from .model_recommendation import _router_target, bounded_router, enrich_route_metadata
-                    candidates = [item["id"] for item in self.catalog.public() if item["available"]]
+                    from .model_recommendation import _router_target, bounded_router, enrich_route_metadata, message_route_candidates
+                    candidates = message_route_candidates(self, data.get("file_ids"), user)
                     recommendation = data.get("_route_recommendation")
                     if not isinstance(recommendation, dict):
                         recommendation = bounded_router(self.catalog, data.get("text", ""), candidates)
                         target_id, target_selection, target_error = _router_target(self)
                         enrich_route_metadata(recommendation["router"], target_id, target_selection, target_error)
+                    if recommendation.get("model_id") not in candidates:
+                        raise AppError(422, "MODEL_ROUTE_INCOMPATIBLE", "自动选择的模型不支持本轮输入，沿用当前模型。")
                     routed = self.catalog.select(recommendation["model_id"], recommendation["reasoning_level"])
                     previous = selection
                     if routed["model_id"] != previous["model_id"] and native_session_id(conversation) and (self.catalog.requires_new_conversation(previous) or self.catalog.requires_new_conversation(routed)):
@@ -650,6 +736,8 @@ class Service:
                 preflight(self, conversation_id, user, data["file_ids"], model_id=selection["model_id"])
             elif conversation_runtime_type(conversation) == "claude":
                 from .sdk_image_attachments import preflight_images
+                if len(data["file_ids"]) > 10:
+                    raise AppError(422, "ATTACHMENT_COUNT_LIMIT", "此模型每条消息最多接受 10 个附件")
                 preflight_images(self, conversation_id, user, data["file_ids"],
                                  model_id=selection["model_id"], assistant=assistant)
             from .skills import selected_skills
@@ -660,7 +748,17 @@ class Service:
             snapshot["argument_constraint_schemas"] = {}
             for binding in (() if self.policy.is_trial else snapshot["connections"]):
                 connection = self.require_resource("connections", binding["connection_id"], user)
-                schemas = validate_definitions(binding, connection, self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)
+                if not connection["enabled"]:
+                    continue
+                # Cached definitions can pin the last known constraint shape.
+                # The offline connection still can't be mounted or invoked.
+                pinned = {**connection, "status": "connected"} if connection["status"] == "failed" else connection
+                try:
+                    schemas = validate_definitions(binding, pinned, self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)
+                except AppError:
+                    if connection["status"] == "connected":
+                        raise
+                    continue
                 if schemas:
                     snapshot["argument_constraint_schemas"][connection["id"]] = schemas
             message_id, assistant_message_id, run_id, timestamp = uid(), uid(), uid(), now()
@@ -679,11 +777,21 @@ class Service:
             if conversation_runtime_type(conversation) == "harness":
                 binding = self.memory.snapshot_for_run(user["id"], conversation_id)
                 memory_meta = {"memory_binding": binding, "native_epoch": binding["native_epoch"]}
-            self.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump({"model": selection["upstream_model"], "effort": selection["upstream_effort"], "provider": provider, "provider_route": route.kind, "selection": selection, "model_routing": route_decision, "runtime_type": conversation_runtime_type(conversation), **memory_meta}), run_id))
+            execution_meta = {"model": selection["upstream_model"], "effort": selection["upstream_effort"], "provider": provider,
+                              "provider_route": route.kind, "selection": selection, "model_routing": route_decision,
+                              "runtime_type": conversation_runtime_type(conversation), "permission_mode": conversation["permission_mode"],
+                              "permission_mode_by": conversation.get("permission_mode_by"), **memory_meta, **recovery}
+            if scheduled:
+                execution_meta["schedule_id"] = scheduled["id"]
+            self.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump(execution_meta), run_id))
             title = data["text"].strip()[:40] if conversation["title"] == "新对话" and data["text"].strip() else conversation["title"]
             if title == "新对话" and skills:
                 title = " / ".join(skill["name"] for skill in skills)[:40]
             self.db.execute("UPDATE conversations SET active_run_id=?,updated_at=?,title=? WHERE id=?", (run_id, timestamp, title, conversation_id))
+            if queue_sequence is not None:
+                accepted = self.db.execute("UPDATE message_queue SET status='accepted',run_id=?,error=NULL,updated_at=? WHERE sequence=? AND conversation_id=? AND status='pending'", (run_id, timestamp, queue_sequence, conversation_id))
+                if accepted.rowcount != 1:
+                    raise AppError(409, "QUEUE_CHANGED", "待发消息已改变，请刷新后再操作")
             return {"message": message_view(self.require("messages", message_id)), "run_id": run_id}, True
 
     def authorize_tool(self, conversation_id: str, tool_name: str, arguments: dict):
@@ -697,6 +805,14 @@ class Service:
         if not user["enabled"]:
             raise AppError(403, "USER_DISABLED", "账号已停用")
         assistant = self.usable_assistant(conversation["assistant_id"], user)
+        if tool_name in {"mcp__workspace__ask_user", "mcp__workspace__review_plan", "mcp__workspace__delegate_tasks"}:
+            if (conversation_runtime_type(conversation) != "harness" or conversation["archived"]
+                    or not conversation["active_run_id"]):
+                raise AppError(403, "INTERACTION_INACTIVE", "交互需要当前授权的 Harness 任务")
+            active = self.require("runs", conversation["active_run_id"], user)
+            if active["status"] not in {"running", "awaiting_approval"}:
+                raise AppError(403, "INTERACTION_INACTIVE", "交互任务已结束")
+            return True
         if tool_name in {"mcp__workspace__memory_list", "mcp__workspace__memory_read", "mcp__workspace__memory_write"}:
             if (conversation_runtime_type(conversation) != "harness" or conversation["archived"]
                     or not conversation["active_run_id"]):
@@ -719,6 +835,11 @@ class Service:
             raw = arguments.get("path")
             if not isinstance(raw, str):
                 raise AppError(403, "PATH_DENIED", "文件路径无效")
+            if (tool_name == "mcp__workspace__file_read" and conversation_runtime_type(conversation) == "harness"
+                    and re.fullmatch(r"attachment:[0-9a-f]{32}:[0-9]{1,8}", raw)):
+                if not conversation["active_run_id"] or conversation["archived"]:
+                    raise AppError(403, "ATTACHMENT_NOT_AVAILABLE", "读取附件需要当前授权的任务")
+                return True
             workspace_path(root / "workbench", raw)
             return tool_name == "mcp__workspace__file_read"
         if tool_name in {"Read", "Write", "Edit", "Glob", "Grep"}:
@@ -806,6 +927,8 @@ class Service:
                 else:
                     from .tool_constraints import validate_definitions
                     validate_definitions(binding, connection, self.secrets.decrypt(connection.get("secret")) if binding.get("argument_constraints") else None)
+                if connection["status"] != "connected":
+                    raise AppError(409, "MCP_CONNECTION_UNAVAILABLE", "这个业务连接暂不可用，请查看连接状态")
                 validate_mcp_url(connection["url"], self.settings.mcp_hosts)
                 automatic = name in binding["auto_approved_tools"] and (not snapshot or name in prior_binding["auto_approved_tools"])
                 return automatic, binding, connection
@@ -851,6 +974,7 @@ class Service:
         runtime_type = conversation_runtime_type(conversation)
         selection = None
         run = None
+        recovery_only = False
         if conversation["active_run_id"]:
             run = self.require("runs", conversation["active_run_id"])
             metadata = json.loads(run["execution_meta"] or "{}")
@@ -858,6 +982,7 @@ class Service:
             if metadata.get("runtime_type", "claude") != runtime_type:
                 raise AppError(409, "RUNTIME_TYPE_CHANGED", "任务与会话执行器不一致，请重新创建会话")
             selection = metadata.get("selection")
+            recovery_only = metadata.get("recovery_mode") == "answer_only" or bool(metadata.get("schedule_id"))
         selection = self.catalog.validate_snapshot(selection or json.loads(conversation["model_snapshot"]))
         provider_env = self.validated_provider(selection)
         user = self.require("users", conversation["user_id"])
@@ -871,21 +996,41 @@ class Service:
             # Trial runs never mount business MCP servers or skills, even for
             # historical assistants/runs that still carry those snapshots.
             skill_snapshots = []
-        servers, versions = {}, [assistant["revision"]]
-        for binding in (() if self.policy.is_trial else assistant_snapshot["connections"]):
+        servers, versions, inventory, unavailable = {}, [assistant["revision"]], [], []
+        for binding in (() if self.policy.is_trial or recovery_only else assistant_snapshot["connections"]):
             connection = self.require_resource("connections", binding["connection_id"], user)
             pinned_revision = assistant_snapshot.get("connection_revisions", {}).get(connection["id"])
             if pinned_revision is not None and pinned_revision != connection["revision"]:
                 raise AppError(409, "CONFIG_CHANGED", "任务提交后数据源配置已改变，请重新发送任务")
             if not connection["enabled"]:
                 continue
+            versions.append((connection["id"], connection["revision"], connection["scope"], connection["owner_id"]))
+            # A recovered inventory rebuilds the runtime on the next turn.
+            # Health does not change the access fingerprint of other tools.
+            constraint_error = False
+            if connection["status"] == "connected" and run and binding.get("argument_constraints"):
+                from .tool_constraints import validate_definitions
+                try:
+                    observed = validate_definitions(binding, connection, self.secrets.decrypt(connection["secret"]))
+                    constraint_error = observed != assistant_snapshot.get("argument_constraint_schemas", {}).get(connection["id"])
+                except AppError:
+                    constraint_error = True
+            oauth_unavailable = connection["auth_type"] == "oauth" and (
+                runtime_type != "harness" or not self.mcp_oauth.configured(connection))
+            if connection["status"] != "connected" or constraint_error or oauth_unavailable:
+                if binding["allowed_tools"]:
+                    reason = ("当前会话或连接的 OAuth 授权不可用" if oauth_unavailable else
+                              "工具定义已变化，请先核验请求约束" if constraint_error else connection["last_error"] or "工具配置待核验")
+                    unavailable.append({"connection_id": connection["id"], "name": connection["name"],
+                                        "status": connection["status"], "reason": reason})
+                continue
             validate_mcp_url(connection["url"], self.settings.mcp_hosts)
             config = {"type": "http", "url": connection["url"]}
-            credential = self.secrets.decrypt(connection["secret"])
+            credential = None if connection["auth_type"] == "oauth" else self.secrets.decrypt(connection["secret"])
             if credential:
                 config["headers"] = {"Authorization": f"Bearer {credential}"}
             servers[f"c{connection['id']}"] = config
-            versions.append((connection["id"], connection["revision"], connection["scope"], connection["owner_id"]))
+            inventory.append((connection["id"], hashlib.sha256(connection["tools"].encode()).hexdigest()))
         for item_id in assistant_snapshot["knowledge_base_ids"]:
             kb = self.require_resource("knowledge_bases", item_id, user)
             versions.append(("knowledge", item_id, kb.get("revision"), kb["enabled"], kb["scope"], kb["owner_id"]))
@@ -907,6 +1052,8 @@ class Service:
         memory = self.memory.root(user["id"], conversation_id)
         versions.append(("model", selection))
         versions.append(("runtime", runtime_type))
+        if recovery_only:
+            versions.append(("recovery", "answer_only"))
         if runtime_type == "harness":
             versions.append(("harness_launch", self.settings.harness_node_path, self.settings.harness_source_dir))
             versions.append(("harness_output", self.settings.harness_max_output_tokens))
@@ -914,45 +1061,96 @@ class Service:
         # the selected executor's resume ID to the runtime configuration.
         runtime_conversation = {**conversation, "runtime_type": runtime_type}
         runtime_conversation["sdk_session_id" if runtime_type == "harness" else "harness_session_id"] = None
-        return {"conversation": runtime_conversation, "runtime_type": runtime_type, "native_session_id": native_session_id(conversation), "memory_binding": memory_binding, "instructions": assistant_snapshot["instructions"], "mcp_servers": servers, "fingerprint": dump(versions), "memory_dir": str(memory), "assistant_snapshot": assistant_snapshot, "skill_snapshots": skill_snapshots, "user": user_view(user),
+        return {"conversation": runtime_conversation, "runtime_type": runtime_type, "native_session_id": native_session_id(conversation), "memory_binding": memory_binding, "instructions": assistant_snapshot["instructions"], "mcp_servers": servers, "mcp_inventory": inventory, "mcp_unavailable": unavailable, "fingerprint": dump(versions), "memory_dir": str(memory), "assistant_snapshot": assistant_snapshot, "skill_snapshots": skill_snapshots, "user": user_view(user),
                 "selection": selection, "public_model_id": selection["model_id"], "public_model_label": selection["model_label"],
-                "reasoning_level": selection["reasoning_level"], "upstream_model": selection["upstream_model"], "upstream_effort": selection["upstream_effort"],
+                "reasoning_level": selection["reasoning_level"], "upstream_model": selection["upstream_model"], "upstream_effort": selection["upstream_effort"], "recovery_only": recovery_only,
                 "provider_env": provider_env}
 
-    def collect_artifacts(self, conversation_id, run_id):
-        conversation = self.require("conversations", conversation_id)
+    @staticmethod
+    def _artifact_version(value):
+        return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+    def artifact_snapshot(self, conversation_id):
+        """Capture changes made in the conversation actor's current turn."""
         root = self.settings.data_dir / "workspaces" / conversation_id
         directory = root / "artifacts"
-        if not directory.exists():
-            return
-        # Copy immutable snapshots; never expose arbitrary paths or symlink targets.
-        for path in list(directory.rglob("*"))[:100]:
-            if not path.is_file() or path.is_symlink():
-                continue
+        snapshot = {}
+        if not directory.is_dir() or directory.is_symlink():
+            return snapshot
+        directory = directory.resolve()
+        for path in directory.rglob("*"):
             try:
-                workspace_path(root, str(path))
-                size = path.stat().st_size
-                if size > self.settings.upload_max_bytes:
-                    continue
-                import hashlib
-                digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                artifact_name = path.name
-                prior = self.db.one("SELECT id FROM files WHERE conversation_id=? AND name=? AND path LIKE ?", (conversation_id, artifact_name, f"%{digest}%"))
-                if prior:
-                    continue
-                file_id = uid()
-                stored = self.settings.data_dir / "files" / f"{file_id}-{digest}"
-                shutil.copyfile(path, stored)
-                self.db.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?,?)", (file_id, conversation["user_id"], artifact_name, mimetypes.guess_type(artifact_name)[0] or "application/octet-stream", size, str(stored), now(), conversation_id))
-                value = file_view(self.require("files", file_id))
-                self.db.event(run_id, "artifact.created", value)
-                row = self.require("runs", run_id)
-                message = self.require("messages", row["assistant_message_id"])
-                ids = json.loads(message["file_ids"])
-                ids.append(file_id)
-                self.db.execute("UPDATE messages SET file_ids=? WHERE id=?", (dump(ids), message["id"]))
+                value = path.lstat()
+                if stat.S_ISREG(value.st_mode) and workspace_path(root, str(path)) == path:
+                    snapshot[path] = self._artifact_version(value)
             except (OSError, AppError):
                 continue
+        return snapshot
+
+    def collect_artifacts(self, conversation_id, run_id, before):
+        conversation = self.require("conversations", conversation_id)
+        maximum = self.settings.upload_max_bytes
+        changed = [(path, version) for path, version in self.artifact_snapshot(conversation_id).items()
+                   if before.get(path) != version and version[2] <= maximum]
+        for path, version in changed[:100]:
+            # Read only the selected file version. A late write or replacement
+            # cannot turn an already verified artifact into different bytes.
+            try:
+                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0))
+                with os.fdopen(descriptor, "rb") as source:
+                    initial = os.fstat(source.fileno())
+                    if not stat.S_ISREG(initial.st_mode) or self._artifact_version(initial) != version:
+                        continue
+                    payload = source.read(maximum + 1)
+                    if len(payload) != version[2] or self._artifact_version(os.fstat(source.fileno())) != version:
+                        continue
+                if self._artifact_version(path.lstat()) != version:
+                    continue
+                self._publish_artifact(conversation, run_id, path.name, payload)
+            except (OSError, AppError):
+                continue
+
+    def _publish_artifact(self, conversation, run_id, name, payload):
+        conversation_id, owner_id = conversation["id"], conversation["user_id"]
+        digest = hashlib.sha256(payload).hexdigest()
+        directory = self.settings.data_dir / "files"
+        stored = None
+        try:
+            with self.db.transaction():
+                run = self.require("runs", run_id)
+                current = self.require("conversations", conversation_id)
+                if (run["conversation_id"] != conversation_id or run["user_id"] != owner_id
+                        or run["status"] != "running" or current["active_run_id"] != run_id):
+                    return
+                message = self.require("messages", run["assistant_message_id"])
+                ids = json.loads(message["file_ids"])
+                prior = self.db.one(
+                    """SELECT * FROM files WHERE conversation_id=? AND user_id=? AND name=? AND size=?
+                       AND path LIKE ? ORDER BY created_at LIMIT 1""",
+                    (conversation_id, owner_id, name, len(payload), f"%-{digest}"),
+                )
+                prior_path = directory / f"{prior['id']}-{digest}" if prior else None
+                if prior_path is not None and str(prior_path) == prior["path"] and prior_path.is_file() and not prior_path.is_symlink():
+                    file = prior
+                else:
+                    file_id = uid()
+                    target_path = directory / f"{file_id}-{digest}"
+                    with target_path.open("xb") as target:
+                        stored = target_path
+                        target.write(payload)
+                    self.db.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?,?)", (
+                        file_id, owner_id, name, mimetypes.guess_type(name)[0] or "application/octet-stream",
+                        len(payload), str(stored), now(), conversation_id,
+                    ))
+                    file = self.require("files", file_id)
+                if file["id"] not in ids:
+                    ids.append(file["id"])
+                    self.db.execute("UPDATE messages SET file_ids=? WHERE id=?", (dump(ids), message["id"]))
+                    self.db.event(run_id, "artifact.created", file_view(file))
+        except BaseException:
+            if stored is not None:
+                stored.unlink(missing_ok=True)
+            raise
 
     def usage(self, user, *, scope="self", model_id=None, date_from=None, date_to=None):
         from .usage_accounting import usage_summary

@@ -1,7 +1,8 @@
 """Harness business tools using the existing official Python MCP transport.
 
-Only the trusted host holds routes and credentials. Model-visible names are
-opaque, bounded aliases; approval and evidence retain the canonical tool name.
+Only the trusted host holds routes and credentials. Model-facing definitions
+describe their source and original tool names, while dispatch uses bounded
+aliases and approval and evidence retain the canonical tool name.
 """
 from __future__ import annotations
 
@@ -292,12 +293,17 @@ class MCPBusinessTool:
         from .tool_constraint_context import constrained_input_schema
         self.model_input_schema = constrained_input_schema(self.input_schema, argument_constraint)
         self.route = dict(runtime.config["mcp_servers"][f"c{self.connection_id}"])
+        self.oauth = connection.get("auth_type") == "oauth"
         self.credential = runtime.service.secrets.decrypt(connection.get("secret"))
         # Schema constants/defaults must not smuggle a transport credential to
         # Node or the model. Descriptions may be safely scrubbed as plain text.
         if self.credential and contains_credential(self.input_schema, self.credential):
             raise AppError(422, "HARNESS_MCP_SCHEMA_UNSUPPORTED", "业务工具定义包含连接凭据，请修正连接后重新测试")
-        self.description = self.clean(definition.get("description") or f"已授权业务工具 {self.server_tool}")[:4000]
+        connection_name = " ".join(self.clean(connection.get("name") or "").split())
+        connection_name = re.sub(r"https?://\S+", "[redacted]", connection_name, flags=re.IGNORECASE)[:100] or "业务连接"
+        label = f"MCP 服务 {dump(connection_name)} 的工具 {dump(self.clean(self.server_tool))}。"
+        description = self.clean(definition.get("description") or "已授权业务工具")
+        self.description = f"{label}\n{description}"[:4000]
 
     def clean(self, value):
         return clean_mcp_value(value, self.credential)
@@ -325,17 +331,25 @@ class MCPBusinessTool:
                 or encoded(matching[0]) != self.stored_definition):
             raise AppError(409, "HARNESS_MCP_CONFIG_CHANGED", "业务工具定义或连接状态已变化，请重新测试连接并发送任务")
         validate_mcp_url(self.route["url"], service.settings.mcp_hosts)
+        return row
 
     async def invoke(self, arguments, recheck):
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
         self.runtime.service.policy.require_tool(self.canonical_name)
-        self.current()
+        row = self.current()
         recheck()
         try:
             with transport_logs(), anyio.fail_after(MCP_TIMEOUT_SECONDS):
-                async with httpx.AsyncClient(headers={**self.route.get("headers", {}), "Accept-Encoding": "identity"}, timeout=httpx.Timeout(MCP_TIMEOUT_SECONDS, connect=10),
+                headers = {**self.route.get("headers", {}), "Accept-Encoding": "identity"}
+                credential = self.credential
+                if self.oauth:
+                    credential = await self.runtime.service.mcp_oauth.access_token(row)
+                    headers["Authorization"] = f"Bearer {credential}"
+                    self.current()
+                    recheck()
+                async with httpx.AsyncClient(headers=headers, timeout=httpx.Timeout(MCP_TIMEOUT_SECONDS, connect=10),
                         follow_redirects=False, max_redirects=0, trust_env=False, event_hooks={"response": [bound_response]}) as http:
                     async with streamable_http_client(self.route["url"], http_client=http) as streams:
                         async with ClientSession(streams[0], streams[1]) as session:
@@ -349,6 +363,11 @@ class MCPBusinessTool:
                                     break
                             if cursor or len(matches) != 1 or encoded(matches[0].inputSchema) != encoded(self.input_schema):
                                 raise AppError(409, "HARNESS_MCP_SCHEMA_CHANGED", "业务工具的远端定义已变化，请重新测试连接并发送任务")
+                            confirmation = getattr(recheck, "definition_digest", None)
+                            if confirmation:
+                                from .read_only_tools import require_eligible
+                                if require_eligible(matches[0]) != confirmation:
+                                    raise AppError(409, "READ_ONLY_CONFIRMATION_STALE", "远端工具定义已变化，请重新测试连接并确认只读用途")
                             self.current()
                             # Network initialization is an await boundary: an
                             # old approval cannot survive revocation during it.
@@ -365,7 +384,7 @@ class MCPBusinessTool:
             body = include_structured_text(body)
             # Decide equivalence before clean() normalizes JSON text, so a
             # duplicate-key/precision ambiguity cannot become false equality.
-            body = self.clean(body)
+            body = self.clean(clean_mcp_value(body, credential)) if self.oauth else self.clean(body)
             if len(encoded(body).encode()) > MAX_RESPONSE_BYTES:
                 raise ValueError("large normalized result")
             enforce_model_result_budget(body)
@@ -398,7 +417,7 @@ def build_mcp_tools(runtime):
         if not connection["enabled"] or f"c{connection['id']}" not in runtime.config.get("mcp_servers", {}):
             continue
         if connection["status"] != "connected":
-            raise AppError(409, "HARNESS_MCP_NOT_TESTED", "请先测试并确认已绑定的业务连接")
+            continue
         definitions = json.loads(connection["tools"])
         if binding.get("argument_constraints"):
             from .tool_constraints import validate_definitions
@@ -406,7 +425,9 @@ def build_mcp_tools(runtime):
         for name in binding["allowed_tools"]:
             matching = [item for item in definitions if item.get("name") == name]
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name) or len(matching) != 1:
-                raise AppError(409, "HARNESS_MCP_TOOL_UNAVAILABLE", "助手授权的业务工具已不存在或名称不受支持，请重新配置")
+                # A removed grant is unavailable until the operator updates
+                # the assistant. Other business and workspace tools can run.
+                continue
             tool = MCPBusinessTool(runtime, connection, matching[0], binding.get("argument_constraints", {}).get(name))
             if tool.name in tools:
                 raise AppError(409, "HARNESS_MCP_TOOL_UNAVAILABLE", "业务工具定义重复，请重新配置助手")

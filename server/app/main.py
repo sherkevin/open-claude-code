@@ -1,27 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote_to_bytes, urlencode
 
 from fastapi import Depends, FastAPI, File, Request, Response, UploadFile, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.routing import Match
+from starlette.requests import ClientDisconnect
+from starlette.routing import Match, WebSocketRoute
 
 from .config import Settings
 from .db import dump, now, offload, offload_write, uid
 from .deployment_policy import DeploymentPolicy
 from .models import *
-from .middleware import BodyLimitMiddleware, TrustedProxySchemeMiddleware
+from .run_steering import SteerTurn, dispatch_steer, list_steers
+from .middleware import BodyLimitMiddleware, TrustedProxySchemeMiddleware, is_streaming_upload
 from .runtime import RunManager
 from .security import AppError, password_hash, password_matches, safe_name, token_hash
 from .service import Service, TERMINAL, user_view, connection_view, assistant_view, conversation_view, message_view, file_view, approval_view
@@ -84,6 +89,8 @@ class DeploymentPolicyMiddleware:
 def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAPI:
     settings = settings or Settings()
     policy = DeploymentPolicy(settings.deployment_mode, settings.trial_capabilities)
+    prefix = "/api/v1"
+    streaming_upload_path = None if policy.is_trial else prefix + "/files/binary"
 
     def deployment_guard(request: Request):
         """Exact template + method allowlist; runs before every handler.
@@ -100,12 +107,14 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     @asynccontextmanager
     async def lifespan(app):
         service = app.state.service = Service(settings)
+        service.catalog.require_credentials = runtime_factory is None
         manager = app.state.manager = RunManager(service, runtime_factory)
         service.manager = manager
         manager.recover()
         app.state.login_attempts = {}
         app.state.feishu_h5_attempts = {}
         app.state.dummy_password_hash = password_hash(secrets.token_urlsafe(32))
+        manager.start_queue_worker()
         yield
         await manager.close()
         service.db.close()
@@ -125,8 +134,11 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     # letting a trailing-slash variant reach the router's normal handling.
     if policy.is_trial:
         app.router.redirect_slashes = False
-    app.add_middleware(CORSMiddleware, allow_origins=list(settings.origins), allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Content-Type", "Last-Event-ID"])
-    app.add_middleware(BodyLimitMiddleware, maximum=settings.upload_max_bytes + 1024 * 1024)
+    cors_headers = ["Content-Type", "Last-Event-ID"]
+    if streaming_upload_path is not None:
+        cors_headers.append("X-Upload-Filename")
+    app.add_middleware(CORSMiddleware, allow_origins=list(settings.origins), allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=cors_headers)
+    app.add_middleware(BodyLimitMiddleware, maximum=settings.upload_max_bytes + 1024 * 1024, streaming_upload_path=streaming_upload_path)
     # Forwarded transport is honored only from explicitly configured proxy
     # socket addresses; application code trusts the resulting ASGI scheme.
     if settings.trusted_proxy_peers:
@@ -169,12 +181,13 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             local_origin = f"{request.url.scheme}://{request.url.netloc}"
             if (origin and origin.rstrip("/") not in {*settings.origins, local_origin}) or request.headers.get("sec-fetch-site") == "cross-site" and not origin:
                 return JSONResponse(status_code=403, content={"error": {"code": "ORIGIN_DENIED", "message": "请求来源未授权"}})
-            try:
-                too_large = int(request.headers.get("content-length", "0")) > settings.upload_max_bytes + 1024 * 1024
-            except ValueError:
-                too_large = True
-            if too_large:
-                return JSONResponse(status_code=413, content={"error": {"code": "UPLOAD_TOO_LARGE", "message": "上传内容超过大小限制"}})
+            if not is_streaming_upload(request.scope, streaming_upload_path):
+                try:
+                    too_large = int(request.headers.get("content-length", "0")) > settings.upload_max_bytes + 1024 * 1024
+                except ValueError:
+                    too_large = True
+                if too_large:
+                    return JSONResponse(status_code=413, content={"error": {"code": "UPLOAD_TOO_LARGE", "message": "上传内容超过大小限制"}})
         response = await call_next(request)
         # Route-specific hardening (for example the operator page) may be
         # stricter than these defaults; never overwrite it here.
@@ -207,6 +220,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     app.include_router(create_registration_router(svc))
     from .mcp_import import create_import_router
     app.include_router(create_import_router(svc, authenticated))
+    from .kaiwu_platform_export import create_kaiwu_platform_export_router
+    app.include_router(create_kaiwu_platform_export_router(svc, admin))
     from .skills import create_skill_router
     app.include_router(create_skill_router(svc, authenticated))
     from .plugins import create_plugin_router
@@ -233,25 +248,47 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     app.include_router(create_benchmark_router(svc, admin))
     from .artifacts import create_artifact_router
     app.include_router(create_artifact_router(svc, authenticated))
+    from .conversation_export import create_conversation_export_router
+    app.include_router(create_conversation_export_router(svc, authenticated))
+    if not policy.is_trial:
+        from .conversation_fork import create_conversation_fork_router
+        from .conversation_interactions import create_interaction_router
+        from .conversation_schedules import create_schedule_router
+        app.include_router(create_conversation_fork_router(svc, authenticated))
+        app.include_router(create_interaction_router(svc, authenticated))
+        app.include_router(create_schedule_router(svc, authenticated))
     from .workflows import create_workflow_router
     app.include_router(create_workflow_router(svc, authenticated, enabled=settings.workflows_enabled))
     from .kaiwu_control import create_kaiwu_control_router
     app.include_router(create_kaiwu_control_router(svc))
+    from .kaiwu_native_relay import NATIVE_RELAY_PATH, NativeRelayRegistry, connect_native_relay
+    app.state.kaiwu_native_relay = NativeRelayRegistry()
+    app.router.routes.append(WebSocketRoute(NATIVE_RELAY_PATH, connect_native_relay))
     from .kaiwu_edge import create_kaiwu_edge_router
     app.include_router(create_kaiwu_edge_router(svc, settings))
-
-    prefix = "/api/v1"
 
     @app.get(prefix + "/config")
     def config():
         view = policy.public_view()
         feishu_ready = settings.feishu_h5_ready and not policy.is_trial
+        upload_config: dict[str, object] = {"upload_max_bytes": settings.upload_max_bytes}
+        if streaming_upload_path is not None:
+            from .harness_attachments import MAX_IMAGE_BYTES, attachment_limits
+
+            upload_config.update(
+                chat_attachment_upload_max_bytes=settings.chat_attachment_upload_max_bytes,
+                chat_attachment_limits=attachment_limits(settings),
+                legacy_chat_image_max_bytes=MAX_IMAGE_BYTES,
+                chat_attachment_discard=True,
+            )
         return {
             "brand_name": settings.brand_name,
             "registration_enabled": registration_available(settings),
             "registration_min_password_length": MIN_PASSWORD_LENGTH,
-            "upload_max_bytes": settings.upload_max_bytes,
+            **upload_config,
             "auth_types": ["none", "bearer"],
+            **({"harness_subagents": bool(settings.harness_source_dir and settings.harness_node_path and settings.max_active_sessions >= 2)}
+               if not policy.is_trial else {}),
             "feishu_h5": {
                 "enabled": feishu_ready,
                 "app_id": settings.feishu_h5_app_id if feishu_ready else "",
@@ -408,14 +445,52 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         return service.save_connection(data.model_dump(exclude_unset=True), item_id, user=user)
 
     @app.delete(prefix + "/connections/{item_id}", status_code=204)
-    def connection_delete(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
-        service.require_resource("connections", item_id, user, edit=True)
-        service.db.execute("UPDATE connections SET deleted=1,enabled=0,revision=revision+1 WHERE id=?", (item_id,))
+    async def connection_delete(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        row = await offload(service.require_resource, "connections", item_id, user, True)
+        if row["auth_type"] == "oauth":
+            await service.mcp_oauth.revoke(item_id, user, delete=True)
+        else:
+            await offload_write(service.db.execute, "UPDATE connections SET deleted=1,enabled=0,revision=revision+1 WHERE id=?", (item_id,))
         return Response(status_code=204)
 
     @app.post(prefix + "/connections/{item_id}/test")
     async def connection_test(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
         return await service.test_connection(item_id, user=user)
+
+    @app.get(prefix + "/connections/oauth/profiles")
+    def connection_oauth_profiles(user=Depends(authenticated), service: Service = Depends(svc)):
+        return [{"url": profile.resource} for profile in service.mcp_oauth.profiles.values()]
+
+    @app.post(prefix + "/connections/{item_id}/oauth/start")
+    async def connection_oauth_start(item_id: str, request: Request, user=Depends(authenticated), service: Service = Depends(svc)):
+        url = await service.mcp_oauth.start(item_id, user, token_hash(request.cookies[settings.session_cookie_name]))
+        return {"authorization_url": url}
+
+    @app.post(prefix + "/connections/{item_id}/oauth/revoke")
+    async def connection_oauth_revoke(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+        remotely_revoked = await service.mcp_oauth.revoke(item_id, user)
+        return {"locally_revoked": True, "issuer_revoked": remotely_revoked}
+
+    @app.get(prefix + "/connections/oauth/callback/{profile_key}")
+    async def connection_oauth_callback(profile_key: str, request: Request, user=Depends(authenticated), service: Service = Depends(svc)):
+        query = request.query_params
+        state, code, issuer = (query.get(key) for key in ("state", "code", "iss"))
+        if (not state or not re.fullmatch(r"[A-Za-z0-9_-]{43}", state)
+                or code is not None and (not re.fullmatch(r"[\x21-\x7e]{1,4096}", code) or "error" in query)
+                or issuer is not None and len(issuer) > 2048
+                or any(len(query.getlist(key)) > 1 for key in ("state", "code", "iss", "error"))):
+            raise AppError(422, "MCP_OAUTH_CALLBACK_INVALID", "OAuth 授权回调格式无效")
+        outcome = {"mcp_oauth": "failed"}
+        try:
+            item_id = await service.mcp_oauth.complete(profile_key, user, token_hash(request.cookies[settings.session_cookie_name]), state, code, issuer)
+            current = await offload(service.require_resource, "connections", item_id, user)
+            await service.probe_connection(current, timeout=10)
+            outcome = {"mcp_oauth": "linked", "mcp_oauth_connection": item_id}
+        except AppError:
+            # The browser lands on a clean URL. Provider callback values and
+            # exception content never enter application redirects or UI copy.
+            pass
+        return RedirectResponse("/?" + urlencode(outcome), status_code=303, headers={"Referrer-Policy": "no-referrer"})
 
     @app.get(prefix + "/assistants")
     def assistants(manage: bool = False, user=Depends(authenticated), service: Service = Depends(svc)):
@@ -477,7 +552,9 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
 
     @app.get(prefix + "/conversations/{item_id}")
     def conversation_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
-        return conversation_view(service.require("conversations", item_id, user))
+        conversation = conversation_view(service.require("conversations", item_id, user), user)
+        fork = service.db.one("SELECT inherited_through_id FROM conversation_forks WHERE conversation_id=?", (item_id,))
+        return {**conversation, "fork_inherited_through_id": fork["inherited_through_id"]} if fork else conversation
 
     @app.get(prefix + "/conversations/{item_id}/trajectory")
     def conversation_trajectory(item_id: str, cursor: str | None = Query(default=None, max_length=1024),
@@ -490,9 +567,17 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         return service.patch_conversation(item_id, data.model_dump(exclude_unset=True), user)
 
     @app.get(prefix + "/conversations/{item_id}/messages")
-    def messages(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
-        service.require("conversations", item_id, user)
-        return [message_view(row) for row in service.db.all("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at,rowid", (item_id,))]
+    def messages(item_id: str, limit: int | None = Query(None, ge=1, le=100),
+                 before: str | None = Query(None, min_length=1, max_length=128),
+                 after: str | None = Query(None, min_length=1, max_length=128),
+                 around: str | None = Query(None, min_length=1, max_length=128),
+                 user=Depends(authenticated), service: Service = Depends(svc)):
+        with service.db.lock:
+            service.require("conversations", item_id, user)
+            if limit is not None or before is not None or after is not None or around is not None:
+                from .conversation_history import message_history
+                return message_history(service.db, item_id, limit or 40, before=before, after=after, around=around)
+            return [message_view(row) for row in service.db.all("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at,rowid", (item_id,))]
 
     @app.post(prefix + "/conversations/{item_id}/messages", status_code=202)
     async def message_send(item_id: str, data: SendMessage, user=Depends(authenticated), service: Service = Depends(svc)):
@@ -507,12 +592,14 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         conversation = await offload(service.require, "conversations", item_id, user)
         route_enabled = False if service.policy.is_trial else (payload.get("auto_route") if payload.get("auto_route") is not None else bool(conversation.get("auto_model_routing")))
         duplicate = await offload(service.db.one, "SELECT id FROM runs WHERE conversation_id=? AND client_request_id=?", (item_id, payload["client_request_id"]))
-        if not duplicate and route_enabled and not payload.get("model_id") and payload.get("text", "").strip() and not conversation.get("active_run_id"):
+        if (not duplicate and route_enabled and not payload.get("recovery_run_id") and not payload.get("model_id")
+                and payload.get("text", "").strip() and not conversation.get("active_run_id")):
             # Provider-backed fitness routing is asynchronous at the API edge;
             # prepare_run consumes the bounded result and records its evidence.
-            from .model_recommendation import provider_router
-            candidates = [item["id"] for item in service.catalog.public() if item["available"]]
-            payload["_route_recommendation"] = await provider_router(service, payload.get("text", ""), candidates, user_id=user["id"])
+            from .model_recommendation import message_route_candidates, provider_router
+            candidates = await offload(message_route_candidates, service, payload.get("file_ids"), user)
+            if candidates:
+                payload["_route_recommendation"] = await provider_router(service, payload.get("text", ""), candidates, user_id=user["id"])
         result, created = await service.prepare_and_submit_async(item_id, payload, user)
         return result
 
@@ -528,6 +615,15 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         result = {"schema_version": 1, "generated_at": now(), "run": {**service.run_view(row), "duration_ms": max(0, int((end - started).total_seconds() * 1000))}, "messages": [message_view(item) for item in service.db.all("SELECT * FROM messages WHERE run_id=? ORDER BY created_at,rowid", (item_id,))], "events": service.public_events(item_id, 0), "usage": json.loads(row["usage"]) if row["usage"] else None}
         from .run_trace import redact_run_trace
         return JSONResponse(content=redact_run_trace(result), headers={"Content-Disposition": f'attachment; filename="run-{item_id}.json"'})
+
+    if not policy.is_trial:
+        @app.get(prefix + "/runs/{item_id}/steering")
+        def run_steering(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+            return list_steers(service, item_id, user)
+
+        @app.post(prefix + "/runs/{item_id}/steering")
+        async def steer_run(item_id: str, body: SteerTurn, user=Depends(authenticated), service: Service = Depends(svc)):
+            return await dispatch_steer(service, item_id, body, user)
 
     @app.get(prefix + "/runs/{item_id}/events")
     async def run_events(item_id: str, request: Request, after: int = 0, user=Depends(authenticated), service: Service = Depends(svc)):
@@ -569,14 +665,16 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
                 await asyncio.sleep(0.25)
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
+    if not policy.is_trial:
+        @app.get(prefix + "/conversations/{item_id}/subagent-plans")
+        def subagent_plans(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+            service.require("conversations", item_id, user)
+            return service.db.all("""SELECT id,created_at,status FROM runs r WHERE r.conversation_id=?
+                AND EXISTS(SELECT 1 FROM subagent_children c WHERE c.parent_run_id=r.id)
+                ORDER BY created_at DESC,r.rowid DESC LIMIT 100""", (item_id,))
+
     @app.post(prefix + "/runs/{item_id}/subagents", status_code=202)
     async def subagent_plan(item_id: str, data: SubagentPlanRequest, user=Depends(authenticated), service: Service = Depends(svc)):
-        """Start a protected, local synthetic read-only child plan.
-
-        This endpoint is intentionally not a model or MCP delegation surface;
-        it exists to exercise the bounded lifecycle contract without customer
-        data, credentials, network calls, or paid model calls.
-        """
         await service.require_async("runs", item_id, user)
         plan = await offload(service.subagents.create_plan, item_id, user["id"], data.tasks, data.mode)
         service.subagents.start_plan(item_id, user["id"])
@@ -682,30 +780,128 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             future.set_result(data.decision)
         return {"id": item_id, "status": status, "decided_at": decided_at, "decision_source": "user"}
 
+    def register_upload(service, file_id, name, mime, size, path, user, draft, upload_id, content_digest):
+        created_at = now()
+        try:
+            with service.db.transaction():
+                if upload_id:
+                    existing = service.db.one("""SELECT f.*,uploads.content_digest FROM chat_draft_upload_requests uploads
+                        JOIN files f ON f.id=uploads.file_id WHERE uploads.user_id=? AND uploads.request_id=?""", (user["id"], upload_id))
+                    if existing:
+                        if (existing["size"], existing["name"], existing["content_digest"]) != (size, name, content_digest):
+                            raise AppError(409, "UPLOAD_REQUEST_CHANGED", "上传编号对应的附件已变化，请重新添加")
+                        path.unlink(missing_ok=True)
+                        return file_view(existing)
+                service.db.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?,NULL)",
+                                   (file_id, user["id"], name, mime, size, str(path), created_at))
+                if draft and not policy.is_trial:
+                    from .draft_uploads import mark_draft_upload
+                    mark_draft_upload(service.db, file_id)
+                    if upload_id:
+                        service.db.execute("INSERT INTO chat_draft_upload_requests VALUES(?,?,?,?)",
+                                           (user["id"], upload_id, file_id, content_digest))
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return {"id": file_id, "name": name, "mime_type": mime, "size": size, "created_at": created_at}
+
+    upload_request = Query(None, pattern=r"^[A-Za-z0-9_-]{8,100}$")
+
     @app.post(prefix + "/files", status_code=201)
-    async def upload(file: UploadFile = File(...), user=Depends(authenticated), service: Service = Depends(svc)):
+    async def upload(file: UploadFile = File(...), draft: bool = False, upload_id: str | None = upload_request,
+                     user=Depends(authenticated), service: Service = Depends(svc)):
+        upload_id = upload_id if draft and not policy.is_trial else None
+        digest = hashlib.sha256() if upload_id else None
         file_id, name = uid(), safe_name(file.filename or "attachment")
         path = settings.data_dir / "files" / file_id
         size = 0
         try:
-            with path.open("xb") as output:
-                while chunk := await file.read(1024 * 1024):
-                    size += len(chunk)
-                    if size > settings.upload_max_bytes:
-                        raise AppError(413, "UPLOAD_TOO_LARGE", "附件超过大小限制")
-                    output.write(chunk)
-            mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            await offload_write(service.db.execute, "INSERT INTO files VALUES(?,?,?,?,?,?,?,NULL)", (file_id, user["id"], name, mime, size, str(path), now()))
+            try:
+                with path.open("xb") as output:
+                    while chunk := await file.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > settings.upload_max_bytes:
+                            raise AppError(413, "UPLOAD_TOO_LARGE", "附件超过大小限制")
+                        if digest:
+                            digest.update(chunk)
+                        output.write(chunk)
+            finally:
+                await file.close()
         except BaseException:
             path.unlink(missing_ok=True)
             raise
-        finally:
-            await file.close()
-        return file_view(await service.require_async("files", file_id, user))
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return await offload_write(register_upload, service, file_id, name, mime, size, path, user, draft, upload_id, digest.hexdigest() if digest else None)
+
+    if streaming_upload_path is not None:
+        @app.post(streaming_upload_path, status_code=201)
+        async def upload_binary(request: Request, draft: bool = False, upload_id: str | None = upload_request,
+                                user=Depends(authenticated), service: Service = Depends(svc)):
+            upload_id = upload_id if draft else None
+            digest = hashlib.sha256() if upload_id else None
+            maximum = settings.chat_attachment_upload_max_bytes
+            try:
+                declared_size = int(request.headers.get("content-length", "0"))
+            except ValueError:
+                declared_size = -1
+            if not 0 <= declared_size <= maximum:
+                raise AppError(413, "UPLOAD_TOO_LARGE", "附件超过大小限制")
+
+            media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+            if media_type != "application/octet-stream":
+                raise AppError(415, "UNSUPPORTED_UPLOAD_TYPE", "请使用 application/octet-stream 上传附件")
+            filename = request.headers.get("x-upload-filename", "")
+            if not filename or not filename.isascii() or re.search(r"%(?![0-9a-fA-F]{2})", filename):
+                raise AppError(400, "INVALID_UPLOAD_FILENAME", "缺少有效的附件名称")
+            try:
+                name = safe_name(unquote_to_bytes(filename).decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise AppError(400, "INVALID_UPLOAD_FILENAME", "缺少有效的附件名称") from exc
+
+            file_id = uid()
+            path = settings.data_dir / "files" / file_id
+            mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            size = 0
+            output = path.open("xb")
+            try:
+                with output:
+                    try:
+                        async for chunk in request.stream():
+                            size += len(chunk)
+                            if size > maximum:
+                                raise AppError(413, "UPLOAD_TOO_LARGE", "附件超过大小限制")
+                            if chunk:
+                                if digest:
+                                    digest.update(chunk)
+                                await offload_write(output.write, chunk)
+                    except ClientDisconnect as exc:
+                        raise AppError(400, "UPLOAD_DISCONNECTED", "附件上传中断") from exc
+                    if size == 0:
+                        raise AppError(400, "UPLOAD_EMPTY", "附件为空")
+                    await offload_write(output.flush)
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+
+            return await offload_write(register_upload, service, file_id, name, mime, size, path, user, draft, upload_id, digest.hexdigest() if digest else None)
 
     @app.get(prefix + "/files/{item_id}")
     def file_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
         return file_view(service.require("files", item_id, user))
+
+    if not policy.is_trial:
+        @app.get(prefix + "/files/{item_id}/preview")
+        async def preview_file(item_id: str, page: int = Query(1, ge=1, le=10000), user=Depends(authenticated), service: Service = Depends(svc)):
+            from .document_preview import file_preview
+
+            return await offload(file_preview, service, item_id, user, page)
+
+    if streaming_upload_path is not None:
+        @app.delete(prefix + "/files/{item_id}", status_code=204)
+        async def discard_draft_file(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
+            from .draft_uploads import release_draft_upload
+
+            await offload_write(release_draft_upload, service, item_id, user)
 
     @app.get(prefix + "/files/{item_id}/content")
     def file_content(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):

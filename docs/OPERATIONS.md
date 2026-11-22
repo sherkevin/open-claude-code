@@ -53,6 +53,27 @@ GLM-5.3 目录项保持 `requires_new_conversation_on_switch:true`。已有原�
 
 页面修改连接或助手会递增配置版本；连接编辑后需重新测试、确认允许的工具。运行中的下一次工具检查遇到版本变化会拒绝继续使用旧配置，并提示重新发送任务；下一轮会重建执行连接。停用用户、停用连接、收回助手访问或工具授权会在后续授权检查生效，待批准工具在执行前也重新检查。它们不会撤回已经发往外部系统的调用或撤销已产生的业务结果；紧急撤权还应在客户 MCP／业务系统中吊销对应凭据。
 
+## OAuth MCP 接入
+
+`AGENT_MCP_OAUTH_PROFILES` 指向仅工作台服务可读的 JSON 文件。设置前在供应方预注册 OAuth 客户端，填写对应项目的 `redirect_uri`，并在 `AGENT_MCP_ALLOWED_HOSTS` 中加入 MCP 服务主机。使用 HTTPS，工作台会话 Cookie 须设置 `AGENT_COOKIE_SECURE=true`。
+
+```json
+{
+  "example": {
+    "resource": "https://mcp.example.com/mcp",
+    "issuer": "https://login.example.com",
+    "client_id": "kaiwu-client",
+    "client_secret_env": "KAIWU_EXAMPLE_OAUTH_SECRET",
+    "redirect_uri": "https://workbench.example.com/api/v1/connections/oauth/callback/example",
+    "scope": "records:read"
+  }
+}
+```
+
+公开客户端可省略 `client_secret_env`。供应方需在标准地址提供 OAuth 资源及授权服务器元数据，支持 PKCE S256、指定资源、有效期和撤销。授权、令牌和撤销地址必须与配置的 `issuer` 同源。平台代理在 `/api/v1/connections/oauth/callback/` 路径上的日志应只记录路径，隐藏查询参数。`AGENT_MCP_OAUTH_LOOPBACK=true` 仅供回环测试。
+
+用户在 MCP 连接页面选择「OAuth 账号授权」，保存后到供应方确认。返回工作台时自动读取工具清单，允许的工具在个人助手中配置。连接页面可测试、断开授权和核对撤销结果。授权与刷新记录保存在 `mcp_oauth_events`。轮换注册配置或密钥后，用户需重新授权。Windows 内网连接器导入使用原有认证方式。
+
 ## 停机整体备份
 
 先停止入口接收新任务，等待运行完成或取消，然后通过实际使用的进程管理器、`docker compose stop` 或 `scripts/preview.py stop` 停止服务，并确认 API 与其执行子进程已退出。**以下备份命令不自动停止进程，不能在服务运行时执行。**

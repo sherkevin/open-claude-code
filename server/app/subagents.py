@@ -1,10 +1,4 @@
-"""Bounded, application-owned synthetic sub-agent orchestration.
-
-This module deliberately does not call a model, network, MCP connection, or
-the Claude Agent SDK.  It is the first local contract slice for sub-agents:
-finite read-only children, durable lifecycle rows, replayable parent events,
-and deterministic tests.  Native Agent/Task delegation remains disabled.
-"""
+"""Durable lifecycle for bounded synthetic children and isolated Harness workers."""
 
 from __future__ import annotations
 
@@ -45,12 +39,7 @@ def _bounded_text(value: Any, limit: int) -> str:
 
 
 class SubagentOrchestrator:
-    """Persist and execute a bounded local synthetic child plan.
-
-    The executor argument is intentionally injectable for deterministic tests.
-    A production instance uses ``_synthetic_executor`` and therefore cannot
-    accidentally reach a paid provider or customer connection.
-    """
+    """Persist and execute one bounded child plan per parent run."""
 
     def __init__(
         self,
@@ -73,6 +62,7 @@ class SubagentOrchestrator:
         self._plan_tasks: dict[str, dict[str, asyncio.Task]] = {}
         self._background_tasks: set[asyncio.Task] = set()
         self._cancelled_plans: set[str] = set()
+        self._worker_capacity = asyncio.Semaphore(max(1, min(2, service.settings.max_active_sessions - 1)))
 
     # ------------------------------------------------------------------
     # Contract and persistence
@@ -145,31 +135,44 @@ class SubagentOrchestrator:
         return normalized
 
     def create_plan(self, parent_run_id: str, user_id: str, tasks: Iterable[Any], mode: str = "synthetic") -> dict:
-        """Create a durable plan without starting execution.
+        with self.service.db.lock:
+            return self._create_plan(parent_run_id, user_id, tasks, mode)
 
-        This is an internal API.  Only the explicit ``synthetic`` mode is
-        accepted; no SDK/model/MCP mode can be selected through this contract.
-        """
-        if mode != "synthetic":
-            raise AppError(422, "SUBAGENT_MODE_DISABLED", "当前只允许本地合成子任务")
+    def _create_plan(self, parent_run_id: str, user_id: str, tasks: Iterable[Any], mode: str) -> dict:
+        if mode not in {"synthetic", "harness"}:
+            raise AppError(422, "SUBAGENT_MODE_DISABLED", "不支持所请求的子任务模式")
         parent = self._parent(parent_run_id, user_id)
+        harness = mode == "harness"
+        if harness:
+            settings = self.service.settings
+            metadata = json.loads(parent.get("execution_meta") or "{}")
+            owner = self.service.require("users", user_id)
+            conversation = self.service.require("conversations", parent["conversation_id"], owner)
+            self.service.usable_assistant(conversation["assistant_id"], owner)
+            if (self.service.policy.is_trial or conversation["archived"] or conversation["active_run_id"] != parent_run_id
+                    or conversation["runtime_type"] != "harness" or parent.get("kind", "chat") != "chat"
+                    or parent["status"] != "running" or metadata.get("recovery_mode") == "answer_only" or metadata.get("schedule_id")
+                    or not settings.harness_source_dir or not settings.harness_node_path or settings.max_active_sessions < 2):
+                raise AppError(409, "SUBAGENT_PARENT_INACTIVE", "当前运行不支持创建分析子任务")
+            if not isinstance(tasks, list) or any(not isinstance(task, str) for task in tasks):
+                raise AppError(422, "SUBAGENT_INVALID_TASK", "分析子任务仅接受文字说明")
         depth = self._parent_depth(parent_run_id) + 1
         if depth > self.max_depth:
             raise AppError(422, "SUBAGENT_DEPTH_LIMIT", "子任务嵌套层级超过限制")
         normalized = self._normalize_tasks(tasks)
-        existing = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY created_at", (parent_run_id,))
+        existing = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY rowid", (parent_run_id,))
         if existing:
             # Idempotent plan creation is safe only when the requested shape is
             # identical; never create a second fan-out for the same parent.
             requested = [_task_digest(item) for item in normalized]
-            if [row["task_digest"] for row in existing] != requested:
+            if json.loads(existing[0]["capability_snapshot"])["mode"] != mode or [row["task_digest"] for row in existing] != requested:
                 raise AppError(409, "SUBAGENT_PLAN_EXISTS", "父任务已有不同的子任务计划")
             return self.plan_view(parent_run_id)
 
         timestamp = now()
         capability = {
-            "mode": "synthetic",
-            "tools": ["Read", "Glob", "Grep"],
+            "mode": mode,
+            "tools": [] if harness else ["Read", "Glob", "Grep"],
             "writes": False,
             "network": False,
             "mcp": False,
@@ -197,7 +200,7 @@ class SubagentOrchestrator:
                     parent["user_id"],
                     parent["conversation_id"],
                     depth,
-                    "synthetic_readonly",
+                    "harness_analysis" if harness else "synthetic_readonly",
                     "queued",
                     None,
                     _task_digest(item),
@@ -224,7 +227,7 @@ class SubagentOrchestrator:
         self.remember_inputs(parent_run_id, normalized)
         self._emit(parent_run_id, "subagent.plan.created", {
             "plan_id": parent_run_id,
-            "mode": "synthetic",
+            "mode": mode,
             "depth": depth,
             "max_children": self.max_children,
             "children": [self._safe_child_summary(row[0]) for row in rows],
@@ -279,12 +282,12 @@ class SubagentOrchestrator:
 
     def list_children(self, parent_run_id: str, user_id: str | None = None) -> list[dict]:
         self._parent(parent_run_id, user_id, allow_terminal=True)
-        return [self.child_view(row) for row in self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY created_at,child_id", (parent_run_id,))]
+        return [self.child_view(row) for row in self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY rowid", (parent_run_id,))]
 
     def plan_view(self, parent_run_id: str, user_id: str | None = None) -> dict:
         children = self.list_children(parent_run_id, user_id)
         counts = {status: sum(1 for child in children if child["status"] == status) for status in ("queued", "running", "cancelling", "succeeded", "failed", "cancelled", "interrupted")}
-        return {"plan_id": parent_run_id, "mode": "synthetic", "children": children, "counts": counts}
+        return {"plan_id": parent_run_id, "mode": children[0]["capability_snapshot"]["mode"] if children else "synthetic", "children": children, "counts": counts}
 
     # ------------------------------------------------------------------
     # Deterministic local executor and lifecycle
@@ -460,10 +463,16 @@ class SubagentOrchestrator:
                     self._mark_child(child_id, "failed", "approval_denied")
                     self._emit_child(parent_run_id, child_id, "subagent.failed", "approval_denied")
                     return
-                result = await asyncio.wait_for(self.executor(child, task), timeout=self.child_timeout_seconds)
+                if child["role"] == "harness_analysis":
+                    from .harness_child import execute_harness_child
+
+                    async with self._worker_capacity:
+                        result = await asyncio.wait_for(execute_harness_child(self.service, child, task, self.max_result_chars - 256), timeout=90)
+                else:
+                    result = await asyncio.wait_for(self.executor(child, task), timeout=self.child_timeout_seconds)
                 encoded = dump(result)
                 if len(encoded) > self.max_result_chars:
-                    raise ValueError("synthetic result exceeds bound")
+                    raise ValueError("child result exceeds bound")
                 usage = result.get("usage", {}) if isinstance(result, dict) else {}
                 updated = self.service.db.execute("UPDATE subagent_children SET status='succeeded',stop_reason='completed',observed_usage=?,result_json=?,completed_at=? WHERE child_id=? AND status='running'", (dump(usage), dump({"output": result.get("output") if isinstance(result, dict) else result, "stop_reason": "completed"}), now(), child_id))
                 if updated.rowcount != 1:
@@ -502,7 +511,7 @@ class SubagentOrchestrator:
         # Once a plan is durably accepted, its local children may finish even
         # if the chat parent reaches a terminal state in the meantime.
         parent = self._parent(parent_run_id, user_id, allow_terminal=True)
-        children = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY created_at,child_id", (parent_run_id,))
+        children = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY rowid", (parent_run_id,))
         if not children:
             raise AppError(409, "SUBAGENT_PLAN_MISSING", "父任务没有子任务计划")
         if parent_run_id in self._cancelled_plans or all(row["status"] in CHILD_TERMINAL for row in children):

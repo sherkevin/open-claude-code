@@ -29,6 +29,7 @@ import logging
 import re
 import secrets
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 from urllib.parse import urlsplit
@@ -36,13 +37,14 @@ from urllib.parse import urlsplit
 import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import Settings
 from .db import Database, dump, now, uid
 from .kaiwu_bridge import BridgeError, build_bridge_material, derive_secret
+from .kaiwu_native_relay import is_native_connector
 from .kaiwu_diagnostics import (
     CATALOG,
     CONNECTOR_ID_RE,
@@ -59,6 +61,7 @@ from .kaiwu_diagnostics import (
     insert_rows,
     maybe_prune,
     normalize_event,
+    new_event_id,
     new_trace_id,
     ops_page_headers,
     parse_rfc3339,
@@ -80,8 +83,11 @@ TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 TENANT_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+ENROLLMENT_ID_RE = re.compile(r"^enr_[0-9a-f]{32}$")
 INTEGRATION_ID_RE = re.compile(r"^int_[0-9a-f]{32}$")
 CONNECTOR_ID_RE = re.compile(r"^conn_[0-9a-f]{32}$")
+PERSISTENT_CODE_PREFIX = "kwp_"
+DEVICE_EXPORT_ACTOR_PREFIX = "device-export:"
 INTEGRATION_TTL_MAX = 365 * 24 * 60 * 60
 log = logging.getLogger(__name__)
 
@@ -94,6 +100,8 @@ class EnrollmentRequest(StrictModel):
     tenant_id: str = Field(min_length=1, max_length=128)
     tenant_name: str = Field(min_length=1, max_length=128)
     ttl_seconds: int = Field(default=900, ge=60, le=86400)
+    persistent: bool = Field(default=False, strict=True)
+    issued_to: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("tenant_id")
     @classmethod
@@ -110,6 +118,27 @@ class EnrollmentRequest(StrictModel):
         if not value or any(ord(char) < 32 for char in value):
             raise ValueError("tenant_name is invalid")
         return value
+
+    @field_validator("issued_to")
+    @classmethod
+    def valid_recipient(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or any(ord(char) < 32 for char in value):
+            raise ValueError("issued_to is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def valid_persistent_scope(self) -> EnrollmentRequest:
+        if self.persistent:
+            if not self.issued_to:
+                raise ValueError("issued_to is required for a persistent enrollment")
+            if "ttl_seconds" in self.model_fields_set:
+                raise ValueError("persistent enrollments do not accept ttl_seconds")
+        elif self.issued_to is not None:
+            raise ValueError("issued_to requires a persistent enrollment")
+        return self
 
 
 class RedeemRequest(StrictModel):
@@ -237,6 +266,10 @@ class IntegrationRotateRequest(StrictModel):
     ttl_seconds: int | None = Field(default=None, ge=60, le=INTEGRATION_TTL_MAX)
 
 
+class DeviceExportRequest(StrictModel):
+    source_id: str = Field(pattern=SOURCE_ID_RE.pattern)
+
+
 class SelfTestRequest(StrictModel):
     source_id: str = Field(min_length=36, max_length=36)
     nonce: str = Field(min_length=1, max_length=128)
@@ -265,6 +298,12 @@ BUILTIN_DEMO_TOOLS = frozenset({
 })
 BUILTIN_DEMO_TOOL = "kaiwu_demo_ping"
 BUILTIN_DEMO_MARKER = "KAIWU_BUILTIN_DEMO_V1"
+# These released demos have identical tool definitions. Their fingerprints
+# differ only because the handshake used the connector package version.
+BUILTIN_DEMO_COMPATIBLE_SCHEMA_DIGESTS = frozenset({
+    "02b1de23a81613bf6295fc5a937e70eba07032e1b5d064c9a4837f22437e675e",  # 1.4.1
+    "b7e05ec9b71d8f583eaed02655592e99938303931e2594969fbc5e60df9b3123",  # 1.4.2 and fixed demo profile
+})
 SELF_TEST_INTEGRATION_CREATED_BY_PREFIX = "device-self-test:"
 SELF_TEST_CLEANUP_ACTION = "integration.self_test_cleanup"
 MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -302,6 +341,33 @@ def _is_builtin_demo(connector_id: str, source: dict) -> bool:
         and all(isinstance(tool, str) for tool in tools)
         and set(tools) == BUILTIN_DEMO_TOOLS
     )
+
+
+@contextmanager
+def _report_source_conflict(db: Database, connector: dict, source_id: str):
+    """Record a denied registration after rolling back its transaction."""
+    try:
+        yield
+    except AppError as exc:
+        if exc.code == "SOURCE_CONFIG_CONFLICT":
+            event_code = "connection_source_conflict"
+            try:
+                spec = CATALOG[event_code]
+                insert_rows(db, connector["tenant_id"], connector["id"], [{
+                    "event_id": new_event_id(),
+                    "occurred_at": now(),
+                    "level": spec.level,
+                    "component": spec.component,
+                    "event_code": event_code,
+                    "message_code": event_code,
+                    "source_id": source_id,
+                    "trace_id": new_trace_id(),
+                    "http_status": exc.status,
+                }], origin="edge")  # Server-generated event, not a device upload.
+                maybe_prune(db)
+            except Exception as log_error:  # Log collection must not change the denial.
+                log.warning("source conflict diagnostics write failed (%s)", type(log_error).__name__)
+        raise
 
 
 def _assert_business_source_limit(connector_id: str, sources: list[dict]) -> None:
@@ -560,6 +626,58 @@ def _token_prefix(token: str) -> str:
     return token[:15] + "..." + token[-6:]
 
 
+def _device_export_token(settings: Settings, connector_id: str, integration_id: str) -> str:
+    return "kw_int_" + _derive_secret(settings, "device-mcp-export-v1", f"{connector_id}:{integration_id}")
+
+
+def _issue_platform_integration(service_obj, data, sources: list[dict], actor_id: str, *, device_export: bool = False) -> dict:
+    """Issue within the caller's transaction so authorization and creation are atomic."""
+    settings = service_obj.settings
+    _assert_business_source_limit(data.connector_id, sources)
+    integration_id = "int_" + uid()
+    if device_export:
+        token = _device_export_token(settings, data.connector_id, integration_id)
+        created_by = DEVICE_EXPORT_ACTOR_PREFIX + data.connector_id
+    else:
+        token = _new_integration_token()
+        created_by = actor_id
+    config = _platform_config(settings, sources, token, data.display_name)
+    ttl = data.ttl_seconds or settings.kaiwu_integration_default_ttl_seconds
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
+    timestamp = now()
+    trace_id = "tr_" + uid()
+    db = service_obj.db
+    db.execute(
+        "INSERT INTO kaiwu_integrations"
+        "(id,tenant_id,connector_id,display_name,token_hash,token_prefix,expires_at,"
+        "revision,rotated_at,revoked_at,created_by,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,?,1,NULL,NULL,?,?,?)",
+        (
+            integration_id, data.tenant_id, data.connector_id, data.display_name,
+            _hash_secret(token), _token_prefix(token), expires_at, created_by, timestamp, timestamp,
+        ),
+    )
+    db.executemany(
+        "INSERT INTO kaiwu_integration_sources"
+        "(integration_id,connector_id,source_id) VALUES(?,?,?)",
+        [(integration_id, data.connector_id, source["source_id"]) for source in sources],
+    )
+    _audit(
+        db, tenant_id=data.tenant_id, connector_id=data.connector_id,
+        source_id=sources[0]["source_id"] if device_export else None,
+        actor_type="device" if device_export else "admin", actor_id=actor_id, action="integration.created", outcome="allow",
+        trace_id=trace_id, detail={"integration_id": integration_id, "source_ids": data.source_ids, "expires_at": expires_at},
+    )
+    row = db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
+    return {
+        "integration": _integration_view(db, row),
+        "access_token": token,
+        "mcp_config": config,
+        "mcp_config_json": json.dumps(config, ensure_ascii=False, indent=2),
+        "trace_id": trace_id,
+    }
+
+
 def _allocate_visitor_port(db: Database, settings: Settings) -> int:
     used = {
         int(row["visitor_port"])
@@ -582,7 +700,7 @@ def _integration_rows(db: Database, connector_id: str, source_ids: list[str]) ->
     )
     if {row["source_id"] for row in rows} != set(source_ids):
         raise AppError(403, "INTEGRATION_SOURCE_DENIED", "来源不属于该连接器或尚未登记")
-    if any(row["visitor_port"] is None for row in rows):
+    if not is_native_connector(db, connector_id) and any(row["visitor_port"] is None for row in rows):
         raise AppError(409, "EDGE_ROUTE_NOT_READY", "云端 visitor 路由尚未分配，请先完成来源登记")
     return rows
 
@@ -617,6 +735,18 @@ def _revoke_connector_integrations(db: Database, connector_id: str, actor_type: 
 def _release_connector_routes(db: Database, connector_id: str) -> None:
     """Release visitor ports once a connector can never be resumed."""
     db.execute("DELETE FROM kaiwu_edge_routes WHERE connector_id=?", (connector_id,))
+
+
+def _revoke_connector_locked(
+    db: Database, connector_id: str, timestamp: str, actor_type: str, actor_id: str,
+) -> None:
+    db.execute(
+        "UPDATE kaiwu_connectors SET draining=1,revoked=1,revision=revision+1,updated_at=?,revoked_at=? "
+        "WHERE id=? AND revoked=0",
+        (timestamp, timestamp, connector_id),
+    )
+    _revoke_connector_integrations(db, connector_id, actor_type, actor_id)
+    _release_connector_routes(db, connector_id)
 
 
 class _SelfTestFailure(Exception):
@@ -1005,27 +1135,84 @@ def _record_self_test_cleanup(
         log.warning("self-test cleanup diagnostics write failed (%s)", type(exc).__name__)
 
 
+def _control_settings(service_obj) -> Settings:
+    settings = service_obj.settings
+    if not settings.kaiwu_control_enabled:
+        raise AppError(503, "CONTROL_PLANE_DISABLED", "内网连接器控制面尚未启用")
+    if not settings.kaiwu_control_token():
+        raise AppError(503, "CONTROL_PLANE_DISABLED", "内网连接器控制面缺少独立管理员凭据")
+    if not settings.kaiwu_native_relay_enabled and (
+        not settings.kaiwu_control_relay_address or settings.kaiwu_control_relay_port <= 0
+    ):
+        raise AppError(503, "CONTROL_PLANE_DISABLED", "内网连接器控制面缺少已配置的中继端点")
+    return settings
+
+
+def verify_device_request(service_obj, headers, method: str, path: str, body: bytes) -> dict:
+    settings = _control_settings(service_obj)
+    supplied = headers.get("authorization", "")
+    scheme, _, token = supplied.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise AppError(401, "DEVICE_UNAUTHENTICATED", "设备身份无效")
+    if hmac.compare_digest(token, settings.kaiwu_control_token()):
+        raise AppError(403, "CREDENTIAL_PLANE_DENIED", "管理员凭据不能调用设备接口")
+    connector = service_obj.db.one(
+        "SELECT * FROM kaiwu_connectors WHERE device_token_hash=?",
+        (_hash_secret(token),),
+    )
+    if not connector or connector["revoked"]:
+        raise AppError(403, "DEVICE_REVOKED", "设备身份已失效")
+    if headers.get("x-kaiwu-device-key", "") != connector["device_key_id"]:
+        raise AppError(403, "DEVICE_SIGNATURE_INVALID", "设备签名无效")
+
+    timestamp_raw = headers.get("x-kaiwu-timestamp", "")
+    nonce = headers.get("x-kaiwu-nonce", "")
+    signature_raw = headers.get("x-kaiwu-signature", "")
+    try:
+        timestamp = int(timestamp_raw)
+    except (TypeError, ValueError):
+        raise AppError(403, "DEVICE_SIGNATURE_INVALID", "设备签名无效") from None
+    if abs(int(time.time()) - timestamp) > CLOCK_SKEW_SECONDS:
+        raise AppError(403, "DEVICE_SIGNATURE_EXPIRED", "设备签名已过期")
+    if not NONCE_RE.fullmatch(nonce):
+        raise AppError(403, "DEVICE_SIGNATURE_INVALID", "设备签名无效")
+
+    message = "\n".join((
+        timestamp_raw,
+        nonce,
+        method.upper(),
+        path,
+        hashlib.sha256(body).hexdigest(),
+    )).encode("utf-8")
+    try:
+        signature = _decode_base64url(signature_raw)
+        public_key = _device_public_key(connector["device_public_key"])[1]
+        public_key.verify(signature, message)
+    except (ValueError, InvalidSignature):
+        raise AppError(403, "DEVICE_SIGNATURE_INVALID", "设备签名无效") from None
+
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=CLOCK_SKEW_SECONDS + 5)).isoformat()
+    service_obj.db.execute("DELETE FROM kaiwu_device_nonces WHERE expires_at<=?", (now(),))
+    try:
+        service_obj.db.execute(
+            "INSERT INTO kaiwu_device_nonces(connector_id,nonce,expires_at,created_at) VALUES(?,?,?,?)",
+            (connector["id"], nonce, expires_at, now()),
+        )
+    except Exception as exc:
+        if "UNIQUE constraint failed" in str(exc):
+            raise AppError(403, "DEVICE_SIGNATURE_REPLAYED", "设备签名不可重复使用") from None
+        raise
+    return {"connector": connector, "settings": settings}
+
+
 def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
     router = APIRouter(prefix=ADMIN_PREFIX, tags=["kaiwu-control"])
 
     def service(request: Request):
         return service_getter(request)
 
-    def settings_for(service_obj) -> Settings:
-        return service_obj.settings
-
-    def guard(service_obj) -> Settings:
-        settings = settings_for(service_obj)
-        if not settings.kaiwu_control_enabled:
-            raise AppError(503, "CONTROL_PLANE_DISABLED", "内网连接器控制面尚未启用")
-        if not settings.kaiwu_control_token():
-            raise AppError(503, "CONTROL_PLANE_DISABLED", "内网连接器控制面缺少独立管理员凭据")
-        if not settings.kaiwu_control_relay_address or settings.kaiwu_control_relay_port <= 0:
-            raise AppError(503, "CONTROL_PLANE_DISABLED", "内网连接器控制面缺少已配置的中继端点")
-        return settings
-
     def admin(request: Request, service_obj=Depends(service)) -> dict:
-        settings = guard(service_obj)
+        settings = _control_settings(service_obj)
         supplied = request.headers.get("authorization", "")
         scheme, _, token = supplied.partition(" ")
         if scheme.lower() != "bearer" or not token or not hmac.compare_digest(token, settings.kaiwu_control_token()):
@@ -1038,120 +1225,184 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         return {"actor_id": "control-admin", "settings": settings}
 
     async def device(request: Request, service_obj=Depends(service)) -> dict:
-        settings = guard(service_obj)
-        supplied = request.headers.get("authorization", "")
-        scheme, _, token = supplied.partition(" ")
-        if scheme.lower() != "bearer" or not token:
-            raise AppError(401, "DEVICE_UNAUTHENTICATED", "设备身份无效")
-        if hmac.compare_digest(token, settings.kaiwu_control_token()):
-            raise AppError(403, "CREDENTIAL_PLANE_DENIED", "管理员凭据不能调用设备接口")
-        connector = service_obj.db.one(
-            "SELECT * FROM kaiwu_connectors WHERE device_token_hash=?",
-            (_hash_secret(token),),
+        return verify_device_request(
+            service_obj, request.headers, request.method, request.url.path, await request.body(),
         )
-        if not connector or connector["revoked"]:
-            raise AppError(403, "DEVICE_REVOKED", "设备身份已失效")
-        if request.headers.get("x-kaiwu-device-key", "") != connector["device_key_id"]:
-            raise AppError(403, "DEVICE_SIGNATURE_INVALID", "设备签名无效")
-
-        timestamp_raw = request.headers.get("x-kaiwu-timestamp", "")
-        nonce = request.headers.get("x-kaiwu-nonce", "")
-        signature_raw = request.headers.get("x-kaiwu-signature", "")
-        try:
-            timestamp = int(timestamp_raw)
-        except (TypeError, ValueError):
-            raise AppError(403, "DEVICE_SIGNATURE_INVALID", "设备签名无效") from None
-        if abs(int(time.time()) - timestamp) > CLOCK_SKEW_SECONDS:
-            raise AppError(403, "DEVICE_SIGNATURE_EXPIRED", "设备签名已过期")
-        if not NONCE_RE.fullmatch(nonce):
-            raise AppError(403, "DEVICE_SIGNATURE_INVALID", "设备签名无效")
-
-        body = await request.body()
-        message = "\n".join((
-            timestamp_raw,
-            nonce,
-            request.method.upper(),
-            request.url.path,
-            hashlib.sha256(body).hexdigest(),
-        )).encode("utf-8")
-        try:
-            signature = _decode_base64url(signature_raw)
-            public_key = _device_public_key(connector["device_public_key"])[1]
-            public_key.verify(signature, message)
-        except (ValueError, InvalidSignature):
-            raise AppError(403, "DEVICE_SIGNATURE_INVALID", "设备签名无效") from None
-
-        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=CLOCK_SKEW_SECONDS + 5)).isoformat()
-        service_obj.db.execute("DELETE FROM kaiwu_device_nonces WHERE expires_at<=?", (now(),))
-        try:
-            service_obj.db.execute(
-                "INSERT INTO kaiwu_device_nonces(connector_id,nonce,expires_at,created_at) VALUES(?,?,?,?)",
-                (connector["id"], nonce, expires_at, now()),
-            )
-        except Exception as exc:
-            if "UNIQUE constraint failed" in str(exc):
-                raise AppError(403, "DEVICE_SIGNATURE_REPLAYED", "设备签名不可重复使用") from None
-            raise
-        return {"connector": connector, "settings": settings}
 
     @router.get("/v1/health")
     def health(service_obj=Depends(service)):
-        enabled = bool(
-            service_obj.settings.kaiwu_control_enabled
-            and service_obj.settings.kaiwu_control_token()
-            and service_obj.settings.kaiwu_control_relay_address
-            and service_obj.settings.kaiwu_control_relay_port > 0
-        )
+        try:
+            _control_settings(service_obj)
+            enabled = True
+        except AppError:
+            enabled = False
         return {"status": "enabled" if enabled else "disabled", "version": "control-plane-1"}
 
     @router.post("/v1/enrollments")
     def create_enrollment(
         data: EnrollmentRequest,
-        request: Request,
+        response: Response,
         admin_ctx=Depends(admin),
         service_obj=Depends(service),
     ):
-        settings: Settings = admin_ctx["settings"]
+        db = service_obj.db
         enrollment_id = "enr_" + uid()
-        code = "kw_" + secrets.token_urlsafe(32)
-        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=data.ttl_seconds)).isoformat()
-        service_obj.db.execute(
-            "INSERT INTO kaiwu_enrollments"
-            "(id,tenant_id,tenant_name,code_hash,expires_at,used_at,connector_id,created_by,created_at)"
-            " VALUES(?,?,?,?,?,NULL,NULL,?,?)",
-            (
-                enrollment_id,
-                data.tenant_id,
-                data.tenant_name,
-                _hash_secret(code),
-                expires_at,
-                admin_ctx["actor_id"],
-                now(),
-            ),
-        )
+        code = (PERSISTENT_CODE_PREFIX if data.persistent else "kw_") + secrets.token_urlsafe(32)
+        code_hash = _hash_secret(code)
+        timestamp = now()
+        expires_at = None
+        persistent_fields = {}
+        if data.persistent:
+            persistent_fields = {"persistent": True, "issued_to": data.issued_to}
+        else:
+            expires_at = (datetime.now(timezone.utc) + timedelta(seconds=data.ttl_seconds)).isoformat()
         trace_id = "tr_" + uid()
-        _audit(
-            service_obj.db,
-            tenant_id=data.tenant_id,
-            connector_id=None,
-            source_id=None,
-            actor_type="admin",
-            actor_id=admin_ctx["actor_id"],
-            action="enrollment.created",
-            outcome="allow",
-            trace_id=trace_id,
-            detail={"enrollment_id": enrollment_id, "expires_at": expires_at},
-        )
+        with db.transaction():
+            if data.persistent:
+                db.execute(
+                    "INSERT INTO kaiwu_persistent_enrollments"
+                    "(id,tenant_id,tenant_name,issued_to,code_hash,created_by,created_at)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (enrollment_id, data.tenant_id, data.tenant_name, data.issued_to, code_hash,
+                     admin_ctx["actor_id"], timestamp),
+                )
+            else:
+                db.execute(
+                    "INSERT INTO kaiwu_enrollments"
+                    "(id,tenant_id,tenant_name,code_hash,expires_at,used_at,connector_id,created_by,created_at)"
+                    " VALUES(?,?,?,?,?,NULL,NULL,?,?)",
+                    (enrollment_id, data.tenant_id, data.tenant_name, code_hash, expires_at,
+                     admin_ctx["actor_id"], timestamp),
+                )
+            _audit(
+                db,
+                tenant_id=data.tenant_id,
+                connector_id=None,
+                source_id=None,
+                actor_type="admin",
+                actor_id=admin_ctx["actor_id"],
+                action="enrollment.created",
+                outcome="allow",
+                trace_id=trace_id,
+                detail={"enrollment_id": enrollment_id, "expires_at": expires_at, **persistent_fields},
+            )
+        response.headers["Cache-Control"] = "no-store"
         return {
             "enrollment_id": enrollment_id,
             "code": code,
             "expires_at": expires_at,
             "trace_id": trace_id,
+            **persistent_fields,
+        }
+
+    @router.get("/v1/enrollments")
+    def list_persistent_enrollments(
+        response: Response,
+        limit: int = Query(default=25, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=1_000_000),
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        rows = service_obj.db.all(
+            "SELECT e.id AS enrollment_id,e.tenant_id,e.tenant_name,e.issued_to,e.created_by,"
+            "e.created_at,e.revoked_at,"
+            "(SELECT COUNT(*) FROM kaiwu_persistent_enrollment_devices d WHERE d.enrollment_id=e.id) AS device_count "
+            "FROM kaiwu_persistent_enrollments e ORDER BY e.created_at DESC,e.id LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return {"enrollments": [{**row, "expires_at": None} for row in rows]}
+
+    @router.get("/v1/enrollments/{enrollment_id}/devices")
+    def list_persistent_enrollment_devices(
+        enrollment_id: str,
+        response: Response,
+        limit: int = Query(default=25, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=1_000_000),
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        db = service_obj.db
+        if not ENROLLMENT_ID_RE.fullmatch(enrollment_id) or not db.one(
+            "SELECT 1 FROM kaiwu_persistent_enrollments WHERE id=?", (enrollment_id,),
+        ):
+            raise AppError(404, "ENROLLMENT_NOT_FOUND", "长期接入码不存在")
+        rows = db.all(
+            "SELECT c.id AS connector_id,c.device_key_id,d.bound_at,c.revoked,c.revoked_at,"
+            "h.received_at AS last_heartbeat_at "
+            "FROM kaiwu_persistent_enrollment_devices d JOIN kaiwu_connectors c ON c.id=d.connector_id "
+            "LEFT JOIN kaiwu_heartbeats h ON h.connector_id=c.id WHERE d.enrollment_id=? "
+            "ORDER BY d.bound_at DESC,d.connector_id LIMIT ? OFFSET ?",
+            (enrollment_id, limit, offset),
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "enrollment_id": enrollment_id,
+            "devices": [{**row, "revoked": bool(row["revoked"])} for row in rows],
+        }
+
+    @router.post("/v1/enrollments/{enrollment_id}/revoke")
+    async def revoke_persistent_enrollment(
+        enrollment_id: str,
+        request: Request,
+        response: Response,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        db = service_obj.db
+        trace_id = "tr_" + uid()
+        with db.transaction():
+            enrollment = db.one(
+                "SELECT tenant_id,issued_to,revoked_at FROM kaiwu_persistent_enrollments WHERE id=?",
+                (enrollment_id,),
+            )
+            if not enrollment:
+                raise AppError(404, "ENROLLMENT_NOT_FOUND", "长期接入码不存在")
+            devices = db.all(
+                "SELECT c.id,c.revoked FROM kaiwu_persistent_enrollment_devices d "
+                "JOIN kaiwu_connectors c ON c.id=d.connector_id WHERE d.enrollment_id=?",
+                (enrollment_id,),
+            )
+            revoked_at = enrollment["revoked_at"]
+            if revoked_at is None:
+                revoked_at = now()
+                db.execute(
+                    "UPDATE kaiwu_persistent_enrollments SET revoked_at=? WHERE id=?",
+                    (revoked_at, enrollment_id),
+                )
+                for device_row in devices:
+                    if not device_row["revoked"]:
+                        _revoke_connector_locked(db, device_row["id"], revoked_at, "admin", admin_ctx["actor_id"])
+                _audit(
+                    db,
+                    tenant_id=enrollment["tenant_id"],
+                    connector_id=None,
+                    source_id=None,
+                    actor_type="admin",
+                    actor_id=admin_ctx["actor_id"],
+                    action="enrollment.revoked",
+                    outcome="allow",
+                    trace_id=trace_id,
+                    detail={
+                        "enrollment_id": enrollment_id,
+                        "issued_to": enrollment["issued_to"],
+                        "device_count": len(devices),
+                    },
+                )
+        for device_row in devices:
+            await request.app.state.kaiwu_native_relay.disconnect(device_row["id"])
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "enrollment_id": enrollment_id,
+            "revoked": True,
+            "revoked_at": revoked_at,
+            "revoked_device_count": len(devices),
+            "trace_id": trace_id,
         }
 
     @router.post("/v1/enrollments/redeem")
-    def redeem(data: RedeemRequest, service_obj=Depends(service)):
-        guard(service_obj)
+    def redeem(data: RedeemRequest, response: Response, service_obj=Depends(service)):
+        _control_settings(service_obj)
         try:
             key_id, _ = _device_public_key(data.device_public_key)
         except ValueError:
@@ -1160,24 +1411,37 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         connector_id = "conn_" + uid()
         device_token = "dvc_" + secrets.token_urlsafe(32)
         relay_token = _derive_secret(settings, "relay", connector_id)
+        db = service_obj.db
+        code_hash = _hash_secret(data.code)
+        persistent = data.code.startswith(PERSISTENT_CODE_PREFIX)
         trace_id = "tr_" + uid()
-        with service_obj.db.transaction():
-            enrollment = service_obj.db.one(
-                "SELECT * FROM kaiwu_enrollments WHERE code_hash=?",
-                (_hash_secret(data.code),),
-            )
-            if not enrollment or enrollment["used_at"]:
-                raise AppError(409, "ENROLLMENT_INVALID", "接入码无效或已使用")
-            if enrollment["expires_at"] <= now():
-                raise AppError(409, "ENROLLMENT_EXPIRED", "接入码已过期")
-            service_obj.db.execute(
-                "UPDATE kaiwu_enrollments SET used_at=?,connector_id=? WHERE id=? AND used_at IS NULL",
-                (now(), connector_id, enrollment["id"]),
-            )
-            current = service_obj.db.one("SELECT used_at,connector_id FROM kaiwu_enrollments WHERE id=?", (enrollment["id"],))
-            if current["connector_id"] != connector_id:
-                raise AppError(409, "ENROLLMENT_INVALID", "接入码无效或已使用")
-            service_obj.db.execute(
+        with db.transaction():
+            timestamp = now()
+            if persistent:
+                enrollment = db.one(
+                    "SELECT * FROM kaiwu_persistent_enrollments WHERE code_hash=?",
+                    (code_hash,),
+                )
+                if not enrollment or enrollment["revoked_at"]:
+                    raise AppError(409, "ENROLLMENT_INVALID", "接入码无效或已撤销")
+                if db.one(
+                    "SELECT 1 FROM kaiwu_persistent_enrollment_devices d "
+                    "JOIN kaiwu_connectors c ON c.id=d.connector_id "
+                    "WHERE d.enrollment_id=? AND c.revoked=0 LIMIT 1",
+                    (enrollment["id"],),
+                ):
+                    raise AppError(409, "ENROLLMENT_DEVICE_ACTIVE", "接入码已绑定设备，请联系管理员撤销旧设备后重试")
+            else:
+                enrollment = db.one("SELECT * FROM kaiwu_enrollments WHERE code_hash=?", (code_hash,))
+                if not enrollment or enrollment["used_at"]:
+                    raise AppError(409, "ENROLLMENT_INVALID", "接入码无效或已使用")
+                if enrollment["expires_at"] <= timestamp:
+                    raise AppError(409, "ENROLLMENT_EXPIRED", "接入码已过期")
+                db.execute(
+                    "UPDATE kaiwu_enrollments SET used_at=?,connector_id=? WHERE id=? AND used_at IS NULL",
+                    (timestamp, connector_id, enrollment["id"]),
+                )
+            db.execute(
                 "INSERT INTO kaiwu_connectors"
                 "(id,tenant_id,tenant_name,device_public_key,device_key_id,device_token_hash,"
                 "relay_token_hash,revision,draining,revoked,created_at,updated_at,revoked_at)"
@@ -1190,12 +1454,20 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                     key_id,
                     _hash_secret(device_token),
                     _hash_secret(relay_token),
-                    now(),
-                    now(),
+                    timestamp,
+                    timestamp,
                 ),
             )
+            detail = {"enrollment_id": enrollment["id"]}
+            if persistent:
+                db.execute(
+                    "INSERT INTO kaiwu_persistent_enrollment_devices(connector_id,enrollment_id,bound_at) "
+                    "VALUES(?,?,?)",
+                    (connector_id, enrollment["id"], timestamp),
+                )
+                detail.update(persistent=True, issued_to=enrollment["issued_to"])
             _audit(
-                service_obj.db,
+                db,
                 tenant_id=enrollment["tenant_id"],
                 connector_id=connector_id,
                 source_id=None,
@@ -1204,8 +1476,9 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                 action="enrollment.redeemed",
                 outcome="allow",
                 trace_id=trace_id,
-                detail={"enrollment_id": enrollment["id"]},
+                detail=detail,
             )
+        response.headers["Cache-Control"] = "no-store"
         return {
             "connector_id": connector_id,
             "tenant_id": enrollment["tenant_id"],
@@ -1244,74 +1517,16 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         admin_ctx=Depends(admin),
         service_obj=Depends(service),
     ):
-        settings: Settings = admin_ctx["settings"]
-        connector = service_obj.db.one(
-            "SELECT * FROM kaiwu_connectors WHERE id=?",
-            (data.connector_id,),
-        )
-        if not connector or connector["revoked"]:
-            raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在或已撤销")
-        if connector["tenant_id"] != data.tenant_id:
-            raise AppError(403, "INTEGRATION_TENANT_DENIED", "连接器不属于该企业")
-        sources = _integration_rows(service_obj.db, data.connector_id, data.source_ids)
-        _assert_business_source_limit(data.connector_id, sources)
-        _edge_public_base(settings)
-        token = _new_integration_token()
-        ttl = data.ttl_seconds or settings.kaiwu_integration_default_ttl_seconds
-        integration_id = "int_" + uid()
-        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
-        timestamp = now()
-        trace_id = "tr_" + uid()
         with service_obj.db.transaction():
-            service_obj.db.execute(
-                "INSERT INTO kaiwu_integrations"
-                "(id,tenant_id,connector_id,display_name,token_hash,token_prefix,expires_at,"
-                "revision,rotated_at,revoked_at,created_by,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?,1,NULL,NULL,?,?,?)",
-                (
-                    integration_id,
-                    data.tenant_id,
-                    data.connector_id,
-                    data.display_name,
-                    _hash_secret(token),
-                    _token_prefix(token),
-                    expires_at,
-                    admin_ctx["actor_id"],
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            service_obj.db.executemany(
-                "INSERT INTO kaiwu_integration_sources"
-                "(integration_id,connector_id,source_id) VALUES(?,?,?)",
-                [(integration_id, data.connector_id, source["source_id"]) for source in sources],
-            )
-            _audit(
-                service_obj.db,
-                tenant_id=data.tenant_id,
-                connector_id=data.connector_id,
-                source_id=None,
-                actor_type="admin",
-                actor_id=admin_ctx["actor_id"],
-                action="integration.created",
-                outcome="allow",
-                trace_id=trace_id,
-                detail={
-                    "integration_id": integration_id,
-                    "source_ids": data.source_ids,
-                    "expires_at": expires_at,
-                },
-            )
-        row = service_obj.db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
-        config = _platform_config(settings, sources, token, data.display_name)
+            connector = service_obj.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (data.connector_id,))
+            if not connector or connector["revoked"]:
+                raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在或已撤销")
+            if connector["tenant_id"] != data.tenant_id:
+                raise AppError(403, "INTEGRATION_TENANT_DENIED", "连接器不属于该企业")
+            sources = _integration_rows(service_obj.db, data.connector_id, data.source_ids)
+            issued = _issue_platform_integration(service_obj, data, sources, admin_ctx["actor_id"])
         response.headers["Cache-Control"] = "no-store"
-        return {
-            "integration": _integration_view(service_obj.db, row),
-            "access_token": token,
-            "mcp_config": config,
-            "mcp_config_json": json.dumps(config, ensure_ascii=False, indent=2),
-            "trace_id": trace_id,
-        }
+        return issued
 
     @router.get("/v1/integrations")
     def list_integrations(
@@ -1464,6 +1679,8 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
     ):
         if not CONNECTOR_ID_RE.fullmatch(connector_id):
             raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在")
+        if is_native_connector(service_obj.db, connector_id):
+            raise AppError(409, "NATIVE_RELAY_SELECTED", "该连接器使用开物内置中继")
         try:
             material = build_bridge_material(
                 service_obj.db,
@@ -1526,6 +1743,8 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         connector = device_ctx["connector"]
         if connector["id"] != connector_id:
             raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
+        if is_native_connector(service_obj.db, connector_id):
+            raise AppError(409, "NATIVE_RELAY_SELECTED", "该连接器使用开物内置中继")
         settings: Settings = device_ctx["settings"]
         sources = []
         for row in service_obj.db.all(
@@ -1564,7 +1783,8 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         service_obj=Depends(service),
     ):
         connector = device_ctx["connector"]
-        with service_obj.db.transaction():
+        with _report_source_conflict(service_obj.db, connector, data.source_id), service_obj.db.transaction():
+            native = is_native_connector(service_obj.db, connector["id"])
             existing = service_obj.db.one(
                 "SELECT * FROM kaiwu_sources WHERE connector_id=? AND source_id=?",
                 (connector["id"], data.source_id),
@@ -1580,29 +1800,39 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             if existing:
                 current = {key: existing[key] for key in desired}
                 if current != desired:
-                    # Earlier clients hashed the ephemeral loopback port. Migrate
-                    # only the exact built-in contract to its stable binding digest.
+                    # Only the fixed bundled demo can migrate fingerprints. All
+                    # customer sources still require review on any such change.
                     stable_binding = hashlib.sha256(
                         (BUILTIN_DEMO_SOURCE_ID_NAMESPACE + ":" + data.source_id).encode("utf-8")
                     ).hexdigest()
+                    schema = desired["tool_schema_sha256"]
+                    migrated = {"target_binding_sha256": stable_binding, "tool_schema_sha256": schema}
+                    same_schema = current["tool_schema_sha256"] == schema
                     if (
                         _is_builtin_demo(connector["id"], existing)
-                        and desired["target_binding_sha256"] == stable_binding
-                        and (current | {"target_binding_sha256": stable_binding}) == desired
+                        and current["display_name"] == BUILTIN_DEMO_SOURCE_NAME
+                        and (current | migrated) == desired
+                        and (same_schema or {current["tool_schema_sha256"], schema} <= BUILTIN_DEMO_COMPATIBLE_SCHEMA_DIGESTS)
                     ):
                         service_obj.db.execute(
-                            "UPDATE kaiwu_sources SET target_binding_sha256=?,updated_at=? "
+                            "UPDATE kaiwu_sources SET target_binding_sha256=?,tool_schema_sha256=?,updated_at=? "
                             "WHERE connector_id=? AND source_id=?",
-                            (stable_binding, now(), connector["id"], data.source_id),
+                            (stable_binding, schema, now(), connector["id"], data.source_id),
                         )
-                        existing["target_binding_sha256"] = stable_binding
+                        existing.update(migrated)
+                        _audit(
+                            service_obj.db, tenant_id=connector["tenant_id"], connector_id=connector["id"],
+                            source_id=data.source_id, actor_type="device", actor_id=connector["device_key_id"],
+                            action="source.builtin_demo_compatibility", outcome="allow", trace_id=trace_id,
+                            detail={"schema_changed": not same_schema, "binding_changed": current["target_binding_sha256"] != stable_binding},
+                        )
                     else:
                         raise AppError(409, "SOURCE_CONFIG_CONFLICT", "同一来源编号的配置发生变化，请重新审核")
                 route = service_obj.db.one(
                     "SELECT 1 FROM kaiwu_edge_routes WHERE connector_id=? AND source_id=?",
                     (connector["id"], data.source_id),
                 )
-                if not route:
+                if not native and not route:
                     timestamp = now()
                     visitor_port = _allocate_visitor_port(service_obj.db, device_ctx["settings"])
                     service_obj.db.execute(
@@ -1639,7 +1869,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             derived = _derive_secret(
                 device_ctx["settings"], "stcp", f"{connector['id']}:{data.source_id}:1"
             )
-            visitor_port = _allocate_visitor_port(service_obj.db, device_ctx["settings"])
+            visitor_port = None if native else _allocate_visitor_port(service_obj.db, device_ctx["settings"])
             service_obj.db.execute(
                 "INSERT INTO kaiwu_sources"
                 "(connector_id,tenant_id,source_id,display_name,allowed_tools,tool_schema_sha256,"
@@ -1659,19 +1889,20 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                     now(),
                 ),
             )
-            service_obj.db.execute(
-                "INSERT INTO kaiwu_edge_routes"
-                "(connector_id,source_id,visitor_host,visitor_port,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?)",
-                (
-                    connector["id"],
-                    data.source_id,
-                    device_ctx["settings"].kaiwu_edge_visitor_host,
-                    visitor_port,
-                    now(),
-                    now(),
-                ),
-            )
+            if visitor_port is not None:
+                service_obj.db.execute(
+                    "INSERT INTO kaiwu_edge_routes"
+                    "(connector_id,source_id,visitor_host,visitor_port,created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?)",
+                    (
+                        connector["id"],
+                        data.source_id,
+                        device_ctx["settings"].kaiwu_edge_visitor_host,
+                        visitor_port,
+                        now(),
+                        now(),
+                    ),
+                )
             service_obj.db.execute(
                 "UPDATE kaiwu_connectors SET revision=revision+1,updated_at=? WHERE id=?",
                 (now(), connector["id"]),
@@ -1772,6 +2003,69 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             ),
         )
         return {"ok": True, "received_at": now()}
+
+    @router.post("/v1/connectors/{connector_id}/mcp-export")
+    def export_device_mcp(
+        connector_id: str,
+        data: DeviceExportRequest,
+        request: Request,
+        response: Response,
+        device_ctx=Depends(device),
+        service_obj=Depends(service),
+    ):
+        if device_ctx["connector"]["id"] != connector_id:
+            raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
+        settings: Settings = device_ctx["settings"]
+        db = service_obj.db
+        with db.transaction():
+            # Device authentication happened before this transaction. Check the
+            # current record again to serialize issuance with revocation.
+            connector = db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
+            if not connector or connector["revoked"]:
+                raise AppError(403, "DEVICE_REVOKED", "设备身份已失效")
+            tenant_id = connector["tenant_id"]
+            if tenant_id not in settings.kaiwu_device_export_tenants:
+                raise AppError(403, "DEVICE_EXPORT_DENIED", "该企业尚未开通复制 MCP 配置，请联系开物管理员")
+            if (
+                not settings.kaiwu_native_relay_enabled or connector["draining"]
+                or not is_native_connector(db, connector_id)
+                or not request.app.state.kaiwu_native_relay.is_online(connector_id)
+            ):
+                raise AppError(409, "NATIVE_RELAY_OFFLINE", "请先连接开物，再复制 MCP 配置")
+            if data.source_id == _builtin_demo_source_id(connector_id):
+                raise AppError(403, "DEVICE_EXPORT_SOURCE_DENIED", "请选择已登记的业务 MCP 服务")
+            source, = _integration_rows(db, connector_id, [data.source_id])
+            if source["tenant_id"] != tenant_id or source["transport"] != "streamable_http":
+                raise AppError(403, "DEVICE_EXPORT_SOURCE_DENIED", "请选择本企业的 Streamable HTTP 业务 MCP")
+            if urlsplit(_edge_public_base(settings)).scheme != "https":
+                raise AppError(503, "EDGE_NOT_CONFIGURED", "复制 MCP 配置需要配置 HTTPS 公网地址")
+
+            # This namespace is used only by the signed-device endpoint. Never
+            # return or rotate an administrator-issued integration token.
+            latest = db.one(
+                "SELECT i.* FROM kaiwu_integrations i JOIN kaiwu_integration_sources m ON m.integration_id=i.id "
+                "WHERE i.connector_id=? AND i.tenant_id=? AND i.created_by=? AND m.source_id=? "
+                "ORDER BY i.created_at DESC,i.id DESC LIMIT 1",
+                (connector_id, tenant_id, DEVICE_EXPORT_ACTOR_PREFIX + connector_id, data.source_id),
+            )
+            if latest and latest["revoked_at"]:
+                raise AppError(403, "DEVICE_EXPORT_REVOKED", "这个 MCP 配置已被管理员停用，请联系开物管理员")
+            if latest and latest["expires_at"] > now():
+                token = _device_export_token(settings, connector_id, latest["id"])
+                if not hmac.compare_digest(_hash_secret(token), latest["token_hash"]):
+                    raise AppError(409, "DEVICE_EXPORT_TOKEN_CHANGED", "该 MCP 凭据已更新，请联系开物管理员")
+                config = _platform_config(settings, [source], token, latest["display_name"])
+            else:
+                integration = IntegrationCreateRequest(
+                    tenant_id=tenant_id, connector_id=connector_id, display_name=source["display_name"][:100],
+                    source_ids=[data.source_id],
+                )
+                created = _issue_platform_integration(
+                    service_obj, integration, [source], connector["device_key_id"], device_export=True,
+                )
+                config = created["mcp_config"]
+        response.headers["Cache-Control"] = "no-store"
+        return {"mcp_config": config}
 
     @router.post("/v1/connectors/{connector_id}/self-test")
     async def self_test(
@@ -1876,64 +2170,59 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         return response
 
     def transition(connector_id: str, action: str, admin_ctx, service_obj) -> dict:
-        connector = service_obj.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
-        if not connector:
-            raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在")
-        if connector["revoked"] and action != "revoke":
-            raise AppError(403, "DEVICE_REVOKED", "连接器已撤销")
-        if action == "drain":
-            draining, revoked = 1, 0
-        elif action == "resume":
-            draining, revoked = 0, 0
-        else:
-            draining, revoked = 1, 1
-        changed = bool(connector["draining"]) != bool(draining) or bool(connector["revoked"]) != bool(revoked)
-        if changed:
-            timestamp = now()
-            with service_obj.db.transaction():
-                service_obj.db.execute(
-                    "UPDATE kaiwu_connectors SET draining=?,revoked=?,revision=revision+1,updated_at=?,revoked_at=? WHERE id=?",
-                    (draining, revoked, timestamp, timestamp if revoked else connector["revoked_at"], connector_id),
-                )
-                if revoked:
-                    _revoke_connector_integrations(
-                        service_obj.db,
-                        connector_id,
-                        "admin",
-                        admin_ctx["actor_id"],
-                    )
-                    _release_connector_routes(service_obj.db, connector_id)
-        current = service_obj.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
+        db = service_obj.db
         trace_id = "tr_" + uid()
-        _audit(
-            service_obj.db,
-            tenant_id=current["tenant_id"],
-            connector_id=connector_id,
-            source_id=None,
-            actor_type="admin",
-            actor_id=admin_ctx["actor_id"],
-            action="connector." + action,
-            outcome="allow",
-            trace_id=trace_id,
-            detail={"revision": current["revision"], "changed": changed},
-        )
+        with db.transaction():
+            connector = db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
+            if not connector:
+                raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在")
+            if connector["revoked"] and action != "revoke":
+                raise AppError(403, "DEVICE_REVOKED", "连接器已撤销")
+            draining = int(action != "resume")
+            revoked = int(action == "revoke")
+            changed = connector["draining"] != draining or connector["revoked"] != revoked
+            if changed and revoked:
+                _revoke_connector_locked(db, connector_id, now(), "admin", admin_ctx["actor_id"])
+            elif changed:
+                db.execute(
+                    "UPDATE kaiwu_connectors SET draining=?,revision=revision+1,updated_at=? WHERE id=?",
+                    (draining, now(), connector_id),
+                )
+            current = db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
+            _audit(
+                db,
+                tenant_id=current["tenant_id"],
+                connector_id=connector_id,
+                source_id=None,
+                actor_type="admin",
+                actor_id=admin_ctx["actor_id"],
+                action="connector." + action,
+                outcome="allow",
+                trace_id=trace_id,
+                detail={"revision": current["revision"], "changed": changed},
+            )
         return {**_connector_view(current), "trace_id": trace_id}
 
     @router.post("/v1/connectors/{connector_id}/drain")
-    def drain(connector_id: str, admin_ctx=Depends(admin), service_obj=Depends(service)):
-        return transition(connector_id, "drain", admin_ctx, service_obj)
+    async def drain(connector_id: str, request: Request, admin_ctx=Depends(admin), service_obj=Depends(service)):
+        result = transition(connector_id, "drain", admin_ctx, service_obj)
+        await request.app.state.kaiwu_native_relay.disconnect(connector_id)
+        return result
 
     @router.post("/v1/connectors/{connector_id}/resume")
     def resume(connector_id: str, admin_ctx=Depends(admin), service_obj=Depends(service)):
         return transition(connector_id, "resume", admin_ctx, service_obj)
 
     @router.post("/v1/connectors/{connector_id}/revoke")
-    def revoke(connector_id: str, admin_ctx=Depends(admin), service_obj=Depends(service)):
-        return transition(connector_id, "revoke", admin_ctx, service_obj)
+    async def revoke(connector_id: str, request: Request, admin_ctx=Depends(admin), service_obj=Depends(service)):
+        result = transition(connector_id, "revoke", admin_ctx, service_obj)
+        await request.app.state.kaiwu_native_relay.disconnect(connector_id)
+        return result
 
     @router.post("/v1/connectors/{connector_id}/self-revoke")
-    def self_revoke(
+    async def self_revoke(
         connector_id: str,
+        request: Request,
         device_ctx=Depends(device),
         service_obj=Depends(service),
     ):
@@ -1941,19 +2230,14 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         if connector["id"] != connector_id:
             raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
         trace_id = "tr_" + uid()
-        timestamp = now()
         with service_obj.db.transaction():
-            service_obj.db.execute(
-                "UPDATE kaiwu_connectors SET draining=1,revoked=1,revision=revision+1,updated_at=?,revoked_at=? WHERE id=?",
-                (timestamp, timestamp, connector_id),
-            )
-            _revoke_connector_integrations(
+            _revoke_connector_locked(
                 service_obj.db,
                 connector_id,
+                now(),
                 "device",
                 connector["device_key_id"],
             )
-            _release_connector_routes(service_obj.db, connector_id)
             _audit(
                 service_obj.db,
                 tenant_id=connector["tenant_id"],
@@ -1966,6 +2250,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
                 trace_id=trace_id,
                 detail={},
             )
+        await request.app.state.kaiwu_native_relay.disconnect(connector_id)
         return {"connector_id": connector_id, "revoked": True, "trace_id": trace_id}
 
     @router.post("/v1/connectors/{connector_id}/events")
@@ -2067,4 +2352,7 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         # events, and the administrator token is only entered into page memory.
         return HTMLResponse(OPS_PAGE, headers=ops_page_headers())
 
+    from .kaiwu_platform_export import add_device_handoff
+
+    add_device_handoff(router, service, device)
     return router

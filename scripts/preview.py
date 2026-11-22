@@ -100,6 +100,7 @@ def start():
         subprocess.run([str(PYTHON), "-m", "app.cli", "init-admin", "--username", "admin", "--password-file", str(password_file), "--display-name", "管理员"], cwd=ROOT / "server", env=env, check=True)
     nginx_dir = STATE / "nginx"
     nginx_dir.mkdir(exist_ok=True)
+    chat_upload_bytes = int(env.get("AGENT_CHAT_ATTACHMENT_UPLOAD_MAX_BYTES", 50 * 1024 * 1024))
     config = f'''pid {nginx_dir}/nginx.pid;
 error_log {nginx_dir}/error.log;
 events {{ worker_connections 256; }}
@@ -131,6 +132,14 @@ http {{
       text/javascript
       application/wasm
       image/svg+xml;
+    location = /api/v1/files/binary {{
+      client_max_body_size {chat_upload_bytes};
+      proxy_pass http://127.0.0.1:{API_PORT};
+      proxy_http_version 1.1;
+      proxy_set_header Host $http_host;
+      proxy_set_header Connection "";
+      proxy_request_buffering off;
+    }}
     location /api/ {{
       proxy_pass http://127.0.0.1:{API_PORT};
       proxy_http_version 1.1;

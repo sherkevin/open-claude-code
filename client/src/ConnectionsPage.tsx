@@ -5,11 +5,13 @@ import type { Connection, MCPTool } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import McpImportDialog from './McpImportDialog';
+import KaiwuHandoffDialog from './KaiwuHandoffDialog';
 import { displayToolDescription, toolParameters } from './CapabilityGuide';
 import './connections-onboarding.css';
 
 export function connectionDiscoveryState(item: Connection) {
   if (!item.enabled) return { label: '已停用', detail: '启用后可重新测试。', complete: false, tone: 'neutral' };
+  if (item.auth_type === 'oauth' && !item.credential_present) return { label: '待授权', detail: '使用供应方账号完成授权后可测试连接。', complete: false, tone: 'warning' };
   if (item.status === 'needs_auth') return { label: '认证未通过', detail: '请核对凭据和 MCP 端权限。', complete: false, tone: 'warning' };
   if (item.status === 'failed') return { label: '测试失败', detail: '请检查网络、地址与协议。', complete: false, tone: 'warning' };
   if (item.status === 'connected' && item.tools.length === 0) return { label: '未发现工具', detail: '连接已通，服务返回空工具清单。', complete: false, tone: 'warning' };
@@ -48,9 +50,9 @@ export function ConnectionGroups({ items, renderCard }: { items: Connection[]; r
   const enabled = items.filter(item => item.enabled), disabled = items.filter(item => !item.enabled);
   return <>{enabled.length ? <div className="connections-grid">{enabled.map(renderCard)}</div> : <p className="connection-empty-active">暂无启用的 MCP。</p>}{disabled.length > 0 && <details className="connections-disabled"><summary><strong>已停用（{disabled.length}）</strong><ChevronDown size={16}/></summary><div className="connections-grid">{disabled.map(renderCard)}</div></details>}</>;
 }
-export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, highlighted = false }: {
+export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onOAuth, highlighted = false }: {
   item: Connection; testing?: boolean; actionsBusy?: boolean; testError?: string; admin: boolean;
-  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; highlighted?: boolean;
+  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onOAuth?: () => void; highlighted?: boolean;
 }) {
   const discovery = connectionDiscoveryState(item), editable = canEdit(item, admin);
   const currentTestPassed = !testing && !testError && discovery.complete;
@@ -64,17 +66,36 @@ export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = 
     <div className="connection-capability-preview">{functions.length ? <ul>{functions.map(description => <li key={description}>{description}</li>)}</ul> : <p className="section-help">{discovery.detail}</p>}</div>
     {(testError || item.last_error) && <p className="inline-error">{testError || item.last_error}</p>}
     <button type="button" className="mcp-tool-list-button button ghost" onClick={onTools}>工具列表 · {item.tools.length}<ChevronDown size={15}/></button>
-    <footer className="card-toolbar"><Button variant="secondary" busy={testing} disabled={actionsBusy || !item.enabled || !editable} onClick={onTest}><PlugZap size={15}/>测试连接</Button><div className="toolbar-spacer"/>{editable && <><button type="button" className="icon-button" disabled={actionsBusy} aria-label={`编辑 ${item.name}`} onClick={onEdit}><Pencil size={16}/></button><button type="button" className="icon-button danger-text" disabled={actionsBusy} aria-label={`删除 ${item.name}`} onClick={onDelete}><Trash2 size={16}/></button></>}</footer>
+    <footer className="card-toolbar">
+      {item.auth_type === 'oauth' && editable && <Button variant="secondary" disabled={actionsBusy || !item.enabled && !item.credential_present} onClick={onOAuth}>
+        <Link2 size={15}/>{item.credential_present ? '断开授权' : '授权账号'}
+      </Button>}
+      {(item.auth_type !== 'oauth' || item.credential_present) && <Button variant="secondary" busy={testing} disabled={actionsBusy || !item.enabled || !editable} onClick={onTest}><PlugZap size={15}/>测试连接</Button>}
+      <div className="toolbar-spacer"/>{editable && <><button type="button" className="icon-button" disabled={actionsBusy} aria-label={`编辑 ${item.name}`} onClick={onEdit}><Pencil size={16}/></button><button type="button" className="icon-button danger-text" disabled={actionsBusy} aria-label={`删除 ${item.name}`} onClick={onDelete}><Trash2 size={16}/></button></>}
+    </footer>
     {item.last_tested_at && <small className="connection-time">{item.status === 'untested' ? '配置已更改，待重测' : `上次测试 ${timeText(item.last_tested_at)}`}</small>}
   </article>;
 }
 
-export default function ConnectionsPage({ admin, focusConnectionId }: { admin: boolean; focusConnectionId?: string }) {
+export default function ConnectionsPage({ admin, focusConnectionId, handoffCode, onCloseHandoff, oauthReturn, clearOAuthReturn }: {
+  admin: boolean; focusConnectionId?: string; handoffCode?: string | null; onCloseHandoff?: () => void;
+  oauthReturn?: { status: string; connectionId?: string } | null; clearOAuthReturn?: () => void;
+}) {
   const [items, setItems] = useState<Connection[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const [importing, setImporting] = useState(false), [success, setSuccess] = useState(''), [editor, setEditor] = useState<Connection | 'new' | null>(null);
   const [testing, setTesting] = useState(''), [testErrors, setTestErrors] = useState<Record<string, string>>({}), [toolsId, setToolsId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null), [busyDelete, setBusyDelete] = useState(false), [localFocusId, setLocalFocusId] = useState<string>();
-  const targetConnectionId = localFocusId || focusConnectionId, tools = items.find(item => item.id === toolsId), located = useRef<string | null>(null);
+  const [oauthProfiles, setOAuthProfiles] = useState<string[]>([]);
+  const [oauthAction, setOAuthAction] = useState('');
+  const [unlinking, setUnlinking] = useState<Connection | null>(null);
+  const targetConnectionId = localFocusId || focusConnectionId || oauthReturn?.connectionId, tools = items.find(item => item.id === toolsId), located = useRef<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    void api<{url:string}[]>('/connections/oauth/profiles', { signal: controller.signal })
+      .then(profiles => setOAuthProfiles(profiles.map(profile => profile.url)))
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
   const focusConnection = (id: string) => { located.current = null; setLocalFocusId(id); };
   useEffect(() => {
     if (loading || !targetConnectionId || located.current === targetConnectionId) return;
@@ -87,6 +108,26 @@ export default function ConnectionsPage({ admin, focusConnectionId }: { admin: b
     catch (cause) { if (!signal?.aborted) setError(`MCP 清单读取失败：${errorText(cause)}`); }
     finally { if (!signal?.aborted) setLoading(false); }
   }, []);
+  const manageOAuth = async (item: Connection) => {
+    clearOAuthReturn?.();
+    if (item.credential_present) { setUnlinking(item); return; }
+    setOAuthAction(item.id); setError('');
+    try {
+      const result = await post<{ authorization_url: string }>(`/connections/${encodeURIComponent(item.id)}/oauth/start`);
+      window.location.assign(result.authorization_url);
+    } catch (cause) { setError(errorText(cause)); setOAuthAction(''); }
+  };
+  const revokeOAuth = async (item: Connection) => {
+    setOAuthAction(item.id); setError(''); setSuccess('');
+    try {
+      const result = await post<{ issuer_revoked: boolean }>(`/connections/${encodeURIComponent(item.id)}/oauth/revoke`);
+      setUnlinking(null);
+      await load();
+      if (result.issuer_revoked) setSuccess('已断开 MCP 授权。');
+      else setError('工作台已断开授权。供应方未确认撤销，请在供应方账号设置中检查授权。');
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setOAuthAction(''); }
+  };
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load]);
   const test = async (item: Connection) => {
     setTesting(item.id); setSuccess(''); setError('');
@@ -98,16 +139,94 @@ export default function ConnectionsPage({ admin, focusConnectionId }: { admin: b
   return <div className="page connections-onboarding mcp-catalog">
     <PageHeader eyebrow="" title="MCP" description="查看与管理已接入的工具服务。" actions={<><Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入配置</Button><Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>接入 MCP</Button></>}/>
     <ErrorNotice message={error} onDismiss={() => setError('')}/><SuccessNotice message={success}/>
+    {oauthReturn?.status === 'failed' && <ErrorNotice message="OAuth 授权未完成，请在对应连接上重新授权。" onDismiss={clearOAuthReturn}/>}
+    {oauthReturn?.status === 'linked' && <SuccessNotice message="已返回工作台。请查看连接卡片上的工具发现结果。"/>}
     <div className="connections-list-heading"><h2>已启用{!loading && ` · ${items.filter(item => item.enabled).length}`}</h2><Button variant="ghost" busy={loading} disabled={!!testing} onClick={() => void load()}><RefreshCw size={16}/>刷新</Button></div>
-    {loading && !items.length ? <Loader/> : !items.length ? <EmptyState icon={<Network size={32}/>} title={error ? '暂时无法读取 MCP' : '还没有 MCP'} description={error ? '请刷新重试。' : '填写服务地址，或导入已有配置。'}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} testing={testing === item.id} actionsBusy={!!testing || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setToolsId(item.id)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} highlighted={item.id === targetConnectionId}/>}/>}
-    {editor && <ConnectionEditor admin={admin} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => { setEditor(null); focusConnection(saved.id); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]); setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; }); setSuccess('MCP 配置已保存。'); if (shouldTest) await test(saved); }}/ >}
+    {loading && !items.length ? <Loader/> : !items.length ? <EmptyState icon={<Network size={32}/>} title={error ? '暂时无法读取 MCP' : '还没有 MCP'} description={error ? '请刷新重试。' : '填写服务地址，或导入已有配置。'}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} testing={testing === item.id} actionsBusy={!!testing || !!oauthAction || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setToolsId(item.id)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onOAuth={() => void manageOAuth(item)} highlighted={item.id === targetConnectionId}/>}/>}
+    {editor && <ConnectionEditor admin={admin} oauthProfiles={oauthProfiles} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => { setEditor(null); focusConnection(saved.id); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]); setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; }); setSuccess('MCP 配置已保存。'); if (shouldTest && saved.auth_type === 'oauth' && !saved.credential_present) await manageOAuth(saved); else if (shouldTest) await test(saved); }}/ >}
+    {unlinking && <Modal title="断开 OAuth 授权" onClose={() => { if (!oauthAction) setUnlinking(null); }}><div className="modal-body"><p>断开「{unlinking.name}」后，已绑定的助手将停止使用该连接，直到你再次授权。</p><ErrorNotice message={error}/></div><footer className="modal-footer"><Button variant="secondary" disabled={!!oauthAction} onClick={() => setUnlinking(null)}>取消</Button><Button variant="danger" busy={!!oauthAction} onClick={() => void revokeOAuth(unlinking)}>断开授权</Button></footer></Modal>}
     {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); if (result.connections[0]) focusConnection(result.connections[0].id); setSuccess(`已导入 ${result.connections.length} 个 MCP。`); void load(); }}/ >}
+    {handoffCode && onCloseHandoff && <KaiwuHandoffDialog code={handoffCode} admin={admin} onClose={onCloseHandoff} onImported={async item => {
+      onCloseHandoff();
+      focusConnection(item.id);
+      await load();
+      if (item.status === 'untested') await test(item);
+    }}/ >}
     {tools && <Modal title={`${tools.name} · 工具列表`} description={tools.last_tested_at ? `最近测试 ${timeText(tools.last_tested_at)}` : undefined} onClose={() => setToolsId(null)} wide><div className="modal-body mcp-tool-list">{!tools.tools.length ? <EmptyState icon={<CircleHelp size={26}/>} title="暂无工具" description={tools.status === 'connected' ? '服务返回空工具清单。' : '测试连接后可查看工具。'}/> : <>{tools.status !== 'connected' && <p className="section-help">以下为上次保存的工具定义，当前配置尚未通过测试。</p>}{tools.tools.map(tool => <McpToolDetails key={tool.name} item={tools} tool={tool}/>)}</>}</div><footer className="modal-footer"><Button variant="secondary" onClick={() => setToolsId(null)}>关闭</Button></footer></Modal>}
     {deleting && <Modal title="删除 MCP" onClose={() => { if (!busyDelete) setDeleting(null); }}><div className="modal-body"><p>确认删除「{deleting.name}」？删除后将无法继续调用，历史记录仍保留。</p></div><footer className="modal-footer"><Button variant="secondary" disabled={busyDelete} onClick={() => setDeleting(null)}>取消</Button><Button variant="danger" busy={busyDelete} onClick={async () => { setBusyDelete(true); try { await remove(`/connections/${encodeURIComponent(deleting.id)}`); setDeleting(null); setSuccess('MCP 已删除。'); await load(); } catch (cause) { setError(errorText(cause)); setDeleting(null); } finally { setBusyDelete(false); } }}>删除</Button></footer></Modal>}
   </div>;
 }
-export function ConnectionEditor({ value, admin, onClose, onSaved }: { value: Connection | null;admin:boolean; onClose: () => void; onSaved: (saved: Connection, shouldTest: boolean) => void | Promise<void> }) {
-  const [scope,setScope]=useState<ResourceScope>(value?.scope||'private');const [metadata,setMetadata]=useState(JSON.stringify(value?.source_metadata||{},null,2));
-  const [name, setName] = useState(value?.name || ''); const [url, setURL] = useState(value?.url || ''); const [auth, setAuth] = useState<'none' | 'bearer'>(value?.auth_type || 'none'); const [credential, setCredential] = useState(''); const [clear, setClear] = useState(false); const [enabled, setEnabled] = useState(value?.enabled ?? true); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  return <Modal title={value ? '编辑 MCP' : '接入 MCP'} description="输入 MCP 服务地址和认证信息，保存后检查连接。" onClose={() => { if (!busy) onClose(); }}><form className="connections-onboarding-editor" onSubmit={async e => { e.preventDefault(); if (busy) return; const shouldTest = enabled && (e.nativeEvent as SubmitEvent).submitter?.getAttribute('value') === 'test'; setBusy(true); setError(''); let sourceMetadata:Record<string,string>;try{sourceMetadata=JSON.parse(metadata);if(!sourceMetadata||Array.isArray(sourceMetadata)||typeof sourceMetadata!=='object'||Object.values(sourceMetadata).some(v=>typeof v!=='string'))throw new Error();}catch{setError('数据源说明须为名称与文本组成的 JSON 对象。');setBusy(false);return;} const body = { name: name.trim(),scope,source_metadata:sourceMetadata, transport: 'http', url: url.trim(), auth_type: auth, enabled, ...(auth === 'bearer' && !clear && credential ? { credential } : {}), ...(value && (clear || auth === 'none') ? { clear_credential: true } : {}) }; try { const saved = await saveConnectionConfiguration(value, body); await onSaved(saved, shouldTest); } catch (err) { setError(errorText(err)); } finally { setBusy(false); } }}><div className="modal-body"><fieldset className="plain-fieldset" disabled={busy}><ErrorNotice message={error}/><ScopeField value={scope} onChange={setScope} admin={admin} disabled={!!value}/><Field label="连接名称" required><input autoFocus value={name} maxLength={100} onChange={e => setName(e.target.value)} placeholder="例如：企业知识库" required/></Field><Field label="MCP 服务地址" hint="支持 Streamable HTTP，由工作台服务端连接。填写管理员已核准的服务地址，不要在地址中填写凭据。" required><input type="url" value={url} onChange={e => setURL(e.target.value)} placeholder="https://your-service.example/mcp" required/></Field><Field label="认证方式"><select value={auth} onChange={e => setAuth(e.target.value as 'none' | 'bearer')}><option value="none">无需认证</option><option value="bearer">Bearer Token</option></select></Field>{auth === 'bearer' && <><Field label={value?.credential_present ? '替换 Token' : 'Token'} hint={value?.credential_present ? '留空会保留已保存的凭据。保存后无法再次查看原文。' : '保存后以受控方式存储，不会展示在对话中。'}><input type="password" autoComplete="new-password" value={credential} disabled={clear} onChange={e => setCredential(e.target.value)} placeholder={value?.credential_present ? '已保存凭据，输入新值以替换' : '输入 Token'} required={!value?.credential_present && !clear}/></Field>{value?.credential_present && <label className="checkbox-row"><input type="checkbox" checked={clear} onChange={e => setClear(e.target.checked)}/>清除已保存的凭据</label>}</>}<details className="resource-advanced"><summary>数据源定位说明</summary><Field label="数据库、表与时间口径（JSON）" hint="填写连接提供的实际信息。每次取数的具体记录和筛选条件由 MCP 返回。"><textarea value={metadata} onChange={e=>setMetadata(e.target.value)} rows={6} placeholder={'{"database":"质量管理库","tables":"quality_records","timezone":"Asia/Shanghai"}'}/></Field></details><label className="checkbox-row separated"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}/><span>启用此连接<small>停用后不再接受新的工具调用。</small></span></label><p className="form-note">保存并测试只读取工具清单，不运行业务工具。</p></fieldset></div><footer className="modal-footer"><Button variant="secondary" type="button" disabled={busy} onClick={onClose}>取消</Button><Button variant="secondary" busy={busy} type="submit" value="save">仅保存</Button><Button busy={busy} disabled={!enabled} type="submit" value="test"><PlugZap size={15}/>保存并测试</Button></footer></form></Modal>;
+export function ConnectionEditor({ value, admin, oauthProfiles = [], onClose, onSaved }: {
+  value: Connection | null; admin: boolean; oauthProfiles?: string[];
+  onClose: () => void; onSaved: (saved: Connection, shouldTest: boolean) => void | Promise<void>;
+}) {
+  const [scope, setScope] = useState<ResourceScope>(value?.scope || 'private');
+  const [metadata, setMetadata] = useState(JSON.stringify(value?.source_metadata || {}, null, 2));
+  const [name, setName] = useState(value?.name || '');
+  const [url, setURL] = useState(value?.url || '');
+  const [auth, setAuth] = useState<Connection['auth_type']>(value?.auth_type || 'none');
+  const [credential, setCredential] = useState('');
+  const [clear, setClear] = useState(false);
+  const [enabled, setEnabled] = useState(value?.enabled ?? true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  return <Modal title={value ? '编辑 MCP' : '接入 MCP'} description="输入 MCP 服务地址和认证信息，保存后检查连接。" onClose={() => { if (!busy) onClose(); }}>
+    <form className="connections-onboarding-editor" onSubmit={async event => {
+      event.preventDefault();
+      if (busy) return;
+      const shouldTest = enabled && (event.nativeEvent as SubmitEvent).submitter?.getAttribute('value') === 'test';
+      setBusy(true);
+      setError('');
+      try {
+        let sourceMetadata: Record<string, string>;
+        try {
+          sourceMetadata = JSON.parse(metadata);
+          if (!sourceMetadata || Array.isArray(sourceMetadata) || typeof sourceMetadata !== 'object' || Object.values(sourceMetadata).some(value => typeof value !== 'string')) throw new Error();
+        } catch {
+          setError('数据源说明须为名称与文本组成的 JSON 对象。');
+          return;
+        }
+        const saved = await saveConnectionConfiguration(value, {
+          name: name.trim(), scope, source_metadata: sourceMetadata, transport: 'http', url: url.trim(), auth_type: auth, enabled,
+          ...(auth === 'bearer' && !clear && credential ? { credential } : {}),
+          ...(value && auth !== 'oauth' && (clear || auth === 'none') ? { clear_credential: true } : {}),
+        });
+        await onSaved(saved, shouldTest);
+      } catch (cause) { setError(errorText(cause)); }
+      finally { setBusy(false); }
+    }}>
+      <div className="modal-body"><fieldset className="plain-fieldset" disabled={busy}>
+        <ErrorNotice message={error}/>
+        <ScopeField value={scope} onChange={setScope} admin={admin} disabled={!!value || auth === 'oauth'}/>
+        <Field label="连接名称" required><input autoFocus value={name} maxLength={100} onChange={event => setName(event.target.value)} placeholder="例如：企业知识库" required/></Field>
+        <Field label="认证方式"><select value={auth} disabled={value?.auth_type === 'oauth'} onChange={event => {
+          const next = event.target.value as Connection['auth_type'];
+          setAuth(next);
+          if (next === 'oauth') {
+            setScope('private');
+            if (!oauthProfiles.includes(url)) setURL(oauthProfiles[0] || '');
+          }
+        }}>
+          <option value="none">无需认证</option><option value="bearer">Bearer Token</option>
+          {(oauthProfiles.length > 0 && !value || value?.auth_type === 'oauth') && <option value="oauth">OAuth 账号授权</option>}
+        </select></Field>
+        <Field label="MCP 服务地址" hint={auth === 'oauth' ? '使用工作台管理员已配置的服务。' : '支持 Streamable HTTP，由工作台服务端连接。填写管理员已核准的服务地址，不要在地址中填写凭据。'} required>
+          {auth === 'oauth' && !value
+            ? <select value={url} onChange={event => setURL(event.target.value)} required>{oauthProfiles.map(profile => <option key={profile} value={profile}>{profile}</option>)}</select>
+            : <input type="url" value={url} onChange={event => setURL(event.target.value)} placeholder="https://your-service.example/mcp" readOnly={auth === 'oauth'} required/>}
+        </Field>
+        {auth === 'bearer' && <>
+          <Field label={value?.credential_present ? '替换 Token' : 'Token'} hint={value?.credential_present ? '留空会保留已保存的凭据。保存后无法再次查看原文。' : '保存后以受控方式存储，不会展示在对话中。'}>
+            <input type="password" autoComplete="new-password" value={credential} disabled={clear} onChange={event => setCredential(event.target.value)} placeholder={value?.credential_present ? '已保存凭据，输入新值以替换' : '输入 Token'} required={!value?.credential_present && !clear}/>
+          </Field>
+          {value?.credential_present && <label className="checkbox-row"><input type="checkbox" checked={clear} onChange={event => setClear(event.target.checked)}/>清除已保存的凭据</label>}
+        </>}
+        <details className="resource-advanced"><summary>数据源定位说明</summary><Field label="数据库、表与时间口径（JSON）" hint="填写连接提供的实际信息。每次取数的具体记录和筛选条件由 MCP 返回。"><textarea value={metadata} onChange={event => setMetadata(event.target.value)} rows={6} placeholder={'{"database":"质量管理库","tables":"quality_records","timezone":"Asia/Shanghai"}'}/></Field></details>
+        <label className="checkbox-row separated"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)}/><span>启用此连接<small>停用后不再接受新的工具调用。</small></span></label>
+        <p className="form-note">{auth === 'oauth' && !value?.credential_present ? '授权将在供应方页面完成，返回后自动读取工具清单。' : '保存并测试只读取工具清单，不运行业务工具。'}</p>
+      </fieldset></div>
+      <footer className="modal-footer"><Button variant="secondary" type="button" disabled={busy} onClick={onClose}>取消</Button><Button variant="secondary" busy={busy} type="submit" value="save">仅保存</Button><Button busy={busy} disabled={!enabled} type="submit" value="test"><PlugZap size={15}/>{auth === 'oauth' && !value?.credential_present ? '保存并授权' : '保存并测试'}</Button></footer>
+    </form>
+  </Modal>;
 }

@@ -1,5 +1,7 @@
 import ipaddress
 
+from starlette._utils import get_route_path
+
 from .db import dump
 
 
@@ -41,6 +43,10 @@ class TrustedProxySchemeMiddleware:
         await self.app(scope, receive, send)
 
 
+def is_streaming_upload(scope, path: str | None) -> bool:
+    return path is not None and scope.get("method") == "POST" and get_route_path(scope) == path
+
+
 class BodyLimitMiddleware:
     """Bound the aggregate body before Starlette can spool multipart files.
 
@@ -48,11 +54,16 @@ class BodyLimitMiddleware:
     file before endpoint-level UploadFile checks. SSE/GET remain streaming.
     """
 
-    def __init__(self, app, maximum: int):
+    def __init__(self, app, maximum: int, streaming_upload_path: str | None = None):
         self.app, self.maximum = app, maximum
+        self.streaming_upload_path = streaming_upload_path
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["method"] in {"GET", "HEAD", "OPTIONS"}:
+            return await self.app(scope, receive, send)
+        # The exact binary upload endpoint authenticates and bounds each chunk
+        # itself. Keep the prebuffering guard for every other route.
+        if is_streaming_upload(scope, self.streaming_upload_path):
             return await self.app(scope, receive, send)
         body = bytearray()
         while True:

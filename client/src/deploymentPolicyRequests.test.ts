@@ -34,7 +34,7 @@ describe('deployment policy frontend requests',()=>{
 
   it('captures trial ChatPage bootstrap and message requests without background closed calls',async()=>{
     const fetch=vi.fn().mockImplementation((target:string,init?:RequestInit)=>{
-      if(target.endsWith('/conversations/chat-id/messages')&&!init?.method)return Promise.resolve(jsonResponse([]));
+      if(target.endsWith('/conversations/chat-id/messages?limit=40')&&!init?.method)return Promise.resolve(jsonResponse({messages:[],before:null,after:null,latest_run_id:null}));
       if(target.endsWith('/conversations/chat-id'))return Promise.resolve(jsonResponse({...conversation,active_run_id:null}));
       if(target.endsWith('/conversations/chat-id/messages'))return Promise.resolve(jsonResponse({message:{id:'message'},run_id:'run'}));
       return Promise.reject(new Error(`unexpected request ${target}`));
@@ -42,7 +42,7 @@ describe('deployment policy frontend requests',()=>{
     vi.stubGlobal('fetch',fetch);
 
     const bootstrap=await loadChatBootstrap('chat-id');
-    expect(bootstrap.messages).toEqual([]);
+    expect(bootstrap.history.messages).toEqual([]);
     expect(await loadChatSkills(false,'assistant')).toEqual([]);
     await sendChatMessage('chat-id',chatMessagePayload({
       requestId:'request-id',text:'问题',fileIds:[],skillIds:[],trial:true,autoModelRouting:true,
@@ -50,7 +50,7 @@ describe('deployment policy frontend requests',()=>{
 
     const paths=fetch.mock.calls.map(([target])=>String(target));
     expect(paths).toEqual([
-      '/api/v1/conversations/chat-id/messages',
+      '/api/v1/conversations/chat-id/messages?limit=40',
       '/api/v1/conversations/chat-id',
       '/api/v1/conversations/chat-id/messages',
     ]);

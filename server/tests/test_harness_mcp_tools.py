@@ -49,6 +49,7 @@ def mcp_server():
     state = SimpleNamespace(tools=copy.deepcopy(TOOL_DEFINITIONS), methods=[], calls=[],
                             authenticated=[], delayed=False, echo_credential=False, fail=False,
                             delay_method="tools/call", response_fault=None, response_format="json", redirected=[],
+                            unavailable_paths=set(),
                             structured_mode="both", payload_padding=0,
                             started=threading.Event(), released=threading.Event())
 
@@ -94,6 +95,9 @@ def mcp_server():
                 self.reply(202)
                 return
             method, params = request["method"], request.get("params") or {}
+            if method == "initialize" and self.path in state.unavailable_paths:
+                self.reply(503)
+                return
             if self.path == "/redirected":
                 state.redirected.append(request)
             if method == "tools/call":
@@ -227,6 +231,127 @@ def write_request(system):
 
 def completed(system):
     return [event for event in system.service.db.events(system.actor.current_run_id, 0) if event["type"] == "tool.completed"][-1]["data"]
+
+
+def new_run(system, *, permission_mode=None):
+    service, actor, owner = system.service, system.actor, system.owner
+    service.db.execute("UPDATE runs SET status='succeeded' WHERE id=?", (actor.current_run_id,))
+    service.db.execute("UPDATE conversations SET active_run_id=NULL WHERE id=?", (actor.conversation_id,))
+    if permission_mode is not None:
+        service.patch_conversation(actor.conversation_id, {"permission_mode": permission_mode}, owner)
+    result, _ = service.prepare_run(actor.conversation_id, {"text": "Read synthetic data", "file_ids": [],
+                                                            "client_request_id": "next"}, owner)
+    actor.current_run_id = result["run_id"]
+    service.db.execute("UPDATE runs SET status='running' WHERE id=?", (actor.current_run_id,))
+    config = service.runtime_config(actor.conversation_id)
+    system.runtime = actor.runtime = HarnessRuntime(service, actor.conversation_id, config, actor.approve, actor.emit)
+    system.runtime.current_run = service.require("runs", actor.current_run_id)
+    return config
+
+
+def certify_read(system):
+    from app.read_only_tools import definition_digest
+
+    row = system.service.require("connections", system.connection["id"])
+    tool = next(tool for tool in json.loads(row["tools"]) if tool["name"] == "read_records")
+    binding = {"connection_id": row["id"], "allowed_tools": ["read_records", "write_record"],
+               "auto_approved_tools": [], "read_only_confirmations": {"read_records": {
+                   "connection_revision": row["revision"], "definition_digest": definition_digest(tool),
+                   "basis": "Verified fixture routes, read-only credential and allowed arguments",
+               }}}
+    system.service.save_assistant({"connections": [binding]}, system.assistant["id"], user=system.owner)
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto", "full"])
+def test_session_approval_modes_use_the_same_certified_read_and_keep_permissions(system, mode):
+    certify_read(system)
+    new_run(system, permission_mode=mode)
+
+    async def scenario():
+        with pytest.raises(AppError):
+            await system.runtime.bridge.invoke(request(system, "unbound_tool", {}))
+        task = asyncio.create_task(system.runtime.bridge.invoke(request(system)))
+        if mode == "manual":
+            approval = await pending_approval(system)
+            assert not system.server.calls
+            system.service.db.execute("UPDATE approvals SET decided_by=? WHERE id=?", (system.owner["id"], approval["id"]))
+            system.actor.manager.approvals[approval["id"]].set_result("allow")
+        result = await asyncio.wait_for(task, 8)
+        assert not result.get("is_error"), result
+        assert [call["name"] for call in system.server.calls] == ["read_records"]
+        decisions = [event["data"] for event in system.service.db.events(system.actor.current_run_id, 0)
+                     if event["type"] == "approval.session_decided"]
+        if mode == "manual":
+            assert not decisions
+        else:
+            assert len(decisions) == 1
+            assert (decisions[0]["mode"], decisions[0]["tool_name"], decisions[0]["decided_by"], decisions[0]["certified_by"]) == (
+                mode, canonical(system, "read_records"), system.owner["id"], system.owner["id"])
+
+    asyncio.run(scenario())
+    conversation = system.service.list_conversations(system.owner)[0]
+    assert conversation["permission_mode"] == mode
+    changes = system.service.db.all("SELECT * FROM conversation_permission_changes WHERE conversation_id=?", (conversation["id"],))
+    if mode == "manual":
+        assert not changes
+    else:
+        assert len(changes) == 1 and changes[0]["actor_id"] == system.owner["id"] and changes[0]["mode"] == mode
+
+
+def test_automatic_approval_rejects_live_definition_change_before_call(system):
+    certify_read(system)
+    new_run(system, permission_mode="auto")
+    system.server.tools[0]["annotations"]["readOnlyHint"] = False
+    result = asyncio.run(system.runtime.bridge.invoke(request(system)))
+    assert result["is_error"] and not system.server.calls
+
+
+def test_full_keeps_manual_external_writes_and_rejects_member_selection(system):
+    certify_read(system)
+    member = system.service.create_user({"username": "member", "display_name": "Member", "role": "member",
+                                         "password": "local-mcp-tests-only-123"})
+    member_assistant = system.service.save_assistant({"name": "Member assistant"}, user=member)
+    with pytest.raises(AppError, match="完全权限需要管理员设置"):
+        system.service.create_conversation({"assistant_id": member_assistant["id"], "title": "Member",
+                                            "permission_mode": "full"}, member)
+    new_run(system, permission_mode="full")
+
+    async def scenario():
+        task = asyncio.create_task(system.runtime.bridge.invoke(write_request(system)))
+        approval = await pending_approval(system)
+        assert not system.server.calls
+        system.actor.manager.approvals[approval["id"]].set_result("deny")
+        result = await asyncio.wait_for(task, 8)
+        assert result["is_error"] and not system.server.calls
+
+    asyncio.run(scenario())
+
+
+def test_unavailable_mcp_keeps_healthy_tools_and_rediscovers_without_call_or_user_test(system):
+    service = system.service
+    healthy = service.save_connection({"name": "Other synthetic MCP", "url": system.server.url + "/healthy",
+                                       "auth_type": "bearer", "credential": SYNTHETIC_CREDENTIAL}, user=system.owner)
+    assert asyncio.run(service.test_connection(healthy["id"], user=system.owner))["status"] == "connected"
+    binding = {"allowed_tools": ["read_records"], "auto_approved_tools": ["read_records"]}
+    service.save_assistant({"connections": [{**binding, "connection_id": connection["id"]}
+                                             for connection in (system.connection, healthy)]}, system.assistant["id"], user=system.owner)
+    system.server.unavailable_paths.add("/mcp")
+    failed = asyncio.run(service.test_connection(system.connection["id"], user=system.owner))
+    assert failed["status"] == "failed" and any(tool["name"] == "read_records" for tool in failed["tools"])
+    config = new_run(system)
+    assert [source["connection_id"] for source in config["mcp_unavailable"]] == [system.connection["id"]]
+    assert config["mcp_unavailable"][0]["reason"]
+    assert set(config["mcp_servers"]) == {f"c{healthy['id']}"}
+    healthy_system = SimpleNamespace(**{**vars(system), "connection": healthy})
+    result = asyncio.run(system.runtime.bridge.invoke(request(healthy_system)))
+    assert not result.get("is_error"), result
+    assert len(system.server.calls) == 1
+    system.server.unavailable_paths.clear()
+    asyncio.run(service.mcp_availability.refresh(system.actor.conversation_id))
+    recovered = service.runtime_config(system.actor.conversation_id)
+    assert not recovered["mcp_unavailable"] and len(recovered["mcp_inventory"]) == 2
+    assert config["fingerprint"] == recovered["fingerprint"]
+    assert len(system.server.calls) == 1, "Background discovery may not invoke a business tool"
 
 
 async def assert_denied(system, payload):

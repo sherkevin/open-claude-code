@@ -2,8 +2,8 @@
  *
  * The official command deliberately accepts no arguments. This adapter keeps
  * the user's optional focus instructions in the summarization request without
- * modifying upstream source, and registers only the host-invoked compact
- * command. Automatic compaction and overflow recovery stay disabled.
+ * modifying upstream source. Automatic pressure and overflow use the same
+ * pinned engine and publish only bounded measurement receipts to the host.
  */
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -49,7 +49,7 @@ function safeError(code: string | undefined): string {
 export async function apply(ctx: any, config: any): Promise<void> {
   if (!config || Object.keys(config).sort().join(',') !== [...CONFIG_KEYS].sort().join(',')
       || typeof config.sourceDir !== 'string' || config.sourceDir.length === 0
-      || config.auto !== false || !Number.isSafeInteger(config.maxTokens)
+      || typeof config.auto !== 'boolean' || !Number.isSafeInteger(config.maxTokens)
       || config.maxTokens < 1 || config.maxTokens > 131072) {
     throw new Error('Invalid locked compaction profile')
   }
@@ -64,6 +64,26 @@ export async function apply(ctx: any, config: any): Promise<void> {
     // new operation signal internally, so binding focus to the original signal
     // would silently lose the user's instruction.
     private readonly focusByAgent = new WeakMap<object, string>()
+
+    override async compactIfNeeded(agent: any, trigger: 'pressure' | 'context-overflow', signal: AbortSignal): Promise<any> {
+      const before = ctx.tokenMeter.measure(agent.session)
+      const generation = agent.session.surface.replaceGeneration
+      const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+      let result: any = null
+      try {
+        result = await super.compactIfNeeded(agent, trigger, boundedSignal)
+        return result
+      } finally {
+        if (agent.session.surface.replaceGeneration > generation) {
+          const after = ctx.tokenMeter.measure(agent.session)
+          ctx.emit('workspace/compaction-result', agent, {
+            trigger, beforeTokens: before.totalTokens, afterTokens: after.totalTokens,
+            shadowedItems: result?.shadowedSeqs.length ?? null,
+            shadowedTokens: result?.shadowedTokenCount ?? null,
+          })
+        }
+      }
+    }
 
     async compactNowWithFocus(agent: any, signal: AbortSignal, sourceCommandId: string,
       focus: string): Promise<any> {
@@ -91,6 +111,9 @@ export async function apply(ctx: any, config: any): Promise<void> {
   ctx.plugin(WorkspaceCompactionEngine, {
     auto: config.auto,
     maxTokens: config.maxTokens,
+    headroomTokens: Math.max(2048, Math.min(8192, config.maxTokens)),
+    compactionRetries: 0,
+    maxOverflowRetries: 1,
   })
 
   ctx.effect(() => ctx.commands.register({

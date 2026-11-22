@@ -67,6 +67,16 @@ def model_server():
             text = " ".join(item.get("text", "") for item in blocks)
             compaction_request = "You are now acting as a compaction engine for this AI coding assistant." in json.dumps(body)
             result = next((item for item in blocks if item["type"] == "tool_result"), None)
+            if not compaction_request and "CASE_AUTO_OVERFLOW" in text and "COMPACT_SUMMARY_SENTINEL" not in json.dumps(body):
+                error = {"error": {"type": "invalid_request_error", "code": "context_length_exceeded",
+                                   "message": "This model maximum context length is 128000 tokens; your input exceeds that limit."}}
+                payload = json.dumps(error).encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
@@ -78,7 +88,7 @@ def model_server():
             try:
                 start_usage = ({"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
                                if "CASE_USAGE_ZERO" in text else {}
-                               if "CASE_USAGE_MISSING" in text else {"input_tokens": 37 if compaction_request else 12, "output_tokens": 0})
+                               if "CASE_USAGE_MISSING" in text else {"input_tokens": 37 if compaction_request else 9000 if "CASE_PRESSURE_SOURCE" in text else 12, "output_tokens": 0})
                 event("message_start", {"message": {"id": f"msg-{len(requests)}", "type": "message", "role": "assistant", "model": "fixture",
                       "content": [], "stop_reason": None, "stop_sequence": None,
                       "usage": start_usage}})
@@ -86,13 +96,24 @@ def model_server():
                     answer = COMPACTION_SUMMARY
                 elif result:
                     source = re.search(r"\[\[source:[A-Za-z0-9_-]+\]\]", json.dumps(result, ensure_ascii=False))
-                    answer = "资料已检索 " + source.group(0) if source else ("工具已拒绝" if result.get("is_error") else "表格已生成")
+                    child_results = json.dumps(result, ensure_ascii=False)
+                    answer = ("子任务结果已汇总" if "CHILD_RESULT_1" in child_results and "CHILD_RESULT_2" in child_results
+                              else "资料已检索 " + source.group(0) if source else ("工具已拒绝" if result.get("is_error") else "表格已生成"))
                 else:
-                    answer = "恢复成功" if "CASE_RESUME" in text else "实时回复成功"
-                if not compaction_request and result is None and ("CASE_KNOWLEDGE" in text or "CASE_XLSX" in text):
+                    answer = ("CHILD_RESULT_1" if "CASE_CHILD_1" in text else
+                              "CHILD_RESULT_2" if "CASE_CHILD_2" in text else
+                              "追加指令已收到" if "CASE_STEER_APPLIED" in text else
+                              "恢复成功" if "CASE_RESUME" in text else "实时回复成功")
+                if not compaction_request and result is None and any(marker in text for marker in ("CASE_KNOWLEDGE", "CASE_XLSX", "CASE_ASK", "CASE_PLAN", "CASE_DELEGATE")):
                     name = "knowledge_search" if "CASE_KNOWLEDGE" in text else "generate_xlsx"
                     arguments = {"query": "P-900 pressure", "limit": 3} if name == "knowledge_search" else {
                         "filename": "approved.xlsx", "sheets": [{"name": "数据", "rows": [["项目", "数值"], ["压力", 7]]}]}
+                    if "CASE_ASK" in text:
+                        name, arguments = "ask_user", {"question": "选择区域", "options": ["华北", "华南"]}
+                    elif "CASE_PLAN" in text:
+                        name, arguments = "review_plan", {"plan": "先核对订单，再汇总"}
+                    elif "CASE_DELEGATE" in text:
+                        name, arguments = "delegate_tasks", {"tasks": ["CASE_CHILD_1", "CASE_CHILD_2"]}
                     event("content_block_start", {"index": 0, "content_block": {"type": "tool_use", "id": f"call-{len(requests)}", "name": name, "input": {}}})
                     event("content_block_delta", {"index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps(arguments)}})
                     reason = "tool_use"
@@ -101,6 +122,8 @@ def model_server():
                     event("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": answer[:2]}})
                     if "CASE_HANG" in text or compaction_request and "CASE_COMPACTION_HANG" in json.dumps(body):
                         released.wait(30)
+                    elif "CASE_STEER_WINDOW" in text and "CASE_STEER_APPLIED" not in text:
+                        time.sleep(2.5)
                     else:
                         time.sleep(0.15)
                     if "CASE_BROKEN" in text:
@@ -146,6 +169,94 @@ def image_fixture_settings(tmp_path, node, source, base):
         provider_test_mode=True,
         origins=("http://testserver",), approval_seconds=30, model_router_enabled=False,
         knowledge_vision_enabled=False, image_generation_enabled=False)
+
+
+def test_real_harness_current_turn_steering(tmp_path, model_server):
+    node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires pinned Node Harness")
+    base, requests = model_server
+    app = create_app(image_fixture_settings(tmp_path, node, source, base))
+    with TestClient(app) as client:
+        app.state.service.create_user({"username": "admin", "display_name": "管理员", "password": PASSWORD, "role": "admin"})
+        login(client)
+        assistant = client.post("/api/v1/assistants", json={"name": "Steering", "instructions": "test", "connections": []}).json()
+        conversation = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()
+        run = send(client, conversation["id"], "CASE_STEER_WINDOW")["run_id"]
+        deadline = time.monotonic() + 30
+        while not requests and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert requests
+        path = f"/api/v1/runs/{run}/steering"
+        payload = {"text": "CASE_STEER_APPLIED", "client_request_id": "steer-request-001"}
+        first = client.post(path, json=payload)
+        assert first.status_code == 200 and first.json()["status"] in {"queued", "applied"}, first.text
+        duplicate = client.post(path, json=payload)
+        assert duplicate.json()["id"] == first.json()["id"]
+        assert wait_run(client, run)["status"] == "succeeded"
+        assert client.get(path).json()[0]["status"] == "applied"
+        messages = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()
+        assert [item["role"] for item in messages] == ["user", "user", "assistant"]
+        assert len(requests) == 2 and "CASE_STEER_APPLIED" in json.dumps(requests[-1]["messages"])
+        assert messages[-1]["text"] == "实时回复成功\n\n追加指令已收到"
+        events = app.state.service.db.events(run, 0)
+        assert "".join(event["data"]["text"] for event in events if event["type"] == "message.delta") == messages[-1]["text"]
+        assert client.post(path, json={**payload, "client_request_id": "steer-request-002"}).status_code == 409
+
+
+def test_real_harness_child_delegation(tmp_path, model_server):
+    node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires pinned Node Harness")
+    base, requests = model_server
+    app = create_app(image_fixture_settings(tmp_path, node, source, base))
+    with TestClient(app) as client:
+        app.state.service.create_user({"username": "admin", "display_name": "管理员", "password": PASSWORD, "role": "admin"})
+        login(client)
+        assistant = client.post("/api/v1/assistants", json={"name": "Delegation", "instructions": "PARENT_PRIVATE_SENTINEL", "connections": []}).json()
+        conversation = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()
+        run = send(client, conversation["id"], "CASE_DELEGATE ORIGINAL_NOT_COPIED")["run_id"]
+        assert wait_run(client, run)["status"] == "succeeded"
+        plan = client.get(f"/api/v1/runs/{run}/subagents").json()
+        assert plan["mode"] == "harness" and plan["counts"]["succeeded"] == 2, plan
+        assert [row["result"]["output"] for row in plan["children"]] == ["CHILD_RESULT_1", "CHILD_RESULT_2"]
+        assert all(row["observed_usage"]["output_tokens"] == 8 and row["capability_snapshot"]["tools"] == [] for row in plan["children"])
+        assert client.get(f"/api/v1/conversations/{conversation['id']}/subagent-plans").json()[0]["id"] == run
+        messages = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()
+        assert messages[-1]["text"] == "子任务结果已汇总"
+        worker_requests = [item for item in requests if not item.get("tools")]
+        assert len(worker_requests) == 2
+        assert all("ORIGINAL_NOT_COPIED" not in json.dumps(item) and "PARENT_PRIVATE_SENTINEL" not in json.dumps(item) for item in worker_requests)
+        assert all(item["max_tokens"] <= 800 for item in worker_requests)
+        usage = client.get("/api/v1/usage").json()
+        independent = next(item for item in usage["by_kind"] if item["kind"] == "subagent")
+        assert independent["model_call_count"] == 2 and independent["output_tokens"] == 16
+
+
+def test_real_harness_cancelling_parent_stops_child(tmp_path, model_server):
+    node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires pinned Node Harness")
+    base, requests = model_server
+    app = create_app(image_fixture_settings(tmp_path, node, source, base))
+    with TestClient(app) as client:
+        app.state.service.create_user({"username": "admin", "display_name": "管理员", "password": PASSWORD, "role": "admin"})
+        login(client)
+        assistant = client.post("/api/v1/assistants", json={"name": "Cancel children", "connections": []}).json()
+        conversation = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()
+        run = send(client, conversation["id"], "CASE_HANG parent")["run_id"]
+        assert wait_run(client, run, {"running"})["status"] == "running"
+        path = f"/api/v1/runs/{run}"
+        response = client.post(path + "/subagents", json={"mode": "harness", "tasks": ["CASE_HANG child"]})
+        assert response.status_code == 202, response.text
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline and not any("CASE_HANG child" in json.dumps(item) for item in requests):
+            time.sleep(.025)
+        assert any("CASE_HANG child" in json.dumps(item) for item in requests)
+        assert client.post(path + "/cancel").is_success
+        assert wait_run(client, run)["status"] == "cancelled"
+        result = client.get(path + "/subagents").json()
+        assert result["counts"]["cancelled"] == 1 and "result" not in result["children"][0]
 
 
 @pytest.mark.parametrize("revocation", ["delete", "bytes"])
@@ -276,7 +387,10 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         message = service.require("messages", service.require("runs", first)["assistant_message_id"])
         assert message["text"] == "实时回复成功"
         assert "/permission CASE_STREAM" in json.dumps(requests[0], ensure_ascii=False)
-        assert {tool["name"] for tool in requests[0]["tools"]} == {"knowledge_search", "knowledge_read", "generate_xlsx", "generate_image", "file_read", "file_write", "file_search", "memory_list", "memory_read", "memory_write"}
+        assert {tool["name"] for tool in requests[0]["tools"]} == {
+            "knowledge_search", "knowledge_read", "generate_xlsx", "generate_image", "file_read", "file_write", "file_search",
+            "memory_list", "memory_read", "memory_write", "ask_user", "review_plan", "delegate_tasks",
+        }
         assert json.loads(service.require("runs", first)["usage"])["output_tokens"] == 8
         assert requests[0]["max_tokens"] == settings.harness_max_output_tokens
 
@@ -328,6 +442,65 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         record_property("real_harness_processes", len(processes))
         record_property("local_synthetic_model_requests", len(requests))
         record_property("paid_model_requests", 0)
+
+
+@pytest.mark.parametrize("trigger", ["context-overflow", "pressure"])
+def test_real_harness_automatically_compacts_and_resumes(tmp_path, monkeypatch, model_server, trigger):
+    node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires explicitly installed pinned Harness runtime")
+    for name in PROVIDER_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    base, requests = model_server
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({"default_model_id": "fixture", "models": [{
+        "id": "fixture", "label": "Local automatic compaction fixture", "upstream_model": "fixture",
+        "reasoning_levels": {"default": None},
+        "provider_env": {"ANTHROPIC_API_KEY": "synthetic-only", "ANTHROPIC_BASE_URL": base},
+    }]}))
+    if trigger == "pressure":
+        from harness import profile
+        original = profile.write_profile
+
+        def bounded_window(**arguments):
+            return original(**{**arguments, "provider": {**arguments["provider"], "contextWindow": 10_000}})
+
+        monkeypatch.setattr(profile, "write_profile", bounded_window)
+    settings = Settings(data_dir=tmp_path / "data", runtime_type="harness", harness_node_path=node,
+        harness_source_dir=source, model_catalog=str(catalog), default_model_id="", harness_max_output_tokens=512,
+        provider_settings="", provider_test_mode=True, origins=("http://testserver",), model_router_enabled=False,
+        knowledge_vision_enabled=False, image_generation_enabled=False)
+    with TestClient(create_app(settings)) as client:
+        service = client.app.state.service
+        user = service.create_user({"username": "admin", "display_name": "Compaction", "password": PASSWORD, "role": "admin"})
+        login(client)
+        assistant = service.save_assistant({"name": "Compaction"}, user=user)
+        cid = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()["id"]
+        history = "OLD_HISTORY_SENTINEL The P-900 pressure limit is 7 bar and must be preserved when you continue. " * 240
+        if trigger == "pressure":
+            history = "CASE_PRESSURE_SOURCE " + history
+        first = send(client, cid, history, "auto-compaction-history")["run_id"]
+        assert wait_run(client, first)["status"] == "succeeded"
+        session_id = service.require("conversations", cid)["harness_session_id"]
+        if trigger == "pressure":
+            # Give upstream a recent tail large enough to preserve without
+            # retaining the entire old turn. One oversized newest turn has
+            # no safe pressure-compaction range by design.
+            tail = "CASE_PRESSURE_SOURCE " + "RECENT_TAIL_SENTINEL The current task also has an approved test plan. " * 125
+            recent = send(client, cid, tail, "auto-compaction-recent")["run_id"]
+            assert wait_run(client, recent)["status"] == "succeeded"
+        prompt = "CASE_RESUME CASE_AUTO_OVERFLOW" if trigger == "context-overflow" else "CASE_RESUME after pressure"
+        second = send(client, cid, prompt, "auto-compaction-resume")["run_id"]
+        result = wait_run(client, second)
+        assert result["status"] == "succeeded", result
+        assert result["compaction"]["trigger"] == trigger
+        assert result["compaction"]["shadowed_items"] > 0
+        assert result["compaction"]["post_tokens"] < result["compaction"]["pre_tokens"]
+        assert len(requests) == 4
+        assert "COMPACT_SUMMARY_SENTINEL" in json.dumps(requests[-1])
+        assert "OLD_HISTORY_SENTINEL" not in json.dumps(requests[-1])
+        assert service.require("conversations", cid)["harness_session_id"] == session_id
+        assert len([stage for stage in result["usage"]["token_accounting"]["stages"] if stage["stage"] == "compression"]) == 1
 
 
 @pytest.mark.parametrize("cancel_compaction", [False, True])
@@ -460,3 +633,78 @@ def test_real_harness_raw_usage_presence(tmp_path, monkeypatch, model_server, ma
         assert usage['cache_creation_input_tokens'] == expected
         assert usage['token_accounting']['capture_complete'] is True
         assert usage['token_accounting']['known_model_calls'] == 1
+
+
+def test_real_harness_forks_at_completed_turn(tmp_path, model_server):
+    node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires explicitly installed pinned Harness runtime")
+    base, requests = model_server
+    app = create_app(image_fixture_settings(tmp_path, node, source, base))
+    with TestClient(app) as client:
+        service = app.state.service
+        user = service.create_user({"username": "admin", "display_name": "Test", "password": PASSWORD, "role": "admin"})
+        login(client)
+        assistant = service.save_assistant({"name": "Fork test"}, user=user)
+        cid = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()["id"]
+        image = io.BytesIO()
+        Image.new("RGB", (8, 8), "green").save(image, format="PNG")
+        upload = client.post("/api/v1/files", files={"file": ("fork.png", image.getvalue(), "image/png")})
+        assert upload.status_code == 201, upload.text
+        first = send(client, cid, "CASE_FORK_KEEP", "fork-first-request", [upload.json()["id"]])["run_id"]
+        assert wait_run(client, first)["status"] == "succeeded"
+        second = send(client, cid, "CASE_FORK_OMIT", "fork-second-request")["run_id"]
+        assert wait_run(client, second)["status"] == "succeeded"
+        boundary = service.require("runs", first)["assistant_message_id"]
+        body = {"message_id": boundary, "client_request_id": "fork-regression-001"}
+        response = client.post(f"/api/v1/conversations/{cid}/fork", json=body)
+        assert response.status_code == 201, response.text
+        child = response.json()["id"]
+        assert client.post(f"/api/v1/conversations/{cid}/fork", json=body).json()["id"] == child
+        messages = client.get(f"/api/v1/conversations/{child}/messages").json()
+        assert [message["text"] for message in messages if message["role"] == "user"] == ["CASE_FORK_KEEP"]
+        assert client.get(f"/api/v1/conversations/{child}").json()["fork_inherited_through_id"] == messages[-1]["id"]
+        run = send(client, child, "CASE_RESUME", "fork-child-request")["run_id"]
+        assert wait_run(client, run)["status"] == "succeeded"
+        assert "CASE_FORK_KEEP" in json.dumps(requests[-1]["messages"])
+        assert "CASE_FORK_OMIT" not in json.dumps(requests[-1]["messages"])
+        assert any(block["type"] == "image" for message in requests[-1]["messages"] for block in message["content"])
+        before = len(requests)
+        service.db.execute("DELETE FROM files WHERE id=?", (upload.json()["id"],))
+        revoked = send(client, child, "CASE_RESUME", "fork-revoked-request")["run_id"]
+        assert wait_run(client, revoked)["status"] == "failed"
+        assert len(requests) == before
+
+
+
+
+@pytest.mark.parametrize(("marker", "kind", "answer"), [
+    ("CASE_ASK", "question", "华北"), ("CASE_PLAN", "plan", "修改计划：先核对日期"),
+])
+def test_real_harness_interaction_resumes_after_answer(tmp_path, model_server, marker, kind, answer):
+    node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires explicitly installed pinned Harness runtime")
+    base, requests = model_server
+    app = create_app(image_fixture_settings(tmp_path, node, source, base))
+    with TestClient(app) as client:
+        service = app.state.service
+        user = service.create_user({"username": "admin", "display_name": "Test", "password": PASSWORD, "role": "admin"})
+        login(client)
+        assistant = service.save_assistant({"name": "Interaction test"}, user=user)
+        cid = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()["id"]
+        run = send(client, cid, marker, f"interaction-request-{kind}")["run_id"]
+        route = f"/api/v1/runs/{run}/interactions"
+        deadline = time.monotonic() + 30
+        while not (interactions := client.get(route).json()):
+            assert time.monotonic() < deadline, client.get(f"/api/v1/runs/{run}").json()
+            time.sleep(.1)
+        interaction, = interactions
+        assert interaction["kind"] == kind
+        assert len(requests) == 1
+        answer_route = f"{route}/{interaction['id']}"
+        assert client.post(answer_route, json={"answer": answer}).status_code == 200
+        assert wait_run(client, run)["status"] == "succeeded"
+        assert answer in json.dumps(requests[-1]["messages"], ensure_ascii=False)
+        assert client.get(route).json() == []
+        assert client.post(answer_route, json={"answer": answer}).status_code == 409

@@ -100,9 +100,37 @@ CREATE INDEX IF NOT EXISTS model_usage_owner ON model_usage_calls(user_id,create
 CREATE INDEX IF NOT EXISTS model_usage_time_model ON model_usage_calls(created_at,model_id);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS connections(id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL, auth_type TEXT NOT NULL, secret TEXT, enabled INTEGER NOT NULL, status TEXT NOT NULL, tools TEXT NOT NULL DEFAULT '[]', last_error TEXT, last_tested_at TEXT, revision INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS mcp_oauth_pending(
+    state_hash TEXT PRIMARY KEY, connection_id TEXT UNIQUE NOT NULL REFERENCES connections(id),
+    revision INTEGER NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), session_hash TEXT NOT NULL,
+    profile_digest TEXT NOT NULL, verifier TEXT NOT NULL, endpoints TEXT NOT NULL, expires INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mcp_oauth_grants(
+    connection_id TEXT PRIMARY KEY REFERENCES connections(id), profile_digest TEXT NOT NULL,
+    endpoints TEXT NOT NULL, refresh_token TEXT, expires INTEGER NOT NULL,
+    refresh_owner TEXT, refresh_until INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS mcp_oauth_events(
+    id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES connections(id),
+    user_id TEXT NOT NULL REFERENCES users(id), event TEXT NOT NULL, created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS assistants(id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, instructions TEXT NOT NULL, enabled INTEGER NOT NULL, access TEXT NOT NULL, connections TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), assistant_id TEXT NOT NULL REFERENCES assistants(id), title TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, active_run_id TEXT, sdk_session_id TEXT, sdk_cost_total REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS message_queue(sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id), payload TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'pending', run_id TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(conversation_id,id));
+CREATE TABLE IF NOT EXISTS conversation_interactions(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), kind TEXT NOT NULL, prompt TEXT NOT NULL, options TEXT NOT NULL, status TEXT NOT NULL, answer TEXT, answered_by TEXT, created_at TEXT NOT NULL, answered_at TEXT);
+CREATE INDEX IF NOT EXISTS conversation_interactions_run ON conversation_interactions(run_id,status,created_at);
+CREATE TABLE IF NOT EXISTS run_steers(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(id),request_id TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(run_id,request_id));
+CREATE TABLE IF NOT EXISTS conversation_fork_attachments(
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id), native_epoch INTEGER NOT NULL,
+    receipts TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS conversation_forks(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),inherited_through_id TEXT NOT NULL REFERENCES messages(id));
+CREATE INDEX IF NOT EXISTS message_queue_pending ON message_queue(conversation_id,sequence) WHERE status='pending';
+CREATE TABLE IF NOT EXISTS conversation_schedules(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), text TEXT NOT NULL, scheduled_at TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, error TEXT);
+CREATE INDEX IF NOT EXISTS conversation_schedules_due ON conversation_schedules(status,scheduled_at);
+CREATE TABLE IF NOT EXISTS chat_draft_expiry(file_id TEXT PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS chat_draft_expiry_due ON chat_draft_expiry(expires_at);
+CREATE TABLE IF NOT EXISTS chat_draft_upload_requests(user_id TEXT NOT NULL REFERENCES users(id),request_id TEXT NOT NULL,file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,content_digest TEXT NOT NULL,PRIMARY KEY(user_id,request_id));
 CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), role TEXT NOT NULL, text TEXT NOT NULL, file_ids TEXT NOT NULL DEFAULT '[]', run_id TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), user_id TEXT NOT NULL REFERENCES users(id), client_request_id TEXT NOT NULL, message_id TEXT NOT NULL, assistant_message_id TEXT, status TEXT NOT NULL, error TEXT, usage TEXT, created_at TEXT NOT NULL, completed_at TEXT, UNIQUE(conversation_id,client_request_id));
 CREATE TABLE IF NOT EXISTS events(run_id TEXT NOT NULL REFERENCES runs(id), id INTEGER NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(run_id,id));
@@ -110,8 +138,20 @@ CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, run_id TEXT NOT NULL R
 CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, mime_type TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL, conversation_id TEXT);
 CREATE TABLE IF NOT EXISTS raw_events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS conversations_owner ON conversations(user_id,updated_at);
+CREATE TABLE IF NOT EXISTS conversation_permission_changes(
+    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    actor_id TEXT NOT NULL REFERENCES users(id), prior_mode TEXT NOT NULL, mode TEXT NOT NULL,
+    changed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_read_only_certifications(
+    assistant_id TEXT NOT NULL REFERENCES assistants(id), assistant_revision INTEGER NOT NULL,
+    connection_id TEXT NOT NULL REFERENCES connections(id), tool_name TEXT NOT NULL,
+    confirmation_digest TEXT NOT NULL, admin_id TEXT NOT NULL REFERENCES users(id),
+    PRIMARY KEY(assistant_id, connection_id, tool_name)
+);
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
 CREATE INDEX IF NOT EXISTS runs_owner ON runs(user_id,created_at);
+CREATE INDEX IF NOT EXISTS runs_conversation ON runs(conversation_id,created_at);
 CREATE TABLE IF NOT EXISTS memory_scopes(user_id TEXT NOT NULL REFERENCES users(id),assistant_id TEXT NOT NULL REFERENCES assistants(id),revision INTEGER NOT NULL DEFAULT 0,digest TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(user_id,assistant_id));
 CREATE TABLE IF NOT EXISTS subagent_children(
     child_id TEXT PRIMARY KEY,
@@ -221,6 +261,28 @@ CREATE TABLE IF NOT EXISTS kaiwu_connectors(
     revoked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS kaiwu_connectors_tenant ON kaiwu_connectors(tenant_id,created_at);
+CREATE TABLE IF NOT EXISTS kaiwu_persistent_enrollments(
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    tenant_name TEXT NOT NULL,
+    issued_to TEXT NOT NULL,
+    code_hash TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS kaiwu_persistent_enrollments_created
+    ON kaiwu_persistent_enrollments(created_at DESC,id);
+CREATE TABLE IF NOT EXISTS kaiwu_persistent_enrollment_devices(
+    connector_id TEXT PRIMARY KEY REFERENCES kaiwu_connectors(id),
+    enrollment_id TEXT NOT NULL REFERENCES kaiwu_persistent_enrollments(id),
+    bound_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kaiwu_persistent_enrollment_devices_bound
+    ON kaiwu_persistent_enrollment_devices(enrollment_id,bound_at DESC,connector_id);
+CREATE TABLE IF NOT EXISTS kaiwu_native_relay_devices(
+    connector_id TEXT PRIMARY KEY REFERENCES kaiwu_connectors(id)
+);
 CREATE TABLE IF NOT EXISTS kaiwu_sources(
     connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
     tenant_id TEXT NOT NULL,
@@ -296,6 +358,19 @@ CREATE TABLE IF NOT EXISTS kaiwu_integration_sources(
     FOREIGN KEY(connector_id,source_id) REFERENCES kaiwu_sources(connector_id,source_id)
 );
 CREATE INDEX IF NOT EXISTS kaiwu_integration_sources_source ON kaiwu_integration_sources(connector_id,source_id);
+CREATE TABLE IF NOT EXISTS kaiwu_platform_handoffs(
+    ticket_hash TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    source_id TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    redeemed_by TEXT REFERENCES users(id),
+    imported_connection_id TEXT REFERENCES connections(id),
+    FOREIGN KEY(connector_id,source_id) REFERENCES kaiwu_sources(connector_id,source_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS kaiwu_platform_handoffs_expiry ON kaiwu_platform_handoffs(expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS kaiwu_platform_handoffs_pending ON kaiwu_platform_handoffs(connector_id,source_id) WHERE redeemed_by IS NULL;
 CREATE TABLE IF NOT EXISTS kaiwu_edge_routes(
     connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
     source_id TEXT NOT NULL,
@@ -446,6 +521,8 @@ class Database:
             "assistants": {"owner_id": "TEXT", "scope": "TEXT NOT NULL DEFAULT 'team'", "knowledge_base_ids": "TEXT NOT NULL DEFAULT '[]'", "skill_ids": "TEXT NOT NULL DEFAULT '[]'", "web_search_enabled": "INTEGER NOT NULL DEFAULT 0", "capabilities": "TEXT NOT NULL DEFAULT '{}'", "default_model_id": "TEXT", "default_reasoning_level": "TEXT", "editor_user_ids": "TEXT NOT NULL DEFAULT '[]'"},
             "conversations": {
                 "category": "TEXT NOT NULL DEFAULT ''", "tags": "TEXT NOT NULL DEFAULT '[]'",
+                "permission_mode": "TEXT NOT NULL DEFAULT 'manual' CHECK(permission_mode IN ('manual','auto','full'))",
+                "permission_mode_by": "TEXT",
                 # Upgrade old rows to Claude regardless of the current default.
                 # Never reinterpret sdk_session_id as a Harness resume token.
                 "runtime_type": "TEXT NOT NULL DEFAULT 'claude' CHECK(runtime_type IN ('claude','harness'))",

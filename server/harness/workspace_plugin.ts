@@ -5,15 +5,18 @@
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { installUsageObserver } from './usage_observer.ts'
+import { forkWorkspaceSession } from './fork_session.ts'
 
 export const name = 'zhixing-workspace-host'
-export const inject = ['tools', 'agents', 'workingDirectory', 'loader', 'sdkAppStartup', 'tokenMeter', 'sessionProjections', 'commands']
+export const inject = ['tools', 'agents', 'workingDirectory', 'loader', 'sdkAppStartup', 'tokenMeter', 'sessionProjections', 'commands', 'sessions', 'attachments']
 
 const ALLOWED_TOOLS = new Set([
   'knowledge_search', 'knowledge_read', 'web_search', 'web_read', 'generate_xlsx', 'generate_image',
   'file_read', 'file_write', 'file_search',
   'ocr', 'image_search',
   'memory_list', 'memory_read', 'memory_write',
+  'ask_user', 'review_plan',
+  'delegate_tasks',
 ])
 const EXTERNAL_TOOL_NAME = /^external_[0-9a-f]{32}$/
 const SOURCE_COMMIT = 'fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159'
@@ -99,10 +102,11 @@ export async function apply(ctx: any, config: any): Promise<void> {
     throw new Error('Invalid locked workspace profile')
   }
   const sourceImport = (path: string) => import(pathToFileURL(resolve(config.sourceDir, path)).href)
-  const [{ JsonRpcLineTransport }, { HarnessSdkJsonRpcServer }, schema] = await Promise.all([
+  const [{ JsonRpcLineTransport }, { HarnessSdkJsonRpcServer }, schema, { createUserMessage }] = await Promise.all([
     sourceImport('packages/sdk/protocol/src/index.ts'),
     sourceImport('packages/sdk/server/src/server.ts'),
     sourceImport('packages/core/tools/src/json-schema.ts'),
+    sourceImport('packages/llm/llm/src/message.ts'),
   ])
   const transport = new JsonRpcLineTransport(process.stdin, process.stdout)
   const server = new HarnessSdkJsonRpcServer(ctx, transport, { maxTokensAsSuccess: false })
@@ -113,7 +117,24 @@ export async function apply(ctx: any, config: any): Promise<void> {
   const streamRequests = new Map<string, string>()
   const requestVisibleText = new Map<string, boolean>()
   const recoveryTurns = new Set<number>()
+  let currentTurn: number | undefined
+  let turnWithTool: number | undefined
+  let turnWithVisibleText: number | undefined
   let initialized = false
+  let acceptingSteer = false
+  const steerMessages = new Map<string, string>()
+  const steerRequests = new Set<string>()
+  ctx.on('session/event', (session: any, event: any) => {
+    if (session.id !== config.sessionId) return
+    if (event.type === 'turn/end') acceptingSteer = false
+    if (event.type !== 'user/message') return
+    const nativeId = event.data?.id
+    const requestId = steerMessages.get(nativeId)
+    if (requestId !== undefined) {
+      steerMessages.delete(nativeId)
+      transport.notify('workspace.steer', { sessionId: config.sessionId, requestId })
+    }
+  })
   const usage = installUsageObserver({ endpoint: config.usageEndpoint, sessionId: config.sessionId,
     onReceipt: receipt => transport.notify('workspace.usage', receipt) })
   ctx.effect(() => () => usage.restore())
@@ -153,6 +174,7 @@ export async function apply(ctx: any, config: any): Promise<void> {
             || Buffer.byteLength(JSON.stringify(arguments_), 'utf8') > MAX_ARGUMENT_BYTES) {
           throw new Error('Workspace tool arguments are invalid')
         }
+        turnWithTool = currentTurn
         const signal = AbortSignal.any([exec.signal, lifetime.signal, AbortSignal.timeout(config.toolTimeoutMs)])
         const cancellation = () => transport.notify('workspace.tool_cancelled', {
           sessionId: config.sessionId, callId: exec.callId,
@@ -195,6 +217,8 @@ export async function apply(ctx: any, config: any): Promise<void> {
     if (!owned(agent)) return
     const common = { sessionId: config.sessionId, stepId: frame.attemptId, revision: frame.revision }
     if (frame.type === 'start') {
+      currentTurn = frame.turn
+      acceptingSteer = true
       streamFinishes.set(frame.attemptId, false)
       const requestKey = `${frame.turn}:${frame.step}`
       streamRequests.set(frame.attemptId, requestKey)
@@ -202,7 +226,10 @@ export async function apply(ctx: any, config: any): Promise<void> {
       transport.notify('workspace.stream', { ...common, event: 'start', turn: frame.turn, step: frame.step })
     } else if (frame.type === 'chunk' && frame.chunk.type === 'text-delta') {
       const requestKey = streamRequests.get(frame.attemptId)
-      if (requestKey !== undefined && frame.chunk.text.length > 0) requestVisibleText.set(requestKey, true)
+      if (requestKey !== undefined && frame.chunk.text.length > 0) {
+        requestVisibleText.set(requestKey, true)
+        turnWithVisibleText = currentTurn
+      }
       transport.notify('workspace.stream', { ...common, event: 'text_delta', text: frame.chunk.text })
     } else if (frame.type === 'chunk' && frame.chunk.type === 'finish') {
       streamFinishes.set(frame.attemptId, true)
@@ -217,13 +244,20 @@ export async function apply(ctx: any, config: any): Promise<void> {
   // Gate the official request-level recovery before its retry listener. Retrying
   // this request preserves earlier tool results; resending the whole turn does not.
   ctx.on('agent/request-error', async ({ agent, turn, step, failure, signal }: any, next: any) => {
+    const overflow = failure?.code === 'CONTEXT_WINDOW_EXCEEDED'
     if (!owned(agent) || signal.aborted || lifetime.signal.aborted
-        || failure?.code !== 'TRANSPORT' || recoveryTurns.has(turn)
+        || (!overflow && !(config.requestRetryCodes ?? ['TRANSPORT']).includes(failure?.code)) || recoveryTurns.has(turn)
+        || (overflow && (turn === turnWithTool || turn === turnWithVisibleText))
         || requestVisibleText.get(`${turn}:${step}`) !== false) return
     const result = await next()
     if (result?.kind === 'retry') recoveryTurns.add(turn)
     return result
   }, { prepend: true })
+  ctx.on('workspace/compaction-result', (agent: any, result: any) => {
+    if (owned(agent) && initialized && !lifetime.signal.aborted) {
+      transport.notify('workspace.compaction', { sessionId: config.sessionId, ...result })
+    }
+  })
 
   let closing: Promise<void> | undefined
   const close = (): Promise<void> => closing ??= (async () => {
@@ -269,6 +303,22 @@ export async function apply(ctx: any, config: any): Promise<void> {
       return result
     }
     if (method === 'workspace/context') return readWorkspaceContext(ctx, config, params, initialized)
+    if (method === 'workspace/fork' && initialized) return forkWorkspaceSession(ctx, config, params)
+    if (method === 'workspace/steer') {
+      if (!initialized || !isRecord(params) || Object.keys(params).sort().join(',') !== 'requestId,sessionId,text'
+          || params.sessionId !== config.sessionId || typeof params.requestId !== 'string' || !/^[a-f0-9]{32}$/u.test(params.requestId)
+          || typeof params.text !== 'string' || params.text.length > 8000 || !params.text.trim()) {
+        throw new Error('Invalid current-turn input')
+      }
+      if (steerRequests.has(params.requestId)) return { accepted: true }
+      const agent = ctx.agents.get(config.sessionId)
+      if (!acceptingSteer || agent?.status !== 'running' || !owned(agent) || steerRequests.size >= 10) return { accepted: false }
+      const message = createUserMessage({ content: [{ type: 'text', text: params.text }], source: { kind: 'user' } })
+      steerRequests.add(params.requestId)
+      steerMessages.set(message.id, params.requestId)
+      agent.steer(message)
+      return { accepted: true }
+    }
     if (method === 'workspace/compact') {
       if (!initialized || !isRecord(params)
           || Object.keys(params).sort().join(',') !== 'instructions,sessionId'
@@ -293,7 +343,7 @@ export async function apply(ctx: any, config: any): Promise<void> {
     if (method === 'session/prompt') {
       let imageCount = 0, imageBytes = 0
       const valid = Array.isArray(params.contentBlocks) && params.contentBlocks.length > 0
-        && params.contentBlocks.length <= 21 && params.contentBlocks.every((block: any) => {
+        && params.contentBlocks.length <= 41 && params.contentBlocks.every((block: any) => {
           if (block?.type === 'text') return typeof block.text === 'string'
             && Object.keys(block).every(key => ['type', 'text'].includes(key))
           if (block?.type !== 'image' || typeof block.data !== 'string'
@@ -307,7 +357,7 @@ export async function apply(ctx: any, config: any): Promise<void> {
           if (bytes.toString('base64') !== block.data || bytes.length > 5 * 1024 * 1024) return false
           imageCount += 1
           imageBytes += bytes.length
-          return imageCount <= 10 && imageBytes <= 10 * 1024 * 1024
+          return imageCount <= 20 && imageBytes <= 10 * 1024 * 1024
         })
       if (!valid) throw new Error('Workspace prompts accept literal text and bounded encoded raster images only')
     }

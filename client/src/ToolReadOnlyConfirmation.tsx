@@ -50,7 +50,7 @@ export default function ToolReadOnlyConfirmation({ connection, tool, value, save
     <summary>工作流只读确认 · {label}</summary>
     <RemoteToolDeclaration tool={tool}/>
     <p className="section-help">此确认仅用于本助手。确认前须核查整个工具在所有允许参数下均仅读取，且服务端使用只读账号。填写依据不会改变远端权限，也不能替代只读账号或服务端权限控制。</p>
-    <p className="section-help">状态依据本次加载的连接与工具定义；保存和执行时，服务端会重新核验。</p>
+    <p className="section-help">管理员保存的当前确认也可供会话自动审批使用。保存和执行时，服务端会重新核验连接与工具定义。</p>
     {value && <p className="tool-confirmation-basis"><strong>{state === 'current' ? '确认依据' : '原确认依据（当前不生效）'}</strong>{value.basis}</p>}
     {issue && <p className="section-help" role="status">{issue}</p>}
     <Field label={`${tool.name} 只读核查依据`} hint="填写实际检查过的接口说明、权限配置或验证记录，1–500 字。不要填写凭据。">
@@ -63,6 +63,6 @@ export default function ToolReadOnlyConfirmation({ connection, tool, value, save
       <Button variant="ghost" disabled={disabled || !pending} onClick={() => { if (!disabled) onDiscard(); }}>撤销依据编辑</Button>
       {value && <Button variant="ghost" disabled={disabled} onClick={() => { if (!disabled) onRemove(); }}>移除只读确认</Button>}
     </div>
-    {changed && !pending && <p className="section-help">只读确认的变更将在保存助手后生效；工具授权和审批方式不受此操作影响。</p>}
+    {changed && !pending && <p className="section-help">保存助手后生效。工具授权和会话审批档位各自管理。</p>}
   </details>;
 }

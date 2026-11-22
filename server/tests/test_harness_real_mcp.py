@@ -140,15 +140,90 @@ def decide(env, row, decision):
     return response.json()
 
 
+def test_recovery_after_successful_write_does_not_replay(mcp_app):
+    env = mcp_app
+    env.model.faults["disconnect_after_result"] = True
+    text = "RECOVERY_WRITE_CASE"
+    first = env.run(text, "update_asset", WRITE_ARGUMENTS)
+    decide(env, approval(env, first, "update_asset"), "allow")
+    failed = wait_run(env.client, first)
+    assert failed["status"] == "failed", failed
+    assert failed["recovery"]["mode"] == "answer_only"
+    assert failed["recovery"]["operations"] == [{"tool_name": env.canonical("update_asset"), "state": "completed"}]
+    assert not tool_events(env, first, "model.retry")
+    original = env.service.require("runs", first)
+    assert send(env.client, env.cid, text, original["client_request_id"])["run_id"] == first
+    endpoint = f"/api/v1/conversations/{env.cid}/messages"
+    legacy = env.client.post(endpoint, json={"text": text, "client_request_id": "legacy-retry"})
+    assert legacy.status_code == 409 and legacy.json()["error"]["code"] == "RECOVERY_REQUIRED"
+    recovery = env.client.post(endpoint, json={"text": text, "client_request_id": "resume-without-tools", "recovery_run_id": first})
+    assert recovery.status_code == 202, recovery.text
+    resumed = recovery.json()["run_id"]
+    completed(env, resumed)
+    assert not env.model.requests[-1].get("tools")
+    native_messages = env.model.requests[-1]["messages"]
+    assert "completed" in json.dumps(native_messages, ensure_ascii=False)
+    assert any(block.get("type") == "tool_result" and "R-17" in json.dumps(block) for item in native_messages
+               for block in item["content"] if isinstance(item["content"], list))
+    assert env.mcp.calls == [{"tool": "update_asset", "arguments": WRITE_ARGUMENTS}]
+    assert not tool_events(env, resumed, "tool.dispatched")
+
+
+def test_recovery_after_automatic_workspace_write_does_not_replay(mcp_app):
+    env = mcp_app
+    response = env.client.patch(f"/api/v1/conversations/{env.cid}", json={"permission_mode": "full"})
+    assert response.status_code == 200, response.text
+    env.model.faults["disconnect_after_result"] = True
+    text = "RECOVERY_AUTOMATIC_WORKSPACE_WRITE"
+    env.model.actions[text] = ("generate_xlsx", {"filename": "once.xlsx", "sheets": [{"name": "test", "rows": [["once"]]}]})
+    run = send(env.client, env.cid, text, "recovery-local-write-only")['run_id']
+    failed = wait_run(env.client, run)
+    assert failed['status'] == 'failed', failed
+    assert failed['recovery']['mode'] == 'answer_only'
+    assert failed['recovery']['operations'] == [{'tool_name': 'mcp__workspace__generate_xlsx', 'state': 'completed'}]
+    assert tool_events(env, run, 'approval.session_decided')
+    assert not env.service.db.all('SELECT id FROM approvals WHERE run_id=?', (run,))
+    response = env.client.post(f"/api/v1/conversations/{env.cid}/messages", json={
+        "client_request_id": "answer-after-automatic-write", "recovery_run_id": run,
+    })
+    assert response.status_code == 202, response.text
+    restored = response.json()['run_id']
+    completed(env, restored)
+    assert not tool_events(env, restored, 'tool.dispatched')
+    assert not env.model.requests[-1].get('tools')
+    artifacts = env.settings.data_dir / 'workspaces' / env.cid / 'artifacts'
+    assert len(list(artifacts.rglob('*.xlsx'))) == 1
+
+
+def test_context_overflow_does_not_retry_after_an_external_write(mcp_app):
+    env = mcp_app
+    historical = "PREVIOUS_HISTORY The P-900 pressure limit is 7 bar. Keep this earlier context. " * 200
+    completed(env, send(env.client, env.cid, historical, "prior-compaction-material")['run_id'])
+    env.model.faults["overflow_after_result"] = True
+    run = env.run("OVERFLOW_AFTER_COMMITTED_MCP_WRITE", "update_asset", WRITE_ARGUMENTS)
+    decide(env, approval(env, run, "update_asset"), "allow")
+    result = wait_run(env.client, run)
+    assert result['status'] == 'failed' and result['error_code'] == 'MODEL_CONTEXT_LIMIT', result
+    assert result['compaction'] is None and len(env.model.requests) == 3
+    assert not tool_events(env, run, 'context.compaction_result')
+    assert len(env.mcp.calls) == 1
+
+
 def test_real_mcp_granted_tools_full_arguments_sources_and_failure(mcp_app):
     env = mcp_app
     read = env.run("MCP_CASE_READ", "read_assets", READ_ARGUMENTS)
     completed(env, read)
-    names = {tool["name"] for tool in env.model.requests[0]["tools"]}
+    definitions = {tool["name"]: tool for tool in env.model.requests[0]["tools"]}
+    names = set(definitions)
     # This assistant has no knowledge collection binding, so no knowledge
     # retrieval tools may be advertised alongside its explicit MCP grants.
-    assert names == {"generate_xlsx", "generate_image", "file_read", "file_write", "file_search", "memory_list", "memory_read", "memory_write", *(env.alias(name) for name in GRANTED)}
+    assert names == {"generate_xlsx", "generate_image", "file_read", "file_write", "file_search", "memory_list", "memory_read", "memory_write",
+                     "ask_user", "review_plan", "delegate_tasks", *(env.alias(name) for name in GRANTED)}
     assert env.alias("hidden_admin") not in names
+    for name in GRANTED:
+        provider_description = definitions[env.alias(name)]["description"]
+        assert env.connection["name"] in provider_description and name in provider_description
+        assert env.mcp.url not in provider_description and env.mcp.token not in provider_description
     assert env.mcp.calls == [{"tool": "read_assets", "arguments": READ_ARGUMENTS}]
     assert not env.service.db.all("SELECT id FROM approvals WHERE run_id=?", (read,))
     started = tool_events(env, read, "tool.started")

@@ -14,6 +14,7 @@ _UNRECORDED_EFFORT = object()
 class ModelCatalog:
     def __init__(self, settings):
         self.settings = settings
+        self.require_credentials = False
         if settings.model_catalog:
             document = json.loads(Path(settings.model_catalog).read_text(encoding="utf-8"))
         else:
@@ -56,30 +57,34 @@ class ModelCatalog:
         if self.default_model_id not in self.models:
             raise ValueError("Model catalog must specify an existing default_model_id")
 
+    def _unavailable_reason(self, item):
+        if not item.get("enabled", True) or not item.get("upstream_model"):
+            return item.get("unavailable_reason") or "此模型尚未开通，请联系管理员"
+        try:
+            provider = {**self.settings.provider_env(), **item.get("provider_env", {})}
+        except (OSError, ValueError, TypeError):
+            return "模型服务配置无法读取，请联系管理员"
+        provider.setdefault("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL)
+        route = provider_route(provider)
+        test_mode = bool(getattr(self.settings, "provider_test_mode", False))
+        if not (route.production_ready or (test_mode and route.allowed)):
+            return "模型服务线路未满足安全部署策略"
+        if self.require_credentials and not (provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN")):
+            return "模型服务尚未配置凭据，请联系管理员"
+        return None
+
     def public(self):
         result = []
         for item in self.models.values():
-            try:
-                provider = {**self.settings.provider_env(), **dict(item.get("provider_env", {}))}
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                # A malformed private settings file must make the route
-                # unavailable, not turn the public catalog into a 500.
-                provider = dict(item.get("provider_env", {}))
-            provider.setdefault("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL)
-            has_credentials = bool(provider.get("ANTHROPIC_API_KEY") or provider.get("ANTHROPIC_AUTH_TOKEN"))
-            route = provider_route(provider)
-            test_mode = bool(getattr(self.settings, "provider_test_mode", False))
-            available = bool(item.get("enabled", True) and item.get("upstream_model")
-                            and (route.production_ready or (test_mode and route.allowed)))
+            reason = self._unavailable_reason(item)
+            available = reason is None
             entry = {"id": item["id"], "label": item["label"], "available": available,
                      "requires_new_conversation_on_switch": item.get("requires_new_conversation_on_switch", False),
                      "capabilities": list(item.get("capabilities", [])),
                      "reasoning_levels": [{"id": level, "label": "默认" if level == "default" else level} for level in item["reasoning_levels"]],
                      "default_reasoning_level": item["default_reasoning_level"]}
-            if not available:
-                entry["unavailable_reason"] = ("模型服务线路未满足安全部署策略"
-                                                if not route.allowed
-                                                else item.get("unavailable_reason") or "此模型尚未开通，请联系管理员")
+            if reason:
+                entry["unavailable_reason"] = reason
             result.append(entry)
         return result
 
@@ -88,12 +93,14 @@ class ModelCatalog:
         item = self.models[self.default_model_id]
         return {"default_model_id": item["id"], "default_reasoning_level": item["default_reasoning_level"], "model_label": item["label"]}
 
-    def select(self, model_id=None, reasoning_level=None):
+    def select(self, model_id=None, reasoning_level=None, *, require_provider=True):
         item = self.models.get(model_id or self.default_model_id)
         if item is None:
             raise AppError(422, "UNKNOWN_MODEL", "请选择模型列表中的模型")
         if not item.get("enabled", True) or not item.get("upstream_model"):
             raise AppError(503, "MODEL_UNAVAILABLE", "此模型尚未开通，请选择其他模型或联系管理员")
+        if require_provider and self.require_credentials and (reason := self._unavailable_reason(item)):
+            raise AppError(503, "MODEL_UNAVAILABLE", reason)
         level = reasoning_level or item["default_reasoning_level"]
         if level not in item["reasoning_levels"]:
             raise AppError(422, "UNSUPPORTED_REASONING_LEVEL", "当前模型不支持此推理级别")

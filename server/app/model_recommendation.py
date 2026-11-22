@@ -60,7 +60,7 @@ def _router_target(service):
     """Resolve the configured public router target without inventing routes."""
     target_id = getattr(service.settings, "model_router_model_id", "") or ROUTER_MODEL_ID
     try:
-        return target_id, service.catalog.select(target_id), None
+        return target_id, service.catalog.select(target_id, require_provider=False), None
     except (AppError, ValueError, TypeError) as error:
         return target_id, None, getattr(error, "message", "授权模型线路不可用")
 
@@ -76,7 +76,7 @@ def _tab_target(service):
     """
     target_id = getattr(service.settings, "tab_completion_model_id", "") or TAB_COMPLETION_MODEL_ID
     try:
-        return target_id, service.catalog.select(target_id), None
+        return target_id, service.catalog.select(target_id, require_provider=False), None
     except (AppError, ValueError, TypeError) as error:
         # Keep the exact public target fail-closed first.  Only an explicit
         # catalog entry whose pinned upstream route exactly names this target may
@@ -94,7 +94,7 @@ def _tab_target(service):
             ):
                 continue
             try:
-                return target_id, service.catalog.select(public_id), None
+                return target_id, service.catalog.select(public_id, require_provider=False), None
             except (AppError, ValueError, TypeError):
                 continue
         return target_id, None, getattr(error, "message", "授权模型线路不可用")
@@ -359,6 +359,17 @@ def _score(item: dict[str, Any], summary: str) -> tuple[int, str]:
     return score, ", ".join(matched)
 
 
+def message_route_candidates(service, file_ids, user):
+    from pathlib import Path
+    from .harness_attachments import IMAGE_MIMES
+
+    rows = [service.require("files", identity, user) for identity in file_ids or ()]
+    images = any(row["mime_type"].startswith("image/") or Path(row["name"]).suffix.lower() in IMAGE_MIMES
+                 for row in rows)
+    return [item["id"] for item in service.catalog.public()
+            if item["available"] and (not images or "multimodal" in item["capabilities"])]
+
+
 def bounded_router(catalog, task_summary: str, candidate_model_ids: list[str] | None = None) -> dict[str, Any]:
     """Return a deterministic recommendation under a fixed input/output bound.
 
@@ -370,7 +381,7 @@ def bounded_router(catalog, task_summary: str, candidate_model_ids: list[str] | 
     summary = _safe_summary(task_summary)
     if not summary:
         raise AppError(422, "EMPTY_TASK_SUMMARY", "请描述需要完成的任务")
-    requested = candidate_model_ids or list(catalog.models)
+    requested = list(catalog.models) if candidate_model_ids is None else candidate_model_ids
     candidates = []
     for model_id in requested:
         if not isinstance(model_id, str) or model_id not in catalog.models:

@@ -134,7 +134,7 @@ def _entry(row, *, auxiliary=False):
         amounts[field] = amount if _number(amount, field) else None
         part = subtotals.get(ledger_field) if field in TOKEN_FIELDS else None
         known[field] = amounts[field] if amounts[field] is not None else part if _number(part, field) else 0
-    if auxiliary:
+    if auxiliary and row.get("kind") != "subagent":
         calls = (0 if row.get("status") == "not_sent" else 1
                  if row.get("status") in {"succeeded", "failed", "cancelled"} else None)
     elif product:

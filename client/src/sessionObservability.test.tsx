@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { SessionOverviewCards, SessionRowUsage, sessionOverviewDisplayMetrics } from './SessionObservability';
+import { SessionOverviewCards, SessionRowUsage } from './SessionObservability';
 import { TrajectoryContent } from './SessionTrajectory';
 import { appendTrajectory, durationText, filterTrajectory, metricDefinitions, metricValue, overviewMetrics, trajectoryDetails, trajectoryPath, trajectoryPositions, type SessionOverview, type SessionUsage, type TrajectoryItem } from './sessionObservationData';
 
@@ -12,15 +12,19 @@ const items:TrajectoryItem[]=[
 ];
 
 describe('session metric evidence boundaries',()=>{
-  it('always shows the ten customer presentation values in one interface',()=>{
-    const original=JSON.stringify(overview);
-    const html=renderToStaticMarkup(<SessionOverviewCards value={overview} loading={false} error="" onRefresh={()=>{}}/>);
-    expect(html).not.toContain('预览效果');expect(html).not.toContain('切回实际数据');
-    const metrics=sessionOverviewDisplayMetrics(overview);
-    expect(metrics).toHaveLength(10);expect(metrics.every(metric=>metric.value!==null)).toBe(true);
-    const values=Object.fromEntries(metrics.map(metric=>[metric.id,metric.value!]));
-    expect(values.cache_read_tokens/values.input_tokens).toBe(values.cache_hit_rate);
-    expect(JSON.stringify(overview)).toBe(original);
+  it('renders actual totals and a visibly qualified estimate',()=>{
+    const value: SessionOverview = {...overview, metrics: overview.metrics.map(metric =>
+      metric.id === 'request_count' ? {...metric,value:3,precision:'partial'} :
+      metric.id === 'cost_usd' ? {...metric,value:0.07,precision:'estimated'} : metric
+    )};
+    const html=renderToStaticMarkup(<SessionOverviewCards value={value} loading={false} error="" onRefresh={()=>{}}/>);
+    expect(html).toContain('<strong title="2 count">2</strong>');
+    expect(html).toContain('<strong title="3 count">3</strong>');
+    expect(html).toContain('<small>部分记录</small>');
+    expect(html).toContain('<strong title="0.07 USD">≈ $0.07</strong>');
+    expect(html).toContain('97%');
+    expect(html).not.toContain('$0.42');
+    expect(html).not.toContain('展示数据');
   });
   it('keeps all ten requested metrics, ignores unexpected fields and retains the fixed display order',()=>{
     const values=overviewMetrics({...overview,metrics:[{id:'private_extra',title:'Private',unit:'count',value:999,precision:'observed' as const,note:'hidden'},...overview.metrics].reverse()});
@@ -38,12 +42,12 @@ describe('session metric evidence boundaries',()=>{
     expect(metricValue(.00003,'USD','estimated')).toBe('≈ $0.00003');
     expect(metricValue(.97,'ratio')).toBe('97%');
   });
-  it('keeps the same populated overview while receipts load or are incomplete',()=>{
+  it('marks values unavailable while receipts load',()=>{
     const html=renderToStaticMarkup(<SessionOverviewCards value={null} loading={true} error="" onRefresh={()=>{}}/>);
     expect(html.match(/data-metric=/g)).toHaveLength(10);
     expect(html).toContain('我的全部会话');expect(html).toContain('含已归档会话');
-    expect(html).toContain('70%');expect(html).toContain('$0.42');
-    expect(html).not.toContain('未记录');expect(html).not.toContain('部分记录');
+    expect(html.match(/<strong title="未记录">未记录<\/strong>/g)).toHaveLength(10);
+    expect(html).not.toContain('70%');expect(html).not.toContain('$0.42');
     expect(html).toContain('指标说明');
   });
   it('shows unavailable per-session readings instead of deriving them from visible message lengths',()=>{

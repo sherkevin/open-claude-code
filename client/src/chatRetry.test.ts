@@ -1,21 +1,24 @@
-import { describe, expect, it } from 'vitest';
-import { retryMessagePayload } from './ChatPage';
+import { describe, expect, it, vi } from 'vitest';
+import { recoveryMessagePayload, sendChatMessage } from './ChatPage';
 
-describe('retryMessagePayload', () => {
-  it('keeps the original text, attachment ids, and selected skill ids without mutating the message', () => {
-    const message = {
-      text: '列出逾期采购订单',
-      file_ids: ['file-1'],
-      skills: [{ id: 'skill-1', name: '采购分析', revision: 3 }],
-    };
-    const payload = retryMessagePayload(message);
-    expect(payload).toEqual({ text: '列出逾期采购订单', fileIds: ['file-1'], skillIds: ['skill-1'] });
-    expect(message.file_ids).toEqual(['file-1']);
-    expect(message.skills).toHaveLength(1);
-  });
-
-  it('uses the same fallback text rules as send when the original text is empty', () => {
-    expect(retryMessagePayload({ text: '  ', file_ids: ['file-1'], skills: [] }).text).toBe('请阅读我上传的附件。');
-    expect(retryMessagePayload({ text: '  ', file_ids: [], skills: [{ id: 'skill-1', name: '分析', revision: 1 }] }).text).toBe('请执行所选 Skill。');
+describe('task recovery request', () => {
+  it('identifies the prior run and reuses its request id when the response is lost', async () => {
+    const fetch = vi.fn().mockRejectedValueOnce(new Error('response lost')).mockResolvedValue(new Response(JSON.stringify({ run_id: 'new-run' }), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const request = recoveryMessagePayload('prior-run', 'request-123');
+      await expect(sendChatMessage('conversation', request)).rejects.toThrow();
+      await sendChatMessage('conversation', request);
+      expect(fetch.mock.calls[0][0]).toBe('/api/v1/conversations/conversation/messages');
+      expect(fetch.mock.calls[1][1].body).toBe(fetch.mock.calls[0][1].body);
+      expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
+        client_request_id: 'request-123',
+        recovery_run_id: 'prior-run',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

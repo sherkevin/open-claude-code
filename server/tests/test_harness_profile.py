@@ -53,11 +53,12 @@ def test_profile_has_no_inherited_bundles_or_native_tools(arguments):
     assert provider["apiKeyEnv"] == "WORKSPACE_MODEL_API_KEY"
     assert provider["models"][0]["inputModalities"] == ["text", "image"]
     assert provider["retryPolicy"] == {"mode": "normal", "maxRetries": 1,
-        "retryableCodes": ["TRANSPORT"],
-        "backoff": {"initialDelayMs": 500, "maxDelayMs": 500, "jitterRatio": 0}}
+        "retryableCodes": ["TRANSPORT", "RATE_LIMIT", "SERVER", "TIMEOUT"],
+        "backoff": {"initialDelayMs": 500, "maxDelayMs": 10000, "jitterRatio": 0}}
+    assert next(entry for entry in entries if entry["id"] == "workspace-compaction")["config"]["auto"] is True
     attachments = next(entry for entry in entries if entry["id"] == "attachments")["config"]
     assert attachments["dshHome"] == str(arguments["profile_root"])
-    assert attachments["maxImagesPerMessage"] == 10
+    assert attachments["maxImagesPerMessage"] == 20
     assert attachments["maxImageBytes"] == 5 * 1024 * 1024
     assert attachments["imageCompressionConcurrency"] == 1
     assert result["args"] == ["--profile", "workspace"]

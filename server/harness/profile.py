@@ -15,12 +15,15 @@ from urllib.parse import urlsplit
 
 PINNED_COMMIT = "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"
 PROFILE_NAME = "workspace"
+MODEL_RECOVERY_CODES = ("TRANSPORT", "RATE_LIMIT", "SERVER", "TIMEOUT")
 TOOL_NAMES = frozenset({
     "knowledge_search", "knowledge_read", "web_search", "web_read",
     "generate_xlsx", "generate_image",
     "file_read", "file_write", "file_search",
     "ocr", "image_search",
     "memory_list", "memory_read", "memory_write",
+    "ask_user", "review_plan",
+    "delegate_tasks",
 })
 EXTERNAL_TOOL_NAME = re.compile(r"external_[0-9a-f]{32}")
 MAX_TOOL_DEFINITION_BYTES = 524_288
@@ -184,7 +187,7 @@ def write_profile(
         elif identifier == "attachments":
             entry["config"] = {
                 "dshHome": str(root), "maxImageBytes": 5 * 1024 * 1024,
-                "maxImagesPerMessage": 10, "maxMessageImageBytes": 10 * 1024 * 1024,
+                "maxImagesPerMessage": 20, "maxMessageImageBytes": 10 * 1024 * 1024,
                 "maxImagePixels": 10_000_000, "maxImageDimension": 10_000,
                 "imageCompressionConcurrency": 1,
             }
@@ -201,8 +204,8 @@ def write_profile(
                 # The host bridge additionally rejects retries after visible text
                 # and limits the entire turn to one recovery attempt.
                 "retryPolicy": {"mode": "normal", "maxRetries": 1,
-                    "retryableCodes": ["TRANSPORT"],
-                    "backoff": {"initialDelayMs": 500, "maxDelayMs": 500, "jitterRatio": 0}},
+                    "retryableCodes": list(MODEL_RECOVERY_CODES),
+                    "backoff": {"initialDelayMs": 500, "maxDelayMs": 10_000, "jitterRatio": 0}},
                 **({"maxTokens": provider["maxTokens"]} if "maxTokens" in provider else {}),
                 **({"defaultContextWindow": provider["contextWindow"]} if "contextWindow" in provider else {}),
             }
@@ -212,14 +215,15 @@ def write_profile(
         "name": str(Path(__file__).with_name("compaction_plugin.ts").resolve()),
         "config": {
             "sourceDir": str(source),
-            "auto": False,
+            "auto": True,
             "maxTokens": min(provider.get("maxTokens", 8192), 131072),
         },
     })
     entries.append({
         "id": "workspace-host", "name": str(Path(__file__).with_name("workspace_plugin.ts").resolve()),
         "config": {
-            "sourceDir": str(source), "sessionId": session_id, "cwd": str(workspace),
+            "sourceDir": str(source), "sessionId": session_id, "cwd": str(workspace), "profileRoot": str(root),
+            "requestRetryCodes": list(MODEL_RECOVERY_CODES),
             "usageEndpoint": endpoint.rstrip("/") + ("" if parsed.path.rstrip("/").endswith("/v1") else "/v1") + "/messages",
             "model": model, "tools": definitions, "maxSteps": max_steps,
             "toolTimeoutMs": tool_timeout_ms, "sourceCommit": PINNED_COMMIT,

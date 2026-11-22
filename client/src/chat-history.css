@@ -1,0 +1,32 @@
+.chat-history-control {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 18px;
+}
+
+.message[data-search-target] {
+  outline: 2px solid #c79639;
+  outline-offset: 5px;
+  border-radius: 8px;
+  scroll-margin-block: 18px;
+}
+
+.session-search-hit {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: #415467;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.session-search-hit mark {
+  border-radius: 3px;
+  padding: 0 2px;
+  background-color: #f8e9bf;
+  color: #493810;
+}
+.chat-fork-boundary { display: flex; align-items: center; gap: 12px; margin: 16px 0; color: var(--muted, #657282); font-size: 12px; }
+.chat-fork-boundary::before,.chat-fork-boundary::after { content: ''; flex: 1; border-top: 1px solid var(--line, #dce3ed); }

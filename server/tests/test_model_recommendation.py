@@ -9,7 +9,7 @@ from app.config import Settings
 from app.model_catalog import ModelCatalog
 from app.model_recommendation import _tab_target, provider_completion, provider_router, router_preflight
 from app.main import create_app
-from test_api import PASSWORD, login
+from test_api import FakeRuntime, PASSWORD, login
 
 
 def _router_service(tmp_path):
@@ -101,7 +101,7 @@ def test_task_submit_auto_routes_without_provider_call_and_allows_manual_overrid
         {"id": "deepseek-v4.1-flash", "label": "DeepSeek", "upstream_model": "deepseek", "capabilities": ["reasoning"], "reasoning_levels": {"default": None}},
         {"id": "vision", "label": "Vision", "upstream_model": "vision", "capabilities": ["multimodal"], "reasoning_levels": {"default": None}},
     ]}), encoding="utf-8")
-    app = create_app(Settings(data_dir=tmp_path / "data", model_catalog=str(catalog), origins=("http://testserver",), provider_settings=""))
+    app = create_app(Settings(data_dir=tmp_path / "data", model_catalog=str(catalog), origins=("http://testserver",), provider_settings=""), runtime_factory=FakeRuntime)
     with TestClient(app) as client:
         service = app.state.service
         user = service.create_user({"username": "admin", "display_name": "Admin", "password": PASSWORD, "role": "admin"})
@@ -133,7 +133,7 @@ def test_message_submit_uses_provider_router_result_and_records_route_mode(tmp_p
         {"id": "deepseek-v4.1-flash", "label": "DeepSeek", "upstream_model": "deepseek", "capabilities": ["reasoning"], "reasoning_levels": {"default": None}},
         {"id": "vision", "label": "Vision", "upstream_model": "vision", "capabilities": ["multimodal"], "reasoning_levels": {"default": None}},
     ]}), encoding="utf-8")
-    app = create_app(Settings(data_dir=tmp_path / "data", model_catalog=str(catalog), origins=("http://testserver",), provider_settings=""))
+    app = create_app(Settings(data_dir=tmp_path / "data", model_catalog=str(catalog), origins=("http://testserver",), provider_settings=""), runtime_factory=FakeRuntime)
 
     async def fake_router(service, task_summary, candidate_model_ids=None, *, user_id=None):
         assert user_id is not None
