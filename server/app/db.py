@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS capability_settings_audit(revision INTEGER PRIMARY KE
 CREATE TABLE IF NOT EXISTS prompt_safety_policy(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, config TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS prompt_safety_user_policy(user_id TEXT PRIMARY KEY REFERENCES users(id), revision INTEGER NOT NULL, config TEXT, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id));
+CREATE TABLE IF NOT EXISTS prompt_safety_user_history(user_id TEXT NOT NULL REFERENCES users(id), revision INTEGER NOT NULL, config TEXT, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL REFERENCES users(id), PRIMARY KEY(user_id,revision));
 CREATE TABLE IF NOT EXISTS prompt_safety_activity(id INTEGER PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), actor_id TEXT REFERENCES users(id), operation TEXT NOT NULL, status TEXT NOT NULL, code TEXT, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS prompt_safety_activity_time ON prompt_safety_activity(created_at,id);
 CREATE INDEX IF NOT EXISTS prompt_safety_activity_owner ON prompt_safety_activity(user_id,created_at,id);

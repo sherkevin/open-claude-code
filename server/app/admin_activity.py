@@ -15,7 +15,7 @@ def _identifier(value):
     return value if isinstance(value, str) and SAFE_ID.fullmatch(value) else None
 
 
-def activity_page(service, *, user_id: str | None, before: str | None, limit: int) -> dict:
+def activity_page(service, *, user_id: str | None, before: str | None, limit: int, include_reviews: bool = True) -> dict:
     values = []
     predicates = []
     if user_id is not None:
@@ -31,6 +31,10 @@ def activity_page(service, *, user_id: str | None, before: str | None, limit: in
         predicates.append("(a.created_at,a.sort_key)<(?,?)")
         values.extend((at, key))
     where = "WHERE " + " AND ".join(predicates) if predicates else ""
+    reviews = """UNION ALL
+        SELECT 'review:'||p.id,p.created_at,p.user_id,p.actor_id,'review',p.operation,p.status,p.code,NULL,
+               NULL,NULL,NULL,NULL
+        FROM prompt_safety_activity p""" if include_reviews else ""
     rows = service.db.all(f"""WITH activity AS (
         SELECT 'run:'||r.id sort_key,r.created_at,r.user_id,NULL actor_id,
                'run' source,r.kind operation,r.status,r.error_code code,NULL tool_name,
@@ -48,10 +52,7 @@ def activity_page(service, *, user_id: str | None, before: str | None, limit: in
                json_extract(e.data,'$.error_code'),json_extract(e.data,'$.tool_name'),NULL,NULL,NULL,NULL
         FROM events e JOIN runs r ON r.id=e.run_id
         WHERE e.type IN ('tool.started','tool.completed','tool.discarded') AND json_valid(e.data)
-        UNION ALL
-        SELECT 'review:'||p.id,p.created_at,p.user_id,p.actor_id,'review',p.operation,p.status,p.code,NULL,
-               NULL,NULL,NULL,NULL
-        FROM prompt_safety_activity p
+        {reviews}
     )
     SELECT a.*,u.display_name,u.username,actor.display_name actor_name
     FROM activity a JOIN users u ON u.id=a.user_id LEFT JOIN users actor ON actor.id=a.actor_id

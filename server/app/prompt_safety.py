@@ -223,9 +223,16 @@ class PromptSafety:
                     ON CONFLICT(id) DO UPDATE SET revision=prompt_safety_policy.revision+1,
                     config=excluded.config,updated_at=excluded.updated_at,updated_by=excluded.updated_by""", (config, timestamp, actor_id))
             else:
+                # Keep the previous revision when upgrading from a database
+                # that only retained the active override.
+                self.db.execute("""INSERT INTO prompt_safety_user_history
+                    SELECT user_id,revision,config,updated_at,updated_by FROM prompt_safety_user_policy WHERE user_id=?
+                    ON CONFLICT(user_id,revision) DO NOTHING""", (target_id,))
                 self.db.execute("""INSERT INTO prompt_safety_user_policy(user_id,revision,config,updated_at,updated_by) VALUES(?,1,?,?,?)
                     ON CONFLICT(user_id) DO UPDATE SET revision=prompt_safety_user_policy.revision+1,
                     config=excluded.config,updated_at=excluded.updated_at,updated_by=excluded.updated_by""", (target_id, config, timestamp, actor_id))
+                self.db.execute("""INSERT INTO prompt_safety_user_history
+                    SELECT user_id,revision,config,updated_at,updated_by FROM prompt_safety_user_policy WHERE user_id=?""", (target_id,))
             code = "PROMPT_POLICY_INHERITED" if config is None else "PROMPT_POLICY_SAVED"
             self.db.execute("""INSERT INTO prompt_safety_activity(user_id,actor_id,operation,status,code,created_at)
                 VALUES(?,?,'prompt_policy','succeeded',?,?)""", (target_id or actor_id, actor_id, code, timestamp))
