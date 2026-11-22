@@ -8,7 +8,10 @@ export const composerInputMaxHeight = (viewportHeight: number) => Math.min(144, 
 type ShortcutEvent = { key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; repeat?: boolean; isComposing?: boolean; keyCode?: number };
 export function composerShortcut(event: ShortcutEvent, state: { composing: boolean; draft: string; canComplete: boolean; completionBusy: boolean; suggestion: boolean; skillsOpen: boolean }) {
   if (state.composing || event.isComposing || event.keyCode === 229) return 'none';
-  if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !event.repeat && state.draft.trim() && state.canComplete && !state.completionBusy && !state.skillsOpen) return state.suggestion ? 'accept' : 'complete';
+  if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !event.repeat && state.canComplete && !state.completionBusy && !state.skillsOpen) {
+    if (state.suggestion) return 'accept';
+    if (state.draft.trim()) return 'complete';
+  }
   if (event.key === 'Enter' && !event.shiftKey && !event.altKey && !state.skillsOpen && !event.repeat) return 'send';
   return 'none';
 }
@@ -28,6 +31,19 @@ type Followups = { busy: boolean; suggestions: string[]; notice: string; runId: 
 const emptyCompletion: Completion = { busy: false, suggestion: '', notice: '' };
 const emptyFollowups: Followups = { busy: false, suggestions: [], notice: '', runId: null };
 export const COMPLETION_TIMEOUT_MS = 20_000;
+const shortPrompts: Record<string, string> = {
+  查: '查询最近的订单，并列出待处理事项。',
+  你: '你可以帮我完成哪些工作？',
+  请: '请帮我查找相关业务资料，并注明来源。',
+  帮: '帮我整理一份待办清单。',
+  如: '如何查询最近的订单和交付状态？',
+  我: '我想了解目前有哪些业务数据可以查。',
+  看: '看一下近期的库存变化，指出异常之处。',
+};
+const starterQuestion = (assistantName?: string) => assistantName?.includes('工业')
+  ? '最近有哪些订单需要跟进？'
+  : '你可以帮我完成哪些工作？';
+
 export function completionSuggestion(draft: string, value: unknown): string {
   return typeof value === 'string' && value.startsWith(draft) && value.slice(draft.length).trim() && [...value].length <= 700 ? value : '';
 }
@@ -43,7 +59,7 @@ export function completionNotice(mode?: string): string {
 type Options = {
   conversationId: string; draft: string; hasExtraDraft: boolean; disabled: boolean; settled: boolean;
   completionEnabled: boolean; followupsEnabled: boolean; run: Run | null; messages: Message[];
-  onDraft: (value: string) => void;
+  assistantName?: string; onDraft: (value: string) => void;
 };
 
 /** Auxiliary requests never submit messages or replace a draft without acceptance. */
@@ -58,6 +74,7 @@ export function useComposerAssistance(options: Options) {
   const requestedFollowups = useRef(new Set<string>());
   const [completion, setCompletion] = useState<Completion>(emptyCompletion);
   const [followups, setFollowups] = useState<Followups>(emptyFollowups);
+  const [previewDismissed, setPreviewDismissed] = useState(false);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; completionRequest.current?.abort(); followupRequest.current?.abort(); };
@@ -70,7 +87,8 @@ export function useComposerAssistance(options: Options) {
     acceptedOrigin.current = null;
     setCompletion(emptyCompletion); setFollowups(emptyFollowups);
   };
-  useEffect(() => { invalidate(); }, [options.conversationId]);
+  useEffect(() => { invalidate(); setPreviewDismissed(false); }, [options.conversationId]);
+  useEffect(() => { setPreviewDismissed(false); }, [options.draft, options.run?.id]);
   // A model/settings dialog or send can make the original draft ineligible.
   useEffect(() => { if (options.disabled) invalidate(); }, [options.disabled]);
   useEffect(() => {
@@ -93,13 +111,14 @@ export function useComposerAssistance(options: Options) {
       return;
     }
     const controller = new AbortController(); completionRequest.current = controller;
+    const singleCharacter = Array.from(start.draft.trim()).length === 1;
     const token = revision.current;
     const current = () => mounted.current && !controller.signal.aborted && completionRequest.current === controller && revision.current === token && latest.current.conversationId === start.conversationId && latest.current.draft === start.draft && latest.current.completionEnabled && !latest.current.disabled;
     setCompletion({ busy: true, suggestion: '', notice: '' });
     const timeout = window.setTimeout(() => {
       if (!current()) return;
       controller.abort(); completionRequest.current = null;
-      setCompletion({ busy: false, suggestion: '', notice: '补全等待超时，可以重试或直接发送。' });
+      setCompletion({ busy: false, suggestion: '', notice: singleCharacter ? '' : '补全等待超时，可以重试或直接发送。' });
     }, COMPLETION_TIMEOUT_MS);
     try {
       const result = await api<{ suggestion: string | null; router: { mode: string } }>('/models/complete', { method: 'POST', body: JSON.stringify({ text: start.draft }), signal: controller.signal });
@@ -109,10 +128,10 @@ export function useComposerAssistance(options: Options) {
         acceptedOrigin.current = { scope: start.conversationId, draft: start.draft, revision: token };
         setCompletion({ busy: false, suggestion, notice: '' });
       } else {
-        setCompletion({ busy: false, suggestion: '', notice: completionNotice(result?.router?.mode) });
+        setCompletion({ busy: false, suggestion: '', notice: singleCharacter ? '' : completionNotice(result?.router?.mode) });
       }
     } catch {
-      if (current()) setCompletion({ busy: false, suggestion: '', notice: '补全暂不可用，可以继续输入。' });
+      if (current()) setCompletion({ busy: false, suggestion: '', notice: singleCharacter ? '' : '补全暂不可用，可以继续输入。' });
     } finally {
       window.clearTimeout(timeout);
       if (completionRequest.current === controller) completionRequest.current = null;
@@ -156,7 +175,21 @@ export function useComposerAssistance(options: Options) {
     invalidate(); latest.current.onDraft(text);
   };
   const visibleFollowups = options.followupsEnabled && !options.disabled && !options.draft.length && !options.hasExtraDraft && options.run?.id === followups.runId && answerRunId === followups.runId ? followups : emptyFollowups;
-  return { completion, followups: visibleFollowups, complete, accept, invalidate, chooseFollowup, version: () => revision.current };
+  const canPreviewInline = options.completionEnabled && !options.disabled && options.settled && !options.hasExtraDraft
+    && (!options.run || !isActive(options.run.status)) && !completion.busy && !completion.suggestion && !previewDismissed;
+  let inlineSuggestion = '';
+  if (canPreviewInline && !options.draft) {
+    inlineSuggestion = visibleFollowups.suggestions[0] || starterQuestion(options.assistantName);
+  } else if (canPreviewInline && options.draft.length === 1) {
+    inlineSuggestion = shortPrompts[options.draft] || '';
+  }
+  const acceptSuggestion = () => {
+    if (!inlineSuggestion || latest.current.draft !== options.draft || latest.current.conversationId !== options.conversationId) return;
+    invalidate();
+    latest.current.onDraft(inlineSuggestion);
+  };
+  const dismiss = () => { invalidate(); setPreviewDismissed(true); };
+  return { completion, inlineSuggestion, acceptSuggestion, dismiss, followups: visibleFollowups, complete, accept, invalidate, chooseFollowup, version: () => revision.current };
 }
 
 export function ComposerCompletion({ value, onAccept, onDismiss }: { value: Completion; onAccept: () => void; onDismiss: () => void }) {

@@ -142,6 +142,17 @@ def test_mcp_discovery_and_live_permission_revocation(client):
         service.authorize_tool(convo["id"], tool, {})
 
 
+def test_first_message_titles_conversation_and_preserves_manual_title(client, monkeypatch):
+    monkeypatch.setattr(client.app.state.service.manager, "submit", lambda _run_id: None)
+    cid = conversation(client)["id"]
+    send(client, cid, "你可以干什么？请说明可以协助的业务")
+    assert client.get(f"/api/v1/conversations/{cid}").json()["title"] == "助手能力介绍"
+    renamed = conversation(client)["id"]
+    assert client.patch(f"/api/v1/conversations/{renamed}", json={"title": "新对话"}).status_code == 200
+    send(client, renamed, "查询三季度库存，联系资料仅保留在本次消息中", "request-title-2")
+    assert client.get(f"/api/v1/conversations/{renamed}").json()["title"] == "新对话"
+
+
 def test_replay_idempotency_and_warm_session(client):
     before = FakeRuntime.connects
     cid = conversation(client)["id"]

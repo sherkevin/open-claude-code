@@ -13,8 +13,8 @@ function ownerPrefix(owner: string) {
   return prefix + encodeURIComponent(owner) + ':';
 }
 
-function readDraft(key: string | null, text: string): Draft {
-  const empty = { text, files: [], skills: [] };
+function readDraft(key: string | null, text: string, initialSubmission?: Submission): Draft {
+  const empty = { text, files: [], skills: [], submission: initialSubmission };
   if (!key) return empty;
   try {
     const raw = sessionStorage.getItem(key);
@@ -53,8 +53,8 @@ export function clearComposerDrafts(owner: string) {
   }
 }
 
-function makeStore(key: string | null, initial: string) {
-  let value = readDraft(key, initial);
+function makeStore(key: string | null, initial: string, initialSubmission?: Submission) {
+  let value = readDraft(key, initial, initialSubmission);
   let disposed = false;
   const callbacks = new Set<() => void>();
   const update = (mutate: (previous: Draft) => Draft) => {
@@ -94,13 +94,13 @@ function makeStore(key: string | null, initial: string) {
   };
 }
 
-export function useComposerDraft(owner: string | undefined, conversationId: string, initialText: string) {
+export function useComposerDraft(owner: string | undefined, conversationId: string, initialText: string, initialSubmission?: Submission) {
   const [store] = useState(() => {
-    if (!owner) return makeStore(null, initialText);
+    if (!owner) return makeStore(null, initialText, initialSubmission);
     const key = ownerPrefix(owner) + encodeURIComponent(conversationId);
     const existing = drafts.get(key);
     if (existing) return existing;
-    const created = makeStore(key, initialText);
+    const created = makeStore(key, initialText, initialSubmission);
     drafts.set(key, created);
     return created;
   });

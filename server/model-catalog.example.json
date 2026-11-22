@@ -12,7 +12,7 @@
     },
     {
       "id": "glm-5.3",
-      "label": "GLM-5.3（文本）",
+      "label": "GLM-5.3",
       "requires_new_conversation_on_switch": true,
       "upstream_model": "glm-5.3",
       "enabled": true,
@@ -22,7 +22,7 @@
     },
     {
       "id": "glm-5.3-flash",
-      "label": "GLM-5.3-Flash（识图）",
+      "label": "GLM-5.3 Flash",
       "requires_new_conversation_on_switch": true,
       "upstream_model": "",
       "enabled": false,
@@ -42,8 +42,8 @@
     },
     {
       "id": "hy4",
-      "label": "混元 4",
-      "upstream_model": "",
+      "label": "HY4",
+      "upstream_model": "hy4",
       "enabled": false,
       "capabilities": ["general", "chinese", "multimodal", "reasoning"],
       "reasoning_levels": {"default": null},
@@ -52,13 +52,23 @@
     },
     {
       "id": "kimi-k3.1-pro",
-      "label": "Kimi 3.1 PRO",
-      "upstream_model": "",
+      "label": "Kimi K3.1 Pro",
+      "upstream_model": "kimi-k3.1-pro",
       "enabled": false,
-      "capabilities": ["general", "chinese", "long_context", "coding", "reasoning"],
+      "capabilities": ["general", "chinese", "long_context", "coding", "reasoning", "multimodal"],
       "reasoning_levels": {"default": null},
       "default_reasoning_level": "default",
-      "unavailable_reason": "管理员尚未配置此模型"
+      "unavailable_reason": "管理员尚未验证并启用此模型线路"
+    },
+    {
+      "id": "minimax-m3.1-flash",
+      "label": "MiniMax M3.1 Flash",
+      "upstream_model": "minimax-m3.1-flash",
+      "enabled": false,
+      "capabilities": ["general", "chinese", "reasoning", "multimodal"],
+      "reasoning_levels": {"default": null},
+      "default_reasoning_level": "default",
+      "unavailable_reason": "管理员尚未验证并启用此模型线路"
     },
     {
       "id": "deepseek-v4-flash-202605",

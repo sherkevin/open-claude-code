@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 
 from .config import RUNTIME_TYPES, Settings
+from .conversation_title import DEFAULT_TITLE, first_message_title
 from .db import Database, dump, now, offload, offload_write, shielded, uid
 from .model_catalog import ModelCatalog
 from .resources import TABLES, resource_access, resource_editable, scope_fields, choose_scope
@@ -564,7 +565,13 @@ class Service:
         # Keep API clients that predate task-submit routing deterministic; the
         # current client opts in explicitly on the create request.
         auto_route = bool(data.get("auto_model_routing"))
-        self.db.execute("INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,model_id,model_label,reasoning_level,model_snapshot,auto_model_routing,runtime_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, user["id"], data["assistant_id"], data["title"], timestamp, timestamp, selection["model_id"], selection["model_label"], selection["reasoning_level"], dump(selection), int(auto_route), runtime_type or self.settings.runtime_type))
+        self.db.execute(
+            "INSERT INTO conversations(id,user_id,assistant_id,title,created_at,updated_at,model_id,model_label,"
+            "reasoning_level,model_snapshot,auto_model_routing,runtime_type,auto_title_pending) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (item_id, user["id"], data["assistant_id"], data.get("title", DEFAULT_TITLE), timestamp, timestamp,
+             selection["model_id"], selection["model_label"], selection["reasoning_level"], dump(selection),
+             int(auto_route), runtime_type or self.settings.runtime_type, int("title" not in data)),
+        )
         from .session_permissions import change as change_permission_mode
         change_permission_mode(self, self.require("conversations", item_id, user), user, data.get("permission_mode"), creating=True)
         self.memory.initialize_empty(item_id)
@@ -631,7 +638,9 @@ class Service:
                     if self.catalog.requires_new_conversation(previous) or self.catalog.requires_new_conversation(selection):
                         raise AppError(409, "MODEL_NEW_CONVERSATION_REQUIRED", "请新建对话使用此模型；原对话和记忆保留")
                 self._save_model_selection(item_id, selection)
-            for key in ("title", "archived", "category"):
+            if data.get("title") is not None:
+                self.db.execute("UPDATE conversations SET title=?,auto_title_pending=0 WHERE id=?", (data["title"], item_id))
+            for key in ("archived", "category"):
                 if data.get(key) is not None:
                     self.db.execute(f"UPDATE conversations SET {key}=? WHERE id=?", (data[key], item_id))
             if data.get("tags") is not None:
@@ -784,10 +793,13 @@ class Service:
             if scheduled:
                 execution_meta["schedule_id"] = scheduled["id"]
             self.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump(execution_meta), run_id))
-            title = data["text"].strip()[:40] if conversation["title"] == "新对话" and data["text"].strip() else conversation["title"]
-            if title == "新对话" and skills:
-                title = " / ".join(skill["name"] for skill in skills)[:40]
-            self.db.execute("UPDATE conversations SET active_run_id=?,updated_at=?,title=? WHERE id=?", (run_id, timestamp, title, conversation_id))
+            if conversation["auto_title_pending"]:
+                title = first_message_title(data["text"])
+                if not title and skills:
+                    title = " / ".join(skill["name"] for skill in skills)[:40]
+                if title:
+                    self.db.execute("UPDATE conversations SET title=?,auto_title_pending=0 WHERE id=?", (title, conversation_id))
+            self.db.execute("UPDATE conversations SET active_run_id=?,updated_at=? WHERE id=?", (run_id, timestamp, conversation_id))
             if queue_sequence is not None:
                 accepted = self.db.execute("UPDATE message_queue SET status='accepted',run_id=?,error=NULL,updated_at=? WHERE sequence=? AND conversation_id=? AND status='pending'", (run_id, timestamp, queue_sequence, conversation_id))
                 if accepted.rowcount != 1:

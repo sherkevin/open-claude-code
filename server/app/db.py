@@ -500,6 +500,9 @@ class Database:
             # routing existed; keep their behavior unchanged. New sessions
             # opt in through the create path below.
             self.conn.execute("ALTER TABLE conversations ADD COLUMN auto_model_routing INTEGER NOT NULL DEFAULT 0")
+        if "auto_title_pending" not in conversation_columns:
+            # Existing titles have no provenance and stay as the user saw them.
+            self.conn.execute("ALTER TABLE conversations ADD COLUMN auto_title_pending INTEGER NOT NULL DEFAULT 0")
         approval_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(approvals)")}
         for column, definition in (("decided_at", "TEXT"), ("decided_by", "TEXT"), ("decision_source", "TEXT"),
                                    ("strategy", "TEXT NOT NULL DEFAULT 'user'"), ("review_model_id", "TEXT"),

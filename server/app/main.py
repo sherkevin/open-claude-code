@@ -543,7 +543,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
 
     @app.post(prefix + "/conversations", status_code=201)
     def conversation_create(data: ConversationCreate, user=Depends(authenticated), service: Service = Depends(svc)):
-        return service.create_conversation(data.model_dump(), user)
+        return service.create_conversation(data.model_dump(exclude_unset=True), user)
 
     @app.get(prefix + "/conversations/overview")
     def conversation_overview(user=Depends(authenticated), service: Service = Depends(svc)):

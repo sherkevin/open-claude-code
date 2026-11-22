@@ -34,6 +34,8 @@ describe('composer shortcuts respect focus and IME',()=>{
   it('uses a plain Tab to request, then explicitly accept a preview',()=>{
     expect(composerShortcut({key:'Tab'},state)).toBe('complete');
     expect(composerShortcut({key:'Tab'},{...state,suggestion:true})).toBe('accept');
+    expect(composerShortcut({key:'Tab'},{...state,draft:'',suggestion:true})).toBe('accept');
+    expect(composerShortcut({key:'Tab',shiftKey:true},{...state,draft:'',suggestion:true})).toBe('none');
   });
   it.each([{shiftKey:true},{ctrlKey:true},{metaKey:true},{altKey:true},{repeat:true},{isComposing:true},{keyCode:229}])('does not capture modified Tab or IME: %j',change=>{
     expect(composerShortcut({key:'Tab',...change},state)).toBe('none');

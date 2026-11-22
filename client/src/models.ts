@@ -10,8 +10,16 @@ export function modelSelection(models: ModelOption[], config: Pick<AppConfig, 'd
 }
 
 /** Only known public catalog identities can become labels; never echo an unknown routing ID. */
+export function modelDisplayName(model: ModelOption): string {
+  if (model.id === 'hy4' && ['混元 4', 'Hy4'].includes(model.label)) return 'HY4';
+  if (model.id === 'glm-5.3' && model.label === 'GLM-5.3（文本）') return 'GLM-5.3';
+  if (model.id === 'glm-5.3-flash' && model.label === 'GLM-5.3-Flash（识图）') return 'GLM-5.3 Flash';
+  return model.label;
+}
+
 export function publicModelLabel(models: ModelOption[], id: string | null | undefined): string {
-  return models.find(model => model.id === id || model.label === id)?.label || '模型信息暂不可用';
+  const model = models.find(model => model.id === id || model.label === id);
+  return model ? modelDisplayName(model) : '模型信息暂不可用';
 }
 
 /** Preserve existing context when either route cannot continue another model's history. */

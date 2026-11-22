@@ -1,3 +1,5 @@
+import type { Message } from './types';
+
 type RuntimeImportMeta = ImportMeta & { env?: Record<string, string | undefined> };
 const clientEnv = (import.meta as RuntimeImportMeta).env;
 // Vite's asset base and the API share the reverse-proxy mount. A build without
@@ -66,6 +68,15 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const post = <T>(path: string, body?: unknown) => api<T>(path, { method: 'POST', ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 export const patch = <T>(path: string, body: unknown) => api<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
+export const chatMessagePayload = (input: { requestId: string; text: string; fileIds: string[]; skillIds: string[]; trial: boolean; autoModelRouting: boolean }) => ({
+  client_request_id: input.requestId,
+  text: input.text,
+  file_ids: input.fileIds,
+  skill_ids: input.skillIds,
+  auto_route: !input.trial && input.autoModelRouting,
+});
+export const sendChatMessage = (conversationId: string, payload: ReturnType<typeof chatMessagePayload> | { client_request_id: string; recovery_run_id: string }) =>
+  post<{ message: Message; run_id: string }>(`/conversations/${encodeURIComponent(conversationId)}/messages`, payload);
 export const remove = (path: string) => api<void>(path, { method: 'DELETE' });
 export const errorText = (error: unknown) => error instanceof Error ? error.message : '操作未完成，请重试。';
 export const fileURL = (id: string) => apiURL(`/files/${encodeURIComponent(id)}/content`);

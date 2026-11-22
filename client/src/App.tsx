@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, BookOpen, ChartNoAxesCombined, Database, FolderOpen, House, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, Users, X } from 'lucide-react';
-import { api, ApiError, errorText, post, timeText } from './api';
+import { api, ApiError, chatMessagePayload, clientRequestId, errorText, post, sendChatMessage, timeText } from './api';
 import { configAllows, type AppConfig, type Assistant, type Conversation, type ModelOption, type ModelSelection, type User } from './types';
 import { Button, ErrorNotice, Loader, Modal } from './components';
 import NewSession from './NewSession';
@@ -99,7 +99,9 @@ export default function App() {
   const workspaceRequest=useRef<AbortController|null>(null);
   const resetWorkspace=useCallback(()=>{workspaceRequest.current?.abort();workspaceRequest.current=null;setAssistants([]);setConversations([]);setAssistantsRead(pendingWorkspaceRead);setConversationsRead(pendingWorkspaceRead);},[]);
   const [selected,setSelected]=useState<Conversation|null>(null);const [assistantDetail,setAssistantDetail]=useState<Assistant|null>(null);const [sidebarOpen,setSidebarOpen]=useState(false);const [newSession,setNewSession]=useState<{assistant?:Assistant;question?:string;project?:string;selection?:ModelSelection;connectionSetup?:Readonly<ConnectionSetupContext>}|null>(null);
-  const [initialDraft,setInitialDraft]=useState<{conversationId:string;text:string}|null>(null);
+  const [initialDraft,setInitialDraft]=useState<{conversationId:string;text:string;requestId?:string}|null>(null);
+  const quickStart = useRef(false);
+  const [startingQuestion, setStartingQuestion] = useState(false);
   const [routeConversationId, setRouteConversationId] = useState(conversationFromLocation);
   const [targetMessageId, setTargetMessageId] = useState(messageFromLocation);
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -176,6 +178,35 @@ export default function App() {
   const snapshotAssistant=(assistant:Assistant)=>{setAssistantDetail(assistant);setAssistants(previous=>previous.map(item=>item.id===assistant.id?assistant:item));};
   const showView=(next:View)=>{if(next!=='assistants'&&next!=='connections')setConnectionSetup(null);if(next!=='workspace')navigateConversation(null);setView(next);setSidebarOpen(false);setError('');};const navigate=(next:View)=>{if(next==='workspace'){protectMemory(()=>{setSelected(null);navigateConversation(null);showView('workspace');});return;}if(next===view){setSidebarOpen(false);return;}protectMemory(()=>showView(next));};
   const newChat=(assistant?:Assistant,question?:string,project?:string,selection?:ModelSelection)=>protectMemory(()=>{setNewSession({assistant,question,project,selection});setSidebarOpen(false);});
+  const startQuestion = async (question: string, assistant: Assistant) => {
+    if (quickStart.current || !configAllows(config, 'conversations.write') || !configAllows(config, 'messages.send')) return;
+    quickStart.current = true;
+    setStartingQuestion(true);
+    setError('');
+    const trial = config.deployment_mode === 'trial';
+    try {
+      const conversation = await post<Conversation>('/conversations', { assistant_id: assistant.id, auto_model_routing: !trial });
+      const requestId = clientRequestId();
+      let sendError = '';
+      try {
+        await sendChatMessage(conversation.id, chatMessagePayload({ requestId, text: question, fileIds: [], skillIds: [], trial, autoModelRouting: Boolean(conversation.auto_model_routing) }));
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) return;
+        sendError = errorText(error);
+      }
+      setInitialDraft(sendError ? { conversationId: conversation.id, text: question, requestId } : null);
+      setSelected(conversation);
+      navigateConversation(conversation.id);
+      showView('workspace');
+      if (sendError) setError(`首条消息未确认发送，草稿已保留。${sendError}`);
+      void refresh();
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 401)) setError(errorText(error));
+    } finally {
+      quickStart.current = false;
+      setStartingQuestion(false);
+    }
+  };
   const startConnectionAssistant=(assistant:Assistant,connection:Readonly<ConnectionSetupContext>,question?:string)=>protectMemory(()=>{setAssistants(previous=>previous.some(item=>item.id===assistant.id)?previous.map(item=>item.id===assistant.id?assistant:item):[...previous,assistant]);setNewSession({...connectionTrialSession(assistant,connection),...(question?{question}: {})});setSidebarOpen(false);});
   const startConfiguredAssistant=(assistant:Assistant)=>{if(!connectionSetup){setError('本次连接信息已失效，请返回连接页重新开始。');return;}startConnectionAssistant(assistant,connectionSetup);};
   const openConversation=(conversation:Conversation,messageId?:string)=>protectMemory(()=>{setInitialDraft(null);setSelected(conversation);navigateConversation(conversation.id,false,messageId);showView('workspace');});
@@ -207,7 +238,7 @@ export default function App() {
     <aside id="workspace-sidebar" className={`sidebar ${sidebarOpen?'open':''}`}><div className="sidebar-brand"><Brand name={config.brand_name} compact/><button type="button" className="sidebar-layout-toggle" aria-label={sidebarLayout.collapsed?'展开侧栏':'收起侧栏'} title={sidebarLayout.collapsed?'展开侧栏':'收起侧栏'} aria-expanded={!sidebarLayout.collapsed} aria-controls="workspace-sidebar" onClick={sidebarLayout.toggle}>{sidebarLayout.collapsed?<PanelLeftOpen size={19}/>:<PanelLeftClose size={19}/>}</button><button className="icon-button mobile-only" aria-label="关闭导航" onClick={()=>setSidebarOpen(false)}><X size={20}/></button></div>{canCreateConversation&&<button aria-label="新建会话" title="新建会话" className="new-conversation" disabled={!assistantsRead.loaded&&!assistants.length} onClick={()=>newChat()}><Plus size={18}/><span className="sidebar-label">新建会话</span><ArrowUpRight size={16}/></button>}<div className="sidebar-scroll"><nav aria-label="主导航">{navigation.filter(item=>!secondaryViews.has(item.id)&&item.id!=='assistants').map(navItem)}<div className="nav-divider"/>{navigation.filter(item=>item.id==='assistants').map(navItem)}{(navigation.some(item=>secondaryViews.has(item.id))||(admin&&canManageUsers))&&<details className="nav-administration" open={secondaryViews.has(view)||view==='users'?true:undefined}><summary title="工作空间管理"><Settings2 size={18}/><span className="sidebar-label">工作空间管理</span></summary>{navigation.filter(item=>secondaryViews.has(item.id)).map(navItem)}{admin&&canManageUsers&&<button aria-label="成员管理" title="成员管理" className={`nav-item ${view==='users'?'selected':''}`} onClick={()=>navigate('users')}><Users size={18}/><span className="sidebar-label">成员管理</span></button>}</details>}</nav><div className="history-heading"><span>最近会话</span><button className="icon-button" aria-label="刷新对话" disabled={conversationsRead.loading} onClick={()=>void refresh()}><RefreshCw size={13}/></button></div><ConversationHistory conversations={conversations} state={conversationsRead} selectedId={view==='workspace'?selected?.id:undefined} onOpen={openConversation} onRetry={()=>void refresh()}/></div><div className="sidebar-bottom"><div className="account"><span className="avatar">{(user.display_name||user.username).slice(0,1)}</span><div><strong>{user.display_name||user.username}</strong><small>{admin?'工作台管理员':'工作台成员'}</small></div><button className="icon-button" aria-label="退出登录" onClick={()=>protectMemory(()=>{void logout();})}><LogOut size={17}/></button></div></div><div className="sidebar-resizer" {...sidebarLayout.separator}/></aside>
     <main className="main"><div className="mobile-bar"><button className="icon-button" onClick={()=>setSidebarOpen(true)} aria-label="打开导航"><Menu size={21}/></button><Brand name={config.brand_name} compact/><span className="mobile-avatar">{user.display_name.slice(0,1)}</span></div>{error&&<div className="global-notice"><ErrorNotice message={error} onDismiss={()=>setError('')}/></div>}
     {releaseUpdated&&<div className="workbench-update" role="status"><span>开物有新版本可用。</span><Button type="button" variant="secondary" onClick={()=>window.location.reload()}>更新页面</Button></div>}
-    {view==='workspace'&&(routeConversationId&&selected?.id!==routeConversationId?<Loader text="正在打开会话…"/>:selected?<ChatPage key={`${selected.id}:${memoryEpoch}`} conversation={selected} targetMessageId={targetMessageId} onOpenConversation={openConversation} draftOwnerId={user.id} assistant={assistants.find(a=>a.id===selected.assistant_id)} config={config} models={models} modelsLoading={modelsLoading} initialDraft={initialDraft?.conversationId===selected.id?initialDraft.text:undefined} onNewConversation={canCreateConversation?(selection,draft)=>newChat(assistants.find(a=>a.id===selected.assistant_id),draft,selected.category,selection):undefined} onChanged={refresh} onMemoryDirtyChange={setMemoryDirty} onMemorySavingChange={changeMemorySaving} onArchived={()=>{setSelected(null);navigateConversation(null);showView(configAllows(config,'conversations.read')?'sessions':'workspace');}}/>:<WorkspacePage assistants={assistants} conversations={conversations} assistantsRead={assistantsRead} conversationsRead={conversationsRead} onReload={()=>void refresh()} onAssistant={openAssistant} onConversation={openConversation} onNew={newChat} onNavigate={navigate} canCreate={canCreateConversation} canManage={canManageAssistants} canReadKnowledge={configAllows(config,'knowledge.read')} canManageConnections={configAllows(config,'connections.write')} canReadSessions={configAllows(config,'conversations.read')} onStart={(question,assistant)=>protectMemory(()=>{setNewSession({assistant,question});setSidebarOpen(false);})}/>) }
+    {view==='workspace'&&(routeConversationId&&selected?.id!==routeConversationId?<Loader text="正在打开会话…"/>:selected?<ChatPage key={`${selected.id}:${memoryEpoch}`} conversation={selected} targetMessageId={targetMessageId} onOpenConversation={openConversation} draftOwnerId={user.id} assistant={assistants.find(a=>a.id===selected.assistant_id)} config={config} models={models} modelsLoading={modelsLoading} initialDraft={initialDraft?.conversationId===selected.id?initialDraft.text:undefined} initialRequestId={initialDraft?.conversationId===selected.id?initialDraft.requestId:undefined} onNewConversation={canCreateConversation?(selection,draft)=>newChat(assistants.find(a=>a.id===selected.assistant_id),draft,selected.category,selection):undefined} onChanged={refresh} onMemoryDirtyChange={setMemoryDirty} onMemorySavingChange={changeMemorySaving} onArchived={()=>{setSelected(null);navigateConversation(null);showView(configAllows(config,'conversations.read')?'sessions':'workspace');}}/>:<WorkspacePage assistants={assistants} conversations={conversations} assistantsRead={assistantsRead} conversationsRead={conversationsRead} onReload={()=>void refresh()} onAssistant={openAssistant} onConversation={openConversation} onNew={newChat} onNavigate={navigate} canCreate={canCreateConversation} canManage={canManageAssistants} canReadKnowledge={configAllows(config,'knowledge.read')} canManageConnections={configAllows(config,'connections.write')} canReadSessions={configAllows(config,'conversations.read')} starting={startingQuestion} onStart={configAllows(config,'messages.send')?(question,assistant)=>protectMemory(()=>void startQuestion(question,assistant)):undefined}/>) }
     {view==='assistant-detail'&&assistantDetail&&<AssistantDetailPage key={assistantDetail.id} assistantId={assistantDetail.id} assistants={assistants} admin={admin} onOpen={openConversation} onNew={newChat} onChanged={refresh} onSnapshot={snapshotAssistant} onDirtyChange={setAssistantDirty} onSavingChange={changeAssistantSaving} requestNavigation={protectMemory} draftEpoch={draftEpoch}/>}
     {view==='sessions'&&<SessionsPage assistants={assistants} onOpen={openConversation} onNew={(assistant,project)=>newChat(assistant,undefined,project)} onChanged={refresh}/>}
     {view==='business-data'&&<BusinessDataPage onConnections={()=>navigate('connections')}/>}

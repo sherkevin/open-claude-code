@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BookOpen, Archive, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Circle, Clock3, Download, FileText, Gauge, ListTree, LoaderCircle, Minimize2, Paperclip, Pencil, Radio, ShieldCheck, Sparkles, Square, X, XCircle } from 'lucide-react';
-import { api, API_BASE, ApiError, clientRequestId, errorText, fileURL, patch, post, remove, timeText } from './api';
+import { api, API_BASE, ApiError, chatMessagePayload, clientRequestId, errorText, fileURL, patch, post, remove, sendChatMessage, timeText } from './api';
 import { configAllows, type AppConfig, type Approval, type Assistant, type Conversation, type Message, type ModelOption, type ModelRecommendation, type ModelSelection, type Run, type RunStatus, type Skill, type StoredFile, type StreamEvent } from './types';
 import { isActive, statusLabels } from './types';
 import { appendEvent, eventTypes, pendingApprovalIds, streamText } from './stream';
@@ -35,6 +35,7 @@ import ComposerReferences from './ComposerReferences';
 import { readChatHistory, useChatHistory } from './chatHistory';
 import './chat-history.css';
 import './composer.css';
+import './assistant-working.css';
 
 type SteeringReceipt = { id: string; text: string; status: 'pending' | 'queued' | 'applied' | 'rejected' | 'uncertain' };
 
@@ -66,15 +67,8 @@ export const loadChatBootstrap=async(conversationId:string,signal?:AbortSignal,t
   return {history,detail,run,runError,runId,missingTarget};
 };
 export const loadChatSkills=async(enabled:boolean,assistantId:string,signal?:AbortSignal):Promise<Skill[]>=>enabled?api<Skill[]>(`/assistants/${assistantId}/skills`,{signal}):[];
-export const chatMessagePayload=(input:{requestId:string;text:string;fileIds:string[];skillIds:string[];trial:boolean;autoModelRouting:boolean})=>({
-  client_request_id:input.requestId,
-  text:input.text,
-  file_ids:input.fileIds,
-  skill_ids:input.skillIds,
-  auto_route:input.trial?false:input.autoModelRouting,
-});
+export { chatMessagePayload, sendChatMessage } from './api';
 export const recoveryMessagePayload=(runId:string,requestId:string)=>({client_request_id:requestId,recovery_run_id:runId});
-export const sendChatMessage=(conversationId:string,payload:ReturnType<typeof chatMessagePayload> | ReturnType<typeof recoveryMessagePayload>)=>post<{message:Message;run_id:string}>(`/conversations/${conversationId}/messages`,payload);
 export const chatTrialFeatures=(trial:boolean, config?:AppConfig)=>({
   canUseAttachments:!trial,
   canUseSkills:!trial,
@@ -86,7 +80,7 @@ export const chatTrialFeatures=(trial:boolean, config?:AppConfig)=>({
   canRecommend:!trial,
 });
 
-export default function ChatPage({ conversation, assistant, config, models, modelsLoading, initialDraft, draftOwnerId, targetMessageId, onOpenConversation, onChanged, onArchived, onNewConversation, onMemoryDirtyChange, onMemorySavingChange }: { conversation: Conversation; assistant?: Assistant; config: AppConfig; models: ModelOption[]; modelsLoading: boolean; initialDraft?: string; draftOwnerId?: string; targetMessageId?: string; onOpenConversation?: (conversation: Conversation) => void; onChanged: () => void; onArchived: () => void; onNewConversation?: (selection:ModelSelection,draft:string)=>void; onMemoryDirtyChange?: (dirty:boolean)=>void; onMemorySavingChange?: (saving:boolean)=>void }) {
+export default function ChatPage({ conversation, assistant, config, models, modelsLoading, initialDraft, initialRequestId, draftOwnerId, targetMessageId, onOpenConversation, onChanged, onArchived, onNewConversation, onMemoryDirtyChange, onMemorySavingChange }: { conversation: Conversation; assistant?: Assistant; config: AppConfig; models: ModelOption[]; modelsLoading: boolean; initialDraft?: string; initialRequestId?: string; draftOwnerId?: string; targetMessageId?: string; onOpenConversation?: (conversation: Conversation) => void; onChanged: () => void; onArchived: () => void; onNewConversation?: (selection:ModelSelection,draft:string)=>void; onMemoryDirtyChange?: (dirty:boolean)=>void; onMemorySavingChange?: (saving:boolean)=>void }) {
   const trial = config.deployment_mode === 'trial'; const canSend = configAllows(config, 'messages.send'); const {canUseAttachments,canUseSkills,canUseCompletion,canUseContext,canRecommend} = chatTrialFeatures(trial,config);
   const history = useChatHistory(conversation.id);
   const { messages } = history.page;
@@ -102,7 +96,9 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const [selection, setSelection] = useState<ModelSelection>({ model_id: conversation.model_id, reasoning_level: conversation.reasoning_level });
   const [autoModelRouting, setAutoModelRouting] = useState(!trial && Boolean(conversation.auto_model_routing));
   const [recommendOpen, setRecommendOpen] = useState(false); const [recommendSummary, setRecommendSummary] = useState(''); const [recommendation, setRecommendation] = useState<ModelRecommendation | null>(null); const [recommendBusy, setRecommendBusy] = useState(false);
-  const [savingModel, setSavingModel] = useState(false); const selectionVersion = useRef(0);
+  const [savingModel, setSavingModel] = useState(false);
+  const [routingSaved, setRoutingSaved] = useState(false);
+  const selectionVersion = useRef(0);
   const [hasNativeSession, setHasNativeSession] = useState(conversation.has_native_session);
   const [modelReconnectRequired, setModelReconnectRequired] = useState(false);
   const [refreshingRun, setRefreshingRun] = useState(false);
@@ -112,7 +108,8 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const steeringRequest = useRef<{ runId: string; text: string; id: string } | null>(null);
   const [steeringReceipt, setSteeringReceipt] = useState<{ runId: string; value: SteeringReceipt } | null>(null);
   const { draft: { text: input, files, skills: selectedSkills, preview }, readDraft, setText: setInput, setFiles,
-    setSkills: setSelectedSkills, setPreview, setSubmission, finishSubmission } = useComposerDraft(draftOwnerId, conversation.id, initialDraft || '');
+    setSkills: setSelectedSkills, setPreview, setSubmission, finishSubmission } = useComposerDraft(draftOwnerId, conversation.id, initialDraft || '', initialRequestId && initialDraft
+      ? { id: initialRequestId, signature: JSON.stringify([initialDraft.trim(), [], []]), queued: false } : undefined);
   const saveAttachment = useCallback((saved: StoredFile, selectionOrder: number) => setFiles(previous => {
     if (previous.some(file => file.id === saved.id)) return previous;
     const position = previous.findIndex(file => file.selectionOrder !== undefined && file.selectionOrder > selectionOrder);
@@ -234,9 +231,9 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       if (event.type === 'run.stage') setRunStage(String(event.data.stage||''));
       if (event.type === 'usage.updated') setRun(prev => prev ? { ...prev, usage: event.data } : prev);
       if (event.type === 'run.started') {setRunStage('initializing');}
-      if (event.type === 'run.started') setRun(prev => prev ? { ...prev, status: 'running' } : prev);
-      if (event.type === 'approval.required') { setRun(prev => prev ? { ...prev, status: 'awaiting_approval' } : prev); }
-      if (event.type === 'approval.resolved') setRun(prev => prev ? { ...prev, status: 'running', approvals: prev.approvals.filter(a => a.id !== event.data.approval_id) } : prev);
+      if (event.type === 'run.started') setRun(prev => prev?.status === 'queued' ? { ...prev, status: 'running' } : prev);
+      if (event.type === 'approval.required') { setRun(prev => prev && isActive(prev.status) && prev.status !== 'cancelling' ? { ...prev, status: 'awaiting_approval' } : prev); }
+      if (event.type === 'approval.resolved') setRun(prev => prev && isActive(prev.status) && prev.status !== 'cancelling' ? { ...prev, status: 'running', approvals: prev.approvals.filter(a => a.id !== event.data.approval_id) } : prev);
       if (['context.compaction_started', 'context.compacted', 'context.compaction_result'].includes(event.type)) setRun(prev => prev ? { ...prev, compaction: { trigger: null, pre_tokens: null, before: null, after: null, ...prev.compaction, status: event.type === 'context.compaction_started' ? 'started' : event.type === 'context.compacted' ? 'completed' : compactionStatus(event.data.status), error: typeof event.data.error === 'string' ? event.data.error : null, followup_status: typeof event.data.followup_status === 'string' ? event.data.followup_status : prev.compaction?.followup_status } } : prev);
       if (event.type === 'run.completed') { sawTerminalEvent = true; setRun(prev => prev ? { ...prev, status: event.data.status as RunStatus, error: typeof event.data.error === 'string' ? event.data.error : null, error_code: typeof event.data.error_code === 'string' ? event.data.error_code : null } : prev); void finalize(); }
     };
@@ -286,6 +283,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const canonicalHasAnswer = messages.some(m => m.role === 'assistant' && m.run_id === run?.id && !!m.text);
   const liveCitations=events.filter(e=>e.type==='message.updated').at(-1)?.data.citations as Message['citations'];
   const showStream = !!run && (active || !canonicalHasAnswer) && !!liveText;
+  const showThinking = (!active && sending) || (connectionState === 'connected' && !showStream && (run?.status === 'queued' || run?.status === 'running'));
   const artifacts = events.filter(e => e.type === 'artifact.created').map(e => e.data as unknown as StoredFile);
   const locatedTarget = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -344,7 +342,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const assistance = useComposerAssistance({ conversationId: conversation.id, draft: input, hasExtraDraft: files.length > 0 || selectedSkills.length > 0,
     completionEnabled: canUseCompletion, followupsEnabled: configAllows(config, 'models.followups'),
     disabled: archived || sending || loading || savingModel || showContext || !canSend,
-    settled: !loading && !refreshingRun && !sending, run, messages, onDraft: fillDraft });
+    settled: !loading && !refreshingRun && !sending, run, messages, assistantName: assistant?.name, onDraft: fillDraft });
   const changeDraft = (value: string, caret: number) => {
     recall.current = -1;
     assistance.invalidate(); inputVersion.current += 1; setInput(value);
@@ -454,7 +452,8 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     setSending(true); setError(''); shouldFollow.current = true;
     try {
       if (submission.queued) {
-        await queue.enqueue({ ...chatMessagePayload({requestId:submission.id,text,fileIds,skillIds,trial,autoModelRouting}), model_id: selection.model_id, reasoning_level: selection.reasoning_level });
+        const payload = chatMessagePayload({ requestId: submission.id, text, fileIds, skillIds, trial, autoModelRouting });
+        await queue.enqueue(payload.auto_route ? payload : { ...payload, ...selection });
         finishSubmission(submission.id, snapshot);
         if (!mounted.current) return;
         if (inputVersion.current === sentInputVersion) setSkillQuery(null);
@@ -628,11 +627,12 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   };
   const changeRouting = async (automatic: boolean) => {
     if (trial || automatic === autoModelRouting || active || loading || sending || savingModel || showContext || uploading || refreshingRun || recommendBusy) return;
-    selectionVersion.current += 1; setSavingModel(true); setError('');
+    selectionVersion.current += 1; setRoutingSaved(false); setSavingModel(true); setError('');
     try {
       const saved = await saveModelRouting(conversation.id, automatic);
       if (!mounted.current) return;
       setAutoModelRouting(Boolean(saved.auto_model_routing));
+      setRoutingSaved(true);
       setSelection({ model_id: saved.model_id, reasoning_level: saved.reasoning_level });
       onChangedRef.current();
     } catch (error) { if (mounted.current) setError(errorText(error)); }
@@ -642,7 +642,10 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   return <div className="chat-page"><header className="chat-header"><div className="chat-heading"><AiIdentity active={aiWorking}/><div><h1>{title || '新会话'}</h1><span>{assistant?.name || '业务助手'}{active && <><i/> {statusLabels[run.status]}</>}</span></div></div><div className="chat-actions">{!trial&&<button type="button" className="icon-button" title="计划与子任务" aria-label="计划与子任务" onClick={()=>setShowTasks(true)}><Clock3 size={17}/></button>}{!trial&&<ConversationExport conversationId={conversation.id}/>}{!trial&&<button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={()=>setShowTrajectory(true)}><ListTree size={17}/></button>}{!trial&&<button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={()=>setShowMemory(true)}><BookOpen size={17}/></button>}<button className="icon-button" title="重命名会话" aria-label="重命名会话" onClick={() => { setTitleDraft(title); setRename(true); }}><Pencil size={16}/></button>{canUseContext&&<button type="button" className="icon-button" title="上下文" aria-label="上下文" disabled={savingModel || loading} onClick={() => setShowContext(true)}><Gauge size={17}/></button>}<button className="icon-button" title="归档会话" aria-label="归档会话" disabled={active} onClick={() => setArchive(true)}><Archive size={17}/></button></div></header>
     <div className="chat-proof-bar" aria-label="会话能力状态"><span><FileText size={14}/>业务会话</span><span>{assistant?.connections.length||0} 个已配置 MCP</span><span className="run-status-pill" data-state={run?.status || 'idle'}>{run?.status === 'succeeded' ? <CheckCircle2 size={14}/> : run?.status === 'failed' ? <XCircle size={14}/> : run?.status === 'awaiting_approval' ? <ShieldCheck size={14}/> : <Clock3 size={14}/>} {run?statusLabels[run.status]:'等待开始'}</span>{run&&<RunModelIdentity run={run} models={models}/>}{connectionState === 'reconnecting' && <strong>连接恢复中</strong>}</div>
     <div className="chat-layout"><section className="conversation-column"><div className="message-scroll" ref={scroll} onScroll={() => { const el = scroll.current; if (!el) return; shouldFollow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; setShowScroll(!shouldFollow.current); }}>
-      {loading ? <Loader text="正在恢复会话…"/> : messages.length === 0 && !liveText ? <div className="chat-intro"><AiIdentity size="large"/><h2>向{assistant?.name || '业务助手'}提问</h2><p>{assistant?.description || '描述你的问题或目标，也可以上传相关资料。'}</p><div className="chat-intro-note"><ShieldCheck size={16}/>调用需审批的业务工具时，你会先看到操作内容。</div></div> : <div className="messages">{history.page.before && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('older')}>加载更早消息</Button></div>}{messages.filter(m => !(active && m.role === 'assistant' && m.run_id === run?.id) && (m.role !== 'assistant' || !!m.text || m.file_ids.length > 0 || historyResultIds.has(m.id))).map(message => <article className={`message ${message.role}`} key={message.id} data-message-id={message.id} data-search-target={message.id === targetMessageId ? true : undefined}><div className="message-label">{message.role === 'assistant' ? <><AiIdentity size="inline"/>{assistant?.name || '助手'}</> : <>你<span>{timeText(message.created_at)}</span></>}</div><div className="message-content">{message.role === 'assistant' ? <AnswerMarkdown text={message.text} citations={message.citations}/> : <p className="user-text">{run?.kind === 'compact' && message.run_id === run.id ? '请求原生上下文压缩' : message.text}</p>}{message.role==='user'&&!!message.skills?.length&&<div className="message-skill-record">{message.skills.map(skill=><span key={skill.id}>@{skill.name}</span>)}</div>}{canUseAttachments && message.file_ids.length > 0 && <div className="attachment-row">{message.file_ids.map(id => <Attachment key={id} id={id} onPreview={setPreview}/>)}</div>}{!trial && conversation.runtime_type === 'harness' && onOpenConversation && message.role === 'assistant' && message.run_id && message.text && <Button variant="ghost" disabled={active || !!forking} busy={forking === message.id} onClick={() => void forkMessage(message)}>从这条消息创建分支</Button>}{message.run_id && historyResultIds.has(message.id) && <HistoricalBusinessResults conversationId={conversation.id} runId={message.run_id} messageId={message.id} question={questionForRun(messages,message.run_id)}/>}</div>{message.id === forkBoundary && <div className="chat-fork-boundary" role="separator" aria-label="分支从这里开始"><span>分支从这里开始</span></div>}</article>)}{history.page.after && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('newer')}>加载更新消息</Button></div>}{!history.page.after && showStream && <article className="message assistant"><div className="message-label"><AiIdentity size="inline"/>{assistant?.name || '助手'}{active && <span className="typing-indicator"><i/><i/><i/></span>}</div><div className="message-content"><AnswerMarkdown text={liveText} citations={liveCitations}/></div></article>}{!history.page.after&&run&&<BusinessResults events={events} runId={run.id} status={run.status} question={questionForRun(messages,run.id)}/>}{!history.page.after && active && <LiveActivity run={run} events={events} stage={runStage} connectionState={connectionState}/>}<div className="compaction-message-container">{!history.page.after && run?.kind === 'compact' && <div className="compaction-message"><Minimize2 size={17}/><div><strong>{compactionLabel(run)}</strong><p>历史消息与附件仍保留，可在“上下文”中查看原生统计。</p></div></div>}</div>{!history.page.after && run && !active && ['failed', 'interrupted', 'cancelled'].includes(run.status) && <RunOutcome run={run} busy={retrying} disabled={retrying || sending || refreshingRun || !modelReady} onRetry={() => void retryLastMessage()} onAdjust={() => textInput.current?.focus()} onContext={() => setShowContext(true)}/>}{!history.page.after && !trial && artifacts.length > 0 && <div className="artifact-section"><span className="eyebrow">生成的文件</span><div className="attachment-row">{artifacts.map(file => <FileChip key={file.id} file={file} onPreview={() => setPreview(file)}/>)}</div></div>}</div>}
+      {loading ? <Loader text="正在恢复会话…"/> : messages.length === 0 && !liveText && !showThinking ? <div className="chat-intro"><AiIdentity size="large"/><h2>向{assistant?.name || '业务助手'}提问</h2><p>{assistant?.description || '描述你的问题或目标，也可以上传相关资料。'}</p><div className="chat-intro-note"><ShieldCheck size={16}/>调用需审批的业务工具时，你会先看到操作内容。</div></div> : <div className="messages">{history.page.before && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('older')}>加载更早消息</Button></div>}{messages.filter(m => !(active && m.role === 'assistant' && m.run_id === run?.id) && (m.role !== 'assistant' || !!m.text || m.file_ids.length > 0 || historyResultIds.has(m.id))).map(message => <article className={`message ${message.role}`} key={message.id} data-message-id={message.id} data-search-target={message.id === targetMessageId ? true : undefined}><div className="message-label">{message.role === 'assistant' ? <><AiIdentity size="inline"/>{assistant?.name || '助手'}</> : <>你<span>{timeText(message.created_at)}</span></>}</div><div className="message-content">{message.role === 'assistant' ? <AnswerMarkdown text={message.text} citations={message.citations}/> : <p className="user-text">{run?.kind === 'compact' && message.run_id === run.id ? '请求原生上下文压缩' : message.text}</p>}{message.role==='user'&&!!message.skills?.length&&<div className="message-skill-record">{message.skills.map(skill=><span key={skill.id}>@{skill.name}</span>)}</div>}{canUseAttachments && message.file_ids.length > 0 && <div className="attachment-row">{message.file_ids.map(id => <Attachment key={id} id={id} onPreview={setPreview}/>)}</div>}{!trial && conversation.runtime_type === 'harness' && onOpenConversation && message.role === 'assistant' && message.run_id && message.text && <Button variant="ghost" disabled={active || !!forking} busy={forking === message.id} onClick={() => void forkMessage(message)}>从这条消息创建分支</Button>}{message.run_id && historyResultIds.has(message.id) && <HistoricalBusinessResults conversationId={conversation.id} runId={message.run_id} messageId={message.id} question={questionForRun(messages,message.run_id)}/>}</div>{message.id === forkBoundary && <div className="chat-fork-boundary" role="separator" aria-label="分支从这里开始"><span>分支从这里开始</span></div>}</article>)}{history.page.after && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('newer')}>加载更新消息</Button></div>}{!history.page.after && showThinking && <div className="assistant-working" role="status">
+        <AiIdentity size="inline"/><span>{assistant?.name || '助手'}正在处理</span>
+        <span className="assistant-working-dots" aria-hidden="true"><i/><i/><i/></span>
+      </div>}{!history.page.after && showStream && <article className="message assistant"><div className="message-label"><AiIdentity size="inline"/>{assistant?.name || '助手'}{active && <span className="typing-indicator"><i/><i/><i/></span>}</div><div className="message-content"><AnswerMarkdown text={liveText} citations={liveCitations}/></div></article>}{!history.page.after&&run&&<BusinessResults events={events} runId={run.id} status={run.status} question={questionForRun(messages,run.id)}/>}{!history.page.after && active && <LiveActivity run={run} events={events} stage={runStage} connectionState={connectionState}/>}<div className="compaction-message-container">{!history.page.after && run?.kind === 'compact' && <div className="compaction-message"><Minimize2 size={17}/><div><strong>{compactionLabel(run)}</strong><p>历史消息与附件仍保留，可在“上下文”中查看原生统计。</p></div></div>}</div>{!history.page.after && run && !active && ['failed', 'interrupted', 'cancelled'].includes(run.status) && <RunOutcome run={run} busy={retrying} disabled={retrying || sending || refreshingRun || !modelReady} onRetry={() => void retryLastMessage()} onAdjust={() => textInput.current?.focus()} onContext={() => setShowContext(true)}/>}{!history.page.after && !trial && artifacts.length > 0 && <div className="artifact-section"><span className="eyebrow">生成的文件</span><div className="attachment-row">{artifacts.map(file => <FileChip key={file.id} file={file} onPreview={() => setPreview(file)}/>)}</div></div>}</div>}
     </div>{(showScroll || history.page.after) && <button type="button" className="scroll-latest" disabled={history.reading} onClick={returnToLatest}><ArrowDown size={15}/>回到最新消息</button>}
     <div className="composer-area composer-refined">{archived&&<div className="archive-banner"><span>此会话已归档，恢复后可以继续工作。</span><Button variant="secondary" busy={restoring} onClick={async()=>{setRestoring(true);try{await patch(`/conversations/${conversation.id}`,{archived:false});setArchived(false);onChangedRef.current();}catch(e){setError(errorText(e));}finally{setRestoring(false);}}}>恢复会话</Button></div>}<ErrorNotice message={error} onDismiss={() => setError('')}/><ErrorNotice message={history.error}/>{readbackIssue && <div role="status" className="run-outcome"><p>{readbackIssue}</p><Button variant="secondary" busy={refreshingRun} onClick={() => retryReadback.current?.()}>重新读取任务结果</Button></div>}{modelReconnectRequired && <ModelRecovery currentAvailable={modelReady} busy={active || loading || sending || savingModel || uploading || showContext || refreshingRun} pending={savingModel} onReconnect={() => void changeModel(selection, true)}/>}{!trial && active && run && <RunInteractions key={run.id} runId={run.id}/>}<PendingApprovals conversationId={conversation.id} approvals={approvals} busyId={decisionBusy} onDecision={(approval,decision,digest)=>decide(approval,decision,digest)}/>
       <MessageQueue queue={queue}/>
@@ -674,7 +677,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
             {job.status === 'failed' && <button type="button" onClick={() => attachmentQueue.retry(job.id)}>重试上传</button>}
             <button type="button" aria-label={`${job.status === 'failed' ? '移除' : '取消上传'} ${job.file.name}`} onClick={() => attachmentQueue.cancel(job.id)}><X size={14}/></button>
           </li>)}</ul>}
-        <textarea ref={textInput} aria-label="输入消息" aria-describedby="composer-shortcuts" placeholder={active ? '输入下一条问题，加入队列…' : '描述你的问题或工作…'} value={input}
+        <textarea ref={textInput} aria-label="输入消息" aria-describedby={assistance.inlineSuggestion ? 'composer-shortcuts composer-inline-suggestion' : 'composer-shortcuts'} placeholder={active ? '输入下一条问题，加入队列…' : !input ? assistance.inlineSuggestion || '使用 Flint Work' : undefined} value={input}
           onChange={e => changeDraft(e.target.value, e.target.selectionStart)}
           onCompositionStart={() => { composing.current = true; assistance.invalidate(); }} onCompositionEnd={() => { composing.current = false; }}
           onKeyDown={e => {
@@ -691,33 +694,36 @@ export default function ChatPage({ conversation, assistant, config, models, mode
             }
             if (e.key === 'Escape') {
               if (skillQuery !== null) { e.preventDefault(); setSkillQuery(null); mention.current = null; }
-              else if (assistance.completion.busy || assistance.completion.suggestion || assistance.completion.notice) { e.preventDefault(); assistance.invalidate(); }
+              else if (assistance.completion.busy || assistance.completion.suggestion || assistance.completion.notice || assistance.inlineSuggestion) { e.preventDefault(); assistance.dismiss(); }
               return;
             }
             if (!e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && recallDraft(e.key)) {
               e.preventDefault(); return;
             }
-            const action = composerShortcut({ key: e.key, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, repeat: e.repeat, isComposing: e.nativeEvent.isComposing, keyCode: e.nativeEvent.keyCode }, { composing: composing.current, draft: input, canComplete: canUseCompletion && !archived && !sending && !loading && !savingModel && !showContext && canSend, completionBusy: assistance.completion.busy, suggestion: !!assistance.completion.suggestion, skillsOpen: skillQuery !== null });
-            if (action !== 'none') { e.preventDefault(); if (action === 'complete') void assistance.complete(); else if (action === 'accept') assistance.accept(); else void send(); }
+            const action = composerShortcut({ key: e.key, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, repeat: e.repeat, isComposing: e.nativeEvent.isComposing, keyCode: e.nativeEvent.keyCode }, { composing: composing.current, draft: input, canComplete: canUseCompletion && !archived && !sending && !loading && !savingModel && !showContext && canSend, completionBusy: assistance.completion.busy, suggestion: !!(assistance.completion.suggestion || assistance.inlineSuggestion) && e.currentTarget.selectionStart === input.length && e.currentTarget.selectionEnd === input.length, skillsOpen: skillQuery !== null });
+            if (action !== 'none') { e.preventDefault(); if (action === 'complete') void assistance.complete(); else if (action === 'accept') { if (assistance.completion.suggestion) assistance.accept(); else assistance.acceptSuggestion(); } else void send(); }
           }} rows={1}/>
+        {assistance.inlineSuggestion && !slash.length && <span className="composer-inline-suggestion" id="composer-inline-suggestion">
+          {input && <span>{assistance.inlineSuggestion.slice(input.length)}</span>}<kbd>Tab</kbd> 采用建议
+        </span>}
         {slash.length > 0 && <div className="composer-commands" aria-label="会话命令">{slash.map(command => <Button key={command.name} variant="ghost" onClick={() => runCommand(command.open)}>{command.name}</Button>)}</div>}
-        <ComposerCompletion value={assistance.completion} onAccept={assistance.accept} onDismiss={assistance.invalidate}/>
+        <ComposerCompletion value={assistance.completion} onAccept={assistance.accept} onDismiss={assistance.dismiss}/>
         <div className="composer-toolbar composer-actions">
           <div className="composer-utilities">
             {canUseAttachments && <><input ref={fileInput} type="file" multiple hidden accept={CHAT_ATTACHMENT_ACCEPT} onChange={e => void upload(e.target.files)}/><button className="attach-button composer-icon" type="button" aria-label={uploading ? '正在上传附件' : '添加附件'} title="添加附件，也可粘贴或拖放文件到输入框" disabled={uploading || sending || loading || archived} onClick={() => fileInput.current?.click()}>{uploading ? <LoaderCircle className="spin" size={18}/> : <Paperclip size={18}/>}</button></>}
             {canUseSkills && <button type="button" className="attach-button composer-icon" aria-label="选择 Skill" title="选择 Skill" aria-expanded={skillQuery !== null} disabled={sending || loading || archived} onClick={() => { closeModelSettings(); mention.current = null; setSkillQuery(previous => previous === null ? '' : null); }}><Sparkles size={17}/></button>}
           </div>
           <ModelSettingsDisclosure automatic={autoModelRouting} selection={selection} models={models} loading={loading||modelsLoading} pending={savingModel}>
-            {!trial&&<ModelRoutingControl automatic={autoModelRouting} disabled={archived||active||loading||sending||uploading||showContext||refreshingRun||savingModel||recommendBusy} onChange={value=>void changeRouting(value)}/>}
-            <ModelSelector models={models} value={selection} hasHistory={hasHistory} automatic={autoModelRouting} loading={modelsLoading}
+            {!trial&&<ModelRoutingControl automatic={autoModelRouting} confirmation={routingSaved ? '选模方式已保存' : undefined} disabled={archived||active||loading||sending||uploading||showContext||refreshingRun||savingModel||recommendBusy} onChange={value=>void changeRouting(value)}/>}
+            {!autoModelRouting && <ModelSelector models={models} value={selection} hasHistory={hasHistory} loading={modelsLoading}
               disabled={archived || active || loading || sending || uploading || showContext || refreshingRun}
               disabledReason={archived ? '恢复此会话后可以切换模型。' : active ? '当前任务完成或停止后可以切换模型。' : showContext ? '关闭上下文窗口后可以切换模型。' : '正在读取或保存会话，请稍候再切换模型。'}
               pending={savingModel} onRecommend={canRecommend ? openRecommendation : undefined} recommendBusy={recommendBusy}
               onNewConversation={onNewConversation ? next => { closeModelSettings(); onNewConversation(next, input); } : undefined}
-              onChange={next => void changeModel(next)}/>
+              onChange={next => void changeModel(next)}/> }
           </ModelSettingsDisclosure>
           {!trial && <SessionPermissionMode key={conversation.id} conversation={conversation} disabled={active || archived || loading || sending || refreshingRun}/>}
-          {canUseCompletion&&<span className="composer-input-hint"><kbd>Tab</kbd> 补全</span>}<span className="composer-action-space"/>
+          {canUseCompletion && !assistance.inlineSuggestion && <span className="composer-input-hint"><kbd>Tab</kbd> 补全</span>}<span className="composer-action-space"/>
           {canSteer && <Button variant="secondary" onClick={() => void steer()} title="追加文字到正在执行的这轮任务，发送按钮仍用于下一轮" disabled={!input.trim() || input.trim().length > 4000 || !!files.length || !!selectedSkills.length || sending || uploading || failedAttachments}>追加到本轮</Button>}
           {active && <Button type="button" variant="secondary" busy={stopping} onClick={() => void stop()} disabled={run.status === 'cancelling'}><Square size={13}/>{run.status === 'cancelling' ? '停止中' : '停止'}</Button>}
           <button className="send-button" type="submit" aria-label={active || queue.state?.items.length ? '加入消息队列' : '发送消息'} title={failedAttachments ? '请重试或移除上传失败的附件' : active || queue.state?.items.length ? '加入消息队列' : '发送消息'} disabled={!canSend || archived || sending || uploading || restoringUploads || failedAttachments || loading || refreshingRun || savingModel || showContext || !modelReady || (!input.trim() && !files.length && !selectedSkills.length)}>{sending ? <LoaderCircle size={18} className="spin"/> : <ArrowUp size={20}/>}</button>
@@ -727,7 +733,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
         {steering.status === 'applied' ? '追加指令已进入本轮。' : steering.status === 'queued' || steering.status === 'pending' ? '等待本轮接收追加指令。' : steering.status === 'rejected' ? '本轮未接收追加指令，文字仍保存在草稿中。' : '未确认本轮是否收到这条追加指令。'}
         {steering.status === 'uncertain' && !input.trim() && <Button variant="ghost" onClick={() => fillDraft(steering.text)}>放回草稿</Button>}
       </div>}
-      <div className="composer-footnote"><span id="composer-shortcuts"><kbd>Enter</kbd> 发送 · <kbd>Shift + Enter</kbd> 换行</span><span>重要信息请核对来源</span></div>
+      <div className="composer-footnote"><span id="composer-shortcuts"><kbd>Enter</kbd> 发送 · <kbd>Shift + Enter</kbd> 换行</span><span>开物的回答也可能出错</span></div>
     </div></section>
     {showReferences && <ComposerReferences messages={messages} fileIds={canUseAttachments ? [...new Set(messages.flatMap(message => message.file_ids))] : []}
       onMessage={message => insertReference(`> ${message.text.trim().slice(0, 4000).replaceAll('\n', '\n> ')}\n\n`)}

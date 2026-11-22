@@ -70,10 +70,10 @@ describe('workspace real state and access boundaries', () => {
 
   it('offers a question field only when its handoff exists and never offers disabled assistants', () => {
     expect(render()).not.toContain('wr-question-panel');
-    const html = render({ onStart: () => {}, assistants: [assistant, { ...assistant, id: 'disabled', name: '停用助手', enabled: false }] });
+    const html = render({ onStart: () => {}, assistants: [assistant, { ...assistant, id: 'industrial', name: '工业业务助手' }, { ...assistant, id: 'disabled', name: '停用助手', enabled: false }] });
     expect(html).toContain('id="wr-question"');
-    expect(html).toContain('进入会话后确认并发送');
-    expect(html).toContain('value="purchasing"');
+    expect(html).not.toContain('进入会话后确认并发送');
+    expect(html).toContain('value="industrial" selected=""');
     expect(html).not.toContain('停用助手');
   });
 

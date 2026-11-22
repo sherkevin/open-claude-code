@@ -11,14 +11,14 @@ const run:Run={id:'run',conversation_id:'chat',status:'running',assistant_messag
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('explicit model routing mode',()=>{
-  it('keeps manual model options discoverable in automatic new-session mode', () => {
+  it('hides manual controls in automatic new-session mode', () => {
     const config = { brand_name: '开物', upload_max_bytes: 100, auth_types: [], model_label: '', default_model_id: 'dano' } as AppConfig;
     const props = { assistants: [], config, models, modelsLoading: false, modelsError: '', onReloadModels: () => {}, onClose: () => {}, onCreated: () => {} };
     const html = renderToStaticMarkup(<NewSession {...props}/>);
-    expect(html).toContain('aria-label="选择模型"');
-    expect(html).toContain('选择模型后改为手动固定');
+    expect(html).toContain('aria-checked="true"');
+    expect(html).not.toContain('aria-label="选择模型"');
     const manual = renderToStaticMarkup(<NewSession {...props} initialSelection={{ model_id: 'deepseek', reasoning_level: 'default' }}/>);
-    expect(manual).toContain('value="manual" selected=""');
+    expect(manual).toContain('aria-checked="false"');
     expect(manual).toContain('<span>Deepseek</span>');
   });
   it('preserves the explicit new-conversation model across assistant defaults and catalog removal', () => {
@@ -32,7 +32,7 @@ describe('explicit model routing mode',()=>{
     expect(html).toContain('class="chat-model-settings fw-model-settings"');
     expect(html).toContain('<summary class="fw-model-pill" aria-label="模型设置：Dano · 高">');
     expect(html).toContain('Dano · 高');expect(html).not.toContain('调整模型');
-    expect(html).not.toMatch(/<details[^>]*\bopen=/);expect(html).toContain('aria-label="选模方式"');
+    expect(html).not.toMatch(/<details[^>]*\bopen=/);expect(html).toContain('aria-label="自动选择模型"');
   });
   it('summarizes automatic selection without pretending the base model will execute',()=>{
     const html=renderToStaticMarkup(<ModelSettingsDisclosure automatic selection={selection} models={models}><span>设置内容</span></ModelSettingsDisclosure>);
@@ -42,12 +42,12 @@ describe('explicit model routing mode',()=>{
   });
   it('labels automatic selection without presenting a fixed Dano selection',()=>{
     const html=renderToStaticMarkup(<ModelRoutingControl automatic onChange={()=>{}}/>);
-    expect(html).toContain('value="auto" selected=""');expect(html).toContain('实际使用的模型显示在会话顶部');
-    expect(html).not.toContain('Dano');expect(html).toContain('手动固定');
+    expect(html).toContain('aria-checked="true"');expect(html).toContain('实际使用的模型显示在会话顶部');
+    expect(html).not.toContain('Dano');expect(html).toContain('自动选择');
   });
   it('locks mode while pending and states that manual mode cannot auto-switch',()=>{
     const html=renderToStaticMarkup(<ModelRoutingControl automatic={false} disabled onChange={()=>{}}/>);
-    expect(html).toContain('value="manual" selected=""');expect(html).toMatch(/<select[^>]*disabled=""/);expect(html).toContain('不自动切换');
+    expect(html).toContain('aria-checked="false"');expect(html).toMatch(/<button[^>]*disabled=""/);expect(html).toContain('不自动切换');
   });
   it('preserves explicit automatic choice but never routes a manual or trial creation',async()=>{
     expect(newSessionPayload(false,'a',selection,true).auto_model_routing).toBe(true);

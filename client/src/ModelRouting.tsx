@@ -1,14 +1,26 @@
 import { useEffect, useRef, type ReactNode } from 'react';
-import { ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { Check, ChevronDown, LoaderCircle, SlidersHorizontal } from 'lucide-react';
 import type { ModelOption, ModelSelection, Run } from './types';
 import { publicModelLabel } from './models';
 import { reasoningLevelLabel } from './ModelSelector';
 import './model-picker.css';
 
-export function ModelRoutingControl({ automatic, disabled = false, onChange }: {
-  automatic: boolean; disabled?: boolean; onChange: (automatic: boolean) => void;
+export function ModelRoutingControl({ automatic, disabled = false, confirmation, onChange }: {
+  automatic: boolean; disabled?: boolean; confirmation?: string; onChange: (automatic: boolean) => void;
 }) {
-  return <div className="model-routing-control fw-model-routing"><label><span>选模方式</span><select aria-label="选模方式" value={automatic ? 'auto' : 'manual'} disabled={disabled} onChange={event => onChange(event.target.value === 'auto')}><option value="auto">自动选择</option><option value="manual">手动固定</option></select></label><p>{automatic ? '根据当前任务选择模型，实际使用的模型显示在会话顶部。' : '使用你选择的模型和推理级别，不自动切换。'}</p></div>;
+  return <div className="model-routing-control fw-model-routing">
+    <div className="fw-routing-row">
+      <span>选模方式</span>
+      <button type="button" role="switch" aria-label="自动选择模型" aria-checked={automatic} disabled={disabled} onClick={() => onChange(!automatic)}>
+        <span className="fw-routing-track" aria-hidden="true"/>
+        <span aria-hidden="true">{automatic ? '自动选择' : '手动固定'}</span>
+      </button>
+      <span className="fw-routing-confirmation" role="status" aria-label={confirmation}>
+        {confirmation && <Check size={15} aria-hidden="true"/>}
+      </span>
+    </div>
+    <p>{automatic ? '根据当前任务选择模型，实际使用的模型显示在会话顶部。' : '使用你选择的模型和推理级别，不自动切换。'}</p>
+  </div>;
 }
 
 export function ModelSettingsDisclosure({ automatic, selection, models, loading = false, pending = false, children }: {
@@ -45,7 +57,13 @@ export function ModelSettingsDisclosure({ automatic, selection, models, loading 
   const model = models.find(item => item.id === selection.model_id);
   const level = reasoningLevelLabel(model?.reasoning_levels.find(item => item.id === selection.reasoning_level));
   const label = loading ? '正在读取模型设置…' : automatic ? '自动选择' : `${publicModelLabel(models, selection.model_id)}${level ? ` · ${level}` : ''}`;
-  return <details ref={disclosure} className="chat-model-settings fw-model-settings" aria-busy={pending} onToggle={positionPanel}><summary className="fw-model-pill" aria-label={`模型设置：${label}`}><SlidersHorizontal size={14}/><span className="model-settings-current">{label}</span><span className="model-settings-action">{pending ? '正在保存…' : null}<ChevronDown size={14}/></span></summary><div className="model-settings-body fw-model-panel" role="group" aria-label="模型与推理设置">{children}</div></details>;
+  return <details ref={disclosure} className="chat-model-settings fw-model-settings" data-automatic={automatic || undefined} aria-busy={pending} onToggle={positionPanel}>
+    <summary className="fw-model-pill" aria-label={`模型设置：${label}`}>
+      <SlidersHorizontal size={14}/><span className="model-settings-current">{label}</span>
+      <span className="model-settings-action">{pending ? <LoaderCircle size={14} className="spin" aria-label="正在保存模型设置"/> : <ChevronDown size={14}/>}</span>
+    </summary>
+    <div className="model-settings-body fw-model-panel" role="group" aria-label="模型与推理设置">{children}</div>
+  </details>;
 }
 
 export function RunModelIdentity({ run, models }: { run: Run; models: ModelOption[] }) {

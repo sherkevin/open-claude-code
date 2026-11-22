@@ -24,7 +24,8 @@ type Props = {
   onAssistant: (assistant: Assistant) => void;
   onConversation: (conversation: Conversation) => void;
   onNew?: (assistant?: Assistant) => void;
-  onStart?: (question: string, assistant?: Assistant) => void;
+  onStart?: (question: string, assistant: Assistant) => void;
+  starting?: boolean;
   onNavigate: (view: 'assistants' | 'sessions' | 'knowledge' | 'connections') => void;
   canCreate?: boolean;
   canManage?: boolean;
@@ -67,14 +68,19 @@ function updatedTime(value: string) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+export function defaultConversationAssistant(assistants: Assistant[]) {
+  const available = assistants.filter(assistant => assistant.enabled);
+  return available.find(assistant => assistant.name === '工业业务助手') || available[0];
+}
+
 export default function WorkspacePage({
   assistants, conversations, assistantsRead = readyRead, conversationsRead = readyRead, onReload, onAssistant, onConversation, onNew, onStart, onNavigate,
-  canCreate = true, canManage = true, canReadSessions = true,
+  starting = false, canCreate = true, canManage = true, canReadSessions = true,
 }: Props) {
   const [question, setQuestion] = useState('');
   const [assistantId, setAssistantId] = useState('');
   const available = assistants.filter(assistant => assistant.enabled);
-  const selectedAssistant = available.find(assistant => assistant.id === assistantId);
+  const selectedAssistant = assistantId ? available.find(assistant => assistant.id === assistantId) : defaultConversationAssistant(available);
   const selectionUnavailable = Boolean(assistantId && !selectedAssistant);
   const recent = canReadSessions ? conversations.filter(conversation => !conversation.archived)
     .sort((a, b) => updatedTime(b.updated_at) - updatedTime(a.updated_at)).slice(0, 5) : [];
@@ -97,18 +103,16 @@ export default function WorkspacePage({
         <div className="wr-question-heading"><AiIdentity size="small"/><h2 id="wr-question-heading">提问</h2></div>
         <form onSubmit={event => {
           event.preventDefault();
-          if (question.trim() && !selectionUnavailable) onStart?.(question.trim(), selectedAssistant);
+          if (!starting && question.trim() && selectedAssistant) onStart?.(question.trim(), selectedAssistant);
         }}>
           <label className="wr-sr-only" htmlFor="wr-question">业务问题</label>
-          <textarea id="wr-question" rows={1} value={question} onChange={event => setQuestion(event.target.value)} placeholder="输入业务问题，或描述需要查阅的资料" aria-describedby="wr-question-hint"/>
+          <textarea id="wr-question" rows={1} value={question} readOnly={starting} onChange={event => setQuestion(event.target.value)} placeholder="输入业务问题，或描述需要查阅的资料"/>
           <div className="wr-question-footer">
-            <label className="wr-assistant-select"><Layers3 size={16}/><span className="wr-sr-only">使用助手</span><select value={assistantId} onChange={event => setAssistantId(event.target.value)}>
-              <option value="">稍后选择助手</option>
+            <label className="wr-assistant-select"><Layers3 size={16}/><span className="wr-sr-only">使用助手</span><select value={selectedAssistant?.id || assistantId} disabled={starting} onChange={event => setAssistantId(event.target.value)}>
               {selectionUnavailable && <option value={assistantId} disabled>原助手已不可用，请重新选择</option>}
               {available.map(assistant => <option key={assistant.id} value={assistant.id}>{assistant.name}</option>)}
             </select></label>
-            <span id="wr-question-hint" className="wr-question-hint">进入会话后确认并发送</span>
-            <Button type="submit" disabled={!question.trim() || selectionUnavailable}>继续<ArrowRight size={16}/></Button>
+            <Button type="submit" busy={starting} disabled={!question.trim() || selectionUnavailable}>{starting ? '正在发送' : '发送'}<ArrowRight size={16}/></Button>
           </div>
         </form>
       </section>}
