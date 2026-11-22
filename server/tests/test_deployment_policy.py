@@ -625,6 +625,20 @@ def test_trial_exact_allowlist_routes_are_usable(trial_system):
     assert waiting.status_code == 202, waiting.text
     wait_for_run(client, waiting.json()["run_id"], terminal=False)
     called.add(("GET", "/api/v1/runs/{item_id}"))
+    queue_template = "/api/v1/conversations/{item_id}/queue"
+    queue_path = f"/api/v1/conversations/{created['id']}/queue"
+    queued = hit("POST", queue_template, queue_path,
+                 json={"client_request_id": "trial-queued-message", "text": "待发消息"})
+    assert queued.status_code == 201, queued.text
+    row = queued.json()
+    edited = hit("PATCH", queue_template + "/{queue_id}", queue_path + "/" + row["id"],
+                 json={"revision": row["revision"], "text": "编辑后待发消息"})
+    assert edited.status_code == 200
+    assert hit("GET", queue_template, queue_path).json()["items"][0]["text"] == "编辑后待发消息"
+    discarded = hit("POST", queue_template, queue_path,
+                    json={"client_request_id": "trial-discarded-message", "text": "取消此消息"}).json()
+    assert hit("POST", queue_template + "/{queue_id}/cancel", queue_path + "/" + discarded["id"] + "/cancel",
+               json={"revision": discarded["revision"]}).status_code == 200
     cancelled = hit(
         "POST",
         "/api/v1/runs/{item_id}/cancel",
@@ -632,6 +646,23 @@ def test_trial_exact_allowlist_routes_are_usable(trial_system):
     )
     assert cancelled.status_code == 200
     wait_for_run(client, waiting.json()["run_id"])
+    dispatched = hit("POST", queue_template + "/{queue_id}/dispatch", queue_path + "/" + row["id"] + "/dispatch",
+                     json={"revision": row["revision"] + 1, "after_run_id": waiting.json()["run_id"], "resume": True})
+    assert dispatched.status_code == 200 and dispatched.json()["status"] == "accepted", dispatched.text
+    assert wait_for_run(client, dispatched.json()["run_id"])["status"] == "succeeded"
+    background = client.post(queue_path, json={"client_request_id": "trial-background-message", "text": "后台发送"})
+    assert background.status_code == 201
+    db = system.app.state.service.db
+    deadline = time.monotonic() + 4
+    accepted = None
+    while time.monotonic() < deadline:
+        accepted = db.one("SELECT run_id FROM message_queue WHERE conversation_id=? AND id=? AND status='accepted'",
+                          (created["id"], "trial-background-message"))
+        if accepted:
+            break
+        time.sleep(.025)
+    assert accepted is not None
+    assert wait_for_run(client, accepted["run_id"])["status"] == "succeeded"
 
     assert hit(
         "GET",

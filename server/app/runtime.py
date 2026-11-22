@@ -1397,7 +1397,7 @@ class RunManager:
         self.service.memory.recover()
 
     def start_queue_worker(self):
-        if not self.service.policy.is_trial:
+        if self.service.policy.allows("messages.send"):
             self.queue_worker = asyncio.create_task(self._advance_message_queues())
 
     async def _advance_message_queues(self):
@@ -1405,18 +1405,20 @@ class RunManager:
         from .draft_uploads import sweep_expired_draft_uploads
         from .message_queue import MessageQueue
         queue = MessageQueue(self.service)
+        maintenance_enabled = not self.service.policy.is_trial
         next_sweep = 0.0
         # Periodic reconciliation covers a queued draft added just as a run
         # settles, transient actor capacity, and startup after process loss.
         while True:
-            if time.monotonic() >= next_sweep:
+            if maintenance_enabled and time.monotonic() >= next_sweep:
                 next_sweep = time.monotonic() + 3600
                 try:
                     await offload_write(sweep_expired_draft_uploads, self.service)
                 except Exception:
                     log.warning("Draft attachment cleanup failed", exc_info=True)
             try:
-                await offload_write(enqueue_due_schedules, self.service)
+                if maintenance_enabled:
+                    await offload_write(enqueue_due_schedules, self.service)
                 for candidate in await offload(queue.ready):
                     try:
                         actor = self.actor_for(candidate["conversation_id"])
