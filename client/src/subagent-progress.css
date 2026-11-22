@@ -177,6 +177,7 @@ ul.subagent-progress-children > li {
 
 @media (max-width: 480px) {
   .subagent-progress-child > summary { gap: 6px; }
+  .subagent-progress-children > li:has(> details[open])::after { display: none; }
   .subagent-progress-detail { padding-inline-start: 8px; }
   .subagent-progress-stale button { min-height: 44px; }
 }
