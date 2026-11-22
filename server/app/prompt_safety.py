@@ -1,11 +1,13 @@
 """Admission for user text. The deployment policy and Qwen use separate labels."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import time
 import unicodedata
+from functools import cached_property
 from pathlib import Path
 from typing import Literal, get_args
 from urllib.parse import urlsplit
@@ -13,6 +15,8 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .config import Settings
+from .db import Database, now
 from .security import AppError
 
 log = logging.getLogger(__name__)
@@ -24,6 +28,7 @@ BLOCKED = "PROMPT_BLOCKED"
 UNAVAILABLE = "PROMPT_REVIEW_UNAVAILABLE"
 DEFAULT_BLOCK_MESSAGE = "这条消息因内容安全策略未发送，请调整后重试。"
 UNAVAILABLE_MESSAGE = "内容审核暂时不可用，消息未发送，请稍后重试。"
+MODES = {"off", "rules", "qwen"}
 
 QwenCategory = Literal[
     "Violent", "Non-violent Illegal Acts", "Sexual Content or Sexual Acts", "PII",
@@ -52,16 +57,21 @@ class TopicRule(BaseModel):
 
     @field_validator("terms", "require_any", "except_exact")
     @classmethod
-    def normalize_terms(cls, values: list[str]) -> list[str]:
-        normalized = [normalize(value) for value in values]
-        if any(len(value) > 400 for value in values) or any(not value for value in normalized):
+    def validate_terms(cls, values: list[str]) -> list[str]:
+        if any(len(value) > 400 or not normalize(value) for value in values):
             raise ValueError("invalid policy term")
-        return normalized
+        return values
+
+    @cached_property
+    def match_terms(self):
+        return tuple(tuple(map(normalize, values)) for values in (self.terms, self.require_any, self.except_exact))
 
     def matches(self, normalized: str) -> bool:
-        return (self.enabled and normalized not in self.except_exact
-                and any(term in normalized for term in self.terms)
-                and (not self.require_any or any(term in normalized for term in self.require_any)))
+        if not self.enabled:
+            return False
+        terms, required, exceptions = self.match_terms
+        return (normalized not in exceptions and any(term in normalized for term in terms)
+                and (not required or any(term in normalized for term in required)))
 
 
 class PromptPolicy(BaseModel):
@@ -74,6 +84,13 @@ class PromptPolicy(BaseModel):
 
     def blocked_qwen_categories(self, level: str, categories: frozenset[str]) -> frozenset[str]:
         return categories.intersection(self.qwen_block_categories) if level in self.qwen_block_levels else frozenset()
+
+
+class PromptPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str = Field(min_length=1, max_length=70)
+    policy: PromptPolicy
 
 
 class ReviewFailure(Exception):
@@ -118,22 +135,71 @@ def parse_qwen_decision(content: str) -> tuple[str, frozenset[str]]:
 
 
 class PromptSafety:
-    def __init__(self, settings):
+    def __init__(self, settings: Settings, db: Database | None = None):
         self.settings = settings
+        self.db = db
 
     @property
     def enabled(self) -> bool:
         return self.settings.prompt_safety_mode != "off"
 
-    def _read_policy(self) -> PromptPolicy:
+    def _saved_policy(self):
+        return self.db.one("SELECT revision,config,updated_at FROM prompt_safety_policy WHERE id=1") if self.db is not None else None
+
+    def _read_file_policy(self) -> bytes:
         try:
             with Path(self.settings.prompt_safety_policy).open("rb") as file:
                 data = file.read(MAX_POLICY_BYTES + 1)
-            if len(data) > MAX_POLICY_BYTES:
-                raise ReviewFailure("policy")
-            return PromptPolicy.model_validate_json(data)
         except (OSError, ValueError):
             raise ReviewFailure("policy") from None
+        if len(data) > MAX_POLICY_BYTES:
+            raise ReviewFailure("policy")
+        return data
+
+    @staticmethod
+    def _parse_policy(data: bytes | str) -> PromptPolicy:
+        try:
+            return PromptPolicy.model_validate_json(data)
+        except ValueError:
+            raise ReviewFailure("policy") from None
+
+    def _read_policy(self) -> PromptPolicy:
+        saved = self._saved_policy()
+        return self._parse_policy(saved["config"] if saved else self._read_file_policy())
+
+    def admin_view(self) -> dict:
+        saved = self._saved_policy()
+        mode = self.settings.prompt_safety_mode
+        try:
+            if saved:
+                version, source, updated_at = f"db-{saved['revision']}", "administrator", saved["updated_at"]
+                policy = self._parse_policy(saved["config"])
+            elif self.settings.prompt_safety_policy:
+                data = self._read_file_policy()
+                version, source, updated_at = "file-" + hashlib.sha256(data).hexdigest(), "file", None
+                policy = self._parse_policy(data)
+            else:
+                version, source, updated_at = "default", "unconfigured", None
+                policy = PromptPolicy(rules=[])
+        except ReviewFailure:
+            raise AppError(503, "PROMPT_POLICY_UNAVAILABLE", "无法读取审核策略，请检查服务端配置后重试。") from None
+        return {"version": version, "source": source, "updated_at": updated_at,
+                "mode": mode if mode in MODES else "invalid", "policy": policy.model_dump()}
+
+    def save_policy(self, update: PromptPolicyUpdate, user_id: str) -> dict:
+        config = update.policy.model_dump_json()
+        if len(config.encode("utf-8")) > MAX_POLICY_BYTES:
+            raise AppError(422, "PROMPT_POLICY_TOO_LARGE", "审核策略超过大小上限，请缩减词表后保存。")
+        with self.db.transaction():
+            user = self.db.one("SELECT role,enabled FROM users WHERE id=?", (user_id,))
+            if not user or not user["enabled"] or user["role"] != "admin":
+                raise AppError(403, "ADMIN_REQUIRED", "此操作需要管理员权限")
+            if update.version != self.admin_view()["version"]:
+                raise AppError(409, "PROMPT_POLICY_CONFLICT", "审核策略已更新，请重新加载后再保存。")
+            self.db.execute("""INSERT INTO prompt_safety_policy(id,revision,config,updated_at,updated_by) VALUES(1,1,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET revision=prompt_safety_policy.revision+1,
+                config=excluded.config,updated_at=excluded.updated_at,updated_by=excluded.updated_by""", (config, now(), user_id))
+            return self.admin_view()
 
     def classify(self, text: str) -> tuple[str, frozenset[str]]:
         """Use the classifier's native chat template and two-line response."""
@@ -173,7 +239,7 @@ class PromptSafety:
             return
         try:
             mode = self.settings.prompt_safety_mode
-            if mode not in {"rules", "qwen"}:
+            if mode not in MODES:
                 raise ReviewFailure("configuration")
             policy = self._read_policy()
             if policy.rules:

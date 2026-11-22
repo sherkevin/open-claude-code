@@ -22,6 +22,7 @@ from .db import dump, now, offload, offload_write, uid
 from .deployment_policy import DeploymentPolicy
 from .models import *
 from .middleware import BodyLimitMiddleware, TrustedProxySchemeMiddleware
+from .prompt_safety import PromptPolicyUpdate
 from .runtime import RunManager
 from .security import AppError, password_hash, password_matches, safe_name, token_hash
 from .service import Service, TERMINAL, user_view, connection_view, assistant_view, conversation_view, message_view, file_view, approval_view
@@ -268,6 +269,14 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         response.headers["Cache-Control"] = "no-store"
         available = registration_available(settings)
         return {"enabled": available, "invite_code": settings.registration_invite_code if available else None}
+
+    @app.get(prefix + "/admin/prompt-safety")
+    def read_prompt_safety(user=Depends(admin), service: Service = Depends(svc)):
+        return service.prompt_safety.admin_view()
+
+    @app.put(prefix + "/admin/prompt-safety")
+    def save_prompt_safety(data: PromptPolicyUpdate, user=Depends(admin), service: Service = Depends(svc)):
+        return service.prompt_safety.save_policy(data, user["id"])
 
     @app.get(prefix + "/models")
     def models(user=Depends(authenticated), service: Service = Depends(svc)):

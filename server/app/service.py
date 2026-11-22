@@ -110,10 +110,10 @@ def approval_view(row):
 class Service:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.prompt_safety = PromptSafety(settings)
         self.policy = settings.deployment_policy()
         settings.prepare()
         self.db = Database(settings.data_dir / "app.sqlite3", synchronous=settings.sqlite_synchronous)
+        self.prompt_safety = PromptSafety(settings, self.db)
         self.catalog = ModelCatalog(settings)
         self._migrate_model_selections()
         self.secrets = SecretStore(settings.data_dir)

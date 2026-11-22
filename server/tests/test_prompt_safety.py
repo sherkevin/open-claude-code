@@ -261,6 +261,59 @@ def test_invalid_policy_fails_closed_and_can_be_replaced(client, settings, caplo
     assert poll(client, send(client, cid, SAFE, "policy-error-001")["run_id"])["status"] == "succeeded"
 
 
+def test_admin_saved_policy_applies_to_new_chat_and_rejects_stale_edit(client, settings):
+    path = "/api/v1/admin/prompt-safety"
+    initial = client.get(path).json()
+    assert initial["source"] == "file" and initial["mode"] == "rules"
+    assert "prompt_safety_qwen_url" not in initial
+    policy_file = Path(settings.prompt_safety_policy)
+    policy_file.write_bytes(policy_file.read_bytes() + b"\n")
+    stale_file = client.put(path, json={"version": initial["version"], "policy": initial["policy"]})
+    assert stale_file.status_code == 409
+    initial = client.get(path).json()
+    initial["policy"]["rules"][0].update(terms=["选·议员"], message="这是管理员配置的提示。")
+    update = {"version": initial["version"], "policy": initial["policy"]}
+
+    saved = client.put(path, json=update)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["version"] == "db-1" and saved.json()["source"] == "administrator"
+    assert saved.json()["policy"]["rules"][0]["terms"] == ["选·议员"]
+    assert client.put(path, json=update).status_code == 409
+    assert client.get(path).json() == saved.json()
+    policy_file.unlink()
+    cid = conversation(client)["id"]
+    response = client.post(f"/api/v1/conversations/{cid}/messages", json={"client_request_id": "admin-rule-001", "text": POLICY_BLOCK})
+    assert response.status_code == 403 and response.json()["error"]["message"] == "这是管理员配置的提示。"
+    assert_no_run(client, cid)
+
+    updated = saved.json()
+    updated["policy"]["rules"][0]["enabled"] = False
+    second = client.put(path, json={"version": updated["version"], "policy": updated["policy"]})
+    assert second.status_code == 200 and second.json()["version"] == "db-2"
+    assert poll(client, send(client, cid, POLICY_BLOCK, "admin-rule-001")["run_id"])["status"] == "succeeded"
+
+
+def test_prompt_policy_api_requires_admin_and_accepts_first_save_without_file(client, settings):
+    path = "/api/v1/admin/prompt-safety"
+    settings.prompt_safety_policy = ""
+    service = client.app.state.service
+    service.create_user({"username": "member", "display_name": "普通成员", "password": PASSWORD, "role": "member"})
+    initial = client.get(path).json()
+    assert initial["source"] == "unconfigured"
+    revision = {"version": initial["version"], "policy": initial["policy"]}
+    login(client, "member")
+    assert client.get(path).status_code == 403
+    assert client.put(path, json=revision).status_code == 403
+    login(client)
+    assert client.put(path, json={**revision, "mode": "off"}).status_code == 422
+    cid = conversation(client)["id"]
+    response = client.post(f"/api/v1/conversations/{cid}/messages", json={"client_request_id": "admin-first-save", "text": SAFE})
+    assert response.status_code == 503
+    assert_no_run(client, cid)
+    assert client.put(path, json=revision).status_code == 200
+    assert poll(client, send(client, cid, SAFE, "admin-first-save")["run_id"])["status"] == "succeeded"
+
+
 def test_reviewer_timeout_does_not_start_run(client, settings, caplog):
     cid = conversation(client)["id"]
     settings.prompt_safety_mode = "qwen"
