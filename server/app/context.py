@@ -189,12 +189,15 @@ def create_context_router(service_dependency, authenticated_dependency):
         if "\x00" in instructions:
             raise AppError(422, "COMPACTION_INSTRUCTIONS_INVALID", "压缩要求包含无效字符")
         text = "/compact" + (" " + instructions if instructions else "")
+        data = {"text": text, "file_ids": [], "client_request_id": body.client_request_id}
+        await service.review_run_input(conversation_id, {**data, "text": instructions}, user)
+
         async def _start_compaction():
             # One cancellation-safe unit: a run committed by prepare_run must
             # be marked as a compaction and delivered before a cancellation
             # can propagate, otherwise it would stay queued and hold the
             # conversation busy.
-            result, created = await service.prepare_run_async(conversation_id, {"text": text, "file_ids": [], "client_request_id": body.client_request_id}, user)
+            result, created = await service.prepare_run_async(conversation_id, data, user)
             if created:
                 def mark_compaction():
                     with service.db.transaction():

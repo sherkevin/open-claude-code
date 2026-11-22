@@ -14,6 +14,7 @@ import httpx
 from .config import RUNTIME_TYPES, Settings
 from .db import Database, dump, now, offload, offload_write, shielded, uid
 from .model_catalog import ModelCatalog
+from .prompt_safety import PromptSafety
 from .resources import TABLES, resource_access, resource_editable, scope_fields, choose_scope
 from .security import AppError, SecretStore, password_hash, redact, tool_risk_profile, validate_mcp_url, workspace_path
 from .provider_policy import TOKENHUB_BASE_URL, provider_route
@@ -109,6 +110,7 @@ def approval_view(row):
 class Service:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.prompt_safety = PromptSafety(settings)
         self.policy = settings.deployment_policy()
         settings.prepare()
         self.db = Database(settings.data_dir / "app.sqlite3", synchronous=settings.sqlite_synchronous)
@@ -226,6 +228,29 @@ class Service:
     async def require_async(self, table, item_id, user=None):
         return await offload(self.require, table, item_id, user)
 
+    async def review_run_input(self, conversation_id, data, user, *, provider_routing=False):
+        """Review new text before model selection or durable run preparation."""
+        if not provider_routing and not self.prompt_safety.enabled:
+            return data
+        self.require_trial_fields(auto_route=data.get("auto_route"), skill_ids=data.get("skill_ids"), file_ids=data.get("file_ids"))
+        conversation = await offload(self.require, "conversations", conversation_id, user)
+        prior = await offload(self.db.one, "SELECT id FROM runs WHERE conversation_id=? AND client_request_id=?",
+                              (conversation_id, data["client_request_id"]))
+        if prior:
+            return data
+        if self.prompt_safety.enabled:
+            await offload(self.prompt_safety.require_allowed, data["text"])
+        if provider_routing and not self.policy.is_trial and not data.get("model_id"):
+            route_enabled = data.get("auto_route")
+            if route_enabled is None:
+                route_enabled = conversation.get("auto_model_routing")
+            if route_enabled and data["text"].strip() and not conversation.get("active_run_id"):
+                from .model_recommendation import provider_router
+                candidates = [item["id"] for item in self.catalog.public() if item["available"]]
+                recommendation = await provider_router(self, data["text"], candidates, user_id=user["id"])
+                return {**data, "_route_recommendation": recommendation}
+        return data
+
     async def prepare_run_async(self, conversation_id, data, user):
         """Full prepare_run transaction off the loop.
 
@@ -237,7 +262,7 @@ class Service:
         """
         return await offload_write(self.prepare_run, conversation_id, data, user)
 
-    async def prepare_and_submit_async(self, conversation_id, data, user):
+    async def prepare_and_submit_async(self, conversation_id, data, user, *, provider_routing=False):
         """Prepare and deliver a run as one cancellation-safe unit.
 
         ``prepare_run`` durably creates the run and claims
@@ -248,6 +273,8 @@ class Service:
         re-delivers a queued run for any duplicate request, so even a run that
         was committed by an older process edge reaches its actor.
         """
+        data = await self.review_run_input(conversation_id, data, user, provider_routing=provider_routing)
+
         async def start():
             result, created = await self.prepare_run_async(conversation_id, data, user)
             await self.manager.ensure_submitted(result["run_id"])

@@ -50,7 +50,7 @@ export function useMessageQueue(conversationId: string, ready: boolean, runKey: 
     try {
       const next = text === undefined ? await post<QueueState>(`${base}/${item.id}/cancel`, { revision: item.revision }) : await patch<QueueState>(`${base}/${item.id}`, { revision: item.revision, text });
       if (mounted.current) { version.current++; setState(next); setError(''); } return true;
-    } catch (cause) { if (mounted.current) setError(errorText(cause)); await refresh(); return false; }
+    } catch (cause) { await refresh(); if (mounted.current) setError(errorText(cause)); return false; }
     finally { pending.current = false; if (mounted.current) setBusy(false); }
   };
   return { state, error, busy, enqueue, refresh, dispatch, change };
@@ -60,10 +60,10 @@ export default function MessageQueue({ queue }: { queue: ReturnType<typeof useMe
   const [editor, setEditor] = useState<QueuedMessage | null>(null), [text, setText] = useState('');
   if (!queue.state?.items.length && !queue.error) return null;
   return <section className="chat-message-queue" aria-label="待发消息">
-    <ErrorNotice message={queue.error}/>
+    {!editor && <ErrorNotice message={queue.error}/>}
     <div className="chat-queue-header"><ListOrdered size={15}/><span>待发消息 · {queue.state?.items.length || 0}</span><small>留在本会话时依次发送</small>{queue.state?.paused && <Button variant="secondary" busy={queue.busy} onClick={() => void queue.dispatch(true)}>继续队列</Button>}{queue.error && <Button variant="ghost" onClick={() => void queue.refresh()}>刷新</Button>}</div>
     {queue.state?.items.map((item, index) => <div className="chat-queue-item" key={item.id}><span>{index + 1}. {item.text}{Boolean(item.file_ids?.length) && <small> · {item.file_ids.length} 个附件</small>}</span><div className="chat-queue-actions"><button type="button" aria-label={`编辑待发消息 ${index + 1}`} disabled={queue.busy} onClick={() => { setEditor(item); setText(item.text); }}><Pencil size={14}/></button><button type="button" aria-label={`取消待发消息 ${index + 1}`} disabled={queue.busy} onClick={() => void queue.change(item)}><X size={15}/></button></div></div>)}
     {queue.state?.paused && <p className="chat-queue-note">{queue.state.items[0]?.error || '上一项未成功完成。确认后可继续剩余消息。'}</p>}
-    {editor && <Modal title="编辑待发消息" onClose={() => { if (!queue.busy) setEditor(null); }}><form onSubmit={event => { event.preventDefault(); void queue.change(editor, text.trim()).then(ok => { if (ok) setEditor(null); }); }}><div className="modal-body"><Field label="消息内容"><textarea autoFocus rows={5} value={text} onChange={event => setText(event.target.value)} maxLength={50000}/></Field></div><footer className="modal-footer"><Button variant="secondary" disabled={queue.busy} onClick={() => setEditor(null)}>取消</Button><Button type="submit" busy={queue.busy} disabled={!text.trim()}>保存</Button></footer></form></Modal>}
+    {editor && <Modal title="编辑待发消息" onClose={() => { if (!queue.busy) setEditor(null); }}><form onSubmit={event => { event.preventDefault(); void queue.change(editor, text.trim()).then(ok => { if (ok) setEditor(null); }); }}><div className="modal-body"><ErrorNotice message={queue.error}/><Field label="消息内容"><textarea autoFocus rows={5} value={text} onChange={event => setText(event.target.value)} maxLength={50000}/></Field></div><footer className="modal-footer"><Button variant="secondary" disabled={queue.busy} onClick={() => setEditor(null)}>取消</Button><Button type="submit" busy={queue.busy} disabled={!text.trim()}>保存</Button></footer></form></Modal>}
   </section>;
 }

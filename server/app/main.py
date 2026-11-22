@@ -276,6 +276,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     @app.post(prefix + "/models/recommend")
     async def recommend_model(data: ModelRecommendationRequest, user=Depends(authenticated), service: Service = Depends(svc)):
         """Return an advisory model recommendation without changing a session."""
+        await offload(service.prompt_safety.require_allowed, data.task_summary)
         from .model_recommendation import provider_router, public_router_result
         return public_router_result(await provider_router(service, data.task_summary, data.candidate_model_ids, user_id=user["id"]))
 
@@ -304,6 +305,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         coded phrase. If the authorized router route is unavailable, the
         response carries an evidence gap and a null suggestion.
         """
+        await offload(service.prompt_safety.require_allowed, data.text)
         from .model_recommendation import provider_completion, public_router_result
         return public_router_result(await provider_completion(service, data.text, user_id=user["id"]))
 
@@ -496,24 +498,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
 
     @app.post(prefix + "/conversations/{item_id}/messages", status_code=202)
     async def message_send(item_id: str, data: SendMessage, user=Depends(authenticated), service: Service = Depends(svc)):
-        payload = data.model_dump()
-        # Trial mode refuses advanced routing and attachments before any model,
-        # run or database side effect (the service layer re-checks as well).
-        service.require_trial_fields(
-            auto_route=bool(payload.get("auto_route")),
-            skill_ids=payload.get("skill_ids"),
-            file_ids=payload.get("file_ids"),
-        )
-        conversation = await offload(service.require, "conversations", item_id, user)
-        route_enabled = False if service.policy.is_trial else (payload.get("auto_route") if payload.get("auto_route") is not None else bool(conversation.get("auto_model_routing")))
-        duplicate = await offload(service.db.one, "SELECT id FROM runs WHERE conversation_id=? AND client_request_id=?", (item_id, payload["client_request_id"]))
-        if not duplicate and route_enabled and not payload.get("model_id") and payload.get("text", "").strip() and not conversation.get("active_run_id"):
-            # Provider-backed fitness routing is asynchronous at the API edge;
-            # prepare_run consumes the bounded result and records its evidence.
-            from .model_recommendation import provider_router
-            candidates = [item["id"] for item in service.catalog.public() if item["available"]]
-            payload["_route_recommendation"] = await provider_router(service, payload.get("text", ""), candidates, user_id=user["id"])
-        result, created = await service.prepare_and_submit_async(item_id, payload, user)
+        result, _ = await service.prepare_and_submit_async(item_id, data.model_dump(), user, provider_routing=True)
         return result
 
     @app.get(prefix + "/runs/{item_id}")

@@ -29,6 +29,8 @@ Windows 本地开发安装依赖时会额外安装 `tzdata`，用于按北京时
 
 ## 模型和 MCP 配置
 
+对话提示词审核可在服务端启用。选型、策略示例、离线安装和验证命令见[提示词审核指南](../docs/prompt-safety.md)。
+
 `AGENT_MODEL_CATALOG` 定义公共模型名称、私有上游线路、可选推理级别与默认项；可选 `AGENT_DEFAULT_MODEL_ID` 应设置为已启用的公共模型ID。客户端仅接收公开名称和级别。会话保存选择，空闲时可切换；执行使用独立快照并保留原生会话。Dano 的 light/high/max 映射到上游 low/high/max，目录中的其他模型可使用 `default` 对应的供应商默认参数。
 
 空闲会话可以通过 `POST /api/v1/models/recommend` 请求“Select the most fitness model”。默认使用有界本地评分；设置 `AGENT_MODEL_ROUTER_ENABLED=true` 后，服务会用 DeepSeek V4.1 Flash 对不超过 2,000 字的任务摘要和公开模型能力做一次有界判断，超时、额度或格式异常时回退本地评分。`AGENT_MODEL_ROUTER_TIMEOUT_SECONDS`、`AGENT_MODEL_ROUTER_MAX_OUTPUT_TOKENS` 和 `AGENT_MODEL_ROUTER_BUDGET_USD` 控制时限、输出和推荐调用预算。\n\n`AGENT_PROVIDER_SETTINGS` 只导入 `env` 中允许的 Anthropic 兼容供应商变量和顶层 `model`（见 `app/config.py`），不导入该文件的 Hooks、工具权限或 MCP 命令。外部环境覆盖同名供应商变量；目录中每个模型还可配置服务端 `provider_env` 覆盖项。生效配置仅在内存中传给执行器，数据库保存摘要；全局或单模型线路／凭据变更后需要明确重选，不能静默改变已准备的任务。
