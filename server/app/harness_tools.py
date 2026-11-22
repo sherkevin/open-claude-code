@@ -20,7 +20,7 @@ from .harness_memory import HarnessMemoryTools, MEMORY_NAMES
 from .mcp_tools import build_mcp_tools, enforce_model_result_budget
 from .runtime import result_fact_metadata
 from .run_recovery import record_dispatch, require_tool_execution
-from .security import AppError, redact
+from .security import AppError, public_tool_arguments
 from .session_permissions import automatic_decision
 from .workspace_tools import APPROVAL_ID, TOOL_CALL_ID, build_workspace_tools
 
@@ -259,7 +259,7 @@ class HarnessToolBridge:
             # routing or scope enforcement. Report evidence after completion.
             await runtime.emit("run.stage", {"stage": "tool", "tool_name": tool_name})
             await runtime.emit("tool.started", {"tool_call_id": event_id, "tool_name": tool_name,
-                               "arguments": redact(arguments), "requires_approval": not (automatic or session_decision) or review_required or dual,
+                               "arguments": public_tool_arguments(tool_name, arguments), "requires_approval": not (automatic or session_decision) or review_required or dual,
                                "dispatch_tracked": True})
             review = await service.model_approval.review(run, tool_name, arguments)
             allowed = (await runtime.approve(tool_name, arguments, review=review, review_checked=True)

@@ -1,0 +1,182 @@
+.subagent-progress {
+  --subagent-accent: #3f5673;
+  --subagent-line: #e4e6e9;
+  --subagent-muted: #58616e;
+  min-width: 0;
+  width: min(100%, 44rem);
+  margin: 8px 0 22px;
+  padding: 0;
+  color: var(--ink, #131e29);
+}
+
+.subagent-progress-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding: 0 2px 8px;
+}
+
+.subagent-progress-header > strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.subagent-progress-header svg { color: #3b3d42; }
+
+.subagent-progress-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin: 0;
+  color: var(--subagent-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-progress-summary > :first-child {
+  color: var(--subagent-accent);
+  font-weight: 600;
+}
+
+.subagent-progress-stale {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0 12px;
+  padding: 2px 8px;
+  color: var(--subagent-muted);
+  font-size: 13px;
+}
+
+.subagent-progress-stale p { margin: 0; }
+
+.subagent-progress-stale button {
+  min-height: 36px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--subagent-accent);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.subagent-progress-children {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+ul.subagent-progress-children > li {
+  display: block;
+  position: relative;
+}
+
+/* The thread links related work while keeping the answer as the visual focus. */
+.subagent-progress-children > li:not(:last-child)::after {
+  position: absolute;
+  top: 33px;
+  bottom: -11px;
+  left: 15.5px;
+  width: 1px;
+  background: var(--subagent-line);
+  pointer-events: none;
+  content: '';
+}
+
+.subagent-progress-child > summary {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto 15px;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px;
+  border-radius: 8px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.subagent-progress-child > summary::-webkit-details-marker { display: none; }
+
+.subagent-progress-child > summary:hover,
+.subagent-progress-child[open] > summary { background: #f6f7f8; }
+
+.subagent-progress :is(summary, button, .subagent-progress-result):focus-visible {
+  outline: 2px solid var(--subagent-accent);
+  outline-offset: 1px;
+}
+
+.subagent-progress-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 1.45;
+}
+
+.subagent-progress-child-status {
+  color: var(--subagent-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.subagent-progress-status-icon,
+.subagent-progress-chevron { color: var(--subagent-muted); }
+.subagent-progress-status-icon[data-tone='active'] { color: #89532c; }
+.subagent-progress-status-icon[data-tone='attention'] { color: #8c4d1c; }
+.subagent-progress-status-icon[data-tone='success'] { color: var(--green, #256f3a); }
+.subagent-progress-status-icon[data-tone='failure'] { color: #aa202a; }
+.subagent-progress-child[open] .subagent-progress-chevron { transform: rotate(90deg); }
+
+.subagent-progress-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 8px 12px 32px;
+  overflow-wrap: anywhere;
+}
+
+.subagent-progress-detail > p {
+  margin: 0;
+  color: var(--subagent-muted);
+  font-size: 13px;
+}
+
+.subagent-progress-detail > .subagent-progress-usage {
+  color: var(--subagent-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-progress-result { min-width: 0; overflow-x: auto; }
+.subagent-progress-result .markdown { color: inherit; font-size: 14px; }
+.subagent-progress-result .markdown table { display: table; width: 100%; }
+.subagent-progress-result .markdown :is(th, td) { min-width: 80px; }
+.conversation-tasks .subagent-progress-result .markdown li { display: list-item; }
+
+.subagent-progress-result > pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.conversation-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 480px) {
+  .subagent-progress-child > summary { gap: 6px; }
+  .subagent-progress-detail { padding-inline-start: 8px; }
+  .subagent-progress-stale button { min-height: 44px; }
+}

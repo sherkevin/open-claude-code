@@ -66,6 +66,7 @@ class SecretStore:
 
 
 SENSITIVE = re.compile(r"(^|[_-])(password|passwd|secret|token|authorization|api.?key|cookie|credentials?)($|[_-])", re.I)
+DELEGATE_TASKS_TOOL = "mcp__workspace__delegate_tasks"
 
 
 def tool_risk_profile(tool_name: str) -> dict[str, object]:
@@ -137,6 +138,12 @@ def redact(value, truncate=True):
     if isinstance(value, str):
         return value[:16000] if truncate else value
     return value
+
+
+def public_tool_arguments(tool_name, arguments):
+    if tool_name == DELEGATE_TASKS_TOOL:
+        return {"tasks": "[redacted]"}
+    return redact(arguments)
 
 
 def validate_mcp_url(value: str, allowed_hosts: tuple[str, ...]) -> str:

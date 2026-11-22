@@ -1,6 +1,6 @@
 from app.db import now
 
-from test_api import PASSWORD, client, configured, conversation, login
+from test_api import PASSWORD, client, configured, conversation, login, poll, send
 
 
 def test_message_windows_and_search_hits_are_bounded_and_conversation_scoped(client):
@@ -45,3 +45,48 @@ def test_message_windows_and_search_hits_are_bounded_and_conversation_scoped(cli
     login(client, "member")
     assert client.get(route, params={"limit": 20}).status_code == 404
     assert client.get("/api/v1/conversations", params={"q": "AB_50%\\北区"}).json() == []
+
+
+def test_history_links_only_the_question_that_started_the_plan(client):
+    service = client.app.state.service
+    own = conversation(client)["id"]
+    route = f"/api/v1/conversations/{own}/messages"
+    parent = send(client, own, "wait", request_id="history-parent")
+    parent_id, question_id = parent["run_id"], parent["message"]["id"]
+    assert client.post(f"/api/v1/runs/{parent_id}/subagents", json={"tasks": ["统计商品数量"]}).status_code == 202
+    assert client.post(f"/api/v1/runs/{parent_id}/cancel").status_code == 200
+    poll(client, parent_id)
+    plain = send(client, own, "ordinary question", request_id="history-plain")
+    poll(client, plain["run_id"])
+    plain_id = plain["message"]["id"]
+
+    other = conversation(client)["id"]
+    foreign = send(client, other, "wait", request_id="history-other")
+    assert client.post(f"/api/v1/runs/{foreign['run_id']}/subagents", json={"tasks": ["核对库存"]}).status_code == 202
+    # Simulate legacy missing backlinks and reject a different conversation's
+    # run even if its forward link names a question in this conversation.
+    service.db.execute("UPDATE messages SET run_id=NULL WHERE id=?", (question_id,))
+    service.db.execute("UPDATE runs SET message_id=? WHERE id=?", (plain_id, foreign["run_id"]))
+    service.db.execute(
+        "INSERT INTO messages(id,conversation_id,role,text,run_id,created_at) VALUES(?,?,'user',?,?,?)",
+        ("steering-message", own, "follow-up for the active run", parent_id, now()),
+    )
+
+    for params in ({}, {"limit": 20}, {"limit": 1, "around": question_id}, {"limit": 20, "before": plain_id}):
+        data = client.get(route, params=params).json()
+        messages = data if isinstance(data, list) else data["messages"]
+        question = next(message for message in messages if message["id"] == question_id)
+        assert question["run_id"] is None
+        assert question["has_subagents"] is True
+        assert question["subagent_run_id"] == parent_id
+        for message in messages:
+            if message["role"] == "assistant":
+                assert "has_subagents" not in message
+            elif message["id"] != question_id:
+                assert message["has_subagents"] is False
+                assert "subagent_run_id" not in message
+
+    after_question = client.get(route, params={"limit": 20, "after": question_id}).json()
+    assert {message["id"]: message["has_subagents"] for message in after_question["messages"] if message["role"] == "user"} == {
+        plain_id: False, "steering-message": False,
+    }

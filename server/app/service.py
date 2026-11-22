@@ -18,7 +18,7 @@ from .conversation_title import DEFAULT_TITLE, first_message_title
 from .db import Database, dump, now, offload, offload_write, shielded, uid
 from .model_catalog import ModelCatalog
 from .resources import TABLES, resource_access, resource_editable, scope_fields, choose_scope
-from .security import AppError, SecretStore, password_hash, redact, tool_risk_profile, validate_mcp_url, workspace_path
+from .security import AppError, DELEGATE_TASKS_TOOL, SecretStore, password_hash, public_tool_arguments, tool_risk_profile, validate_mcp_url, workspace_path
 from .provider_policy import TOKENHUB_BASE_URL, provider_route
 from .subagents import SubagentOrchestrator
 from .model_approval import ModelApprovalService
@@ -81,7 +81,7 @@ def approval_view(row):
         from .harness_memory import public_memory_arguments
         arguments = public_memory_arguments(arguments)
     else:
-        arguments = redact(arguments)
+        arguments = public_tool_arguments(row["tool_name"], arguments)
     return {
         **{key: arguments if key == "arguments" else row[key] for key in ("id", "run_id", "tool_name", "arguments", "status", "created_at", "expires_at")},
         **profile,
@@ -231,7 +231,15 @@ class Service:
     def public_events(self, run_id, after):
         row = self.require("runs", run_id)
         label = self.public_run_model(row)["model"]
-        return [{**event, "data": self.public_context_data(event["data"], label)} if event["type"].startswith("context.") else event for event in self.db.events(run_id, after)]
+        events = self.db.events(run_id, after)
+        for event in events:
+            if event["type"].startswith("context."):
+                event["data"] = self.public_context_data(event["data"], label)
+            elif event["type"] in {"tool.started", "approval.required"}:
+                data = event["data"]
+                if isinstance(data, dict) and data.get("tool_name") == DELEGATE_TASKS_TOOL:
+                    data["arguments"] = public_tool_arguments(DELEGATE_TASKS_TOOL, data.get("arguments"))
+        return events
 
     async def public_events_async(self, run_id, after):
         """SSE polling reads run on a worker thread, never the event loop."""
@@ -520,6 +528,7 @@ class Service:
 
     def run_view(self, row):
         result = {key: row[key] for key in ("id", "conversation_id", "status", "assistant_message_id", "error", "created_at", "completed_at")}
+        result["message_id"] = row.get("message_id")
         result["error_code"] = row.get("error_code")
         result["usage"] = json.loads(row["usage"]) if row["usage"] else None
         result["kind"] = row.get("kind", "chat")
@@ -817,7 +826,7 @@ class Service:
         if not user["enabled"]:
             raise AppError(403, "USER_DISABLED", "账号已停用")
         assistant = self.usable_assistant(conversation["assistant_id"], user)
-        if tool_name in {"mcp__workspace__ask_user", "mcp__workspace__review_plan", "mcp__workspace__delegate_tasks"}:
+        if tool_name in {"mcp__workspace__ask_user", "mcp__workspace__review_plan", DELEGATE_TASKS_TOOL}:
             if (conversation_runtime_type(conversation) != "harness" or conversation["archived"]
                     or not conversation["active_run_id"]):
                 raise AppError(403, "INTERACTION_INACTIVE", "交互需要当前授权的 Harness 任务")

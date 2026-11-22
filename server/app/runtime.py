@@ -20,7 +20,7 @@ from .context import cached_context, context_snapshot, fresh, save_context
 from .identity import build_system_prompt, identity_reply_for_message
 from .provider_policy import provider_route
 from .run_recovery import record_dispatch, recovery_prompt
-from .security import AppError, redact
+from .security import AppError, DELEGATE_TASKS_TOOL, public_tool_arguments, redact
 from .service import TERMINAL, approval_view
 from .token_savings import TokenAccounting
 
@@ -1035,6 +1035,9 @@ class SessionActor:
         # reviewer; it can never widen a high-risk or unknown tool grant.
         if not review_checked:
             review = await self.service.model_approval.review(run, tool, arguments)
+        # The approval digest and the waiter still use the original in-memory
+        # request. Delegation prompts are private even in the approval audit.
+        stored_arguments = dump(public_tool_arguments(tool, arguments) if tool == DELEGATE_TASKS_TOOL else arguments)
         if review is not None:
             if review.decision == "allow":
                 try:
@@ -1049,7 +1052,7 @@ class SessionActor:
             await offload_write(
                 self.service.db.execute,
                 "INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,decided_at,decided_by,decision_source,strategy,review_model_id,review_policy_id,review_policy_revision,review_policy_digest,review_operation,review_data_scope,review_amount,review_reason,review_result,review_decided_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (approval_id, run["id"], run["user_id"], tool, dump(arguments), "allowed" if review.decision == "allow" else "denied", now(), decided_at, decided_at, None, "model", "model", review.model_id, review.policy_id, review.policy_revision, review.policy_digest, review.operation, review.data_scope, review.amount, review.reason, dump(review.result), decided_at),
+                (approval_id, run["id"], run["user_id"], tool, stored_arguments, "allowed" if review.decision == "allow" else "denied", now(), decided_at, decided_at, None, "model", "model", review.model_id, review.policy_id, review.policy_revision, review.policy_digest, review.operation, review.data_scope, review.amount, review.reason, dump(review.result), decided_at),
             )
             await self.emit("approval.model_decided", {"approval_id": approval_id, **self.service.model_approval.audit_payload(review), "decision": review.decision})
             if review.decision != "allow" or self.cancelled:
@@ -1068,14 +1071,14 @@ class SessionActor:
                 if dual_snapshot:
                     self.service.db.execute(
                         "INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,strategy,approval_mode,required_approvals,approver_allowlist,approver_ids,approval_policy_id,approval_policy_revision,approval_policy_digest,approval_request_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (approval_id, run["id"], run["user_id"], tool, dump(arguments), "pending", now(), expiry,
+                        (approval_id, run["id"], run["user_id"], tool, stored_arguments, "pending", now(), expiry,
                          "dual", dual_snapshot["approval_mode"], dual_snapshot["required_approvals"], dump(dual_snapshot["approver_allowlist"]), "[]",
                          dual_snapshot["approval_policy_id"], dual_snapshot["approval_policy_revision"], dual_snapshot["approval_policy_digest"], dual_snapshot["approval_request_digest"]),
                     )
                     if dual_denied:
                         self.service.db.execute("UPDATE approvals SET status='denied',decided_at=?,decision_source='policy',approval_decision_reason=? WHERE id=?", (now(), "工具不在高风险审批白名单，默认拒绝", approval_id))
                 else:
-                    self.service.db.execute("INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)", (approval_id, run["id"], run["user_id"], tool, dump(arguments), "pending", now(), expiry))
+                    self.service.db.execute("INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)", (approval_id, run["id"], run["user_id"], tool, stored_arguments, "pending", now(), expiry))
 
         # Register the waiting future before the row becomes visible.  A dual
         # administrator can vote as soon as the pending row exists; without
@@ -1313,6 +1316,10 @@ class SessionActor:
 
     def _settle_run(self, run_id, status, error, error_code=None):
         """Memory bookkeeping and the terminal transaction, off the loop."""
+        # The child may unwind its parent while cancel_plan is still joining
+        # workers. The accepted cancellation is already durable at this point.
+        if status in {"failed", "interrupted"} and self.service.require("runs", run_id)["status"] == "cancelling":
+            status, error, error_code = "cancelled", None, None
         try:
             conversation = self.service.require("conversations", self.conversation_id)
             if conversation.get("runtime_type") == "harness":
@@ -1639,12 +1646,15 @@ class RunManager:
         run, marked = await offload_write(mark_cancelling)
         if not marked:
             return
+        actor = self.actors.get(run["conversation_id"])
+        if actor and actor.current_run_id == run_id:
+            actor.cancelled = True
         # A parent cancellation must stop every child before the
         # parent actor is interrupted.  The operation is idempotent and emits
         # only redacted child lifecycle summaries on the parent event stream.
         await self.service.subagents.cancel_plan(run_id, run["user_id"])
         actor = self.actors.get(run["conversation_id"])
-        if actor:
+        if actor and actor.current_run_id == run_id:
             await actor.cancel()
         else:
             await self.finish_async(run_id, "cancelled")

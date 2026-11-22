@@ -13,6 +13,7 @@ from typing import Any
 
 from .db import dump, now, offload, offload_write, uid
 from .security import AppError
+from .subagent_title import display_title, display_title_key
 
 
 CHILD_TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
@@ -214,10 +215,11 @@ class SubagentOrchestrator:
                     None,
                     None,
                     None,
+                    display_title_key(item["task"]),
                 ))
             with self.service.db.transaction():
                 self.service.db.executemany(
-                    "INSERT INTO subagent_children(child_id,parent_run_id,root_run_id,user_id,conversation_id,depth,role,status,stop_reason,task_digest,capability_snapshot,workspace_id,memory_scope_id,reserved_budget,observed_usage,created_at,started_at,completed_at,cancelled_at,result_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO subagent_children(child_id,parent_run_id,root_run_id,user_id,conversation_id,depth,role,status,stop_reason,task_digest,capability_snapshot,workspace_id,memory_scope_id,reserved_budget,observed_usage,created_at,started_at,completed_at,cancelled_at,result_json,display_title_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     rows,
                 )
         except BaseException:
@@ -280,12 +282,20 @@ class SubagentOrchestrator:
             result["result"] = json.loads(row["result_json"])
         return result
 
-    def list_children(self, parent_run_id: str, user_id: str | None = None) -> list[dict]:
+    def list_children(self, parent_run_id: str, user_id: str | None = None, *, include_display_titles: bool = False) -> list[dict]:
         self._parent(parent_run_id, user_id, allow_terminal=True)
-        return [self.child_view(row) for row in self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY rowid", (parent_run_id,))]
+        children = []
+        for row in self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY rowid", (parent_run_id,)):
+            child = self.child_view(row)
+            if include_display_titles:
+                title = display_title(row.get("display_title_key"))
+                if title:
+                    child["display_title"] = title
+            children.append(child)
+        return children
 
-    def plan_view(self, parent_run_id: str, user_id: str | None = None) -> dict:
-        children = self.list_children(parent_run_id, user_id)
+    def plan_view(self, parent_run_id: str, user_id: str | None = None, *, include_display_titles: bool = False) -> dict:
+        children = self.list_children(parent_run_id, user_id, include_display_titles=include_display_titles)
         counts = {status: sum(1 for child in children if child["status"] == status) for status in ("queued", "running", "cancelling", "succeeded", "failed", "cancelled", "interrupted")}
         return {"plan_id": parent_run_id, "mode": children[0]["capability_snapshot"]["mode"] if children else "synthetic", "children": children, "counts": counts}
 
@@ -310,14 +320,8 @@ class SubagentOrchestrator:
             result = {"status": "ok", "task_digest": child["task_digest"]}
         return {"output": result, "stop_reason": "completed", "usage": {"input_units": 0, "output_units": 0}}
 
-    def _child_high_risk_spec(self, task: dict) -> tuple[str, dict] | None:
-        """Return a declared child tool only when it is high risk.
-
-        Child execution is synthetic and read-only by default.  A declared
-        dangerous tool is treated as an approval request rather than being
-        handed to an executor.  Suspicious free-form task text is also denied
-        conservatively when it contains a high-risk marker but no tool name.
-        """
+    def _child_high_risk_spec(self, task: dict) -> tuple[str | None, dict] | None:
+        """Flag high-risk requests for approval, or deny undeclared tools."""
         tool = task.get("tool")
         arguments = task.get("arguments") or {}
         if tool is None:
@@ -327,7 +331,7 @@ class SubagentOrchestrator:
                 "publish", "release", "external", "credential", "secret",
                 "token", "password",
             }):
-                return candidate[:200], {}
+                return None, {}
             return None
         if self.service.high_risk_approval.is_high_risk(tool, arguments):
             return tool, arguments
@@ -369,13 +373,14 @@ class SubagentOrchestrator:
         if not run:
             return False
         tool, arguments = spec
-        snapshot = self.service.high_risk_approval.request_snapshot(run, tool, arguments)
-        # No enabled parent policy means the child cannot inherit a dual
-        # approval chain.  Persist a default-deny audit row instead of falling
-        # through to the legacy single-user confirmation path.
-        approval_id = self._insert_child_approval(run, child_id, tool, arguments, snapshot)
+        snapshot = self.service.high_risk_approval.request_snapshot(run, tool, arguments) if tool is not None else None
+        # Dual approval requires a declared tool and an enabled parent policy.
+        # Record a fixed identifier for suspicious tasks with no declared tool.
+        approval_id = self._insert_child_approval(run, child_id, tool or "subagent_undeclared_tool", arguments, snapshot)
         if not snapshot or not snapshot["tool_allowed"]:
             reason = "父任务未配置高风险双人审批策略，默认拒绝" if not snapshot else "工具不在父任务高风险审批白名单，默认拒绝"
+            if tool is None:
+                reason = "子任务未声明可审批的工具，默认拒绝"
             decided_at = now()
             self.service.db.execute(
                 "UPDATE approvals SET decided_at=?,decision_source='policy',approval_decision_reason=? WHERE id=?",

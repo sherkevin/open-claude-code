@@ -9,3 +9,6 @@
   .assistant-working-dots i:nth-child(3) { animation-delay:240ms; }
   @keyframes assistant-working { 0%,60%,100% { opacity:.42;transform:translateY(0); } 30% { opacity:1;transform:translateY(-3px); } }
 }
+
+.inline-subagent-readback { margin: 12px 0 20px; color: var(--muted); font-size: 13px; }
+.inline-subagent-readback button { color: inherit; font: inherit; text-decoration: underline; }

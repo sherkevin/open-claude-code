@@ -572,12 +572,13 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
                  after: str | None = Query(None, min_length=1, max_length=128),
                  around: str | None = Query(None, min_length=1, max_length=128),
                  user=Depends(authenticated), service: Service = Depends(svc)):
+        from .conversation_history import list_messages, message_history
+
         with service.db.lock:
             service.require("conversations", item_id, user)
             if limit is not None or before is not None or after is not None or around is not None:
-                from .conversation_history import message_history
-                return message_history(service.db, item_id, limit or 40, before=before, after=after, around=around)
-            return [message_view(row) for row in service.db.all("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at,rowid", (item_id,))]
+                return message_history(service.db, item_id, user["id"], limit or 40, before=before, after=after, around=around)
+            return list_messages(service.db, item_id, user["id"])
 
     @app.post(prefix + "/conversations/{item_id}/messages", status_code=202)
     async def message_send(item_id: str, data: SendMessage, user=Depends(authenticated), service: Service = Depends(svc)):
@@ -683,7 +684,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     @app.get(prefix + "/runs/{item_id}/subagents")
     def subagent_list(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
         service.require("runs", item_id, user)
-        return service.subagents.plan_view(item_id, user["id"])
+        return service.subagents.plan_view(item_id, user["id"], include_display_titles=True)
 
     @app.post(prefix + "/runs/{item_id}/subagents/cancel")
     async def subagent_cancel(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):

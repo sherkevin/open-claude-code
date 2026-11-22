@@ -142,7 +142,7 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
                                          for child in plan["children"]]}
                 return await invoke("delegate_tasks", arguments, delegate)
 
-            tools.append(WorkspaceTool("delegate_tasks", "并行分配最多四项彼此独立的纯文字分析，等待结论后汇总。每个子任务只能看到所分配的文字，没有文件、MCP 或历史权限；不要附上凭据。", {"tasks": list}, True, delegate_tasks))
+            tools.append(WorkspaceTool("delegate_tasks", "并行分配最多四项彼此独立的纯文字分析，等待结论后汇总。分别说明业务目标，可以用【商品数量统计】、【交付检查清单】、【市场规模】或【渠道策略】等通用标题。每个子任务只能看到所分配的文字，没有文件、MCP 或历史权限。任务说明请省略个人信息和凭据。", {"tasks": list}, True, delegate_tasks))
 
     # Spreadsheet export is local-only but still a write, so the service's
     # normal approval path is required before the file is produced.

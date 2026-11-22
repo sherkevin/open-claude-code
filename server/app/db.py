@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS session_read_only_certifications(
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
 CREATE INDEX IF NOT EXISTS runs_owner ON runs(user_id,created_at);
 CREATE INDEX IF NOT EXISTS runs_conversation ON runs(conversation_id,created_at);
+CREATE INDEX IF NOT EXISTS runs_conversation_message ON runs(conversation_id,message_id,created_at);
 CREATE TABLE IF NOT EXISTS memory_scopes(user_id TEXT NOT NULL REFERENCES users(id),assistant_id TEXT NOT NULL REFERENCES assistants(id),revision INTEGER NOT NULL DEFAULT 0,digest TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(user_id,assistant_id));
 CREATE TABLE IF NOT EXISTS subagent_children(
     child_id TEXT PRIMARY KEY,
@@ -173,7 +174,8 @@ CREATE TABLE IF NOT EXISTS subagent_children(
     started_at TEXT,
     completed_at TEXT,
     cancelled_at TEXT,
-    result_json TEXT
+    result_json TEXT,
+    display_title_key TEXT
 );
 CREATE INDEX IF NOT EXISTS subagent_children_parent ON subagent_children(parent_run_id,created_at);
 CREATE INDEX IF NOT EXISTS subagent_children_root ON subagent_children(root_run_id,created_at);
@@ -533,6 +535,7 @@ class Database:
                 "native_epoch": "INTEGER NOT NULL DEFAULT 0",
             },
             "messages": {"skills": "TEXT NOT NULL DEFAULT '[]'", "citations": "TEXT NOT NULL DEFAULT '[]'"},
+            "subagent_children": {"display_title_key": "TEXT"},
             "runs": {"capability_snapshot": "TEXT", "skill_snapshots": "TEXT NOT NULL DEFAULT '[]'", "timings": "TEXT NOT NULL DEFAULT '{}'", "error_code": "TEXT"},
         }
         for table, additions_for_table in additions.items():

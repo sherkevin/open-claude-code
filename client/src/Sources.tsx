@@ -208,18 +208,21 @@ function remarkChineseAutolinks() {
   };
 }
 
-export function AnswerMarkdown({text,citations=[]}:{text:string;citations?:EvidenceSource[]}) {
+export function AnswerMarkdown({text,citations=[],mode='answer'}:{text:string;citations?:EvidenceSource[];mode?:'answer'|'subagent'}) {
   const [selected,setSelected]=useState<string|null>(null);
-  const clean=answerText(text,citations);
+  const subagent=mode==='subagent';
+  const clean=answerText(text,subagent?[]:citations);
   return <><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm,remarkChineseAutolinks]} components={{img:({src,alt,title})=>{
+    if(subagent)return alt?<span>{alt}</span>:null;
     const safe=markdownImageURL(src);
     return safe?<img src={safe} alt={alt||''} title={title} loading="lazy" referrerPolicy="no-referrer"/>:<span className="source-blocked-image" title="外部图片不会自动加载">[外部图片已阻止自动加载：{alt||'未命名图片'}]</span>;
   },a:({children,href,node:_node,...props})=>{
+    if(subagent)return <span>{children}</span>;
     const id=sourceIdFromURL(href),verified=id&&citations.some(source=>source.id===id);
     return verified?<button type="button" className="source-inline" onClick={()=>setSelected(id)} title="查看来源详情">{children}</button>:isInternalSourceURL(href)?<span className="source-unverified" title="来源尚未核验">[来源]</span>:<a {...props} href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
   }}}>{clean}</ReactMarkdown></div>
-  {citations.length>0&&<div className="answer-sources" aria-label="引用来源"><span>引用与检索记录</span>{citations.map((source,index)=><SourceCard key={source.id} source={source} index={index} onOpen={()=>setSelected(source.id)}/>)}</div>}
-  {selected&&<SourceDialog key={selected} id={selected} onClose={()=>setSelected(null)}/>}</>;
+  {!subagent&&citations.length>0&&<div className="answer-sources" aria-label="引用来源"><span>引用与检索记录</span>{citations.map((source,index)=><SourceCard key={source.id} source={source} index={index} onOpen={()=>setSelected(source.id)}/>)}</div>}
+  {!subagent&&selected&&<SourceDialog key={selected} id={selected} onClose={()=>setSelected(null)}/>}</>;
 }
 export function SourceActions({source}:{source:EvidenceSource}) {
   const original=publicWebURL(source.original_url);

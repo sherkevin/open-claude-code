@@ -113,7 +113,10 @@ def model_server():
                     elif "CASE_PLAN" in text:
                         name, arguments = "review_plan", {"plan": "先核对订单，再汇总"}
                     elif "CASE_DELEGATE" in text:
-                        name, arguments = "delegate_tasks", {"tasks": ["CASE_CHILD_1", "CASE_CHILD_2"]}
+                        name, arguments = "delegate_tasks", {"tasks": [
+                            "CASE_CHILD_1 统计商品总数。内部参考 PRIVATE_TASK_DETAIL_1。",
+                            "CASE_CHILD_2 整理交付检查清单。内部参考 PRIVATE_TASK_DETAIL_2。",
+                        ]}
                     event("content_block_start", {"index": 0, "content_block": {"type": "tool_use", "id": f"call-{len(requests)}", "name": name, "input": {}}})
                     event("content_block_delta", {"index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps(arguments)}})
                     reason = "tool_use"
@@ -219,13 +222,21 @@ def test_real_harness_child_delegation(tmp_path, model_server):
         assert wait_run(client, run)["status"] == "succeeded"
         plan = client.get(f"/api/v1/runs/{run}/subagents").json()
         assert plan["mode"] == "harness" and plan["counts"]["succeeded"] == 2, plan
+        assert [row["display_title"] for row in plan["children"]] == ["商品数量统计", "交付检查清单"]
         assert [row["result"]["output"] for row in plan["children"]] == ["CHILD_RESULT_1", "CHILD_RESULT_2"]
         assert all(row["observed_usage"]["output_tokens"] == 8 and row["capability_snapshot"]["tools"] == [] for row in plan["children"])
         assert client.get(f"/api/v1/conversations/{conversation['id']}/subagent-plans").json()[0]["id"] == run
         messages = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()
+        assert messages[0]["has_subagents"] is True and messages[0]["subagent_run_id"] == run
         assert messages[-1]["text"] == "子任务结果已汇总"
+        events = app.state.service.db.events(run, 0)
+        assert "PRIVATE_TASK_DETAIL" not in json.dumps(events)
+        sse = client.get(f"/api/v1/runs/{run}/events").text
+        assert '"tasks":"[redacted]"' in sse
+        assert "PRIVATE_TASK_DETAIL" not in sse and "display_title" not in sse
         worker_requests = [item for item in requests if not item.get("tools")]
         assert len(worker_requests) == 2
+        assert all(any(f"PRIVATE_TASK_DETAIL_{index}" in json.dumps(item) for item in worker_requests) for index in (1, 2))
         assert all("ORIGINAL_NOT_COPIED" not in json.dumps(item) and "PARENT_PRIVATE_SENTINEL" not in json.dumps(item) for item in worker_requests)
         assert all(item["max_tokens"] <= 800 for item in worker_requests)
         usage = client.get("/api/v1/usage").json()

@@ -1,4 +1,6 @@
 import asyncio
+import json
+import sqlite3
 import time
 
 from fastapi.testclient import TestClient
@@ -6,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import create_app
 from app.subagents import SubagentOrchestrator
-from test_api import FakeRuntime
+from test_api import FakeRuntime, login
 
 
 PASSWORD = "Correct-test-password-123"
@@ -117,6 +119,90 @@ def test_protected_http_contract_is_synthetic_only(tmp_path):
                 break
             time.sleep(0.02)
         assert value["counts"]["succeeded"] == 1
+
+
+def test_plan_get_returns_only_allowlisted_titles_and_keeps_prompts_private(tmp_path):
+    settings = Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",))
+    app = create_app(settings, runtime_factory=FakeRuntime)
+    prompts = [
+        "请为示例客户 private-customer@fixture.invalid 统计商品总数",
+        "为内部交付整理检查清单，参考 https://private.fixture.invalid/checks",
+        "【林示例】整理 <script>private-label</script> 的背景信息",
+        "审阅 token=private-token-value",
+    ]
+    with TestClient(app) as client:
+        service, _, run = make_parent(app)
+        login(client)
+        run_id = run["run_id"]
+        route = f"/api/v1/runs/{run_id}/subagents"
+        service.db.execute("UPDATE messages SET text=? WHERE id=?", ("请整理林示例的背景信息。", run["message"]["id"]))
+        created = client.post(route, json={"tasks": prompts})
+        assert created.status_code == 202
+        assert all("display_title" not in child for child in created.json()["children"])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            plan = client.get(route).json()
+            if plan["counts"]["succeeded"] + plan["counts"]["failed"] == len(prompts):
+                break
+            time.sleep(0.02)
+        assert plan["counts"]["succeeded"] == 3
+        assert plan["counts"]["failed"] == 1
+        assert [child.get("display_title") for child in plan["children"]] == ["商品数量统计", "交付检查清单", None, None]
+
+        rows = service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY rowid", (run_id,))
+        assert [row["display_title_key"] for row in rows] == ["product_count", "delivery_checklist", None, None]
+        approvals = service.db.all("SELECT * FROM approvals WHERE run_id=?", (run_id,))
+        assert [row["tool_name"] for row in approvals] == ["subagent_undeclared_tool"]
+        events = service.db.events(run_id, 0)
+        assert "display_title" not in json.dumps(events)
+        persisted = json.dumps([rows, approvals, events], ensure_ascii=False)
+        for private in ("private-customer", "private.fixture.invalid", "private-label", "private-token-value", "林示例"):
+            assert private not in persisted
+            assert private not in json.dumps(plan, ensure_ascii=False)
+
+        # Old Harness tool events may have included the raw arguments.
+        tool = {"tool_name": "mcp__workspace__delegate_tasks", "arguments": {"tasks": prompts}}
+        service.db.event(run_id, "tool.started", tool)
+        service.db.event(run_id, "approval.required", tool)
+        service.manager.finish(run_id, "cancelled")
+        events_response = client.get(f"/api/v1/runs/{run_id}/events")
+        assert events_response.status_code == 200
+        assert events_response.text.count('"tasks":"[redacted]"') == 2
+        assert "display_title" not in events_response.text
+        assert all(private not in events_response.text for private in ("private-", "private.fixture.invalid", "林示例"))
+        service.db.execute("UPDATE subagent_children SET display_title_key=? WHERE child_id=?", ("unrecognized-private-label", rows[2]["child_id"]))
+
+        service.create_user({"username": "subagent-reader", "display_name": "他人", "password": PASSWORD, "role": "member"})
+        login(client, "subagent-reader")
+        assert client.get(route).status_code == 404
+
+    with TestClient(create_app(settings, runtime_factory=FakeRuntime)) as client:
+        login(client)
+        titles = [child.get("display_title") for child in client.get(route).json()["children"]]
+        assert titles == ["商品数量统计", "交付检查清单", None, None]
+
+
+def test_existing_children_survive_database_upgrade_without_titles(tmp_path):
+    settings = Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",))
+    app = create_app(settings, runtime_factory=FakeRuntime)
+    with TestClient(app):
+        service, user, run = make_parent(app)
+        plan = service.subagents.create_plan(run["run_id"], user["id"], ["统计商品数量"])
+        expected = plan["children"][0]
+        asyncio.run(service.subagents.run_plan(run["run_id"], user["id"]))
+
+    with sqlite3.connect(tmp_path / "app.sqlite3") as db:
+        db.execute("ALTER TABLE subagent_children DROP COLUMN display_title_key")
+
+    with TestClient(create_app(settings, runtime_factory=FakeRuntime)) as client:
+        login(client)
+        plan = client.get(f"/api/v1/runs/{run['run_id']}/subagents")
+        assert plan.status_code == 200
+        child, = plan.json()["children"]
+        assert child["child_id"] == expected["child_id"]
+        assert child["task_digest"] == expected["task_digest"]
+        assert child["status"] == "succeeded"
+        assert "display_title" not in child
 
 
 def _dual_parent(app):
