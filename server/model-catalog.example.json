@@ -66,8 +66,8 @@
       "upstream_model": "minimax-m3.1-flash",
       "enabled": false,
       "capabilities": ["general", "chinese", "reasoning", "multimodal"],
-      "reasoning_levels": {"default": null},
-      "default_reasoning_level": "default",
+      "reasoning_levels": {"light": "low"},
+      "default_reasoning_level": "light",
       "unavailable_reason": "管理员尚未验证并启用此模型线路"
     },
     {
