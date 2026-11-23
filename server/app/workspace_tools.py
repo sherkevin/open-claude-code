@@ -26,6 +26,11 @@ from .artifacts import write_xlsx, image_generation_capability
 TOOL_CALL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("workspace_tool_call_id", default=None)
 APPROVAL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("workspace_approval_id", default=None)
 
+DELEGATE_TASKS_GUIDANCE = (
+    "\n\n若用户需要两项以上可独立交付、值得分别分析的结论，就主动调用 delegate_tasks，一次分工，再核对汇总。"
+    "简单问答、前后依赖或用户要求独立作答时直接完成。缺资料先取证。"
+)
+
 
 @dataclass(frozen=True)
 class WorkspaceTool:
@@ -34,6 +39,13 @@ class WorkspaceTool:
     input_schema: dict[str, type]
     read_only: bool
     handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+def child_tool_result(child: dict) -> dict:
+    """Send the parent each ordered outcome; the plan retains the full UI receipt."""
+    if child["status"] == "succeeded":
+        return {"output": child["result"]["output"]}
+    return {"status": child["status"], "reason": child.get("stop_reason")}
 
 
 def build_workspace_tools(runtime) -> list[WorkspaceTool]:
@@ -134,15 +146,22 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
         if service.settings.max_active_sessions >= 2:
             async def delegate_tasks(arguments):
                 async def delegate(_assistant, current_user, run_id):
+                    tasks = arguments.get("tasks")
+                    if not isinstance(tasks, list) or len(tasks) < 2:
+                        raise AppError(422, "SUBAGENT_CHILD_LIMIT", "并行分析至少需要两项任务，单项分析请直接完成")
                     owner = current_user["id"]
-                    await offload_write(service.subagents.create_plan, run_id, owner, arguments.get("tasks"), "harness")
+                    await offload_write(service.subagents.create_plan, run_id, owner, tasks, "harness")
                     plan = await service.subagents.start_plan(run_id, owner)
                     runtime.check_tool("mcp__workspace__delegate_tasks", arguments)
-                    return {"children": [{"id": child["child_id"], "status": child["status"], "result": child.get("result")}
-                                         for child in plan["children"]]}
+                    return {"children": [child_tool_result(child) for child in plan["children"]]}
                 return await invoke("delegate_tasks", arguments, delegate)
 
-            tools.append(WorkspaceTool("delegate_tasks", "并行分配最多四项彼此独立的纯文字分析，等待结论后汇总。分别说明业务目标，可以用【商品数量统计】、【交付检查清单】、【市场规模】或【渠道策略】等通用标题。每个子任务只能看到所分配的文字，没有文件、MCP 或历史权限。任务说明请省略个人信息和凭据。", {"tasks": list}, True, delegate_tasks))
+            tools.append(WorkspaceTool(
+                "delegate_tasks",
+                "并行完成 2–4 项文字分析。子任务无工具、文件或历史。每项仅给必要的脱敏事实和目标，"
+                "省略个人信息、凭据和私有配置。可附【风险评估】等通用标题。部分失败时汇总已有结果。",
+                {"tasks": list}, True, delegate_tasks,
+            ))
 
     # Spreadsheet export is local-only but still a write, so the service's
     # normal approval path is required before the file is produced.

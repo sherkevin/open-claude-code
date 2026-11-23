@@ -24,6 +24,7 @@ from .run_recovery import recovery_prompt
 from .run_steering import settle as settle_steer
 from .security import AppError
 from .token_savings import TokenAccounting
+from .workspace_tools import DELEGATE_TASKS_GUIDANCE
 
 PINNED_COMMIT = "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"
 MODEL_FAILURES = {
@@ -357,14 +358,18 @@ class HarnessRuntime(WorkspaceRuntime):
         for directory in (root, root / "artifacts", private):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         cls, config_cls = await asyncio.to_thread(official_client, source)
+        tools = self.bridge.definitions()
+        system_prompt = build_system_prompt(public_model_id=self.config["public_model_id"],
+            public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"])
+        if any(tool["name"] == "delegate_tasks" for tool in tools):
+            system_prompt += DELEGATE_TASKS_GUIDANCE
         profile = write_profile(
             profile_root=private, source_dir=source, cwd=root, session_id=self.session_id,
-            system_prompt=build_system_prompt(public_model_id=self.config["public_model_id"],
-                public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"]),
+            system_prompt=system_prompt,
             provider={"baseURL": provider.get("ANTHROPIC_BASE_URL", TOKENHUB_BASE_URL),
                       "model": self.config["upstream_model"], "apiKeyEnv": "WORKSPACE_MODEL_API_KEY", "reasoningEffort": effort,
                       "maxTokens": max_output},
-            tools=self.bridge.definitions(), max_steps=self.config.get("worker_max_steps", settings.max_turns),
+            tools=tools, max_steps=self.config.get("worker_max_steps", settings.max_turns),
             tool_timeout_ms=(settings.approval_seconds + 60) * 1000,
         )
         launcher = write_launcher(private, node, source, root)

@@ -128,8 +128,8 @@ try {
   const modelBottom=await page.evaluate(()=>!!document.querySelector('.composer-actions .chat-model-settings'));
   assert(modelBottom,'Model pill must remain inside composer bottom toolbar');
 
-  await fill('');await page.keyboard.press('Tab');assert.notEqual(await page.evaluate(()=>document.activeElement?.tagName),'TEXTAREA');assert.equal(completions.length,0);
-  await (await input()).focus();await page.keyboard.down('Shift');await page.keyboard.press('Tab');await page.keyboard.up('Shift');assert.notEqual(await page.evaluate(()=>document.activeElement?.tagName),'TEXTAREA');assert.equal(completions.length,0);passed.push('空输入和 ShiftTab 保持焦点导航');
+  await fill('');await page.keyboard.press('Tab');assert.equal(await value(),'最近有哪些订单需要跟进？');assert.equal(completions.length,0);
+  await (await input()).focus();await page.keyboard.down('Shift');await page.keyboard.press('Tab');await page.keyboard.up('Shift');assert.notEqual(await page.evaluate(()=>document.activeElement?.tagName),'TEXTAREA');assert.equal(completions.length,0);passed.push('空输入 Tab 采用本地建议，ShiftTab 保持焦点导航');
   await fill('正在输入');await page.evaluate(()=>{const node=document.querySelector('textarea');node.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));node.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,keyCode:229,bubbles:true,cancelable:true}));node.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',isComposing:true,keyCode:229,bubbles:true,cancelable:true}));node.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));});
   assert.equal(completions.length,0);assert.equal(sends.length,0);passed.push('中文组合输入不补全、不发送');
 
@@ -154,19 +154,29 @@ try {
   assert.equal(await value(),'发送过程中写的下一条草稿');assert.equal(await page.$('.composer-completion.has-preview'),null);passed.push('发送与延迟补全不覆盖后续草稿');
 
   await switchTo('other');await fill('旧会话请求');await page.keyboard.press('Tab');await wait(()=>document.body.textContent.includes('正在补全'));await switchTo('recent');await response(4,'不得落入新会话');await new Promise(resolve=>setTimeout(resolve,80));assert.equal(await value(),'');passed.push('换会话丢弃旧响应');
-  await finish('recent');await wait(()=>document.body.textContent.includes('正在整理后续问题'));assert.equal(followups.length,1);assert.deepEqual(followups[0].body,{conversation_id:'recent',run_id:'run-recent'});
+  const openSuggestions = async expectedCalls => {
+    await page.waitForSelector('.composer-followups summary');
+    assert.equal(followups.length, expectedCalls, 'A collapsed suggestion list must cost zero requests');
+    await page.click('.composer-followups summary');
+    await wait(() => document.body.textContent.includes('正在整理后续问题'));
+  };
+  await finish('recent');await openSuggestions(0);assert.equal(followups.length,1);assert.deepEqual(followups[0].body,{conversation_id:'recent',run_id:'run-recent'});
   await reply(followups[0].request,{suggestions:['哪些客户的订单最多？','按区域比较订单金额。','查看本周发货明细。'],router:{mode:'provider'}});await page.waitForSelector('.composer-followups button');assert.equal(sends.length,1);
+  await page.click('.composer-followups summary');
+  await page.click('.composer-followups summary');
+  await page.waitForSelector('.composer-followups button');
+  assert.equal(followups.length, 1, 'Reopening the same answer reuses its suggestions');
   await page.$eval('.composer-followups button',node=>node.click());assert.equal(await value(),'哪些客户的订单最多？');assert.equal(sends.length,1);passed.push('新轮次建议只传 IDs，点击只预填');
 
-  await switchTo('draft-race');await finish('draft-race');await wait(()=>document.body.textContent.includes('正在整理后续问题'));assert.equal(followups.length,2);
+  await switchTo('draft-race');await finish('draft-race');await openSuggestions(1);assert.equal(followups.length,2);
   await fill('我已有下一步');await reply(followups[1].request,{suggestions:['过期建议'],router:{mode:'provider'}});await new Promise(resolve=>setTimeout(resolve,80));assert.equal(await value(),'我已有下一步');
-  await fill('');await new Promise(resolve=>setTimeout(resolve,100));assert.equal(await page.$('.composer-followups'),null);assert.equal(followups.length,2);passed.push('建议 pending 时输入取消，清空后无悬挂 spinner 或重复调用');
+  await fill('');await new Promise(resolve=>setTimeout(resolve,100));assert.equal(await page.$('.composer-followups[open]'),null);assert.equal(followups.length,2);passed.push('建议 pending 时输入取消，清空后无悬挂 spinner 或重复调用');
 
   await switchTo('failure');await finish('failure','failed');await new Promise(resolve=>setTimeout(resolve,100));assert.equal(followups.length,2);passed.push('失败任务不请求建议');
   await switchTo('trial');await finish('trial');await new Promise(resolve=>setTimeout(resolve,100));assert.equal(followups.length,2);passed.push('未开放 capability 的 trial 不请求建议');
-  await switchTo('empty-response');await finish('empty-response');await wait(()=>document.body.textContent.includes('正在整理后续问题'));assert.equal(followups.length,3);await reply(followups[2].request,{suggestions:[],router:{mode:'unavailable'}});await wait(()=>!document.querySelector('.composer-followups'));assert.equal(await value(),'');passed.push('无模型/空建议不造模板');
+  await switchTo('empty-response');await finish('empty-response');await openSuggestions(2);assert.equal(followups.length,3);await reply(followups[2].request,{suggestions:[],router:{mode:'unavailable'}});await wait(()=>document.body.textContent.includes('暂无后续问题'));assert.equal(await value(),'');passed.push('空建议不造模板');
 
-  await switchTo('network-error');await finish('network-error');await wait(()=>document.body.textContent.includes('正在整理后续问题'));assert.equal(followups.length,4);await reply(followups[3].request,{error:{message:'辅助请求暂不可用'}},503);await page.waitForSelector('.composer-followups-notice');assert.equal(await page.$('.composer-area .notice.error'),null);await fill('继续问我的业务问题');assert.equal(await page.$('.composer-followups'),null);assert.equal(await page.$eval('button[aria-label="发送消息"]',node=>node.disabled),false);passed.push('建议请求失败不阻塞主会话或发送');
+  await switchTo('network-error');await finish('network-error');await openSuggestions(3);assert.equal(followups.length,4);await reply(followups[3].request,{error:{message:'辅助请求暂不可用'}},503);await page.waitForSelector('.composer-followups-notice');assert.equal(await page.$('.composer-area .notice.error'),null);await fill('继续问我的业务问题');assert.equal(await page.$('.composer-followups'),null);assert.equal(await page.$eval('button[aria-label="发送消息"]',node=>node.disabled),false);passed.push('建议请求失败不阻塞主会话或发送');
 
   await fill('请按客户分析本周订单，指出需要关注的变化。');await page.keyboard.press('Tab');await wait(()=>document.body.textContent.includes('正在补全'));await response(5,'请按客户汇总本周订单数量与金额，列出与上周相比变化较大的客户，并注明统计范围和来源。');await page.waitForSelector('.composer-completion.has-preview');
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:path.join(output,'输入区_桌面_交互夹具.png')});
@@ -178,9 +188,9 @@ try {
   await page.evaluate(()=>window.setComposerCapabilities(['messages.send','runs.read']));await wait(()=>!document.querySelector('.composer-completion'));
   await page.evaluate(()=>window.setComposerCapabilities(['messages.send','models.complete','models.followups','runs.read']));await (await input()).focus();await page.keyboard.press('Tab');await wait(()=>document.body.textContent.includes('正在补全'));assert.equal(completions.length,8);
   const reenabledSuggestion=await response(7,'重新启用后可正常补全。');await page.waitForSelector('.composer-completion.has-preview');await response(6,'已关闭能力的过期响应');assert.equal(await page.$eval('.composer-completion p',el=>el.textContent),reenabledSuggestion);passed.push('补全能力关闭即取消，重新开启不残留 busy，旧响应丢弃');
-  await fill('');await finish('trial-hot');await wait(()=>document.body.textContent.includes('正在整理后续问题'));assert.equal(followups.length,5);
+  await fill('');await finish('trial-hot');await openSuggestions(4);assert.equal(followups.length,5);
   await page.evaluate(()=>window.setComposerCapabilities(['messages.send','models.complete','runs.read']));await wait(()=>!document.querySelector('.composer-followups'));
-  await page.evaluate(()=>window.setComposerCapabilities(['messages.send','models.complete','models.followups','runs.read']));await reply(followups[4].request,{suggestions:['不应显示的旧建议'],router:{mode:'provider'}});await new Promise(resolve=>setTimeout(resolve,80));assert.equal(await page.$('.composer-followups'),null);assert.equal(followups.length,5);passed.push('后续建议能力关闭清除等待，重开不显示旧状态或重复调用');
+  await page.evaluate(()=>window.setComposerCapabilities(['messages.send','models.complete','models.followups','runs.read']));await reply(followups[4].request,{suggestions:['不应显示的旧建议'],router:{mode:'provider'}});await new Promise(resolve=>setTimeout(resolve,80));assert.equal(await page.$('.composer-followups[open]'),null);assert.equal(followups.length,5);passed.push('后续建议能力关闭清除等待，重开不显示旧状态或重复调用');
 
   const paste = (text, useImage) => page.evaluate(({text,useImage,bytes}) => {
     const data = new DataTransfer();

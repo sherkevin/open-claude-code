@@ -87,6 +87,12 @@ class HarnessToolBridge:
                      "additionalProperties": False}}
                 for tool in self.tools.values()
                 if policy.tool_allowed(f"mcp__workspace__{tool.name}")]
+        for definition in workspace:
+            if definition["name"] == "delegate_tasks":
+                schema = definition["input_schema"]
+                schema["required"] = ["tasks"]
+                tasks = schema["properties"]["tasks"]
+                tasks["items"] = {"type": "string"}
         business = [tool.definition() for tool in self.business_tools.values()
                     if policy.tool_allowed(tool.canonical_name)]
         memory = [item for item in self.memory.definitions()

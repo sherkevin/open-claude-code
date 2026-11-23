@@ -62,6 +62,9 @@ describe('followups only use a finished current answer',()=>{
     expect(completedAnswerRun('c1',run,[{...answer,text:'  '}])).toBeNull();
     expect(completedAnswerRun('c1',{...run,kind:'compact'},[answer])).toBeNull();
   });
+  it('offers no follow-up for a local product identity answer',()=>{
+    expect(completedAnswerRun('c1',{...run,execution_kind:'product_metadata'},[answer])).toBeNull();
+  });
   it.each(['running','queued','failed','cancelled','interrupted','awaiting_approval','cancelling'] as const)('does not promote %s into a completed answer',status=>{
     expect(completedAnswerRun('c1',{...run,status},[answer])).toBeNull();
   });
@@ -71,7 +74,7 @@ describe('followups only use a finished current answer',()=>{
     expect(followupTexts([])).toEqual([]);
   });
   it('uses non-submitting buttons and announces pending states',()=>{
-    const suggestions=renderToStaticMarkup(<ComposerFollowups value={{busy:false,suggestions:['看看明细'],notice:'',runId:'r1'}} onChoose={()=>{}}/>);
+    const suggestions=renderToStaticMarkup(<ComposerFollowups value={{busy:false,suggestions:['看看明细'],notice:'',runId:'r1'}} onOpen={()=>{}} onChoose={()=>{}}/>);
     expect(suggestions).toContain('type="button"');expect(suggestions).not.toContain('type="submit"');
     const pending=renderToStaticMarkup(<ComposerCompletion value={{busy:true,suggestion:'',notice:''}} onAccept={()=>{}} onDismiss={()=>{}}/>);
     expect(pending).toContain('role="status"');expect(pending).toContain('正在补全');expect(pending).toContain('取消补全');
@@ -80,7 +83,7 @@ describe('followups only use a finished current answer',()=>{
 
 
 it('keeps long followup suggestions collapsed by default and accessible for explicit expansion',()=>{
- const html=renderToStaticMarkup(<ComposerFollowups value={{busy:false,suggestions:['按客户核对本月发货数量和关联订单金额，并说明范围。','核对尚未发货的订单'],notice:'',runId:'r1'}} onChoose={()=>{}}/>);
+ const html=renderToStaticMarkup(<ComposerFollowups value={{busy:false,suggestions:['按客户核对本月发货数量和关联订单金额，并说明范围。','核对尚未发货的订单'],notice:'',runId:'r1'}} onOpen={()=>{}} onChoose={()=>{}}/>);
  expect(html).toContain('<details');expect(html).toContain('<summary>');expect(html).not.toContain(' open=');
  expect(html).toContain('2 个问题');expect(html).toContain('按客户核对本月发货数量和关联订单金额，并说明范围。');
 });

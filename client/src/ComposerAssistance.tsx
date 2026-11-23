@@ -17,6 +17,7 @@ export function composerShortcut(event: ShortcutEvent, state: { composing: boole
 }
 
 export function completedAnswerRun(conversationId: string, run: Run | null, messages: Message[]) {
+  if (run?.execution_kind === 'product_metadata') return null;
   const last = messages.at(-1);
   return run?.conversation_id === conversationId && run.status === 'succeeded' && run.kind !== 'compact' && last?.role === 'assistant' && last.run_id === run.id && !!last.text.trim() ? run.id : null;
 }
@@ -70,8 +71,7 @@ export function useComposerAssistance(options: Options) {
   const completionRequest = useRef<AbortController | null>(null);
   const followupRequest = useRef<AbortController | null>(null);
   const acceptedOrigin = useRef<{ scope: string; draft: string; revision: number } | null>(null);
-  const observedActive = useRef(new Set<string>());
-  const requestedFollowups = useRef(new Set<string>());
+  const observedActive = useRef<string | null>(null);
   const [completion, setCompletion] = useState<Completion>(emptyCompletion);
   const [followups, setFollowups] = useState<Followups>(emptyFollowups);
   const [previewDismissed, setPreviewDismissed] = useState(false);
@@ -146,35 +146,42 @@ export function useComposerAssistance(options: Options) {
 
   const answerRunId = completedAnswerRun(options.conversationId, options.run, options.messages);
   useEffect(() => {
-    const start = latest.current;
-    if (start.run?.conversation_id === start.conversationId && isActive(start.run.status)) observedActive.current.add(`${start.conversationId}:${start.run.id}`);
-    if (!answerRunId || !start.settled || start.disabled || !start.followupsEnabled || start.draft.length > 0 || start.hasExtraDraft) return;
-    const key = `${start.conversationId}:${answerRunId}`;
-    // Reading an old conversation never spends a new model request.
-    if (!observedActive.current.has(key) || requestedFollowups.current.has(key)) return;
-    let alive = true;
-    const controller = new AbortController(); const token = revision.current;
-    const current = () => alive && mounted.current && !controller.signal.aborted && followupRequest.current === controller && token === revision.current && latest.current.conversationId === start.conversationId && latest.current.run?.id === answerRunId && latest.current.run?.status === 'succeeded' && latest.current.followupsEnabled && !latest.current.disabled && !latest.current.draft.length && !latest.current.hasExtraDraft;
-    // Deferring one microtask avoids spending twice on React StrictMode's
-    // setup/cleanup probe. Once requested, draft edits never trigger a rerun.
-    queueMicrotask(() => {
-      if (!alive || !mounted.current || token !== revision.current) return;
-      requestedFollowups.current.add(key); followupRequest.current = controller;
-      setFollowups({ busy: true, suggestions: [], notice: '', runId: answerRunId });
-      void api<{ suggestions: unknown; router: { mode: string } }>('/models/followups', { method: 'POST', body: JSON.stringify({ conversation_id: start.conversationId, run_id: answerRunId }), signal: controller.signal }).then(result => {
-        if (current()) setFollowups({ busy: false, suggestions: followupTexts(result.suggestions), notice: '', runId: answerRunId });
-      }).catch(() => {
-        if (current()) setFollowups({ busy: false, suggestions: [], notice: '后续建议暂不可用。', runId: answerRunId });
-      }).finally(() => { if (followupRequest.current === controller) followupRequest.current = null; });
-    });
-    return () => { alive = false; controller.abort(); };
-  }, [options.conversationId, options.run?.id, options.run?.status, answerRunId, options.settled, options.disabled, options.followupsEnabled, options.draft, options.hasExtraDraft]);
+    if (options.run?.conversation_id === options.conversationId && isActive(options.run.status)) {
+      observedActive.current = options.run.id;
+    }
+  }, [options.conversationId, options.run?.id, options.run?.status]);
 
+  const offeredRunId = options.settled && !options.disabled && options.followupsEnabled && !options.draft.length
+    && !options.hasExtraDraft && answerRunId === observedActive.current ? answerRunId : null;
+  const loadFollowups = async () => {
+    if (!offeredRunId || followupRequest.current || followups.runId === offeredRunId) return;
+    const start = latest.current;
+    const controller = new AbortController();
+    followupRequest.current = controller;
+    const current = () => mounted.current && followupRequest.current === controller && !controller.signal.aborted
+      && latest.current.conversationId === start.conversationId && latest.current.run?.id === offeredRunId
+      && latest.current.run.status === 'succeeded' && latest.current.followupsEnabled && !latest.current.disabled
+      && !latest.current.draft.length && !latest.current.hasExtraDraft;
+    setFollowups({ busy: true, suggestions: [], notice: '', runId: offeredRunId });
+    try {
+      const result = await api<{ suggestions: unknown }>('/models/followups', { method: 'POST',
+        body: JSON.stringify({ conversation_id: start.conversationId, run_id: offeredRunId }), signal: controller.signal });
+      if (current()) {
+        const suggestions = followupTexts(result.suggestions);
+        setFollowups({ busy: false, suggestions, notice: suggestions.length ? '' : '暂无后续问题。', runId: offeredRunId });
+      }
+    } catch {
+      if (current()) setFollowups({ busy: false, suggestions: [], notice: '后续建议暂不可用。', runId: offeredRunId });
+    } finally {
+      if (followupRequest.current === controller) followupRequest.current = null;
+    }
+  };
   const chooseFollowup = (text: string) => {
     if (latest.current.disabled || latest.current.draft.length || latest.current.hasExtraDraft || latest.current.run?.id !== followups.runId || latest.current.run?.status !== 'succeeded' || !followups.suggestions.includes(text)) return;
     invalidate(); latest.current.onDraft(text);
   };
-  const visibleFollowups = options.followupsEnabled && !options.disabled && !options.draft.length && !options.hasExtraDraft && options.run?.id === followups.runId && answerRunId === followups.runId ? followups : emptyFollowups;
+  const visibleFollowups = offeredRunId && offeredRunId === followups.runId
+    ? followups : { ...emptyFollowups, runId: offeredRunId };
   const canPreviewInline = options.completionEnabled && !options.disabled && options.settled && !options.hasExtraDraft
     && (!options.run || !isActive(options.run.status)) && !completion.busy && !completion.suggestion && !previewDismissed;
   let inlineSuggestion = '';
@@ -189,7 +196,7 @@ export function useComposerAssistance(options: Options) {
     latest.current.onDraft(inlineSuggestion);
   };
   const dismiss = () => { invalidate(); setPreviewDismissed(true); };
-  return { completion, inlineSuggestion, acceptSuggestion, dismiss, followups: visibleFollowups, complete, accept, invalidate, chooseFollowup, version: () => revision.current };
+  return { completion, inlineSuggestion, acceptSuggestion, dismiss, followups: visibleFollowups, complete, accept, invalidate, chooseFollowup, loadFollowups, version: () => revision.current };
 }
 
 export function ComposerCompletion({ value, onAccept, onDismiss }: { value: Completion; onAccept: () => void; onDismiss: () => void }) {
@@ -200,11 +207,14 @@ export function ComposerCompletion({ value, onAccept, onDismiss }: { value: Comp
   </div>;
 }
 
-export function ComposerFollowups({ value, onChoose }: { value: Followups; onChoose: (text: string) => void }) {
-  if (!value.busy && !value.suggestions.length && !value.notice) return null;
-  if (value.busy || value.notice) return <div className="composer-followups composer-followups-state" role="status">{value.busy ? <span className="composer-followups-pending"><LoaderCircle size={13} className="spin"/>正在整理后续问题…</span> : <span className="composer-followups-notice">{value.notice}</span>}</div>;
-  return <details className="composer-followups" aria-label="下一步问题建议">
-    <summary><span>继续了解</span><span>{value.suggestions.length} 个问题<ChevronDown size={14}/></span></summary>
-    <div>{value.suggestions.map(text => <button key={text} type="button" onClick={() => onChoose(text)}>{text}<ArrowUpLeft size={13}/></button>)}</div>
+export function ComposerFollowups({ value, onOpen, onChoose }: { value: Followups; onOpen: () => void; onChoose: (text: string) => void }) {
+  if (!value.runId) return null;
+  return <details className="composer-followups" aria-label="下一步问题建议" onToggle={event => {
+    if (event.currentTarget.open) onOpen();
+  }}>
+    <summary><span>继续了解</span><span>{value.suggestions.length > 0 && `${value.suggestions.length} 个问题`}<ChevronDown size={14}/></span></summary>
+    {value.busy || value.notice
+      ? <div role="status">{value.busy ? <span className="composer-followups-pending"><LoaderCircle size={13} className="spin"/>正在整理后续问题…</span> : <span className="composer-followups-notice">{value.notice}</span>}</div>
+      : <div>{value.suggestions.map(text => <button key={text} type="button" onClick={() => onChoose(text)}>{text}<ArrowUpLeft size={13}/></button>)}</div>}
   </details>;
 }

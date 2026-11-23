@@ -51,6 +51,61 @@ def test_followups_disabled_route_has_no_invented_question(client):
     assert result.json()["router"]["provider_attempted"] is False
 
 
+@pytest.mark.parametrize("text,execution_kind,suggestions,expected_calls", [
+    ("你是谁？", "product_metadata", [], 0),
+    ("你是谁？请比较甲乙公司的订单金额。", "model", ["甲乙公司的订单金额相差多少？"], 1),
+], ids=["identity-only", "mixed-business"])
+def test_identity_only_turn_skips_followup_call_on_cold_start(client, monkeypatch, text, execution_kind, suggestions, expected_calls):
+    cid = conversation(client)["id"]
+    rid = send(client, cid, text)["run_id"]
+    run = poll(client, rid)
+    assert run["status"] == "succeeded" and run["execution_kind"] == execution_kind
+
+    service = client.app.state.service
+    if execution_kind == "model":
+        # The shared fake runtime echoes the question. Supply a business result
+        # with the two values needed to answer the follow-up.
+        service.db.execute("UPDATE messages SET text=? WHERE id=?", (
+            "甲公司的订单金额为 120 元，乙公司为 90 元。", run["assistant_message_id"]))
+    monkeypatch.setattr(service.settings, "tab_completion_enabled", True)
+    monkeypatch.setattr(service.settings, "model_router_budget_usd", 1)
+    monkeypatch.setattr("app.model_followups._tab_target", lambda _: (
+        "deepseek-v4.1-flash-1017", {"upstream_model": "deepseek-v4.1-flash-1017"}, None))
+    monkeypatch.setattr(service, "effective_provider", lambda _: {
+        "ANTHROPIC_API_KEY": "test-only", "ANTHROPIC_BASE_URL": "https://tokenhub.tencentmaas.com"})
+    requests = []
+    usage = {"input_tokens": 111, "output_tokens": 4 if not suggestions else 22}
+    original_client = httpx.AsyncClient
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "content": [{"text": json.dumps({"suggestions": suggestions}, ensure_ascii=False)}],
+            "usage": usage,
+        })
+
+    monkeypatch.setattr("app.model_followups.httpx.AsyncClient", lambda **kwargs:
+                        original_client(**kwargs, transport=httpx.MockTransport(respond)))
+    payload = {"conversation_id": cid, "run_id": rid}
+    service.create_user({"username": "other", "display_name": "Other", "password": PASSWORD, "role": "member"})
+    login(client, "other")
+    assert client.post("/api/v1/models/followups", json=payload).status_code == 404
+    assert not requests
+
+    login(client)
+    response = client.post("/api/v1/models/followups", json=payload)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["suggestions"] == suggestions
+    receipts = service.db.all("SELECT status,usage FROM model_usage_calls WHERE kind='followups'")
+    reported_usage = [json.loads(row["usage"]) for row in receipts]
+    reported_usage = [{key: receipt[key] for key in usage} for receipt in reported_usage]
+    assert (len(requests), reported_usage) == (expected_calls, [usage] * expected_calls)
+    assert result["router"]["provider_attempted"] is bool(expected_calls)
+    assert result["router"]["mode"] == ("authorized" if expected_calls else "not_applicable")
+    assert all(row["status"] == "succeeded" for row in receipts)
+
+
 def test_context_is_bounded_and_question_output_is_plain_text():
     service = SimpleNamespace(db=SimpleNamespace(one=lambda *_: {"text": "token=credential123 " + "业务数据" * 2000}))
     context = _context(service, {"message_id": "q", "assistant_message_id": "a", "conversation_id": "c"})

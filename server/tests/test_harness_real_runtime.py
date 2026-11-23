@@ -49,8 +49,9 @@ COMPACTION_SUMMARY = """## Primary Request and Intent
 
 
 @pytest.fixture
-def model_server():
+def model_server(request):
     requests, released = [], threading.Event()
+    choose_reply = request.param() if hasattr(request, "param") else None
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -92,7 +93,10 @@ def model_server():
                 event("message_start", {"message": {"id": f"msg-{len(requests)}", "type": "message", "role": "assistant", "model": "fixture",
                       "content": [], "stop_reason": None, "stop_sequence": None,
                       "usage": start_usage}})
-                if compaction_request:
+                tool_call = None
+                if choose_reply:
+                    answer, tool_call = choose_reply(body, blocks, result)
+                elif compaction_request:
                     answer = COMPACTION_SUMMARY
                 elif result:
                     source = re.search(r"\[\[source:[A-Za-z0-9_-]+\]\]", json.dumps(result, ensure_ascii=False))
@@ -104,7 +108,7 @@ def model_server():
                               "CHILD_RESULT_2" if "CASE_CHILD_2" in text else
                               "追加指令已收到" if "CASE_STEER_APPLIED" in text else
                               "恢复成功" if "CASE_RESUME" in text else "实时回复成功")
-                if not compaction_request and result is None and any(marker in text for marker in ("CASE_KNOWLEDGE", "CASE_XLSX", "CASE_ASK", "CASE_PLAN", "CASE_DELEGATE")):
+                if not choose_reply and not compaction_request and result is None and any(marker in text for marker in ("CASE_KNOWLEDGE", "CASE_XLSX", "CASE_ASK", "CASE_PLAN", "CASE_DELEGATE")):
                     name = "knowledge_search" if "CASE_KNOWLEDGE" in text else "generate_xlsx"
                     arguments = {"query": "P-900 pressure", "limit": 3} if name == "knowledge_search" else {
                         "filename": "approved.xlsx", "sheets": [{"name": "数据", "rows": [["项目", "数值"], ["压力", 7]]}]}
@@ -117,6 +121,9 @@ def model_server():
                             "CASE_CHILD_1 统计商品总数。内部参考 PRIVATE_TASK_DETAIL_1。",
                             "CASE_CHILD_2 整理交付检查清单。内部参考 PRIVATE_TASK_DETAIL_2。",
                         ]}
+                    tool_call = name, arguments
+                if tool_call:
+                    name, arguments = tool_call
                     event("content_block_start", {"index": 0, "content_block": {"type": "tool_use", "id": f"call-{len(requests)}", "name": name, "input": {}}})
                     event("content_block_delta", {"index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps(arguments)}})
                     reason = "tool_use"
@@ -242,6 +249,96 @@ def test_real_harness_child_delegation(tmp_path, model_server):
         usage = client.get("/api/v1/usage").json()
         independent = next(item for item in usage["by_kind"] if item["kind"] == "subagent")
         assert independent["model_call_count"] == 2 and independent["output_tokens"] == 16
+
+
+PILOT_QUESTION = "我们准备先在两个门店试销，供应商每周补一次货，售后由门店接单。请评估供货风险，并给出门店售后接单流程。"
+PILOT_TASKS = [
+    "【风险评估】两个门店试销，每周补货一次。列出补货风险和应对措施。",
+    "两个门店试销，由门店接售后单。写出门店接单和交接流程。",
+]
+PILOT_FINDINGS = ["每周补货可能使断货延续，需预留安全库存。", "门店先登记问题，再记录责任人与处理时限。"]
+
+
+def delegation_reply():
+    # This fixture exercises the real wire contract. It scripts the model's
+    # behavior so the same question can be tested with and without guidance.
+    workers_ready = threading.Barrier(2, timeout=30)
+
+    def reply(body, blocks, result):
+        text = next((block["text"] for block in blocks if block["type"] == "text"), "")
+        if not body.get("tools") and text in PILOT_TASKS:
+            # Neither worker can reply until both provider requests are active.
+            workers_ready.wait()
+            return PILOT_FINDINGS[PILOT_TASKS.index(text)], None
+        if result:
+            returned = json.dumps(result, ensure_ascii=False)
+            answer = "\n".join(finding for finding in PILOT_FINDINGS if finding in returned)
+            return answer or "没有取得子任务结论。", None
+        tool = next((item for item in body.get("tools", []) if item["name"] == "delegate_tasks"), None)
+        guided = "就主动调用 delegate_tasks" in body.get("system", "")
+        if text == PILOT_QUESTION and tool and guided:
+            return "", ("delegate_tasks", {"tasks": PILOT_TASKS})
+        return "根据现有信息直接回答。", None
+
+    return reply
+
+
+@pytest.mark.parametrize("model_server", [delegation_reply], indirect=True)
+@pytest.mark.parametrize(("question", "guidance", "capacity", "children"), [
+    pytest.param(PILOT_QUESTION, True, 4, 2, id="independent"),
+    pytest.param(PILOT_QUESTION, False, 4, 0, id="without-parent-guidance"),
+    pytest.param(PILOT_QUESTION, True, 1, 0, id="tool-unavailable"),
+    pytest.param("两个门店试销，供应商每周补一次货。每周补货几次？", True, 4, 0, id="simple"),
+    pytest.param("两个门店试销，每周分别卖 10 件和 15 件。先算每周总销量，再按这个结果算两周需准备多少货。", True, 4, 0, id="dependent"),
+])
+def test_real_harness_business_delegation_contract(tmp_path, model_server, monkeypatch, question, guidance, capacity, children):
+    node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires pinned Node Harness")
+    if not guidance:
+        monkeypatch.setattr("app.harness_runtime.DELEGATE_TASKS_GUIDANCE", "")
+    base, requests = model_server
+    settings = image_fixture_settings(tmp_path, node, source, base)
+    settings.max_active_sessions = capacity
+    app = create_app(settings)
+    with TestClient(app) as client:
+        app.state.service.create_user({"username": "admin", "display_name": "管理员", "password": PASSWORD, "role": "admin"})
+        login(client)
+        assistant = client.post("/api/v1/assistants", json={"name": "门店试销", "instructions": "PARENT_PRIVATE_SENTINEL", "connections": []}).json()
+        conversation = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()
+        run = send(client, conversation["id"], question)["run_id"]
+        assert wait_run(client, run)["status"] == "succeeded"
+
+        initial = requests[0]
+        assert initial.get("tool_choice") in (None, {"type": "auto"}, "auto")
+        parent_prompt = initial["system"]
+        tool = next((item for item in initial["tools"] if item["name"] == "delegate_tasks"), None)
+        assert ("就主动调用 delegate_tasks" in parent_prompt) == (guidance and capacity > 1)
+        assert bool(tool) == (capacity > 1)
+        if tool:
+            schema = tool["input_schema"]
+            assert schema["required"] == ["tasks"]
+            assert schema["properties"]["tasks"]["items"]["type"] == "string"
+
+        plans = client.get(f"/api/v1/conversations/{conversation['id']}/subagent-plans").json()
+        messages = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()
+        if not children:
+            assert plans == [] and len(requests) == 1
+            assert messages[-1]["text"] == "根据现有信息直接回答。"
+            return
+
+        plan = client.get(f"/api/v1/runs/{run}/subagents").json()
+        assert len(plans) == 1 and plan["counts"]["succeeded"] == children
+        assert len(requests) == children + 2
+        workers = [item for item in requests if not item.get("tools")]
+        assert len(workers) == children
+        worker_messages = [json.dumps(item["messages"], ensure_ascii=False) for item in workers]
+        assert all(sum(task in message for message in worker_messages) == 1 for task in PILOT_TASKS)
+        assert all(sum(task in message for task in PILOT_TASKS) == 1 for message in worker_messages)
+        assert all(question not in message for message in worker_messages)
+        assert all("PARENT_PRIVATE_SENTINEL" not in json.dumps(item) and item["max_tokens"] <= 800 for item in workers)
+        assert all("就主动调用 delegate_tasks" not in item["system"] for item in workers)
+        assert messages[-1]["text"] == "\n".join(PILOT_FINDINGS)
 
 
 def test_real_harness_cancelling_parent_stops_child(tmp_path, model_server):

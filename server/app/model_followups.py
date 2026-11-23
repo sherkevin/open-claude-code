@@ -113,6 +113,9 @@ async def conversation_followups(service, conversation_id, run_id, user):
     run = await offload(_current_run, service, conversation_id, run_id, user)
     if not run:
         return _empty("not_current")
+    # The server answers identity-only turns from product metadata.
+    if json.loads(run.get("execution_meta") or "{}").get("execution_kind") == "product_metadata":
+        return _empty("not_applicable")
     # Service-local, bounded cache. Authorize again before every cache lookup.
     # Concurrent requests for one run share a task, so opening two tabs cannot
     # multiply model cost. No credentials or provider settings enter the cache.

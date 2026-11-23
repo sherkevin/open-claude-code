@@ -107,6 +107,20 @@ def test_registry_uses_live_assistant_when_no_snapshot(runtime):
     assert runtime.calls[0][2]["knowledge_base_ids"] == ["kb", "new-kb"]
 
 
+@pytest.mark.parametrize("tasks", [[], ["核对试销总量"]])
+def test_model_delegation_requires_more_than_one_analysis(runtime, tasks):
+    runtime.config["runtime_type"] = "harness"
+    runtime.service.settings.max_active_sessions = 4
+
+    def unexpected_plan(*args):
+        pytest.fail("A single analysis must not start a child plan")
+
+    runtime.service.subagents = SimpleNamespace(create_plan=unexpected_plan)
+    delegate = registry(runtime)["delegate_tasks"]
+    result = asyncio.run(delegate.handler({"tasks": tasks}))
+    assert result["is_error"] and "至少需要两项" in result["content"][0]["text"]
+
+
 def test_sdk_wrapper_preserves_registry_metadata_and_server_contract(runtime, monkeypatch):
     captured = {}
 
