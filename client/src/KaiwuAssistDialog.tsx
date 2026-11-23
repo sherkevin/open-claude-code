@@ -64,9 +64,8 @@ function describeJob(job: Job): string {
 }
 
 function deviceName(device: Device): string {
-  const parts = [device.tenant_name, device.device_label || device.id, device.online ? '在线' : '暂未连接'];
-  if (device.active_session_id) parts.push('已发起协助');
-  return parts.join(' · ');
+  const status = device.active_session_id ? '已发起协助' : device.online ? '在线' : '等待本机发起';
+  return [device.tenant_name, device.device_label || device.id, status].join(' · ');
 }
 
 export function useKaiwuAssistDevices(enabled: boolean) {
