@@ -61,6 +61,19 @@ describe('subagent progress', () => {
     expect(html).not.toMatch(/<(?:a|img)\b|\b(?:href|src)="|answer-sources|source-inline/);
   });
 
+  it('shows output-limited children as interrupted with any partial text and reported tokens', () => {
+    const usage = { input_tokens: 12, output_tokens: 800 };
+    const html = render([
+      { ...child('interrupted', 0), stop_reason: 'max_tokens', result: { output: '确认库存 8 件。' }, observed_usage: usage },
+      { ...child('interrupted', 1), stop_reason: 'max_tokens', result: { output: '' }, observed_usage: usage },
+    ]);
+    expect(html).toContain('0/2 项完成 · 2 项已中断');
+    expect(html.match(/子任务达到模型输出上限/g)).toHaveLength(2);
+    expect(html.match(/输入 12 · 输出 800 token/g)).toHaveLength(2);
+    expect(html).toContain('确认库存 8 件。');
+    expect(html.match(/aria-label="子任务结果"/g)).toHaveLength(1);
+  });
+
   it('renders actual structured output and omits empty plans', () => {
     expect(render([{ ...child('succeeded', 0), result: { output: { orders: 0 } } }])).toContain('&quot;orders&quot;: 0');
     expect(render([])).toBe('');

@@ -87,6 +87,8 @@ def model_server(request):
                 self.wfile.flush()
 
             try:
+                max_tokens = not body.get("tools") and "CASE_CHILD_LIMIT_" in text
+                empty_limit = max_tokens and "CASE_CHILD_LIMIT_EMPTY" in text
                 start_usage = ({"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
                                if "CASE_USAGE_ZERO" in text else {}
                                if "CASE_USAGE_MISSING" in text else {"input_tokens": 37 if compaction_request else 9000 if "CASE_PRESSURE_SOURCE" in text else 12, "output_tokens": 0})
@@ -128,22 +130,25 @@ def model_server(request):
                     event("content_block_delta", {"index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps(arguments)}})
                     reason = "tool_use"
                 else:
-                    event("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}})
-                    event("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": answer[:2]}})
-                    if "CASE_HANG" in text or compaction_request and "CASE_COMPACTION_HANG" in json.dumps(body):
-                        released.wait(30)
-                    elif "CASE_STEER_WINDOW" in text and "CASE_STEER_APPLIED" not in text:
-                        time.sleep(2.5)
-                    else:
-                        time.sleep(0.15)
-                    if "CASE_BROKEN" in text:
-                        return
-                    event("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": answer[2:]}})
-                    reason = "end_turn"
-                event("content_block_stop", {"index": 0})
+                    reason = "max_tokens" if max_tokens else "end_turn"
+                    if not empty_limit:
+                        event("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}})
+                        event("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": answer[:2]}})
+                        if "CASE_HANG" in text or compaction_request and "CASE_COMPACTION_HANG" in json.dumps(body):
+                            released.wait(30)
+                        elif "CASE_STEER_WINDOW" in text and "CASE_STEER_APPLIED" not in text:
+                            time.sleep(2.5)
+                        else:
+                            time.sleep(0.15)
+                        if "CASE_BROKEN" in text:
+                            return
+                        event("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": answer[2:]}})
+                if not empty_limit:
+                    event("content_block_stop", {"index": 0})
                 event("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None},
-                                        "usage": {} if "CASE_USAGE_MISSING" in text else {"output_tokens": 0 if "CASE_USAGE_ZERO" in text else 6 if compaction_request else 8}})
-                event("message_stop", {})
+                                        "usage": {} if "CASE_USAGE_MISSING" in text else {"output_tokens": 800 if max_tokens else 0 if "CASE_USAGE_ZERO" in text else 6 if compaction_request else 8}})
+                if "CASE_CHILD_LIMIT_NO_STOP" not in text:
+                    event("message_stop", {})
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
@@ -251,6 +256,60 @@ def test_real_harness_child_delegation(tmp_path, model_server):
         assert independent["model_call_count"] == 2 and independent["output_tokens"] == 16
 
 
+def output_limit_delegation_reply():
+    def reply(body, blocks, result):
+        if not body.get("tools"):
+            return "已确认部分库存：8 件。", None
+        if result:
+            return "已读取子任务回执。", None
+        return "", ("delegate_tasks", {"tasks": ["CASE_CHILD_LIMIT_TEXT", "CASE_CHILD_LIMIT_EMPTY", "CASE_CHILD_LIMIT_NO_STOP"]})
+
+    return reply
+
+
+@pytest.mark.parametrize("model_server", [output_limit_delegation_reply], indirect=True)
+def test_real_harness_child_output_limit(tmp_path, model_server):
+    node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires pinned Node Harness")
+    base, requests = model_server
+    app = create_app(image_fixture_settings(tmp_path, node, source, base))
+    with TestClient(app) as client:
+        service = app.state.service
+        service.create_user({"username": "admin", "display_name": "管理员", "password": PASSWORD, "role": "admin"})
+        login(client)
+        assistant = client.post("/api/v1/assistants", json={"name": "Output limit", "connections": []}).json()
+        conversation = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()
+        run = send(client, conversation["id"], "检查子任务输出上限")["run_id"]
+        assert wait_run(client, run)["status"] == "succeeded"
+
+        plan = client.get(f"/api/v1/runs/{run}/subagents").json()
+        assert plan["counts"]["succeeded"] == 0 and plan["counts"]["interrupted"] == 2
+        usage = {"input_tokens": 12, "output_tokens": 800}
+        expected_children = []
+        for child, output in zip(plan["children"][:2], ["已确认部分库存：8 件。", ""], strict=True):
+            assert child["status"] == "interrupted" and child["stop_reason"] == "max_tokens"
+            assert child["result"] == {"output": output, "stop_reason": "max_tokens"}
+            assert child["observed_usage"] == usage
+            recorded = service.db.one("SELECT status,usage FROM model_usage_calls WHERE id=?", (child["child_id"],))
+            assert recorded["status"] == "interrupted"
+            recorded_usage = json.loads(recorded["usage"])
+            assert {key: recorded_usage[key] for key in usage} == usage
+            expected_children.append({"status": "interrupted", "reason": "max_tokens", "output": output, "usage": usage})
+        broken = plan["children"][2]
+        assert broken["status"] == "failed" and broken["stop_reason"] == "executor_error" and "result" not in broken
+        expected_children.append({"status": "failed", "reason": "executor_error"})
+
+        parent_replies = [block for request in requests if request.get("tools")
+                          for block in request["messages"][-1]["content"] if isinstance(block, dict) and block["type"] == "tool_result"]
+        assert len(parent_replies) == 1
+        content = parent_replies[0]["content"]
+        reply = content if isinstance(content, str) else content[0]["text"]
+        assert json.loads(reply) == {"children": expected_children}
+        workers = [request for request in requests if not request.get("tools")]
+        assert len(workers) == 3 and all(request["max_tokens"] == 800 for request in workers)
+
+
 PILOT_QUESTION = "我们准备先在两个门店试销，供应商每周补一次货，售后由门店接单。请评估供货风险，并给出门店售后接单流程。"
 PILOT_TASKS = [
     "【风险评估】两个门店试销，每周补货一次。列出补货风险和应对措施。",
@@ -338,6 +397,10 @@ def test_real_harness_business_delegation_contract(tmp_path, model_server, monke
         assert all(question not in message for message in worker_messages)
         assert all("PARENT_PRIVATE_SENTINEL" not in json.dumps(item) and item["max_tokens"] <= 800 for item in workers)
         assert all("就主动调用 delegate_tasks" not in item["system"] for item in workers)
+        # The parent keeps enterprise instructions; isolated workers get only their own role and boundaries.
+        assert "工业任务的执行方法" in initial["system"]
+        assert all("工业任务的执行方法" not in item["system"] and "无工具、外网和历史权限" in item["system"] for item in workers)
+
         assert messages[-1]["text"] == "\n".join(PILOT_FINDINGS)
 
 

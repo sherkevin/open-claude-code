@@ -49,6 +49,7 @@ const stopReasons = new Map([
   ['parent_cancelled', '父任务取消后，子任务也已取消。'],
   ['cancelled', '子任务已取消。'],
   ['timeout', '子任务执行超时。'],
+  ['max_tokens', '子任务达到模型输出上限。如有返回内容，仅为部分结果。'],
   ['executor_error', '执行子任务时出错。'],
   ['not_replayable', '子任务已中断，无法从原进度恢复。'],
   ['recovered_after_restart', '服务重启，子任务已中断。'],

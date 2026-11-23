@@ -8,6 +8,7 @@ import json
 import math
 import shutil
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -17,6 +18,12 @@ from .subagent_title import display_title, display_title_key
 
 
 CHILD_TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
+
+
+@dataclass(frozen=True)
+class ChildOutputLimit:
+    output: str
+    usage: dict[str, int | None]
 
 
 def _digest(value: str) -> str:
@@ -475,11 +482,20 @@ class SubagentOrchestrator:
                         result = await asyncio.wait_for(execute_harness_child(self.service, child, task, self.max_result_chars - 256), timeout=90)
                 else:
                     result = await asyncio.wait_for(self.executor(child, task), timeout=self.child_timeout_seconds)
+                if parent_run_id in self._cancelled_plans:
+                    raise asyncio.CancelledError()
+                status, reason = "succeeded", "completed"
+                if isinstance(result, ChildOutputLimit):
+                    status, reason = "interrupted", "max_tokens"
+                    result = {"output": result.output, "usage": result.usage}
                 encoded = dump(result)
                 if len(encoded) > self.max_result_chars:
                     raise ValueError("child result exceeds bound")
                 usage = result.get("usage", {}) if isinstance(result, dict) else {}
-                updated = self.service.db.execute("UPDATE subagent_children SET status='succeeded',stop_reason='completed',observed_usage=?,result_json=?,completed_at=? WHERE child_id=? AND status='running'", (dump(usage), dump({"output": result.get("output") if isinstance(result, dict) else result, "stop_reason": "completed"}), now(), child_id))
+                updated = self.service.db.execute(
+                    "UPDATE subagent_children SET status=?,stop_reason=?,observed_usage=?,result_json=?,completed_at=? WHERE child_id=? AND status='running'",
+                    (status, reason, dump(usage), dump({"output": result.get("output") if isinstance(result, dict) else result, "stop_reason": reason}), now(), child_id),
+                )
                 if updated.rowcount != 1:
                     # A concurrent parent cancellation wins over a result that
                     # finished at the same instant; never resurrect a child.
@@ -487,6 +503,9 @@ class SubagentOrchestrator:
                     if latest and latest["status"] in {"cancelling", "queued", "running"}:
                         self._mark_child(child_id, "cancelled", "parent_cancelled", cancelled=True)
                         self._emit_child(parent_run_id, child_id, "subagent.cancelled", "parent_cancelled")
+                    return
+                if status == "interrupted":
+                    self._emit_child(parent_run_id, child_id, "subagent.failed", reason)
                     return
                 self._emit_child(parent_run_id, child_id, "subagent.progress", "succeeded", progress=100)
                 self._emit_child(parent_run_id, child_id, "subagent.completed", "completed", progress=100)

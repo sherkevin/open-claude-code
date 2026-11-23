@@ -327,6 +327,10 @@ class HarnessRuntime(WorkspaceRuntime):
         self.owned_process = None
         self.bridge = HarnessToolBridge(self)
 
+    def model_system_prompt(self):
+        return build_system_prompt(public_model_id=self.config["public_model_id"],
+            public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"])
+
     def connection_layout(self):
         data_dir = self.service.settings.data_dir
         return data_dir / "workspaces" / self.conversation_id, data_dir / "harness" / self.conversation_id
@@ -359,8 +363,7 @@ class HarnessRuntime(WorkspaceRuntime):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         cls, config_cls = await asyncio.to_thread(official_client, source)
         tools = self.bridge.definitions()
-        system_prompt = build_system_prompt(public_model_id=self.config["public_model_id"],
-            public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"])
+        system_prompt = self.model_system_prompt()
         if any(tool["name"] == "delegate_tasks" for tool in tools):
             system_prompt += DELEGATE_TASKS_GUIDANCE
         profile = write_profile(

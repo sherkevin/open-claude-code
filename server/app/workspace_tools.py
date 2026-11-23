@@ -46,7 +46,10 @@ def child_tool_result(child: dict) -> dict:
     """Send the parent each ordered outcome; the plan retains the full UI receipt."""
     if child["status"] == "succeeded":
         return {"output": child["result"]["output"]}
-    return {"status": child["status"], "reason": child.get("stop_reason")}
+    outcome = {"status": child["status"], "reason": child.get("stop_reason")}
+    if outcome["status"] == "interrupted" and outcome["reason"] == "max_tokens" and "result" in child:
+        outcome.update(output=child["result"]["output"], usage=child["observed_usage"])
+    return outcome
 
 
 def build_workspace_tools(runtime) -> list[WorkspaceTool]:
