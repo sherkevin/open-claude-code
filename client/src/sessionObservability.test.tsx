@@ -32,6 +32,15 @@ const items:TrajectoryItem[]=[
 ];
 
 describe('session metric evidence boundaries', () => {
+  it('keeps historical model events distinct from HTTP requests', () => {
+    const historical: OverviewMetric = { id:'legacy_model_records', title:'旧版模型执行记录', value:3, unit:'条',
+      precision:'observed', note:'网络重试明细未记录。' };
+    const html=renderToStaticMarkup(<SessionOverviewCards value={{...overview, metrics:[historical]}}
+      loading={false} error="" onRefresh={()=>{}}/>);
+    expect(card(html, 'legacy_model_records')).toContain('>3</strong>');
+    expect(html).not.toContain('data-metric="request_count"');
+  });
+
   it('shows the exact recorded token subtotal on the overview card', () => {
     const input: OverviewMetric = { id: 'input_tokens', title: '输入 Token', unit: 'tokens', value: null,
       known_value: 1341601, precision: 'partial', note: '部分请求有回执。' };

@@ -52,7 +52,8 @@ def test_partial_legacy_call_ledger_keeps_measured_fields_from_terminal_receipt(
     event(service, rid, 1, 'run.completed', {'status': 'succeeded', 'usage': {
         'source': 'harness_provider', 'token_accounting': ledger.summary()}})
     result = metrics(overview(service, user))
-    assert result['request_count']['value'] == 2
+    assert result['request_count']['value'] is None
+    assert result['legacy_model_records']['value'] == 2
     for key, observed in [('input_tokens',100), ('cache_read_tokens',72), ('output_tokens',9), ('cache_hit_rate',.72)]:
         assert result[key]['value'] is None
         assert result[key]['known_value'] == observed

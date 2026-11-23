@@ -68,6 +68,7 @@ export function SessionOverviewCards({ value, loading, error, onRefresh }: {
 export function SessionRowUsage({ value }: { value?: SessionUsage }) {
   const fields = [
     ['request_count', '请求', 'count', value?.request_precision],
+    ['legacy_model_records', '旧版模型记录', 'count'],
     ['total_input_tokens', '输入 token', 'tokens'],
     ['cache_read_tokens', '缓存命中', 'tokens'],
     ['output_tokens', '输出 token', 'tokens'],

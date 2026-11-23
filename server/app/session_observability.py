@@ -77,20 +77,33 @@ def _run_usage(row):
     stages = [stage for stage in raw_stages if isinstance(stage, dict) and stage.get('provider_call') is True
               and (not http_capture or stage.get('source') == 'harness_provider')] if isinstance(raw_stages, list) else []
     stage_tokens = []
+    unverified_fields = set()
+    legacy_harness = usage.get('source') == 'harness_provider' and not http_capture
+    legacy_records = 0
     for stage in stages:
         provider = _object(stage.get('provider_usage'))
         tokens = {key: _number(provider.get(field)) for key, field in LEDGER_TOKEN_NAMES.items()}
+        if legacy_harness and stage.get('source') == 'harness_provider' and stage.get('stage') == 'answer':
+            # The old SDK adapter defaulted these counters to zero and hid
+            # transport retries behind assistant events.
+            legacy_records += 1
+            for key in ('input_tokens', 'output_tokens'):
+                if tokens[key] == 0:
+                    tokens[key] = None
+                    unverified_fields.add(key)
         total, known_total = _prompt(_number(stage.get('reported_prompt_tokens')), [tokens[key] for key in INPUT_BUCKETS])
         stage_tokens.append({**tokens, 'prompt': total, 'known_prompt': known_total})
     product = (_object(row.get('execution_meta')).get('execution_kind') == 'product_metadata'
                or usage.get('source') == 'product_metadata')
     calls = entry['call_count']
-    attempts = sum(stage.get('source') == 'harness_provider' for stage in stages)
-    full = {field: entry['amounts'][key] for field, key in TOKEN_NAMES.items()}
+    attempts = sum(stage.get('source') == 'harness_provider' and (not legacy_harness or stage.get('stage') == 'compression')
+                   for stage in stages)
+    full = {field: None if field in unverified_fields else entry['amounts'][key] for field, key in TOKEN_NAMES.items()}
     if http_capture and calls is None:
         full = dict.fromkeys(TOKEN_NAMES)
     total_input = entry['total_input_tokens']
-    if http_capture and (calls is None or any(tokens['prompt'] is None for tokens in stage_tokens)):
+    if 'input_tokens' in unverified_fields or (http_capture and
+            (calls is None or any(tokens['prompt'] is None for tokens in stage_tokens))):
         total_input = None
     full.update(request_count=calls, cost_usd=entry['amounts']['estimated_cost_usd'],
                 total_input_tokens=total_input)
@@ -119,6 +132,7 @@ def _run_usage(row):
             reported = _number(usage.get('total_input_tokens' if http_capture else 'reported_prompt_tokens'))
             _, known['total_input_tokens'] = _prompt(reported, [known[key] for key in INPUT_BUCKETS])
     return {'full': full, 'known': known, 'paired': paired, 'pairs': pairs, 'reported': entry['reported'],
+            'legacy_records': legacy_records, 'product': product,
             'cost_estimated': full['cost_usd'] is not None and not product,
             'proved_no_compaction': product or (http_capture and calls is not None and row['status'] == 'succeeded'
                                                 and all(stage.get('stage') == 'answer' for stage in stages))}
@@ -129,6 +143,10 @@ def _usage(samples, total):
     for field in USAGE_FIELDS:
         observations = [sample['known'][field] for sample in samples if sample['known'][field] is not None]
         complete = all(sample['full'][field] is not None for sample in samples) and len(samples) == total
+        if field == 'request_count' and not complete:
+            # A local metadata action does not supply a request receipt for a model run.
+            observations = [sample['known'][field] for sample in samples
+                            if not sample['product'] and sample['known'][field] is not None]
         if field == 'cost_usd' and not complete:
             # Local-only executions cost zero, but supply no evidence of model charges.
             observations = [sample['known'][field] for sample in samples if sample['cost_estimated']]
@@ -331,6 +349,7 @@ def overview(service, user):
             sessions.append({**{key: conversation[key] for key in ('id', 'title', 'updated_at')},
                 'status': 'running' if conversation['active_run_id'] else 'archived' if conversation['archived'] else 'idle',
                 'run_count': run_count, **_values({**usage, **session_saved}, (*USAGE_FIELDS, *session_saved)),
+                'legacy_model_records': sum(item['legacy_records'] for item in by_session[conversation['id']]) or None,
                 'token_precision': token_precision, 'request_precision': usage['request_count']['precision'],
                 'cost_precision': usage['cost_usd']['precision'],
                 'compression_count_precision': session_saved['compression_count']['precision'],
@@ -346,6 +365,11 @@ def overview(service, user):
         add('session_count', '会话总数', _reading(count, None, count, count), '个', '包含当前账号的已归档会话。')
         add('request_count', '模型请求总数', all_usage['request_count'], '次',
             '统计已记录的请求尝试。失败或取消的尝试不证明供应商收到或收费。SDK 汇总回执无法核实尝试次数。', '条执行记录')
+        legacy_records = sum(sample['legacy_records'] for sample in usage_by_run.values())
+        if legacy_records:
+            add('legacy_model_records', '旧版模型执行记录', _reading(
+                None if incomplete else legacy_records, legacy_records, len(rows), total),
+                '条', '旧版每条记录对应一次助手回复或尝试。历史记录没有逐次网络重试明细。')
         add('compression_count', '压缩次数', saved['compression_count'], '次',
             '统计已确认提交的自动和手动压缩。已确认未发生时为零，历史回执缺失时保留未知。', '条执行记录')
         add('compression_saved_tokens', '压缩上下文减少', saved['compression_saved_tokens'], 'Token',

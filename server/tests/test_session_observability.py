@@ -177,6 +177,16 @@ def test_partial_capture_counts_attempts_without_inventing_provider_zero(env):
         assert cards[field]['value'] is None and cards[field].get('known_value') is None
 
 
+def test_legacy_normalized_harness_defaults_are_not_raw_provider_zeroes(env):
+    _, service, user, cid = env
+    run(service, user, cid, usage={**receipt(input=0, output=0, read=80, write=0), 'source': 'harness_provider'})
+    cards = metrics(overview(service, user))
+    for field in ('request_count', 'output_tokens', 'cache_hit_rate'):
+        assert cards[field]['value'] is None and cards[field].get('known_value') is None
+    assert cards['input_tokens']['value'] is None and cards['input_tokens']['known_value'] == 80
+    assert cards['cache_read_tokens']['value'] == 80
+
+
 def test_verified_no_requests_is_a_real_zero_in_mixed_history(env):
     _, service, user, cid = env
     ledger = HarnessUsageLedger('session', 'run')

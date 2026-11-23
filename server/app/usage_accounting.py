@@ -168,9 +168,13 @@ def _entry(row, *, auxiliary=False):
         valid_stages = isinstance(stages, list) and all(isinstance(stage, dict) and stage.get("provider_call") is True and stage.get("source") == "harness_provider" for stage in stages)
         calls = len(stages) if valid_stages and ledger.get("capture_complete") is True else None
     elif isinstance(stages, list) and stages:
-        # Harness commits one stage per actual attempt. Legacy SDK result
-        # stages can aggregate several requests, so their call count is unknown.
-        calls = len(stages) if all(isinstance(stage, dict) and stage.get("provider_call") is True and stage.get("source") == "harness_provider" for stage in stages) else None
+        # Older ledgers can contain either provider calls or SDK-level summaries.
+        all_attempts = all(isinstance(stage, dict) and stage.get("provider_call") is True
+                           and stage.get("source") == "harness_provider" for stage in stages)
+        # The pre-HTTP Harness emits one stage per assistant event. Its transport can retry internally.
+        legacy_answers = usage.get("source") == "harness_provider" and any(
+            isinstance(stage, dict) and stage.get("stage") == "answer" for stage in stages)
+        calls = len(stages) if all_attempts and not legacy_answers else None
     else:
         calls = None
     buckets = [amounts[field] for field in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")]

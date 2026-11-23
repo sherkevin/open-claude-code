@@ -3,12 +3,12 @@ export type OverviewMetric = {
   id:string; title:string; value:number|null; unit:string; precision:MetricPrecision; note:string;
   known_value?:number|null; known_estimated?:boolean;
 };
-type SessionUsageField = 'request_count' | 'input_tokens' | 'total_input_tokens' | 'output_tokens' |
+type SessionUsageField = 'legacy_model_records' | 'request_count' | 'input_tokens' | 'total_input_tokens' | 'output_tokens' |
   'cache_read_tokens' | 'cache_write_tokens' | 'cost_usd' | 'compression_count' |
   'compression_saved_tokens' | 'net_saved_tokens' | 'compression_return_usd';
 export type SessionUsage = {
   id:string; title:string; updated_at:string; status:'running'|'idle'|'archived'; run_count:number;
-  request_count:number|null; input_tokens:number|null; total_input_tokens:number|null; output_tokens:number|null;
+  legacy_model_records?:number|null; request_count:number|null; input_tokens:number|null; total_input_tokens:number|null; output_tokens:number|null;
   cache_read_tokens:number|null; cache_write_tokens:number|null; cost_usd:number|null;
   compression_count:number|null; compression_saved_tokens:number|null; net_saved_tokens:number|null;
   compression_return_usd:number|null; token_precision:MetricPrecision; request_precision:MetricPrecision;
@@ -49,7 +49,10 @@ export function metricValue(value:number|null|undefined, unit:string, precision?
   return prefix + value.toLocaleString('zh-CN',{maximumFractionDigits:2});
 }
 export function overviewMetrics(value:SessionOverview|null):OverviewMetric[] {
-  return metricDefinitions.map(([id,title,unit]) => {
+  const definitions: ReadonlyArray<readonly [string,string,string]> = value?.metrics.some(metric => metric.id === 'legacy_model_records')
+    ? [metricDefinitions[0], ['legacy_model_records', '旧版模型执行记录', 'count'], ...metricDefinitions.slice(1)]
+    : metricDefinitions;
+  return definitions.map(([id,title,unit]) => {
     const metric=value?.metrics.find(item=>item.id===id);
     return {...metric,id,title:metric?.title||title,unit,value:metric?.value??null,precision:metric?.precision??'unavailable',note:metric?.note||'尚无可用记录。'};
   });
