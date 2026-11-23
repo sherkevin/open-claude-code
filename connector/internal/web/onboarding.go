@@ -74,7 +74,7 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
           <div class="credentials">
             <label class="field" for="sourceName">服务名称</label>
             <input id="sourceName" maxlength="80" autocomplete="off">
-            <label class="field" for="bearerToken">Bearer 访问令牌 <small>留空保留已有值</small></label>
+            <label class="field" for="bearerToken">Bearer 访问令牌 <small id="bearerHint">服务要求认证时，填写该服务的令牌</small></label>
             <input id="bearerToken" type="password" autocomplete="new-password">
             <label class="check" style="margin-top:14px"><input id="dynamicAuth" type="checkbox">使用华微动态签名</label>
             <div id="authFields" hidden>
@@ -128,7 +128,9 @@ async function api(path, body){
   const response = await fetch(path, options);
   const payload = await response.json().catch(()=>({}));
   if(!response.ok || !payload.ok){
-    throw new Error(payload.error?.message || "未能读取连接器的响应，请重试。");
+    const error = new Error(payload.error?.message || "未能读取连接器的响应，请重试。");
+    error.code = payload.error?.code;
+    throw error;
   }
   return payload.data;
 }
@@ -201,6 +203,7 @@ function editSource(source){
   $("upstreamAddress").value = source?.upstream_url || "";
   $("sourceName").value = source?.display_name || "";
   $("bearerToken").value = "";
+  $("bearerHint").textContent = sourceID ? "留空保留已有值" : "服务要求认证时，填写该服务的令牌";
   $("dynamicAuth").checked = !!profile?.configured;
   $("authAppID").value = profile?.app_id || "MCP";
   $("authChannel").value = profile?.channel || "";
@@ -252,7 +255,13 @@ async function operate(text, work){
   busy = true;
   render();
   notice(text);
-  try{ await work(); }catch(error){ notice(error.message, "error"); }
+  try{ await work(); }catch(error){
+    notice(error.message, "error");
+    if(error.code === "UPSTREAM_UNAUTHORIZED"){
+      $("sourceOptions").open = true;
+      $("bearerToken").focus();
+    }
+  }
   finally{ busy = false; render(); }
 }
 

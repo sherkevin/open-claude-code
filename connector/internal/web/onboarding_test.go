@@ -30,7 +30,7 @@ function element(tagName = "div"){
       }
     },
     addEventListener(name, callback){ this["on" + name] = callback; },
-    focus(){}, select(){},
+    focus(){ document.activeElement = this; }, select(){},
     setAttribute(name, value){ this[name] = value; },
     hasAttribute(name){ return Object.hasOwn(this, name); },
     removeAttribute(name){ delete this[name]; },
@@ -84,6 +84,9 @@ const fetch = async (path, options) => {
     Object.assign(control, {bound:true,state:"CONFIGURING",tenant_name:"试测企业"});
     data = control;
   }else if(path === "/api/source/tools"){
+    if (!body.bearer_token) {
+      return {ok:false,json:async()=>({ok:false,error:{code:"UPSTREAM_UNAUTHORIZED",message:"HTTP 401"}})};
+    }
     data = [{name:"read_orders",title:"订单查询"},{name:"update_order",title:"修改订单"}];
   }else if(path === "/api/source/save-and-connect"){
     const source = {source_id:"source-test",display_name:"只读示例",upstream_url:body.upstream_url,tool_allowlist:body.tools};
@@ -119,6 +122,12 @@ async function verifyWorkflow(){
   await readTools(submit());
   assert.equal(calls.filter(call=>call.path === "/api/source/tools").length, 0);
   ui("upstreamAddress").value = "http://127.0.0.1:3800/custom/mcp";
+  await readTools(submit());
+  assert.equal(ui("sourceOptions").open, true);
+  assert.equal(document.activeElement, ui("bearerToken"));
+  assert.match(ui("notice").textContent, /401/);
+  assert.equal(ui("toolForm").hidden, true);
+  ui("bearerToken").value = "synthetic-access-token";
   await readTools(submit());
   assert.equal(calls.filter(call=>call.path === "/api/source/tools").at(-1).body.upstream_url,
     "http://127.0.0.1:3800/custom/mcp");
