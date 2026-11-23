@@ -15,7 +15,11 @@ class HarnessChild(HarnessRuntime):
             "provider_env": service.validated_provider(selection),
             "public_model_id": selection["model_id"], "public_model_label": selection["model_label"],
             "upstream_model": selection["upstream_model"], "upstream_effort": selection["upstream_effort"],
-            "instructions": "独立完成分配的文字分析。依据收到的文字给出简明结论，并注明无法验证的前提。",
+            "instructions": (
+                "只完成分配的文字分析，给主助手可直接使用的结论、关键数字和依据。"
+                "通常用三到五条短要点；按任务需要保留计算、条款或例外，标明无法验证的前提。"
+                "省略题目复述、开场和面向用户的完整报告。"
+            ),
             "worker_max_output_tokens": min(800, service.settings.harness_max_output_tokens), "worker_max_steps": 3,
         }
         super().__init__(service, child["conversation_id"], config, None, None)
