@@ -22,6 +22,11 @@ func newServer(t *testing.T) *httptest.Server {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
+		if request.Method == "notifications/initialized" || r.Header.Get("Mcp-Session-Id") == "session-1" {
+			if version := r.Header.Get("MCP-Protocol-Version"); version != "2025-03-26" {
+				t.Errorf("%s used protocol version %q, want negotiated version 2025-03-26", request.Method, version)
+			}
+		}
 		if request.Method == "notifications/initialized" {
 			w.WriteHeader(http.StatusAccepted)
 			return
@@ -30,7 +35,7 @@ func newServer(t *testing.T) *httptest.Server {
 		switch request.Method {
 		case "initialize":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"demo","version":"1.0"}}}`, request.ID)
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"demo","version":"1.0"}}}`, request.ID)
 		case "tools/list":
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[{\"name\":\"get_inventory\",\"description\":\"查询库存\"}]}}\n\n", request.ID)

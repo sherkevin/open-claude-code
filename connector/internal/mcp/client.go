@@ -30,8 +30,9 @@ type Client struct {
 	// connector uses it for HwMain's per-call dynamic identity and HMAC.
 	HeaderProvider func(method, tool string) (map[string]string, error)
 
-	nextID    atomic.Int64
-	sessionID string
+	nextID            atomic.Int64
+	sessionID         string
+	negotiatedVersion string
 }
 
 // Tool 是服务端返回的工具描述。
@@ -144,6 +145,7 @@ func (c *Client) Initialize(ctx context.Context) (ServerInfo, error) {
 	if err := c.call(ctx, "initialize", "", params, &info); err != nil {
 		return info, err
 	}
+	c.negotiatedVersion = info.ProtocolVersion
 	c.notify(ctx, "notifications/initialized")
 	return info, nil
 }
@@ -178,18 +180,7 @@ func (c *Client) call(ctx context.Context, method, tool string, params any, out 
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if c.ProtocolVersion != "" {
-		req.Header.Set("MCP-Protocol-Version", c.ProtocolVersion)
-	}
-	if c.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", c.sessionID)
-	}
-	for key, value := range c.Headers {
-		req.Header.Set(key, value)
-	}
-	if err := c.applyHeaderProvider(req, method, tool); err != nil {
+	if err := c.setRequestHeaders(req, method, tool); err != nil {
 		return err
 	}
 
@@ -314,15 +305,7 @@ func (c *Client) notify(ctx context.Context, method string) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if c.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", c.sessionID)
-	}
-	for key, value := range c.Headers {
-		req.Header.Set(key, value)
-	}
-	if err := c.applyHeaderProvider(req, method, ""); err != nil {
+	if err := c.setRequestHeaders(req, method, ""); err != nil {
 		return
 	}
 	resp, err := c.httpClient().Do(req)
@@ -331,7 +314,22 @@ func (c *Client) notify(ctx context.Context, method string) {
 	}
 }
 
-func (c *Client) applyHeaderProvider(req *http.Request, method, tool string) error {
+func (c *Client) setRequestHeaders(req *http.Request, method, tool string) error {
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if c.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", c.sessionID)
+	}
+	version := c.ProtocolVersion
+	if method != "initialize" && c.negotiatedVersion != "" {
+		version = c.negotiatedVersion
+	}
+	if version != "" {
+		req.Header.Set("MCP-Protocol-Version", version)
+	}
+	for key, value := range c.Headers {
+		req.Header.Set(key, value)
+	}
 	if c.HeaderProvider == nil {
 		return nil
 	}

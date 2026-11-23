@@ -438,6 +438,16 @@ func TestSourceToolsWithTokenDiscoversOnlySupportedTools(t *testing.T) {
 		"bearer_token": "synthetic-access-token",
 		"dynamic_auth": false,
 	})
+	missing := httptest.NewRequest(http.MethodPost, "/api/source/tools", strings.NewReader(
+		fmt.Sprintf(`{"upstream_url":%q}`, upstream.URL)))
+	missing.Host = loopbackHost
+	missing.Header.Set("X-Connector-Token", server.Token)
+	rejected := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rejected, missing)
+	var failure struct{ Error struct{ Code string } }
+	if json.Unmarshal(rejected.Body.Bytes(), &failure) != nil || failure.Error.Code != "UPSTREAM_UNAUTHORIZED" {
+		t.Fatalf("missing upstream token should point to the local credential field: %s", rejected.Body)
+	}
 	request := httptest.NewRequest(http.MethodPost, "/api/source/tools", strings.NewReader(string(body)))
 	request.Host = loopbackHost
 	request.Header.Set("X-Connector-Token", server.Token)

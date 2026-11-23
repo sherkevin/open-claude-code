@@ -261,6 +261,11 @@ func (s *Server) handleSourceTools(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	tools, err := s.Agent.DiscoverSourceTools(ctx, body)
 	if err != nil {
+		var upstream interface{ HTTPStatusCode() int }
+		if errors.As(err, &upstream) && upstream.HTTPStatusCode() == http.StatusUnauthorized {
+			writeError(w, http.StatusBadRequest, "UPSTREAM_UNAUTHORIZED", err.Error()+"。请核对这个 MCP 服务的访问令牌，再点「读取工具」。")
+			return
+		}
 		writeAPIError(w, err)
 		return
 	}
