@@ -17,7 +17,7 @@ from .db import dump, offload, offload_write, uid
 from .harness_attachments import AttachmentPrompt
 from .harness_tools import HarnessToolBridge
 from .harness_usage import HarnessUsageLedger
-from .identity import build_system_prompt
+from .identity import WEB_READ_GUIDANCE, WEB_SEARCH_GUIDANCE, build_system_prompt
 from .runtime import WorkspaceRuntime, elapsed_ms, save_timing
 from .provider_policy import TOKENHUB_BASE_URL, provider_route
 from .run_recovery import recovery_prompt
@@ -329,7 +329,8 @@ class HarnessRuntime(WorkspaceRuntime):
 
     def model_system_prompt(self):
         return build_system_prompt(public_model_id=self.config["public_model_id"],
-            public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"])
+            public_model_label=self.config["public_model_label"], assistant_instructions=self.config["instructions"],
+            include_web_tool_guidance=False)
 
     def connection_layout(self):
         data_dir = self.service.settings.data_dir
@@ -363,8 +364,13 @@ class HarnessRuntime(WorkspaceRuntime):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         cls, config_cls = await asyncio.to_thread(official_client, source)
         tools = self.bridge.definitions()
+        tool_names = {tool["name"] for tool in tools}
         system_prompt = self.model_system_prompt()
-        if any(tool["name"] == "delegate_tasks" for tool in tools):
+        if "web_search" in tool_names:
+            system_prompt += "\n\n" + WEB_SEARCH_GUIDANCE
+        if "web_read" in tool_names:
+            system_prompt += "\n\n" + WEB_READ_GUIDANCE + "。"
+        if "delegate_tasks" in tool_names:
             system_prompt += DELEGATE_TASKS_GUIDANCE
         profile = write_profile(
             profile_root=private, source_dir=source, cwd=root, session_id=self.session_id,
