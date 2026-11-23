@@ -120,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/mcp-export", s.guard(postOnly(s.handleMCPExport)))
 	mux.HandleFunc("GET /api/assist/offer", s.guard(s.handleAssistOffer))
 	mux.HandleFunc("/api/assist/start", s.guard(postOnly(s.handleAssistStart)))
+	mux.HandleFunc("/api/assist/target", s.guard(postOnly(s.handleAssistTarget)))
 	mux.HandleFunc("/api/assist/stop", s.guard(postOnly(s.handleAssistStop)))
 	mux.HandleFunc("/api/logs", s.guard(s.handleLogs))
 	mux.HandleFunc("/api/logs/download", s.guard(s.handleLogsDownload))
@@ -165,7 +166,31 @@ func (s *Server) handleAssistStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	offer, err := s.Agent.StartAssistForTarget(ctx, body.AssistTarget)
+	var offer *cloud.AssistOffer
+	var err error
+	if body.AssistTarget == (cloud.AssistTarget{}) {
+		offer, err = s.Agent.OpenAssist(ctx)
+	} else {
+		offer, err = s.Agent.StartAssistForTarget(ctx, body.AssistTarget)
+	}
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": offer})
+}
+
+func (s *Server) handleAssistTarget(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionID string `json:"session_id"`
+		cloud.AssistTarget
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	offer, err := s.Agent.SetAssistTarget(ctx, body.SessionID, body.AssistTarget)
 	if err != nil {
 		writeAPIError(w, err)
 		return

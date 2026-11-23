@@ -83,10 +83,14 @@ const fetch = async (path, options) => {
     data = control;
   }else if(path === "/api/assist/offer"){
     assert.ok(options.headers["X-Connector-Token"]);
-    data = {enabled:control.bound,offer:assistance};
+    data = {enabled:control.bound,offer:assistance,target_after_start:control.bound};
   }else if(path === "/api/assist/start"){
-    assert.deepEqual(body, assistTarget);
-    assistance = {id:"as_fixture",...assistTarget,status:"active",local_active:true};
+    assert.deepEqual(body, {});
+    assistance = {id:"as_fixture",name:"内网接入协助",url:"",status:"active",local_active:true};
+    data = assistance;
+  }else if(path === "/api/assist/target"){
+    assert.deepEqual(body, {...assistTarget,session_id:"as_fixture"});
+    assistance = {...assistance,...assistTarget};
     data = assistance;
   }else if(path === "/api/assist/stop"){
     assert.deepEqual(body, {session_id:"as_fixture"});
@@ -133,24 +137,37 @@ async function verifyWorkflow(){
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(ui("assistPanel").hidden, false);
   assert.equal(ui("assistStart").hidden, false);
+  assert.equal(ui("assistTarget").hidden, true);
   assert.equal(ui("assistStop").hidden, true);
   assert.equal(ui("assistAddress").textContent, "");
   await ui("assistStart").onclick();
-  assert.equal(calls.filter(call=>call.path === "/api/assist/start").length, 0);
+  assert.equal(calls.filter(call=>call.path === "/api/assist/start").length, 1);
+  assert.equal(ui("assistStart").hidden, true);
+  assert.equal(ui("assistTarget").hidden, false);
+  assert.equal(ui("assistStop").hidden, false);
+  assert.equal(ui("assistAddress").textContent, "");
+  await ui("assistTarget").onclick();
+  assert.equal(calls.filter(call=>call.path === "/api/assist/target").length, 0);
   assert.equal(document.activeElement, ui("upstreamAddress"));
   ui("upstreamAddress").value = assistTarget.url;
   ui("sourceName").value = assistTarget.name;
   ui("bearerToken").value = "kept-on-device";
   ui("upstreamAddress").oninput();
   assert.equal(ui("assistAddress").textContent, assistTarget.url);
-  await ui("assistStart").onclick();
+  await ui("assistTarget").onclick();
   assert.equal(ui("assistStart").hidden, true);
+  assert.equal(ui("assistTarget").hidden, true);
   assert.equal(ui("assistStop").hidden, false);
   assert.equal(ui("assistAddress").textContent, assistTarget.url);
   await ui("assistStop").onclick();
   assert.equal(ui("assistStart").hidden, false);
   assert.equal(ui("assistStop").hidden, true);
   assert.equal(ui("assistNotice").textContent, "协助已停止。");
+  await ui("assistStart").onclick();
+  assert.equal(ui("assistAddress").textContent, assistTarget.url);
+  assert.equal(ui("assistTarget").hidden, false, "a prefilled address still needs explicit confirmation");
+  await ui("assistStop").onclick();
+  assert.equal(calls.filter(call=>call.path === "/api/assist/target").length, 1);
   ui("sourceName").value = "";
   ui("bearerToken").value = "";
 

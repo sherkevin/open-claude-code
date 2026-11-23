@@ -11,7 +11,8 @@ import (
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 )
 
-// AssistOffer binds a customer's approval to one specific MCP service.
+// AssistOffer describes the current grant. URL is empty until an MCP service
+// has been approved on the device.
 type AssistOffer struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
@@ -22,8 +23,9 @@ type AssistOffer struct {
 }
 
 type AssistStatus struct {
-	Enabled bool         `json:"enabled"`
-	Offer   *AssistOffer `json:"offer"`
+	Enabled          bool         `json:"enabled"`
+	Offer            *AssistOffer `json:"offer"`
+	TargetAfterStart bool         `json:"target_after_start,omitempty"`
 }
 
 type AssistTarget struct {
@@ -58,7 +60,7 @@ type AssistResult struct {
 
 func (c *Client) AssistStatus(ctx context.Context, connectorID string) (AssistStatus, error) {
 	var data AssistStatus
-	err := c.assistRequest(ctx, http.MethodGet, connectorID, "offer?device_first=1", nil, &data)
+	err := c.assistRequest(ctx, http.MethodGet, connectorID, "offer?device_first=1&target_after_start=1", nil, &data)
 	return data, err
 }
 
@@ -66,15 +68,36 @@ func (c *Client) StartAssist(ctx context.Context, connectorID, sessionID string)
 	return c.assistRequest(ctx, http.MethodPost, connectorID, "start", assistSessionRequest{sessionID}, nil)
 }
 
-func (c *Client) StartAssistForTarget(ctx context.Context, connectorID string, target AssistTarget) (AssistOffer, error) {
+func (c *Client) OpenAssist(ctx context.Context, connectorID string, target *AssistTarget) (AssistOffer, error) {
+	var body any = struct{}{}
+	if target != nil {
+		body = target
+	}
 	var offer AssistOffer
-	err := c.assistRequest(ctx, http.MethodPost, connectorID, "start", target, &offer)
+	err := c.assistRequest(ctx, http.MethodPost, connectorID, "start", body, &offer)
 	return offer, err
 }
 
-func (c *Client) PollAssist(ctx context.Context, connectorID, sessionID string) (AssistPoll, error) {
+func (c *Client) SetAssistTarget(ctx context.Context, connectorID, sessionID string, target AssistTarget) (AssistOffer, error) {
+	body := struct {
+		assistSessionRequest
+		AssistTarget
+	}{assistSessionRequest{sessionID}, target}
+	var offer AssistOffer
+	err := c.assistRequest(ctx, http.MethodPost, connectorID, "target", body, &offer)
+	return offer, err
+}
+
+func (c *Client) PollAssist(ctx context.Context, connectorID, sessionID string, acceptJobs bool) (AssistPoll, error) {
+	body := struct {
+		assistSessionRequest
+		AcceptJobs *bool `json:"accept_jobs,omitempty"`
+	}{assistSessionRequest: assistSessionRequest{sessionID}}
+	if !acceptJobs {
+		body.AcceptJobs = &acceptJobs
+	}
 	var data AssistPoll
-	err := c.assistRequest(ctx, http.MethodPost, connectorID, "poll", assistSessionRequest{sessionID}, &data)
+	err := c.assistRequest(ctx, http.MethodPost, connectorID, "poll", body, &data)
 	return data, err
 }
 

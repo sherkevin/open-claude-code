@@ -62,6 +62,7 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
     <p id="assistState" class="muted" role="status"></p>
     <div class="actions">
       <button id="assistStart" class="primary" type="button" hidden>开始协助</button>
+      <button id="assistTarget" class="primary" type="button" hidden>确认这个 MCP</button>
       <button id="assistStop" type="button" hidden>停止协助</button>
     </div>
     <p id="assistNotice" class="notice" role="status"></p>
@@ -130,8 +131,9 @@ let draft;
 let pendingExport = "";
 let assistOffer;
 let assistEnabled = false;
+let assistTargetAfterStart = false;
 let assistRefreshing = false;
-let assistBusy = false;
+let assistAction = "";
 let assistChange = 0;
 
 async function api(path, body){
@@ -163,31 +165,38 @@ function renderAssist(){
   const pending = assistOffer?.status === "pending";
   const active = assistOffer?.status === "active";
   const local = !!assistOffer?.local_active;
-  let target = assistOffer;
-  if(eligible && !target && $("upstreamAddress").value.trim()){
+  const awaitingTarget = local && assistTargetAfterStart && !assistOffer.url;
+  let target = assistOffer?.url ? assistOffer : undefined;
+  const needsTarget = awaitingTarget || (eligible && !active && !assistTargetAfterStart);
+  if(needsTarget && !target && $("upstreamAddress").value.trim()){
     try{ target = localServiceTarget(); }catch(_error){}
   }
   $("assistService").textContent = target?.name || "";
   $("assistAddress").textContent = target?.url || "";
   $("assistAddress").hidden = !target;
-  $("assistState").textContent = local ? "已开始协助。开物可以读取并协助接入这个 MCP 服务，你随时可以停止。" :
+  $("assistState").textContent = awaitingTarget ? "已开始协助。需要读取工具时，在下方填写地址并确认此 MCP。" :
+    local ? "已开始协助。开物可以读取并协助接入这个 MCP 服务，你随时可以停止。" :
     active ? "本机协助已停止。请点「停止协助」通知开物。" :
+    assistTargetAfterStart ? "点击「开始协助」，让开物工程师看到这台设备。" :
     target ? "点击「开始协助」，允许开物工程师读取并协助接入这个 MCP 服务。" :
     "先在下方填写 MCP 地址，再点击「开始协助」。";
   $("assistStart").hidden = active || (!eligible && !pending);
+  $("assistTarget").hidden = !awaitingTarget;
   $("assistStop").hidden = !active;
-  $("assistStart").disabled = assistBusy;
-  $("assistStop").disabled = assistBusy;
+  $("assistStart").disabled = !!assistAction;
+  $("assistTarget").disabled = !!assistAction;
+  $("assistStop").disabled = !!assistAction && assistAction !== "target";
 }
 
 async function refreshAssist(){
-  if(!status?.bound || status.state === "REVOKED" || assistBusy || assistRefreshing){ return; }
+  if(!status?.bound || status.state === "REVOKED" || assistAction || assistRefreshing){ return; }
   assistRefreshing = true;
   const revision = assistChange;
   try{
-    const {enabled, offer} = await api("/api/assist/offer");
-    if(assistBusy || revision !== assistChange){ return; }
+    const {enabled, offer, target_after_start} = await api("/api/assist/offer");
+    if(assistAction || revision !== assistChange){ return; }
     assistEnabled = enabled;
+    assistTargetAfterStart = !!target_after_start;
     assistOffer = offer?.status === "active" || (!assistEnabled && offer?.status === "pending") ? offer : undefined;
     renderAssist();
   }catch(_error){
@@ -198,28 +207,37 @@ async function refreshAssist(){
 }
 
 async function changeAssist(action){
-  if(assistBusy){ return; }
+  if(assistAction && !(assistAction === "target" && action === "stop")){ return; }
   let request;
   if(action === "stop" || (!assistEnabled && assistOffer?.status === "pending")){
     if(!assistOffer){ return; }
     request = {session_id:assistOffer.id};
-  }else{
+  }else if(action === "start" && assistTargetAfterStart){
     if(!assistEnabled || assistOffer?.status === "active"){ return; }
+    request = {};
+  }else{
+    const confirmsTarget = action === "target";
+    if(confirmsTarget){
+      if(!assistTargetAfterStart || !assistOffer?.local_active || assistOffer.url){ return; }
+    }else if(!assistEnabled || assistOffer?.status === "active"){ return; }
     try{
       if(!$("upstreamAddress").value.trim()){ throw new Error("请先在下方填写 MCP 地址。"); }
       request = localServiceTarget();
+      if(confirmsTarget){ request.session_id = assistOffer.id; }
     }catch(error){
       $("assistNotice").textContent = error.message;
+      if(phase !== "address"){ phase = "address"; render(); }
       $("upstreamAddress").focus();
       return;
     }
   }
-  assistBusy = true;
-  assistChange++;
+  assistAction = action;
+  const revision = ++assistChange;
   $("assistNotice").textContent = "";
   renderAssist();
   try{
     const offer = await api("/api/assist/" + action, request);
+    if(revision !== assistChange){ return; }
     if(action === "stop"){
       assistOffer = undefined;
       $("assistNotice").textContent = "协助已停止。";
@@ -227,12 +245,15 @@ async function changeAssist(action){
       assistOffer = offer || { ...assistOffer, status:"active", local_active:true };
     }
   }catch(error){
+    if(revision !== assistChange){ return; }
     if(action === "stop"){ assistOffer = { ...assistOffer, local_active:false }; }
     $("assistNotice").textContent = error.message;
   }finally{
-    assistBusy = false;
-    renderAssist();
-    void refreshAssist();
+    if(revision === assistChange){
+      assistAction = "";
+      renderAssist();
+      void refreshAssist();
+    }
   }
 }
 
@@ -377,6 +398,8 @@ async function loadStatus(){
       assistChange++;
       assistOffer = undefined;
       assistEnabled = false;
+      assistTargetAfterStart = false;
+      assistAction = "";
       $("assistNotice").textContent = "";
       renderAssist();
     }
@@ -503,6 +526,7 @@ $("editAddressBtn").onclick = ()=>{
 };
 $("addAnotherBtn").onclick = ()=>editSource();
 $("assistStart").onclick = ()=>changeAssist("start");
+$("assistTarget").onclick = ()=>changeAssist("target");
 $("assistStop").onclick = ()=>changeAssist("stop");
 $("upstreamAddress").oninput = renderAssist;
 $("sourceName").oninput = renderAssist;

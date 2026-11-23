@@ -216,6 +216,7 @@ func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 		"/api/revoke",
 		"/api/mcp-export",
 		"/api/assist/start",
+		"/api/assist/target",
 		"/api/assist/stop",
 		"/api/diagnostics/settings",
 	}
@@ -259,6 +260,7 @@ func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
 		"/api/revoke",
 		"/api/mcp-export",
 		"/api/assist/start",
+		"/api/assist/target",
 		"/api/assist/stop",
 		"/api/diagnostics/settings",
 	}

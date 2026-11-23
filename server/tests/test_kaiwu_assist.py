@@ -132,6 +132,50 @@ def test_device_starts_target_before_any_operator_and_controls_stop(env):
     ]
 
 
+def test_assist_presence_and_target_authorization_are_independent(env):
+    _, client, db, device, _, _, outsider = env
+    mode = "offer?device_first=1&target_after_start=1"
+    assert device(mode).json() == {"enabled": True, "target_after_start": True, "offer": None}
+    assert device("start", {}, credentials=outsider).status_code == 403
+    assert device("start", {"command": "example"}).status_code == 422
+    started = device("start", {})
+    assert started.status_code == 200, started.text
+    offer = started.json()
+    assert (offer["status"], offer["url"]) == ("active", "")
+    assert device("start", {}).json() == offer
+    assert device("offer?device_first=1").json() == {"enabled": True, "offer": None}
+    assert device(mode).json()["offer"] == offer
+
+    local = {"session_id": offer["id"]}
+    route = PORTAL + "/sessions/" + offer["id"]
+    assert device("poll", {**local, "accept_jobs": False}).json() == {"active": True, "job": None}
+    assert client.post("/api/v1/auth/login", json={"username": "owner", "password": PASSWORD}).status_code == 200
+    assert client.post(route + "/claim").json()["url"] == ""
+    discovery = {"action": "discover", "bearer_token": TOKEN}
+    for endpoint, request in (("jobs", discovery), ("jobs", {"action": "connect", "tools": ["lookup_order"]}),
+                              ("import", {"scope": "private"})):
+        denied = client.post(route + "/" + endpoint, json=request)
+        assert denied.status_code == 409 and denied.json()["error"]["code"] == "ASSIST_TARGET_REQUIRED"
+    assert db.one("SELECT count(*) AS n FROM kaiwu_assist_jobs")["n"] == 0
+
+    target = {**local, "name": "销售合同", "url": TARGET}
+    assert client.post(route + "/target", json=target).status_code == 404
+    assert device("target", target, credentials=outsider).status_code == 403
+    assert device("target", {**target, "url": TARGET + "?secret=example"}).status_code == 422
+    approved = device("target", target)
+    assert approved.status_code == 200 and approved.json()["url"] == TARGET
+    assert device("target", target).json() == approved.json()
+    assert device("target", {**target, "url": TARGET + "_other"}).status_code == 409
+    assert client.get(route).json()["url"] == TARGET
+    queued = client.post(route + "/jobs", json=discovery).json()["latest_job"]
+    assert device("poll", {**local, "accept_jobs": False}).json() == {"active": True, "job": None}
+    assert db.one("SELECT status FROM kaiwu_assist_jobs WHERE id=?", (queued["id"],))["status"] == "queued"
+    assert device("poll", {**local, "accept_jobs": True}).json()["job"]["id"] == queued["id"]
+    assert device("stop", local).status_code == 200
+    assert device("target", target).status_code == 409
+    assert client.post(route + "/jobs", json=discovery).status_code == 409
+
+
 def test_credential_delivery_once_stop_and_expiry(env):
     app, client, db, device, *_ = env
     local, route = request_assist(env)

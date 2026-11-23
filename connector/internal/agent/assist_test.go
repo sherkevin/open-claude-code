@@ -224,6 +224,131 @@ func TestDeviceStartsAssistForLocalTargetWithoutPendingOffer(t *testing.T) {
 	}
 }
 
+func TestDeviceOpensAssistBeforeConfirmingMCP(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		if r.URL.Path != "/mcp" || r.Header.Get("Authorization") != "Bearer "+testAssistToken {
+			t.Error("request escaped the approved MCP target")
+		}
+		http.Error(w, "kept local", http.StatusUnauthorized)
+	}))
+	t.Cleanup(upstream.Close)
+	target := cloud.AssistTarget{Name: "销售合同", URL: upstream.URL + "/mcp"}
+	offer := cloud.AssistOffer{ID: testAssistID, Name: openAssistName, Status: "active", ExpiresAt: time.Now().Add(time.Minute)}
+	presence := make(chan struct{}, 2)
+	f := &assistanceFixture{results: make(chan cloud.AssistResult, 1)}
+	var confirmations atomic.Int32
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		respond := json.NewEncoder(w).Encode
+		switch r.URL.Path {
+		case "/v1/connectors/conn_assist/assist/offer":
+			if r.URL.Query().Get("device_first") != "1" || r.URL.Query().Get("target_after_start") != "1" {
+				t.Error("device did not negotiate the new flow")
+			}
+			_ = respond(cloud.AssistStatus{Enabled: true, TargetAfterStart: true})
+		case "/v1/connectors/conn_assist/assist/start":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body == nil || len(body) != 0 {
+				t.Error("opening assistance must send an empty JSON object")
+			}
+			_ = respond(offer)
+		case "/v1/connectors/conn_assist/assist/target":
+			var body struct {
+				SessionID string `json:"session_id"`
+				cloud.AssistTarget
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.SessionID != offer.ID || body.AssistTarget != target {
+				t.Error("device did not send the approved session and target")
+			}
+			view := offer
+			view.Name, view.URL = target.Name, target.URL
+			if confirmations.Add(1) == 1 {
+				view.URL += "/substituted"
+			}
+			_ = respond(view)
+		case "/v1/connectors/conn_assist/assist/poll":
+			var body struct {
+				SessionID  string `json:"session_id"`
+				AcceptJobs *bool  `json:"accept_jobs"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.SessionID != offer.ID {
+				t.Error("unexpected poll body")
+			}
+			view := cloud.AssistPoll{Active: true}
+			if body.AcceptJobs != nil && !*body.AcceptJobs {
+				select {
+				case presence <- struct{}{}:
+				default:
+				}
+			} else if f.jobSent.CompareAndSwap(false, true) {
+				if confirmations.Load() != 2 {
+					t.Error("device accepted jobs before exact local target confirmation")
+				}
+				view.Job = &cloud.AssistJob{ID: testAssistJobID, Action: "discover", BearerToken: testAssistToken}
+			}
+			_ = respond(view)
+		case "/v1/connectors/conn_assist/assist/result":
+			var result cloud.AssistResult
+			if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
+				t.Error(err)
+			}
+			f.results <- result
+			_ = respond(struct{}{})
+		case "/v1/connectors/conn_assist/assist/stop":
+			_ = respond(struct{}{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(control.Close)
+	f.cloudURL = control.URL
+	a := newAssistTestAgent(t, f)
+	ctx := context.Background()
+
+	status, err := a.AssistStatus(ctx)
+	if err != nil || !status.Enabled || !status.TargetAfterStart || status.Offer != nil {
+		t.Fatalf("expected independent assistance capability: %+v %v", status, err)
+	}
+	started, err := a.OpenAssist(ctx)
+	if err != nil || started == nil || !started.LocalActive || started.URL != "" {
+		t.Fatalf("could not open assistance without a target: %+v %v", started, err)
+	}
+	waitForPresence := func() {
+		t.Helper()
+		select {
+		case <-presence:
+		case <-time.After(6 * time.Second):
+			t.Fatal("device did not poll without accepting jobs")
+		}
+	}
+	waitForPresence()
+	if _, err := a.SetAssistTarget(ctx, offer.ID, target); err == nil {
+		t.Fatal("device accepted a substituted target from the server")
+	}
+	waitForPresence()
+	different := cloud.AssistTarget{Name: target.Name, URL: target.URL + "/another"}
+	if _, err := a.SetAssistTarget(ctx, offer.ID, different); err == nil || confirmations.Load() != 1 || upstreamCalls.Load() != 0 {
+		t.Fatal("ambiguous confirmation allowed a different target or an upstream call")
+	}
+	confirmed, err := a.SetAssistTarget(ctx, offer.ID, target)
+	if err != nil || confirmed == nil || confirmed.URL != target.URL || !confirmed.LocalActive {
+		t.Fatalf("could not confirm the original target: %+v %v", confirmed, err)
+	}
+	select {
+	case result := <-f.results:
+		if result.HTTPStatus != http.StatusUnauthorized || result.SessionID != offer.ID || upstreamCalls.Load() != 1 {
+			t.Fatalf("unexpected result for confirmed target: %+v", result)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("device never ran the job for the confirmed target")
+	}
+	if err := a.StopAssist(ctx, offer.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAssistStopCancelsDiscoveryEvenWhenFirstNotificationFails(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})

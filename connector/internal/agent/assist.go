@@ -22,6 +22,7 @@ const (
 	assistLifetime       = 30 * time.Minute
 	assistPollInterval   = 3 * time.Second
 	assistControlTimeout = 3 * time.Second
+	openAssistName       = "内网接入协助"
 )
 
 var (
@@ -32,10 +33,17 @@ var (
 )
 
 type assistSession struct {
-	offer       cloud.AssistOffer
-	client      *cloud.Client
-	connectorID string
-	cancel      context.CancelFunc
+	offer            cloud.AssistOffer
+	client           *cloud.Client
+	connectorID      string
+	cancel           context.CancelFunc
+	targetAfterStart bool
+
+	// Guarded by Agent.mu. Keep an attempted target pinned if the server's
+	// response was lost, and allow jobs only after checking the response.
+	target          cloud.AssistTarget
+	targetSetting   bool
+	targetConfirmed bool
 }
 
 // AssistStatus returns the current local grant or the server's availability and
@@ -43,9 +51,9 @@ type assistSession struct {
 func (a *Agent) AssistStatus(ctx context.Context) (cloud.AssistStatus, error) {
 	a.mu.RLock()
 	if active := a.assistActive; active != nil {
-		view := active.localOffer()
+		status := active.localStatus()
 		a.mu.RUnlock()
-		return cloud.AssistStatus{Enabled: true, Offer: &view}, nil
+		return status, nil
 	}
 	client, connectorID := a.cloud, a.identity.ConnectorID
 	available := a.canAssistLocked()
@@ -70,8 +78,7 @@ func (a *Agent) AssistStatus(ctx context.Context) (cloud.AssistStatus, error) {
 		return cloud.AssistStatus{}, nil
 	}
 	if active := a.assistActive; active != nil {
-		view := active.localOffer()
-		return cloud.AssistStatus{Enabled: true, Offer: &view}, nil
+		return active.localStatus(), nil
 	}
 	a.assistSeen = nil
 	offer := status.Offer
@@ -90,9 +97,17 @@ func (a *Agent) AssistStatus(ctx context.Context) (cloud.AssistStatus, error) {
 
 func (s *assistSession) localOffer() cloud.AssistOffer {
 	offer := s.offer
+	if s.targetConfirmed {
+		offer.Name, offer.URL = s.target.Name, s.target.URL
+	}
 	offer.Status = "active"
 	offer.LocalActive = true
 	return offer
+}
+
+func (s *assistSession) localStatus() cloud.AssistStatus {
+	offer := s.localOffer()
+	return cloud.AssistStatus{Enabled: true, Offer: &offer, TargetAfterStart: s.targetAfterStart}
 }
 
 func (a *Agent) canAssistLocked() bool {
@@ -101,13 +116,22 @@ func (a *Agent) canAssistLocked() bool {
 		a.identity.DeviceToken != "" && current != state.Revoked && current != state.Draining
 }
 
-// StartAssistForTarget opens a session for the MCP address supplied on this
-// device. Local consent is never restored after restarting the service.
+// StartAssistForTarget supports control servers that still require the
+// assistance session and the locally chosen MCP address in the same request.
 func (a *Agent) StartAssistForTarget(ctx context.Context, target cloud.AssistTarget) (*cloud.AssistOffer, error) {
 	target.Name, target.URL = strings.TrimSpace(target.Name), strings.TrimSpace(target.URL)
 	if !validAssistTarget(target.Name, target.URL) {
 		return nil, errors.New("请填写有效的 MCP 服务名称和地址。内网服务使用 HTTPS，本机服务也可填写端口")
 	}
+	return a.openAssist(ctx, &target)
+}
+
+func (a *Agent) OpenAssist(ctx context.Context) (*cloud.AssistOffer, error) {
+	return a.openAssist(ctx, nil)
+}
+
+// Local consent is never restored after a service restart.
+func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget) (*cloud.AssistOffer, error) {
 	a.mu.Lock()
 	if !a.canAssistLocked() || a.assistActive != nil || a.assistStarting {
 		a.mu.Unlock()
@@ -119,7 +143,7 @@ func (a *Agent) StartAssistForTarget(ctx context.Context, target cloud.AssistTar
 
 	request, done := context.WithTimeout(a.runtimeCtx, assistControlTimeout)
 	stopRequest := context.AfterFunc(ctx, done)
-	offer, err := client.StartAssistForTarget(request, connectorID, target)
+	offer, err := client.OpenAssist(request, connectorID, target)
 	stopRequest()
 	done()
 
@@ -129,12 +153,16 @@ func (a *Agent) StartAssistForTarget(ctx context.Context, target cloud.AssistTar
 		a.mu.Unlock()
 		return nil, assistStartError(err)
 	}
-	if offer.Status != "active" || offer.Name != target.Name || offer.URL != target.URL ||
+	expected := cloud.AssistTarget{Name: openAssistName}
+	if target != nil {
+		expected = *target
+	}
+	if offer.Status != "active" || offer.Name != expected.Name || offer.URL != expected.URL ||
 		!validAssistOffer(offer, time.Now()) {
 		a.mu.Unlock()
 		return nil, errors.New("开物返回的协助内容与本机填写的服务不一致，请刷新后重试")
 	}
-	session := &assistSession{offer: offer, client: client, connectorID: connectorID}
+	session := &assistSession{offer: offer, client: client, connectorID: connectorID, targetAfterStart: target == nil}
 	if !a.canAssistLocked() || client != a.cloud || connectorID != a.identity.ConnectorID ||
 		ctx.Err() != nil || offer.ID == a.assistStopped {
 		a.mu.Unlock()
@@ -149,8 +177,63 @@ func (a *Agent) StartAssistForTarget(ctx context.Context, target cloud.AssistTar
 	session.cancel = cancel
 	a.assistSeen = nil
 	a.assistActive = session
+	view := session.localOffer()
 	a.mu.Unlock()
 	go a.runAssist(sessionCtx, session)
+	return &view, nil
+}
+
+// SetAssistTarget grants access to exactly one local MCP service after Start.
+func (a *Agent) SetAssistTarget(ctx context.Context, sessionID string, target cloud.AssistTarget) (*cloud.AssistOffer, error) {
+	target.Name, target.URL = strings.TrimSpace(target.Name), strings.TrimSpace(target.URL)
+	if !validAssistTarget(target.Name, target.URL) {
+		return nil, errors.New("请填写有效的 MCP 服务名称和地址。内网服务使用 HTTPS，本机服务也可填写端口")
+	}
+	a.mu.Lock()
+	session := a.assistActive
+	if !a.canAssistLocked() || session == nil || session.offer.ID != sessionID ||
+		!session.targetAfterStart || !session.offer.ExpiresAt.After(time.Now()) {
+		a.mu.Unlock()
+		return nil, errors.New("请先在本机开始协助，再确认 MCP")
+	}
+	if session.target.URL != "" && session.target != target {
+		a.mu.Unlock()
+		return nil, errors.New("本次协助只能确认一个 MCP。如需换地址，请停止后重新开始协助")
+	}
+	if session.targetConfirmed {
+		view := session.localOffer()
+		a.mu.Unlock()
+		return &view, nil
+	}
+	if session.targetSetting {
+		a.mu.Unlock()
+		return nil, errors.New("正在确认此 MCP，请稍候")
+	}
+	session.target = target
+	session.targetSetting = true
+	a.mu.Unlock()
+
+	request, done := context.WithTimeout(a.runtimeCtx, assistControlTimeout)
+	stopRequest := context.AfterFunc(ctx, done)
+	offer, err := session.client.SetAssistTarget(request, session.connectorID, sessionID, target)
+	stopRequest()
+	done()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	session.targetSetting = false
+	if a.assistActive != session || !a.canAssistLocked() || a.cloud != session.client ||
+		a.identity.ConnectorID != session.connectorID {
+		return nil, errors.New("本次协助已结束")
+	}
+	if err != nil || ctx.Err() != nil {
+		return nil, errors.New("开物未确认此 MCP，请检查连接后用同一地址重试")
+	}
+	if offer.ID != sessionID || offer.Status != "active" || offer.Name != target.Name || offer.URL != target.URL ||
+		!offer.ExpiresAt.Equal(session.offer.ExpiresAt) || !validAssistOffer(offer, time.Now()) {
+		return nil, errors.New("开物返回的服务与本机所选 MCP 不一致，请核对地址后重试")
+	}
+	session.targetConfirmed = true
 	view := session.localOffer()
 	return &view, nil
 }
@@ -265,19 +348,22 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 	completed := make(chan cloud.AssistResult, 1)
 	busy := false
 	for ctx.Err() == nil {
+		a.mu.RLock()
+		offer := session.localOffer()
+		a.mu.RUnlock()
 		request, done := context.WithTimeout(ctx, assistControlTimeout)
-		poll, err := session.client.PollAssist(request, session.connectorID, session.offer.ID)
+		poll, err := session.client.PollAssist(request, session.connectorID, offer.ID, offer.URL != "")
 		done()
 		if err != nil || !poll.Active || ctx.Err() != nil {
 			return
 		}
 		if job := poll.Job; job != nil {
-			if busy || !assistJobID.MatchString(job.ID) {
+			if busy || offer.URL == "" || !assistJobID.MatchString(job.ID) {
 				return
 			}
 			busy = true
 			go func() {
-				completed <- a.runAssistJob(ctx, session.offer, *job, &draft, &verifiedTools)
+				completed <- a.runAssistJob(ctx, offer, *job, &draft, &verifiedTools)
 			}()
 		}
 		select {
@@ -426,8 +512,11 @@ func validAssistSelection(selected, available []string) bool {
 }
 
 func validAssistOffer(offer cloud.AssistOffer, now time.Time) bool {
-	return assistSessionID.MatchString(offer.ID) && offer.ExpiresAt.After(now) &&
-		validAssistTarget(offer.Name, offer.URL)
+	if !assistSessionID.MatchString(offer.ID) || !offer.ExpiresAt.After(now) {
+		return false
+	}
+	return validAssistTarget(offer.Name, offer.URL) ||
+		(offer.Status == "active" && offer.Name == openAssistName && offer.URL == "")
 }
 
 func validAssistTarget(name, address string) bool {

@@ -115,6 +115,8 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   const device = devices.find(item => item.id === deviceID);
   const job = session?.latest_job;
   const active = session?.status === 'active';
+  const hasTarget = !!session?.url;
+  const canUseMcp = active && hasTarget;
   const sessionID = session?.id;
   const jobBusy = job?.status === 'queued' || job?.status === 'running';
   const connected = job?.action === 'connect' && job.status === 'succeeded';
@@ -135,7 +137,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
         if (!controller.signal.aborted && requestEpoch === epoch.current) {
           setSession(next);
           setPollError('');
-          if (next.status !== 'active') {
+          if (next.status !== 'active' || !next.url) {
             setBearer('');
             setSignature(null);
           }
@@ -187,7 +189,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   }
 
   async function submitJob(action: Job['action']) {
-    if (!session || !active || jobBusy || (action === 'discover' && !signatureReady)) return;
+    if (!session || !canUseMcp || jobBusy || (action === 'discover' && !signatureReady)) return;
     await run(async () => {
       const payload = action === 'discover' ? {
         action,
@@ -216,7 +218,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   }
 
   async function importConnection() {
-    if (!session || !active || !connected || importedID) return;
+    if (!session || !canUseMcp || !connected || importedID) return;
     await run(async () => {
       const result = await post<{connection: Connection}>(path + '/sessions/' + encodeURIComponent(session.id) + '/import', { scope });
       setImported(result.connection);
@@ -246,11 +248,12 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
       {session && <>
         <section className="kaiwu-assist-status" aria-label="协助状态">
           <strong role="status">{sessionLabels[session.status]}</strong>
-          <p>{session.tenant_name} · {session.name}</p>
-          <code>{session.url}</code>
+          <p>{session.tenant_name}{hasTarget && ` · ${session.name}`}</p>
+          {hasTarget && <code>{session.url}</code>}
           {active && <small>开放至 {timeText(session.expires_at)}</small>}
         </section>
-        {job && <section className="kaiwu-assist-result" aria-label="最近一次操作结果">
+        {active && !hasTarget && <p role="status">等待客户在本机确认 MCP 地址。确认后可读取工具。</p>}
+        {hasTarget && job && <section className="kaiwu-assist-result" aria-label="最近一次操作结果">
           <p role="status">{describeJob(job)}</p>
           {(job.stage || job.http_status || job.finished_at || job.authorization !== undefined) && <details>
             <summary>查看请求结果</summary>
@@ -262,7 +265,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
             </dl>
           </details>}
         </section>}
-        {active && !connected && !importedID && <div className="kaiwu-assist-action">
+        {canUseMcp && !connected && !importedID && <div className="kaiwu-assist-action">
           <Field label="Bearer 访问令牌" hint="留空可使用同一地址在客户设备上已保存的令牌。">
             <input type="password" value={bearer} autoComplete="new-password" spellCheck={false} maxLength={8192} disabled={busy || jobBusy} onChange={event => setBearer(event.target.value)} />
           </Field>
@@ -288,7 +291,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
           </div>}
           <Button variant="secondary" busy={jobBusy && job?.action === 'discover'} disabled={busy || jobBusy || !!pollError || !signatureReady} onClick={() => void submitJob('discover')}>读取工具</Button>
         </div>}
-        {active && !connected && !importedID && !!session.discovered_tools.length && <fieldset className="kaiwu-assist-tools" disabled={busy || jobBusy}>
+        {canUseMcp && !connected && !importedID && !!session.discovered_tools.length && <fieldset className="kaiwu-assist-tools" disabled={busy || jobBusy}>
           <legend>允许开物调用的工具</legend>
           {session.discovered_tools.map(tool => <label key={tool}>
             <input type="checkbox" checked={selected.includes(tool)} onChange={event => {
@@ -298,7 +301,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
             <code>{tool}</code>
           </label>)}
         </fieldset>}
-        {active && connected && !importedID && <ScopeField admin value={scope} onChange={setScope} disabled={busy || !!pollError}/>}
+        {canUseMcp && connected && !importedID && <ScopeField admin value={scope} onChange={setScope} disabled={busy || !!pollError}/>}
         {importedID && <SuccessNotice message="已导入开物。可在 MCP 列表查看这项连接。"/>}
       </>}
     </div>
@@ -312,8 +315,8 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
         switchDevice(''); onRefresh();
       }}>返回设备列表</Button>}
       {active && <Button variant="secondary" disabled={busy} onClick={() => void stop()}>结束协助</Button>}
-      {active && !connected && !importedID && !!session.discovered_tools.length && <Button busy={jobBusy && job?.action === 'connect'} disabled={busy || jobBusy || !selected.length || !!pollError} onClick={() => void submitJob('connect')}>保存并连接</Button>}
-      {active && connected && !importedID && <Button busy={busy} disabled={!!pollError} onClick={() => void importConnection()}>导入开物</Button>}
+      {session && canUseMcp && !connected && !importedID && !!session.discovered_tools.length && <Button busy={jobBusy && job?.action === 'connect'} disabled={busy || jobBusy || !selected.length || !!pollError} onClick={() => void submitJob('connect')}>保存并连接</Button>}
+      {canUseMcp && connected && !importedID && <Button busy={busy} disabled={!!pollError} onClick={() => void importConnection()}>导入开物</Button>}
     </footer>
   </Modal>;
 }

@@ -37,6 +37,7 @@ RUN_TTL = 120
 SESSION_ID_RE = r"^asst_[0-9a-f]{32}$"
 JOB_ID_RE = r"^asjob_[0-9a-f]{32}$"
 LIVE_STATES = ("pending", "active")
+UNTARGETED_ASSIST_NAME = "内网接入协助"
 BRIDGE_OPERATOR_PREFIX = "workbench:"
 # Locally started sessions use a device owner until an administrator joins.
 DEVICE_OWNER_PREFIX = "device:"
@@ -107,6 +108,18 @@ class OfferInput(TargetInput):
 
 class SessionInput(StrictModel):
     session_id: str = Field(pattern=SESSION_ID_RE)
+
+
+class StartWithoutTargetInput(StrictModel):
+    pass
+
+
+class ApproveTargetInput(SessionInput, TargetInput):
+    pass
+
+
+class PollInput(SessionInput):
+    accept_jobs: StrictBool = True
 
 
 class DynamicAuth(StrictModel):
@@ -264,6 +277,11 @@ def _require_recent_consent(row):
         raise AppError(409, "ASSIST_DEVICE_NOT_RESPONDING", "设备协助未在线，请等待连接器恢复")
 
 
+def _require_target(row):
+    if not row["url"]:
+        raise AppError(409, "ASSIST_TARGET_REQUIRED", "请先在连接器上确认要协助的 MCP 服务")
+
+
 def _offer(row):
     return {key: row[key] for key in ("id", "name", "url", "status", "expires_at")}
 
@@ -346,7 +364,10 @@ def add_device_assist(router, service_dependency, device):
     path = "/v1/connectors/{connector_id}/assist"
 
     @router.get(path + "/offer")
-    def read_offer(connector_id: str, device_first: bool = False, identity=Depends(device), service=Depends(service_dependency)):
+    def read_offer(
+        connector_id: str, device_first: bool = False, target_after_start: bool = False,
+        identity=Depends(device), service=Depends(service_dependency),
+    ):
         if (
             identity["connector"]["id"] == connector_id
             and (
@@ -362,17 +383,23 @@ def add_device_assist(router, service_dependency, device):
                 "SELECT * FROM kaiwu_assist_sessions WHERE connector_id=? AND status IN ('pending','active')",
                 (connector_id,),
             )
-            result = {"offer": _offer(row) if row else None}
+            result = {"offer": _offer(row) if row and (row["url"] or target_after_start) else None}
             if device_first:
                 result["enabled"] = True
+            if target_after_start:
+                result["target_after_start"] = True
             return result
 
     @router.post(path + "/start")
-    def start(connector_id: str, data: TargetInput | SessionInput, identity=Depends(device), service=Depends(service_dependency)):
+    def start(
+        connector_id: str, data: TargetInput | SessionInput | StartWithoutTargetInput,
+        identity=Depends(device), service=Depends(service_dependency),
+    ):
         connector = _device_scope(service, identity, connector_id)
         with service.db.transaction():
             _expire(service)
-            if isinstance(data, TargetInput):
+            if not isinstance(data, SessionInput):
+                name, url = (data.name, data.url) if isinstance(data, TargetInput) else (UNTARGETED_ASSIST_NAME, "")
                 connector = _connector(service, connector_id, connector["tenant_id"])
                 if connector["revoked"] or connector["draining"]:
                     raise AppError(409, "ASSIST_DEVICE_UNAVAILABLE", "此设备当前无法开始协助")
@@ -381,7 +408,7 @@ def add_device_assist(router, service_dependency, device):
                     (connector_id,),
                 )
                 if existing and existing["status"] == "active":
-                    if (existing["name"], existing["url"]) != (data.name, data.url):
+                    if (existing["name"], existing["url"]) != (name, url):
                         raise AppError(409, "ASSIST_ALREADY_OPEN", "请先结束本机正在进行的协助")
                     return _offer(existing)
                 if existing:
@@ -393,7 +420,7 @@ def add_device_assist(router, service_dependency, device):
                     "(id,connector_id,tenant_id,name,url,created_by,status,expires_at,created_at) "
                     "VALUES(?,?,?,?,?,?,'active',?,?)",
                     (
-                        session_id, connector_id, connector["tenant_id"], data.name, data.url,
+                        session_id, connector_id, connector["tenant_id"], name, url,
                         DEVICE_OWNER_PREFIX + connector_id, _future(SESSION_TTL), now(),
                     ),
                 )
@@ -413,6 +440,26 @@ def add_device_assist(router, service_dependency, device):
             _event(service, row, "approved")
             return {}
 
+    @router.post(path + "/target")
+    def approve_target(
+        connector_id: str, data: ApproveTargetInput, identity=Depends(device), service=Depends(service_dependency),
+    ):
+        _device_scope(service, identity, connector_id)
+        with service.db.transaction():
+            _expire(service)
+            row = _session(service, data.session_id, connector_id=connector_id)
+            if not _active(row):
+                raise AppError(409, "ASSIST_NOT_ACTIVE", "请先在连接器上开始协助")
+            if row["url"]:
+                if (row["name"], row["url"]) != (data.name, data.url):
+                    raise AppError(409, "ASSIST_TARGET_FIXED", "已经确认了本次协助的 MCP 服务，请先停止协助再更换")
+                return _offer(row)
+            service.db.execute(
+                "UPDATE kaiwu_assist_sessions SET name=?,url=? WHERE id=?", (data.name, data.url, row["id"]),
+            )
+            _event(service, row, "target_approved")
+            return _offer(_session(service, row["id"], connector_id=connector_id))
+
     @router.post(path + "/stop")
     def stop(connector_id: str, data: SessionInput, identity=Depends(device), service=Depends(service_dependency)):
         _device_scope(service, identity, connector_id)
@@ -422,7 +469,7 @@ def add_device_assist(router, service_dependency, device):
             return {}
 
     @router.post(path + "/poll")
-    def poll(connector_id: str, data: SessionInput, identity=Depends(device), service=Depends(service_dependency)):
+    def poll(connector_id: str, data: PollInput, identity=Depends(device), service=Depends(service_dependency)):
         _device_scope(service, identity, connector_id)
         with service.db.transaction():
             _expire(service)
@@ -430,6 +477,8 @@ def add_device_assist(router, service_dependency, device):
             if not _active(row):
                 return {"active": False, "job": None}
             service.db.execute("UPDATE kaiwu_assist_sessions SET last_poll_at=? WHERE id=?", (now(), row["id"]))
+            if not data.accept_jobs or not row["url"]:
+                return {"active": True, "job": None}
             job = _job(service, row["id"])
             if not job or job["status"] != "queued":
                 return {"active": True, "job": None}
@@ -587,6 +636,7 @@ def _assist_router(service_dependency, admin, *, prefix: str, bridge: bool = Fal
             _expire(service)
             row = _session(service, session_id, owner=user["id"])
             _require_recent_consent(row)
+            _require_target(row)
             latest = _job(service, row["id"])
             if latest and (latest["status"] in {"queued", "running"} or latest["source_revision"] is not None):
                 raise AppError(409, "ASSIST_JOB_BUSY", "当前协助已有任务，请查看该任务的结果")
@@ -624,6 +674,7 @@ def _assist_router(service_dependency, admin, *, prefix: str, bridge: bool = Fal
                 existing = service.require_resource("connections", row["imported_connection_id"], user, edit=True)
                 return {"connection": connection_view(existing, user)}
             _require_recent_consent(row)
+            _require_target(row)
             job = _job(service, row["id"])
             if not job or job["status"] != "succeeded" or job["action"] != "connect":
                 raise AppError(409, "ASSIST_NOT_CONNECTED", "请先保存已选择的 MCP 工具")
