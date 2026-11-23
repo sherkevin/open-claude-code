@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, BookOpen, ChartNoAxesCombined, Database, FolderOpen, House, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Settings2, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { ArrowUpRight, Blocks, BookOpen, ChartNoAxesCombined, Database, FolderOpen, House, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Settings2, ShieldCheck, X } from 'lucide-react';
 import { api, ApiError, chatMessagePayload, clientRequestId, errorText, post, sendChatMessage, timeText } from './api';
 import { configAllows, type AppConfig, type Assistant, type Conversation, type ModelOption, type ModelSelection, type User } from './types';
 import { Button, ErrorNotice, Loader, Modal } from './components';
@@ -225,7 +225,7 @@ export default function App() {
     ...(configAllows(config,'knowledge.read')?[{id:'knowledge' as View,label:'知识库',icon:<BookOpen size={18}/>}]:[]),
     ...(configAllows(config,'connections.write')?[{id:'connections' as View,label:'MCP',icon:<Network size={18}/>}]:[]),
     ...(canManageCapabilities(admin,config)?[{id:'capability-settings' as View,label:'能力与来源',icon:<Settings2 size={18}/>}]:[]),
-    ...(configAllows(config,'skills.write')?[{id:'skills' as View,label:'Skills',icon:<Sparkles size={18}/>}]:[]),
+    ...(configAllows(config,'skills.write')?[{id:'skills' as View,label:'Skills',icon:<Blocks size={18} aria-hidden="true"/>}]:[]),
     ...(configAllows(config,'usage.read')?[{id:'usage' as View,label:'用量记录',icon:<ChartNoAxesCombined size={18}/>}]:[]),
     ...(admin&&configAllows(config,'benchmark.read')?[{id:'benchmark' as View,label:'对标基准',icon:<ChartNoAxesCombined size={18}/>}]:[]),
     ...(admin&&configAllows(config,'approvals.read')?[{id:'approvals' as View,label:'待审批操作',icon:<ShieldCheck size={18}/>}]:[]),
