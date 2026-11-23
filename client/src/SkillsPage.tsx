@@ -2,8 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { BookOpen, ChevronDown, FileText, Pencil, Plus, Sparkles, Trash2, Upload, Wrench } from 'lucide-react';
 import { api, errorText, patch, post, remove } from './api';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
-import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
-import { BusinessIcon, businessIconFor } from './BusinessIcon';
+import { canEdit, ResourceCardHeading, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import MarkdownDocument from './MarkdownDocument';
 import type { Skill } from './types';
 import './skill-detail.css';
@@ -15,14 +14,10 @@ export default function SkillsPage({ admin }: { admin: boolean }) {
   useEffect(() => { void load(); }, [load]);
   return <div className="page skills-catalog"><PageHeader eyebrow="" title="Skills" description="查看与维护业务处理指引。" actions={<><Button variant="secondary" onClick={() => setImporting(true)}><Upload size={16}/>导入 SKILL.md</Button><Button onClick={() => setEditor('new')}><Plus size={17}/>新建 Skill</Button></>}/>
     <ErrorNotice message={error}/><SuccessNotice message={success}/>
-    {loading ? <Loader/> : !items.length ? <EmptyState icon={<Sparkles size={30}/>} title="还没有 Skill" description="导入或编写一份业务处理指引。"/> : <div className="resource-grid">{items.map(item => {
-      const icon = businessIconFor(item.name, item.description);
-      return <article className="resource-card" key={item.id}>
-        <div className="resource-top">{icon ? <BusinessIcon icon={icon}/> : <BookOpen className="skill-card-icon" aria-hidden="true" size={24}/>}<ScopeBadge scope={item.scope}/></div>
-        <h2>{item.name}</h2><p>{item.description || '暂无说明'}</p><div className="resource-meta"><span>{item.enabled ? '已启用' : '已停用'}</span></div>
+    {loading ? <Loader/> : !items.length ? <EmptyState icon={<Sparkles size={30}/>} title="还没有 Skill" description="导入或编写一份业务处理指引。"/> : <div className="resource-grid">{items.map(item => <article className="resource-card" key={item.id}>
+        <ResourceCardHeading name={item.name} scope={item.scope}/><p>{item.description || '暂无说明'}</p><div className="resource-meta"><span>{item.enabled ? '已启用' : '已停用'}</span></div>
         <footer><Button variant="secondary" onClick={() => setEditor(item)}><BookOpen size={15}/>查看</Button><Button variant="ghost" onClick={() => setHistory(item)}>历史记录</Button>{canEdit(item, admin) && <button type="button" className="icon-button danger-text" aria-label={`删除 ${item.name}`} onClick={() => setDeleting(item)}><Trash2 size={16}/></button>}</footer>
-      </article>;
-    })}</div>}
+      </article>)}</div>}
     {history && <SkillHistory skill={history} onClose={() => setHistory(null)}/>}
     {editor && <SkillEditor value={editor === 'new' ? null : editor} admin={admin} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); setSuccess('Skill 已保存。'); void load(); }}/ >}
     {importing && <SkillImport admin={admin} onClose={() => setImporting(false)} onSaved={() => { setImporting(false); setSuccess('Skill 已导入。'); void load(); }}/ >}
@@ -33,7 +28,7 @@ export default function SkillsPage({ admin }: { admin: boolean }) {
 export function SkillDocument({ value }: { value: Skill }) {
   const references = Object.entries(value.resources || {});
   return <article className="skill-document skill-detail" aria-label={`${value.name}详情`}>
-    <header className="skill-detail-overview"><div className="skill-document-meta"><span className="skill-document-kind"><BookOpen size={14}/>Skill 指引</span><ScopeBadge scope={value.scope}/><span className={`skill-document-status${value.enabled ? ' enabled' : ''}`}><i aria-hidden="true"/>{value.enabled ? '已启用' : '已停用'}</span></div>
+    <header className="skill-detail-overview"><div className="skill-document-meta"><span className="skill-document-kind">Skill 指引</span><ScopeBadge scope={value.scope} textOnly/><span className="skill-document-version">v{value.revision}</span><span className={`skill-document-status${value.enabled ? ' enabled' : ''}`}><i aria-hidden="true"/>{value.enabled ? '已启用' : '已停用'}</span></div>
       {value.description && <p className="skill-document-description">{value.description}</p>}
     </header>
     <div className="skill-reading-surface"><MarkdownDocument text={value.instructions} label="流程指引"/></div>

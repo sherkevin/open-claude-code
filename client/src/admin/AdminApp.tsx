@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react';
-import { Activity, ChartNoAxesCombined, LogOut, Shield, Users } from 'lucide-react';
+import { LogOut, Shield } from 'lucide-react';
 import { ApiError, api, errorText, post } from '../api';
 import { UsersPage } from '../AdminPages';
 import { Button, ErrorNotice, Field, Loader } from '../components';
 import PromptSafetyPage from '../PromptSafetyPage';
+import { SidebarIcon } from '../SidebarIcon';
 import type { AppConfig, User } from '../types';
 import { UsagePage } from '../UsagePage';
 import ActivityPage from './ActivityPage';
 
 const sections = {
-  usage: {label: '用量概览', icon: ChartNoAxesCombined},
-  activity: {label: '操作日志', icon: Activity},
-  policy: {label: '用户规范', icon: Shield},
-  users: {label: '用户管理', icon: Users},
-};
+  usage: {label: '用量概览', icon: 'usage'},
+  activity: {label: '操作日志', icon: 'activity'},
+  policy: {label: '用户规范', icon: 'policy'},
+  users: {label: '用户管理', icon: 'users'},
+} as const;
 type Section = keyof typeof sections;
 
 function PolicySection({users}: {users: User[]}) {
@@ -91,8 +92,8 @@ export default function AdminApp() {
       <div className="ops-brand"><Shield size={21}/><span>开物运营后台</span></div>
       <nav aria-label="运营后台导航">
         {(Object.keys(sections) as Section[]).map(key => {
-          const {icon: Icon, label} = sections[key];
-          return <button key={key} type="button" aria-current={view === key ? 'page' : undefined} onClick={() => {setView(key); setError('');}}><Icon size={18}/>{label}</button>;
+          const {icon, label} = sections[key];
+          return <button key={key} type="button" aria-current={view === key ? 'page' : undefined} onClick={() => {setView(key); setError('');}}><SidebarIcon name={icon}/>{label}</button>;
         })}
       </nav>
     </aside>

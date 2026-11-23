@@ -1,0 +1,68 @@
+/* Use the ink and the single signal colour from the supplied business pictograms. */
+:root {
+  --flint-icon-ink: #141619;
+  --flint-icon-accent: #f36b13;
+  --flint-icon-edge: url(#flint-icon-edge);
+}
+
+.flint-icon-palette { position: absolute; pointer-events: none; overflow: hidden; }
+
+:is(.button.primary, .send-button, .ops-nav, .new-conversation, .nav-item.selected) {
+  --flint-icon-ink: #fff;
+  --flint-icon-accent: #ffb076;
+  --flint-icon-edge: url(#flint-icon-edge-inverse);
+}
+
+#root svg.lucide {
+  stroke: var(--flint-icon-ink);
+  stroke-width: 2.65;
+  stroke-linejoin: miter;
+  stroke-miterlimit: 2;
+  stroke-linecap: square;
+  flex-shrink: 0;
+}
+
+/* One-piece controls keep their familiar silhouette, including at 12–16px. */
+svg.lucide > :only-child {
+  stroke: var(--flint-icon-edge) var(--flint-icon-ink);
+}
+
+/* Where a symbol has several parts, accent its action, reading or indicator. */
+:is(.lucide-shield-check, .lucide-circle-check, .lucide-circle-alert,
+    .lucide-circle-help, .lucide-circle-pause, .lucide-circle-x,
+    .lucide-triangle-alert, .lucide-sparkles, .lucide-download, .lucide-upload,
+    .lucide-log-out, .lucide-copy) > :not(:first-child),
+:is(.lucide-archive, .lucide-arrow-down, .lucide-arrow-right, .lucide-ban,
+    .lucide-circle-dot, .lucide-clock3, .lucide-database, .lucide-eye, .lucide-eye-off,
+    .lucide-history, .lucide-key-round, .lucide-link2, .lucide-paperclip, .lucide-pencil,
+    .lucide-plug-zap, .lucide-save, .lucide-search, .lucide-settings2, .lucide-globe,
+    .lucide-panel-right-open, .lucide-panel-right-close, .lucide-panel-left-open,
+    .lucide-panel-left-close, .lucide-x) > :last-child,
+:is(.lucide-arrow-left, .lucide-arrow-up, .lucide-arrow-up-left, .lucide-arrow-up-right,
+    .lucide-blocks, .lucide-book-open, .lucide-gauge, .lucide-house, .lucide-lock-keyhole,
+    .lucide-redo2, .lucide-undo2, .lucide-user-round) > :first-child,
+:is(.lucide-archive-restore, .lucide-bot, .lucide-file-plus2, .lucide-file-text,
+    .lucide-list-tree, .lucide-user-plus, .lucide-users) > :nth-last-child(-n+2),
+:is(.lucide-external-link, .lucide-list-checks, .lucide-maximize2, .lucide-minimize2) > :nth-child(-n+2),
+:is(.lucide-image, .lucide-layers, .lucide-layout-list, .lucide-menu, .lucide-package,
+    .lucide-plus, .lucide-rotate-ccw, .lucide-timer) > :nth-child(2),
+:is(.lucide-chart-column, .lucide-git-fork, .lucide-network, .lucide-radio) > :nth-child(3),
+.lucide-calendar-clock > :nth-last-child(2),
+.lucide-chart-no-axes-combined > :nth-child(4),
+.lucide-git-branch > circle:first-of-type,
+.lucide-list-ordered > :nth-child(n+4),
+.lucide-mouse-pointer-click > :not(:last-child),
+.lucide-refresh-cw > :nth-child(even),
+.lucide-sliders-horizontal > :nth-last-child(-n+3),
+.lucide-stethoscope > circle,
+.lucide-trash2 > line,
+:is(.lucide-zoom-in, .lucide-zoom-out) > :nth-child(n+3) {
+  stroke: var(--flint-icon-accent);
+}
+
+.lucide-key-round > circle { fill: var(--flint-icon-accent); }
+
+@media (forced-colors: active) {
+  #root svg.lucide, #root svg.lucide > * { stroke: currentColor; }
+  .lucide-key-round > circle { fill: currentColor; }
+}

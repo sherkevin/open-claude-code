@@ -4,4 +4,7 @@ import AdminApp from './AdminApp';
 import '../styles.css';
 import './admin.css';
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><AdminApp/></React.StrictMode>);
+import IconPalette from '../IconPalette';
+import '../flint-icons.css';
+
+ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><IconPalette/><AdminApp/></React.StrictMode>);

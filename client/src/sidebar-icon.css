@@ -1,0 +1,18 @@
+.kaiwu-sidebar-icon {
+  display: block;
+  flex: none;
+  fill: #141619;
+}
+
+.kaiwu-sidebar-icon-accent { fill: #f36b13; }
+
+/* Reverse the ink on the dark admin rail, keeping the accent visible. */
+.ops-nav .kaiwu-sidebar-icon { fill: #fff; }
+.ops-nav .kaiwu-sidebar-icon-accent { fill: #ffb076; }
+
+@media (forced-colors: active) {
+  .kaiwu-sidebar-icon,
+  .kaiwu-sidebar-icon-accent,
+  .ops-nav .kaiwu-sidebar-icon,
+  .ops-nav .kaiwu-sidebar-icon-accent { fill: currentColor; }
+}

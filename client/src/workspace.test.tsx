@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { canEdit, ScopeField } from './resources';
+import { canEdit, ResourceCardHeading, ScopeField } from './resources';
 import { AnswerMarkdown, answerText, attachmentSourceURL, isInternalSourceURL, publicWebURL, sourceIdFromURL } from './Sources';
 import { knowledgeOriginalURL } from './KnowledgePage';
 import { mentionQuery, selectedSkillIds, SkillChips } from './SkillPicker';
@@ -33,6 +33,12 @@ describe('explicit skill selection',()=>{
   it('submits only selected currently enabled IDs and never a text path',()=>{
     expect(selectedSkillIds(['s1','s1','/etc/passwd','off'],[skill,{...skill,id:'off',enabled:false}])).toEqual(['s1']);
     const html=renderToStaticMarkup(<SkillChips selected={['s1']} skills={[skill]} disabled={false} onRemove={()=>{}}/>);
+    expect(html).not.toContain('lucide-sparkles');
+    expect(html).toContain('lucide-x');
+    const heading=renderToStaticMarkup(<ResourceCardHeading name={skill.name} scope="private"/>);
+    expect(heading).toContain(skill.name);
+    expect(heading).toContain('仅自己');
+    expect(heading).not.toMatch(/<(?:img|svg)\b/);
     expect(html).toContain('@quality-review');expect(html).not.toContain('v3');expect(html).toContain('type="button"');expect(html).not.toContain('type="submit"');
   });
 });

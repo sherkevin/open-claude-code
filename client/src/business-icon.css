@@ -1,5 +1,4 @@
 .flint-business-icon{display:block;flex:none;object-fit:contain}
-.skill-card-icon{color:var(--ink);flex:none}
 .capability-tool>summary>.capability-tool-label{display:flex;flex-direction:row;align-items:center;gap:10px}
 .capability-tool-label>div{min-width:0}
 .mcp-tool-detail .capability-tool-label>div{display:flex;flex-direction:column;gap:5px}

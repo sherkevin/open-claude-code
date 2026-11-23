@@ -84,7 +84,7 @@ export default function BusinessDataPage({onConnections}:{onConnections:()=>void
     {catalogError&&<Button variant="secondary" onClick={()=>setCatalogEpoch(e=>e+1)}>重新读取数据目录</Button>}
     {catalogLoading?<Loader text="正在读取数据目录…"/>:!tables.length&&!catalogError?<EmptyState icon={<Database/>} title="还没有可浏览的业务表" description="连接 MCP 后，由管理员登记允许查看的数据表。工具能回答问题，不一定提供明细浏览接口。"/>:null}
     {table&&<>
-      <nav className="data-table-tabs" aria-label="业务数据表">{tables.map(t=><button key={t.id} aria-current={selected===t.id?'page':undefined} onClick={()=>choose(t.id)}><BusinessIcon icon={businessIconFor(t.name, t.id) ?? 'data-connect'} size={16} mono={selected !== t.id}/>{t.name}</button>)}</nav>
+      <nav className="data-table-tabs" aria-label="业务数据表">{tables.map(t=><button key={t.id} aria-current={selected===t.id?'page':undefined} onClick={()=>choose(t.id)}><BusinessIcon icon={businessIconFor(t.name, t.id) ?? 'data-connect'} size={16}/>{t.name}</button>)}</nav>
       <div className="data-sheet">
         <div className="data-sheet-heading"><div><h2>{table.name}<span className="data-provenance">{provenance[table.scope]}</span><span className="data-provenance">只读</span></h2><p>{table.description}</p></div><Button variant="secondary" busy={loading} onClick={()=>setEpoch(e=>e+1)}><RefreshCw size={15}/>刷新</Button></div>
         <form className="data-filters" noValidate onSubmit={e=>{e.preventDefault();applyFilters();}}>

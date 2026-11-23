@@ -35,7 +35,7 @@ describe('Skill details respect document and resource permissions', () => {
     const before = JSON.stringify(skill);
     const html = renderToStaticMarkup(<SkillDocument value={skill}/>);
     expect(html).toContain('<h1>质量核对</h1>'); expect(html).toContain('<h2>口径</h2>');
-    expect(html).toContain('v2'); expect(html).toContain('read_quality'); expect(html).not.toContain('配置助手');
+    expect(html).toContain('class="skill-document-version">v2</span>'); expect(html).toContain('read_quality'); expect(html).not.toContain('配置助手');
     expect(html).toContain('<table>'); expect(html).toContain('language-json');
     expect(html).toContain('aria-label="工具与参考资料"'); expect(html).toContain('aria-label="参考资料"');
     expect(JSON.stringify(skill)).toBe(before);

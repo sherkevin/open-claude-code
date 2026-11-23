@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BookOpen, Archive, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Circle, Clock3, Download, FileText, PanelRightClose, PanelRightOpen, ListTree, LoaderCircle, Minimize2, Paperclip, Pencil, Radio, ShieldCheck, Sparkles, Square, X, XCircle } from 'lucide-react';
+import { BookOpen, Archive, ArrowDown, ArrowUp, ArrowUpRight, Check, CheckCircle2, ChevronDown, Circle, Clock3, Download, FileText, PanelRightClose, PanelRightOpen, ListTree, LoaderCircle, Minimize2, Paperclip, Pencil, Radio, ShieldCheck, Sparkles, Square, X, XCircle } from 'lucide-react';
 import { api, API_BASE, ApiError, chatMessagePayload, clientRequestId, errorText, fileURL, patch, post, remove, sendChatMessage, timeText } from './api';
 import { configAllows, type AppConfig, type Approval, type Assistant, type Conversation, type Message, type ModelOption, type ModelRecommendation, type ModelSelection, type Run, type RunStatus, type Skill, type StoredFile, type StreamEvent } from './types';
 import { isActive, statusLabels } from './types';
@@ -1065,7 +1065,7 @@ export function EventRow({ event, events = [] }: { event: StreamEvent; events?: 
   let label = ''; let detail = ''; let icon = <Circle size={14}/>;
   if (event.type === 'run.started') { label = '开始执行'; icon = <Radio size={14}/>; }
   if (event.type === 'run.stage') { const presentation = evidenceStagePresentation(event, events); label = presentation.label; detail = presentation.detail; icon = presentation.confirmed ? <CheckCircle2 size={14}/> : <Clock3 size={14}/>; }
-  if (event.type === 'tool.started') { label = toolLabel(String(event.data.tool_name || '调用工具')); icon = <ArrowUpRightIcon/>; }
+  if (event.type === 'tool.started') { label = toolLabel(String(event.data.tool_name || '调用工具')); icon = <ArrowUpRight size={14}/>; }
   if (event.type === 'tool.completed') { const state = toolResultState(event); const sourceCount = reportedSourceCount(event); label = `${toolResultLabels[state]} · ${toolLabel(String(event.data.tool_name || '工具调用'))}`; detail = state === 'failed' ? (typeof event.data.error_message==='string' ? event.data.error_message : '未取得成功的工具结果。') : state === 'unknown' ? '未收到明确的调用结果，暂不报告业务结果。' : typeof sourceCount === 'number' && sourceCount > 0 ? `已登记 ${sourceCount} 个来源，内容仍需核对。` : '未提供来源。'; icon = state === 'succeeded' ? <CheckCircle2 size={14}/> : state === 'failed' ? <XCircle size={14}/> : <Circle size={14}/>; }
   if (event.type === 'approval.resolved') { label = event.data.decision === 'allow' ? '已允许操作' : '已拒绝操作'; const source = String(event.data.decision_source || ''); detail = source && source !== 'user' ? `决策来源：${source === 'timeout' ? '超时' : source === 'cancelled' ? '任务取消' : source === 'restart' ? '服务重启' : source === 'interrupted' ? '执行中断' : '运行结束'}` : ''; icon = <ShieldCheck size={14}/>; }
   if (event.type === 'approval.session_decided') { label = event.data.mode === 'full' ? '会话完全权限已允许操作' : '会话自动审批已允许操作'; detail = String(event.data.reason || ''); icon = <ShieldCheck size={14}/>; }
@@ -1079,7 +1079,6 @@ export function EventRow({ event, events = [] }: { event: StreamEvent; events?: 
   if (event.type === 'run.completed') { label = statusLabels[event.data.status as RunStatus] || '执行结束'; icon = event.data.status === 'succeeded' ? <CheckCircle2 size={14}/> : <Square size={12}/>; }
   return <div className={`event-row ${event.type === 'tool.completed' && event.data.success === false ? 'failed' : ''}`}><span className="event-icon">{icon}</span><div><span>{label}</span><small>{timeText(event.created_at)}</small>{detail && <details><summary>查看结果摘要<ChevronDown size={12}/></summary><pre>{detail}</pre></details>}{event.type === 'tool.started' && event.data.arguments != null && <details><summary>查看调用参数<ChevronDown size={12}/></summary><pre>{JSON.stringify(event.data.arguments, null, 2)}</pre></details>}{event.type === 'artifact.created' && typeof event.data.id === 'string' && <a className="inline-download" href={fileURL(event.data.id)} download><Download size={13}/>下载</a>}</div></div>;
 }
-function ArrowUpRightIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M7 17 17 7M7 7h10v10"/></svg>; }
 
 export function RunMetrics({ run }: { run: Run }) {
   const [now, setNow] = useState(Date.now());
