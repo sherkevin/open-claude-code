@@ -18,6 +18,9 @@ import (
 	"github.com/sherkevin/open-claude-code/connector/internal/web"
 )
 
+// The native Windows release sets this from the build command.
+var nativeRelayDefault = "false"
+
 func main() {
 	if runServiceIfNeeded() {
 		return
@@ -64,6 +67,8 @@ func usage() {
   --listen     本机界面监听地址（默认 127.0.0.1:17872）
   --cloud      云端控制面地址
   --edge       云端 Edge 地址，用于导出平台配置
+  --platform   开物导入页面地址
+  --native-relay 使用开物内置 MCP 中继
   --frpc       frpc 可执行文件路径（默认与主程序同目录）
 `)
 }
@@ -186,6 +191,12 @@ func registerCommon(flags *flag.FlagSet) (*agent.Options, *string) {
 	flags.StringVar(&opts.DataDir, "data-dir", defaultDataDir(), "本机数据目录")
 	flags.StringVar(&opts.CloudBase, "cloud", os.Getenv("KAIWU_CLOUD_BASE"), "云端控制面地址")
 	flags.StringVar(&opts.EdgeBase, "edge", os.Getenv("KAIWU_EDGE_BASE"), "云端 Edge 地址")
+	platformURL := os.Getenv("KAIWU_PLATFORM_PUBLIC_URL")
+	if platformURL == "" {
+		platformURL = "https://flintw.com/project/kaiwu/"
+	}
+	flags.StringVar(&opts.PlatformURL, "platform", platformURL, "开物导入页面地址")
+	flags.BoolVar(&opts.NativeRelay, "native-relay", nativeRelayDefault == "true", "使用开物内置 MCP 中继")
 	flags.StringVar(&opts.FrpcBinary, "frpc", "", "frpc 可执行文件路径")
 	flags.BoolVar(&opts.AllowStdio, "allow-stdio", false, "允许标准输入输出型 MCP（条件分支）")
 	listen := flags.String("listen", "127.0.0.1:17872", "本机界面监听地址")

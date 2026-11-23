@@ -58,12 +58,14 @@ const (
 
 // Options 是连接器启动参数。
 type Options struct {
-	DataDir    string
-	CloudBase  string
-	EdgeBase   string
-	FrpcBinary string
-	ListenAddr string
-	AllowStdio bool
+	PlatformURL string
+	DataDir     string
+	CloudBase   string
+	EdgeBase    string
+	FrpcBinary  string
+	ListenAddr  string
+	AllowStdio  bool
+	NativeRelay bool
 
 	ExclusiveDiagnostics bool
 
@@ -102,6 +104,7 @@ type Agent struct {
 	lastError     string
 
 	supervisor      *supervisor.Supervisor
+	native          *nativeRelay
 	proxies         map[string]*authproxy.Server
 	preparedProxies map[string]*authproxy.Server
 	heartbeat       context.CancelFunc
@@ -134,6 +137,8 @@ type Status struct {
 	Sources         []config.Source   `json:"sources"`
 	FrpcRunning     bool              `json:"frpc_running"`
 	FrpcRestarts    int               `json:"frpc_restarts"`
+	TransportMode   string            `json:"transport_mode"`
+	TunnelRestarts  int               `json:"tunnel_restarts"`
 	TunnelConnected bool              `json:"tunnel_connected"`
 	TunnelDetail    string            `json:"tunnel_detail,omitempty"`
 	LastError       string            `json:"last_error,omitempty"`
@@ -269,7 +274,9 @@ func New(opts Options) (*Agent, error) {
 			agent.diagnosticsLock, diagnosticsLock = diagnosticsLock, nil
 		}
 	}
-	agent.reapStaleFrpc()
+	if !opts.NativeRelay {
+		agent.reapStaleFrpc()
+	}
 	return agent, nil
 }
 
@@ -314,8 +321,10 @@ func (a *Agent) CloseContext(ctx context.Context) {
 			a.runtimeCancel()
 		}
 		s := a.supervisor
+		native := a.native
 		stopHeartbeat := a.heartbeat
 		a.supervisor = nil
+		a.native = nil
 		a.heartbeat = nil
 		a.frpcAdminPort = 0
 		a.frpcAdminUser = ""
@@ -326,6 +335,9 @@ func (a *Agent) CloseContext(ctx context.Context) {
 		a.mu.Unlock()
 		if stopHeartbeat != nil {
 			stopHeartbeat()
+		}
+		if native != nil {
+			native.cancel()
 		}
 		if s != nil {
 			_ = s.Stop(ctx)
@@ -1020,6 +1032,14 @@ func containsTool(tools []string, wanted string) bool {
 	return false
 }
 
+type sourceRegistrationError struct {
+	sourceID string
+	cause    error
+}
+
+func (err *sourceRegistrationError) Error() string { return err.cause.Error() }
+func (err *sourceRegistrationError) Unwrap() error { return err.cause }
+
 // registerSources publishes only opaque source metadata to the control plane.
 // Customer URLs, credentials and local proxy targets remain local.
 func (a *Agent) registerSources(ctx context.Context, sources []config.Source, proxies map[string]*authproxy.Server) error {
@@ -1048,24 +1068,30 @@ func (a *Agent) registerSources(ctx context.Context, sources []config.Source, pr
 		if err != nil {
 			return fmt.Errorf("来源 %s 的工具 schema 发现失败: %w", source.DisplayName, err)
 		}
-		bindingDigest := digestString(strings.TrimRight(source.UpstreamURL, "/"))
-		if source.SourceID == demoID {
-			// Each process chooses a new loopback port for the same bundled service.
-			bindingDigest = digestString(builtinDemoProtocolProfile + ":" + demoID)
-		}
 		if _, fail := a.cloud.RegisterSource(ctx, cloud.SourceRegistration{
 			SourceID:            source.SourceID,
 			DisplayName:         source.DisplayName,
 			AllowedTools:        allowedTools,
 			ToolSchemaSHA256:    schemaDigest,
-			TargetBindingSHA256: bindingDigest,
+			TargetBindingSHA256: sourceBindingDigest(source, demoID),
 			Transport:           source.Transport,
 		}); fail != nil {
-			return fmt.Errorf("登记来源 %s 失败: %w", source.DisplayName, fail)
+			return &sourceRegistrationError{
+				sourceID: source.SourceID,
+				cause:    fmt.Errorf("登记来源 %s 失败: %w", source.DisplayName, fail),
+			}
 		}
 		a.markSourceRegistered(source.SourceID, allowedTools)
 	}
 	return nil
+}
+
+func sourceBindingDigest(source config.Source, demoID string) string {
+	if source.SourceID == demoID {
+		// Each process chooses a new loopback port for the same bundled service.
+		return digestString(builtinDemoProtocolProfile + ":" + demoID)
+	}
+	return digestString(strings.TrimRight(source.UpstreamURL, "/"))
 }
 
 func discoverToolSchemaDigest(ctx context.Context, proxy *authproxy.Server, allowlist []string) (string, error) {
@@ -1179,14 +1205,19 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 	a.recordDiagnostic(diagnostics.Record{EventCode: "connection_started", OperationID: operationID})
 	defer func() {
 		code := "connection_succeeded"
+		sourceID := ""
 		if err != nil || status.State != state.Ready {
 			code = "connection_failed"
 		}
-		a.recordDiagnostic(diagnostics.Record{
-			EventCode:   code,
-			OperationID: operationID,
-			DurationMS:  diagnosticDuration(started),
-		})
+		var registrationErr *sourceRegistrationError
+		if errors.As(err, &registrationErr) {
+			sourceID = registrationErr.sourceID
+			var apiErr *cloud.APIError
+			if errors.As(registrationErr, &apiErr) && apiErr.Code == "SOURCE_CONFIG_CONFLICT" {
+				code = "connection_source_conflict"
+			}
+		}
+		a.recordOperationDiagnostic(code, operationID, sourceID, started, err)
 	}()
 	if !a.CloudReadyForTrial() {
 		return a.Status(), errors.New("本机环境未配置云端中继，当前诊断试用包不能建立连接")
@@ -1242,7 +1273,7 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 		}
 		return a.Status(), err
 	}
-	if demoOnly {
+	if demoOnly && !a.opts.NativeRelay {
 		reused, reuseErr := a.reuseRunningDemoTunnel(ctx)
 		if reused {
 			if reuseErr != nil {
@@ -1258,6 +1289,9 @@ func (a *Agent) establishTunnel(ctx context.Context, demoOnly, automatic bool) (
 			return
 		}
 		a.stopPreparedAuthProxies()
+	}
+	if a.opts.NativeRelay {
+		return a.establishNativeRelay(ctx, client, identity.ConnectorID, sources, proxies, demoOnly, cleanupProxies)
 	}
 	registrationErr := error(nil)
 	if demoOnly {
@@ -1732,7 +1766,8 @@ func (a *Agent) frpcBinary() string {
 
 func (a *Agent) startHeartbeat(s *supervisor.Supervisor) {
 	a.mu.Lock()
-	if a.closed || a.runtimeCtx == nil || a.supervisor != s || a.frpcAdminPort == 0 {
+	frpStarted := s != nil && a.supervisor == s && a.frpcAdminPort != 0
+	if a.closed || a.runtimeCtx == nil || (!frpStarted && a.native == nil) {
 		a.mu.Unlock()
 		return
 	}

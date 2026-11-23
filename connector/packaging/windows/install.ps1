@@ -65,9 +65,13 @@ $BackupEntries = @()
 $FrozenHashes = @{}
 $CreatedManagedFiles = [System.Collections.Generic.List[string]]::new()
 $CreatedManagedDirectories = [System.Collections.Generic.List[string]]::new()
+$TransportMarker = Join-Path $Source "transport.txt"
+$NativePayload = Test-Path -LiteralPath $TransportMarker -PathType Leaf
 $CriticalFiles = @(
-  [pscustomobject]@{ SourceRelative = "bin/kaiwu-connector.exe"; TargetName = "kaiwu-connector.exe" },
-  [pscustomobject]@{ SourceRelative = "bin/frpc.exe"; TargetName = "frpc.exe" },
+  [pscustomobject]@{ SourceRelative = "bin/kaiwu-connector.exe"; TargetName = "kaiwu-connector.exe" }
+  if (-not $NativePayload) {
+    [pscustomobject]@{ SourceRelative = "bin/frpc.exe"; TargetName = "frpc.exe" }
+  }
   [pscustomobject]@{ SourceRelative = "service-handoff.ps1"; TargetName = "service-handoff.ps1" }
 )
 $CriticalFilesBySource = @{}
@@ -339,6 +343,17 @@ function Assert-CriticalFiles {
   }
 }
 
+function Assert-NativeTransportMarker {
+  param([string]$Path)
+  if (-not $FrozenHashes["transport.txt"] -or
+      -not (Test-Path -LiteralPath $Path -PathType Leaf) -or
+      (Get-FileSha256 $Path) -ne $FrozenHashes["transport.txt"] -or
+      [IO.File]::ReadAllText($Path).Trim() -cne "native-wss") {
+    Set-InstallFailure "manifest_invalid"
+    throw "内置中继安装包的传输标记无效"
+  }
+}
+
 $Stage = "source_precheck"
 Enter-InstallPhase 'precheck'
 try {
@@ -378,6 +393,13 @@ try {
     if ((Get-FileSha256 $target) -ne $expected) {
       Set-InstallFailure "checksum_mismatch" $relative
       throw "安装包文件校验失败: $relative"
+    }
+  }
+  if ($NativePayload) {
+    Assert-NativeTransportMarker $TransportMarker
+    if ($FrozenHashes.ContainsKey("bin/frpc.exe") -or (Test-Path -LiteralPath (Join-Path $Source "bin\frpc.exe"))) {
+      Set-InstallFailure "manifest_invalid"
+      throw "内置中继安装包包含不匹配的通道文件"
     }
   }
   Assert-CriticalFiles
@@ -508,7 +530,17 @@ function Assert-RestoredFiles {
 
 function Assert-KaiwuServiceBackupFiles {
   param($Manifest)
-  foreach ($name in @("kaiwu-connector.exe", "frpc.exe")) {
+  $required = @("kaiwu-connector.exe")
+  $marker = @($Manifest.entries | Where-Object {
+    $_.category -eq "program" -and $_.relative_path -eq "transport.txt" -and $_.absent -ne $true
+  })
+  if ($marker.Count -eq 0) {
+    $required += "frpc.exe"
+  } elseif ($marker.Count -ne 1 -or
+      [IO.File]::ReadAllText((Get-BackupPayloadPath ([string]$marker[0].backup_relative_path))).Trim() -cne "native-wss") {
+    throw "恢复未确认：备份中的传输标记无效"
+  }
+  foreach ($name in $required) {
     $entries = @($Manifest.entries | Where-Object {
       $_.category -eq "program" -and $_.relative_path -eq $name -and $_.absent -ne $true
     })
@@ -1155,7 +1187,7 @@ $BackupDataNames = @(
 )
 $ManagedEnvNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")
 $BackupProgramNames = @(
-  "kaiwu-connector.exe", "frpc.exe", "版本信息.txt", "install.ps1", "uninstall.ps1",
+  "kaiwu-connector.exe", "frpc.exe", "transport.txt", "版本信息.txt", "install.ps1", "uninstall.ps1",
   "service-handoff.ps1", "windows-smoke.ps1", "open-config.cmd", "uninstall.exe"
 )
 $PayloadDocs = @(Get-ChildItem (Join-Path $Source "docs\*.md") -File -ErrorAction SilentlyContinue)
@@ -1506,6 +1538,7 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
 
   $Stage = "pre_change_verification"
   Enter-InstallPhase 'verify'
+  if ($NativePayload) { Assert-NativeTransportMarker $TransportMarker }
   Assert-CriticalFiles
   $Stage = "replace_install"
   Enter-InstallPhase 'replace'
@@ -1521,7 +1554,20 @@ Write-Host "已核验恢复安装前的程序和配置。业务连通性待确�
   Ensure-ManagedDirectory (Join-Path $InstallDir "compliance")
 
   Copy-ManagedFile (Join-Path $Source "bin\kaiwu-connector.exe") (Join-Path $InstallDir "kaiwu-connector.exe") -CriticalSource "bin/kaiwu-connector.exe"
-  Copy-ManagedFile (Join-Path $Source "bin\frpc.exe") (Join-Path $InstallDir "frpc.exe") -CriticalSource "bin/frpc.exe"
+  $InstalledTransportMarker = Join-Path $InstallDir "transport.txt"
+  if ($NativePayload) {
+    Copy-ManagedFile $TransportMarker $InstalledTransportMarker
+    Assert-NativeTransportMarker $InstalledTransportMarker
+    $previousFrpc = Join-Path $InstallDir "frpc.exe"
+    if (Test-Path -LiteralPath $previousFrpc -PathType Leaf) {
+      Remove-Item -LiteralPath $previousFrpc -Force
+    }
+  } else {
+    Copy-ManagedFile (Join-Path $Source "bin\frpc.exe") (Join-Path $InstallDir "frpc.exe") -CriticalSource "bin/frpc.exe"
+    if (Test-Path -LiteralPath $InstalledTransportMarker -PathType Leaf) {
+      Remove-Item -LiteralPath $InstalledTransportMarker -Force
+    }
+  }
   $PayloadDocs | ForEach-Object {
       Copy-ManagedFile $_.FullName (Join-Path (Join-Path $InstallDir "docs") $_.Name)
     }

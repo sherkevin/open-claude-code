@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 构建开物内网连接器的交付包。
 #
-# 依赖：Go 1.25+、Python 3、frpc 二进制（packaging/bin/ 下）、zip。
+# 构建依赖：Go 1.25+、Python 3、NSIS、SBOM 与漏洞扫描工具。
+# 默认构建现有 FRP 交付包；--native-windows 构建内置中继 Windows 包。
 # 产物：dist/kaiwu-connector-<版本>-linux-amd64.tar.gz
 #       dist/kaiwu-connector-<版本>-windows-amd64.zip
 # 仅构建 Windows 主程序：bash scripts/build.sh --windows-exe <输出文件>
@@ -23,6 +24,19 @@ export SOURCE_DATE_EPOCH
 DIST="$ROOT/dist"
 MODULE="github.com/sherkevin/open-claude-code/connector/internal/version"
 LDFLAGS="-s -w -X ${MODULE}.Version=${VERSION} -X ${MODULE}.Commit=${COMMIT} -X ${MODULE}.BuildTime=${BUILD_TIME}"
+native_windows=false
+targets=(linux windows)
+metadata_target=linux
+windows_name="kaiwu-connector-${VERSION}-windows-amd64"
+if [[ "${1:-}" == --native-windows || "${1:-}" == --native-windows-exe ]]; then
+  native_windows=true
+  targets=(windows)
+  metadata_target=windows
+  DIST="$DIST/native-windows"
+  windows_name="kaiwu-connector-${VERSION}-native-windows-amd64"
+  LDFLAGS+=" -X main.nativeRelayDefault=true"
+fi
+metadata_dir="$DIST/$metadata_target/compliance"
 
 FRPC_LINUX="$ROOT/packaging/bin/frpc-linux-amd64"
 FRPC_WINDOWS="$ROOT/packaging/bin/frpc-windows-amd64.exe"
@@ -70,21 +84,23 @@ build_windows_executable() (
     -o "$output" ./cmd/connector
 )
 
-if [[ $# -eq 2 && "$1" == --windows-exe ]]; then
+if [[ $# -eq 2 && ( "$1" == --windows-exe || "$1" == --native-windows-exe ) ]]; then
   build_windows_executable "$2"
   exit 0
 fi
-if [[ $# -ne 0 ]]; then
-  echo "用法: $0 [--windows-exe <输出文件>]" >&2
+if [[ $# -ne 0 && ! ( $# -eq 1 && "$1" == --native-windows ) ]]; then
+  echo "用法: $0 [--native-windows | --windows-exe <输出文件> | --native-windows-exe <输出文件>]" >&2
   exit 2
 fi
 
-for file in "$FRPC_LINUX" "$FRPC_WINDOWS"; do
-  if [ ! -f "$file" ]; then
-    echo "缺少 frpc 二进制: $file" >&2
-    exit 1
-  fi
-done
+if ! "$native_windows"; then
+  for file in "$FRPC_LINUX" "$FRPC_WINDOWS"; do
+    if [ ! -f "$file" ]; then
+      echo "缺少 frpc 二进制: $file" >&2
+      exit 1
+    fi
+  done
+fi
 
 if [ -z "$SBOM_TOOL" ] || [ ! -x "$SBOM_TOOL" ]; then
   echo "缺少 cyclonedx-gomod，无法生成受控试装 SBOM" >&2
@@ -119,12 +135,15 @@ verify_frpc_hash() {
   fi
 }
 
-verify_frpc_hash "$FRPC_LINUX" "$FRPC_LINUX_SHA256"
-verify_frpc_hash "$FRPC_WINDOWS" "$FRPC_WINDOWS_SHA256"
+if ! "$native_windows"; then
+  verify_frpc_hash "$FRPC_LINUX" "$FRPC_LINUX_SHA256"
+  verify_frpc_hash "$FRPC_WINDOWS" "$FRPC_WINDOWS_SHA256"
+fi
 
 rm -rf "$DIST"
-mkdir -p "$DIST/linux/bin" "$DIST/linux/docs" "$DIST/linux/systemd" "$DIST/linux/config" "$DIST/linux/compliance/go-deps" \
-         "$DIST/windows/bin" "$DIST/windows/docs" "$DIST/windows/config" "$DIST/windows/compliance/go-deps"
+for target in "${targets[@]}"; do
+  mkdir -p "$DIST/$target/"{bin,docs,config,compliance/go-deps}
+done
 
 export CGO_ENABLED=0
 export GOFLAGS=-trimpath
@@ -140,26 +159,35 @@ BUILD_LOG="$DIST/build.log"
   echo "host=$(uname -a)"
   echo "cyclonedx_gomod=$("$SBOM_TOOL" version 2>&1 | tr '\n' ' ')"
   echo "govulncheck=$("$VULN_TOOL" -version 2>&1 | tr '\n' ' ')"
-  echo "frpc_linux_sha256=$(sha256sum "$FRPC_LINUX" | awk '{print $1}')"
-  echo "frpc_windows_sha256=$(sha256sum "$FRPC_WINDOWS" | awk '{print $1}')"
+  if "$native_windows"; then
+    echo "transport=native-wss"
+  else
+    echo "frpc_linux_sha256=$(sha256sum "$FRPC_LINUX" | awk '{print $1}')"
+    echo "frpc_windows_sha256=$(sha256sum "$FRPC_WINDOWS" | awk '{print $1}')"
+  fi
 } > "$BUILD_LOG"
-
-echo "构建 Linux 版本..."
-GOOS=linux GOARCH=amd64 "$GO_TOOL" build -trimpath -buildvcs=false -ldflags "$LDFLAGS" -o "$DIST/linux/bin/kaiwu-connector" "$ROOT/cmd/connector"
 
 echo "构建 Windows 版本..."
 build_windows_executable "$DIST/windows/bin/kaiwu-connector.exe"
 
-cp "$FRPC_LINUX" "$DIST/linux/bin/frpc"
-cp "$FRPC_WINDOWS" "$DIST/windows/bin/frpc.exe"
-chmod 0755 "$DIST/linux/bin/kaiwu-connector" "$DIST/linux/bin/frpc"
-
-cp "$ROOT/packaging/linux/"*.sh "$DIST/linux/"
-cp "$ROOT/packaging/linux/"*.service "$DIST/linux/systemd/"
+if "$native_windows"; then
+  printf 'native-wss\n' > "$DIST/windows/transport.txt"
+else
+  echo "构建 Linux 版本..."
+  GOOS=linux GOARCH=amd64 "$GO_TOOL" build -trimpath -buildvcs=false -ldflags "$LDFLAGS" -o "$DIST/linux/bin/kaiwu-connector" "$ROOT/cmd/connector"
+  cp "$FRPC_LINUX" "$DIST/linux/bin/frpc"
+  cp "$FRPC_WINDOWS" "$DIST/windows/bin/frpc.exe"
+  chmod 0755 "$DIST/linux/bin/kaiwu-connector" "$DIST/linux/bin/frpc"
+  mkdir -p "$DIST/linux/systemd"
+  cp "$ROOT/packaging/linux/"*.sh "$DIST/linux/"
+  cp "$ROOT/packaging/linux/"*.service "$DIST/linux/systemd/"
+  cp "$ROOT/packaging/config/connector.env.example" "$DIST/linux/config/"
+  cp "$ROOT/docs/"*.md "$DIST/linux/docs/"
+  cp "$ROOT/README.md" "$DIST/linux/docs/"
+fi
 cp "$ROOT/packaging/windows/"*.ps1 "$DIST/windows/"
 cp "$ROOT/packaging/windows/connector.ico" "$DIST/windows/"
 cp "$ROOT/scripts/windows-smoke.ps1" "$DIST/windows/"
-cp "$ROOT/packaging/config/connector.env.example" "$DIST/linux/config/"
 cp "$ROOT/packaging/config/connector.env.example" "$DIST/windows/config/"
 
 # Customer packages must never ship with the old empty public endpoint
@@ -174,19 +202,22 @@ for value in "$CLOUD_BASE_VALUE" "$EDGE_BASE_VALUE"; do
     exit 1
   fi
 done
-cp "$ROOT/docs/"*.md "$DIST/linux/docs/"
-cp "$ROOT/README.md" "$DIST/linux/docs/"
+if "$native_windows"; then
+  sed "s/<版本号>/${VERSION}/g" "$ROOT/docs/内置中继交付说明.md" > "$DIST/windows/docs/交付与运维说明.md"
+else
+  for target in "${targets[@]}"; do
+    sed "s/<版本号>/${VERSION}/g" "$ROOT/docs/交付与运维说明.md" > "$DIST/$target/docs/交付与运维说明.md"
+  done
+fi
 
-for target in linux windows; do
-  sed "s/<版本号>/${VERSION}/g" "$ROOT/docs/交付与运维说明.md" > "$DIST/$target/docs/交付与运维说明.md"
-done
-
-for target in linux windows; do
+for target in "${targets[@]}"; do
   cp "$ROOT/third_party/README.md" "$DIST/$target/compliance/THIRD_PARTY_NOTICES.md"
-  cp "$ROOT/third_party/frp/LICENSE" "$DIST/$target/compliance/frp-LICENSE"
-  cp "$ROOT/third_party/frp/NOTICE.txt" "$DIST/$target/compliance/frp-NOTICE.txt"
-  cp "$ROOT/third_party/frp/OFFICIAL_ARCHIVE_CHECKSUMS.txt" "$DIST/$target/compliance/frp-OFFICIAL_ARCHIVE_CHECKSUMS.txt"
-  cp "$ROOT/third_party/frp/OFFICIAL_BINARY_SHA256.txt" "$DIST/$target/compliance/frp-OFFICIAL_BINARY_SHA256.txt"
+  if ! "$native_windows"; then
+    cp "$ROOT/third_party/frp/LICENSE" "$DIST/$target/compliance/frp-LICENSE"
+    cp "$ROOT/third_party/frp/NOTICE.txt" "$DIST/$target/compliance/frp-NOTICE.txt"
+    cp "$ROOT/third_party/frp/OFFICIAL_ARCHIVE_CHECKSUMS.txt" "$DIST/$target/compliance/frp-OFFICIAL_ARCHIVE_CHECKSUMS.txt"
+    cp "$ROOT/third_party/frp/OFFICIAL_BINARY_SHA256.txt" "$DIST/$target/compliance/frp-OFFICIAL_BINARY_SHA256.txt"
+  fi
   cp "$ROOT/third_party/mcp-go-sdk/LICENSE" "$DIST/$target/compliance/mcp-go-sdk-LICENSE.txt"
   cp -a "$ROOT/third_party/go-deps/." "$DIST/$target/compliance/go-deps/"
   cp "$GO_LICENSE" "$DIST/$target/compliance/go-LICENSE.txt"
@@ -213,16 +244,15 @@ while offset < len(text):
     item.pop("Dir", None)
     item.pop("GoMod", None)
     print(json.dumps(item, ensure_ascii=False, sort_keys=True))
-' > "$DIST/linux/compliance/GoModules.json"
-cp "$DIST/linux/compliance/GoModules.json" "$DIST/windows/compliance/GoModules.json"
+' > "$metadata_dir/GoModules.json"
 
 (
   cd "$ROOT"
   "$SBOM_TOOL" mod -licenses -assert-licenses -noserial -type application -std \
-    -output-version 1.5 -json -output "$DIST/linux/compliance/SBOM.cdx.json" . \
-    2> "$DIST/linux/compliance/SBOM-WARNINGS.raw.txt"
+    -output-version 1.5 -json -output "$metadata_dir/SBOM.cdx.json" . \
+    2> "$metadata_dir/SBOM-WARNINGS.raw.txt"
 )
-"$PYTHON_TOOL" - "$DIST/linux/compliance/SBOM-WARNINGS.raw.txt" "$DIST/linux/compliance/SBOM-WARNINGS.txt" <<'PY'
+"$PYTHON_TOOL" - "$metadata_dir/SBOM-WARNINGS.raw.txt" "$metadata_dir/SBOM-WARNINGS.txt" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -243,9 +273,9 @@ PY
 (
   cd "$ROOT"
   "$VULN_TOOL" ./...
-) > "$DIST/linux/compliance/GOVULNCHECK.txt" 2>&1
+) > "$metadata_dir/GOVULNCHECK.txt" 2>&1
 
-"$PYTHON_TOOL" - "$DIST/linux/compliance/SBOM.cdx.json" "$VERSION" "$COMMIT" "$BUILD_TIME" <<'PY'
+"$PYTHON_TOOL" - "$metadata_dir/SBOM.cdx.json" "$VERSION" "$COMMIT" "$BUILD_TIME" <<'PY'
 import json
 import sys
 
@@ -288,7 +318,7 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
 
-cat > "$DIST/linux/compliance/SBOM-NOTES.txt" <<'EOF'
+cat > "$metadata_dir/SBOM-NOTES.txt" <<'EOF'
 The SBOM generator does not detect the Go standard library license from the
 toolchain. The build injects BSD-3-Clause for the `std` component and includes
 the pinned Go LICENSE and PATENTS files in this package. The connector
@@ -296,27 +326,26 @@ application's own licensing status is marked NOASSERTION and is not inferred
 from unrelated files.
 EOF
 
-cp "$DIST/linux/compliance/SBOM.cdx.json" "$DIST/windows/compliance/SBOM.cdx.json"
-cp "$DIST/linux/compliance/SBOM-WARNINGS.txt" "$DIST/windows/compliance/SBOM-WARNINGS.txt"
-cp "$DIST/linux/compliance/SBOM-NOTES.txt" "$DIST/windows/compliance/SBOM-NOTES.txt"
-cp "$DIST/linux/compliance/GOVULNCHECK.txt" "$DIST/windows/compliance/GOVULNCHECK.txt"
-
-(cd "$DIST/linux" && "$GO_TOOL" version -m ./bin/kaiwu-connector) > "$DIST/linux/compliance/BinaryBuildInfo.txt"
 (cd "$DIST/windows" && "$GO_TOOL" version -m ./bin/kaiwu-connector.exe) > "$DIST/windows/compliance/BinaryBuildInfo.txt"
-(cd "$DIST/linux" && file ./bin/frpc) > "$DIST/linux/compliance/frpc-BinaryInfo.txt"
-(cd "$DIST/windows" && file ./bin/frpc.exe) > "$DIST/windows/compliance/frpc-BinaryInfo.txt"
-(cd "$DIST/linux" && sha256sum ./bin/frpc) > "$DIST/linux/compliance/frpc-SHA256.txt"
-(cd "$DIST/windows" && sha256sum ./bin/frpc.exe) > "$DIST/windows/compliance/frpc-SHA256.txt"
+components="kaiwu-connector（内置 MCP 中继）、Go 1.27.4 标准库（BSD License）"
+if ! "$native_windows"; then
+  cp "$metadata_dir/"{GoModules.json,SBOM.cdx.json,SBOM-WARNINGS.txt,SBOM-NOTES.txt,GOVULNCHECK.txt} "$DIST/windows/compliance/"
+  (cd "$DIST/linux" && "$GO_TOOL" version -m ./bin/kaiwu-connector) > "$DIST/linux/compliance/BinaryBuildInfo.txt"
+  (cd "$DIST/linux" && file ./bin/frpc) > "$DIST/linux/compliance/frpc-BinaryInfo.txt"
+  (cd "$DIST/windows" && file ./bin/frpc.exe) > "$DIST/windows/compliance/frpc-BinaryInfo.txt"
+  (cd "$DIST/linux" && sha256sum ./bin/frpc) > "$DIST/linux/compliance/frpc-SHA256.txt"
+  (cd "$DIST/windows" && sha256sum ./bin/frpc.exe) > "$DIST/windows/compliance/frpc-SHA256.txt"
+  components="kaiwu-connector、frpc 0.61.1（Apache License 2.0）、Go 1.27.4 标准库（BSD License）"
+fi
 
-cat > "$DIST/linux/版本信息.txt" <<EOF
+for target in "${targets[@]}"; do
+  cat > "$DIST/$target/版本信息.txt" <<EOF
 开物内网连接器 ${VERSION}
 提交：${COMMIT}
 构建时间：${BUILD_TIME}
-包含：kaiwu-connector、frpc 0.61.1（Apache License 2.0）、Go 1.27.4 标准库（BSD License）
+包含：${components}
 EOF
-cp "$DIST/linux/版本信息.txt" "$DIST/windows/版本信息.txt"
 
-for target in linux windows; do
   # ZIP records local file times. Normalize every package entry first, then
   # normalize the checksum file itself after it has been generated.
   find "$DIST/$target" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
@@ -327,33 +356,33 @@ for target in linux windows; do
   )
 done
 
-(
-  cd "$DIST/linux"
-  # gzip -n keeps the archive header free of the build timestamp; without it the
-  # tarball hash changes on every rebuild even though the contents are identical.
-  TZ=UTC LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -cf - . \
-    | gzip -n > "$DIST/kaiwu-connector-${VERSION}-linux-amd64.tar.gz"
-)
+artifacts=("$windows_name.zip" "$windows_name-setup.exe")
+if ! "$native_windows"; then
+  linux_name="kaiwu-connector-${VERSION}-linux-amd64.tar.gz"
+  (
+    cd "$DIST/linux"
+    # gzip -n keeps the archive header free of the build timestamp.
+    TZ=UTC LC_ALL=C tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -cf - . \
+      | gzip -n > "$DIST/$linux_name"
+  )
+  artifacts=("$linux_name" "${artifacts[@]}")
+fi
 # Zip entry names must carry the UTF-8 flag, otherwise Windows Explorer decodes
 # docs/交付与运维说明.md and 版本信息.txt with the local ANSI codepage and shows
 # garbled names. The writer also pins timestamps for reproducible archives.
 "$PYTHON_TOOL" "$ROOT/scripts/make-zip.py" \
-  "$DIST/windows" "$DIST/kaiwu-connector-${VERSION}-windows-amd64.zip" "$SOURCE_DATE_EPOCH"
+  "$DIST/windows" "$DIST/$windows_name.zip" "$SOURCE_DATE_EPOCH"
 
 "$ROOT/scripts/build-windows-installer.sh" \
   "$DIST/windows" \
   "$VERSION" \
   "$COMMIT" \
-  "$DIST/kaiwu-connector-${VERSION}-windows-amd64-setup.exe" \
+  "$DIST/$windows_name-setup.exe" \
   "$SOURCE_DATE_EPOCH"
 
 (
   cd "$DIST"
-  sha256sum \
-    kaiwu-connector-"${VERSION}"-linux-amd64.tar.gz \
-    kaiwu-connector-"${VERSION}"-windows-amd64.zip \
-    kaiwu-connector-"${VERSION}"-windows-amd64-setup.exe > SHA256SUMS
+  sha256sum "${artifacts[@]}" > SHA256SUMS
+  echo "完成："
+  ls -lh "${artifacts[@]}" SHA256SUMS
 )
-
-echo "完成："
-ls -lh "$DIST"/*.tar.gz "$DIST"/*.zip "$DIST"/*.exe "$DIST"/SHA256SUMS

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/authproxy"
@@ -12,6 +13,7 @@ import (
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
 	"github.com/sherkevin/open-claude-code/connector/internal/devicekey"
 	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
+	"github.com/sherkevin/open-claude-code/connector/internal/mcp"
 	"github.com/sherkevin/open-claude-code/connector/internal/state"
 	"github.com/sherkevin/open-claude-code/connector/internal/store"
 )
@@ -164,6 +166,30 @@ func (a *Agent) recordDiagnostic(record diagnostics.Record) diagnostics.Event {
 		return diagnostics.Event{}
 	}
 	return a.diagMgr.Record(record)
+}
+
+// recordOperationDiagnostic keeps only metadata allowed by the event catalog.
+// Error strings may contain the local URL, network details, or MCP content.
+func (a *Agent) recordOperationDiagnostic(code, operationID, sourceID string, started time.Time, err error) {
+	record := diagnostics.Record{
+		EventCode:   code,
+		OperationID: operationID,
+		SourceID:    sourceID,
+		DurationMS:  diagnosticDuration(started),
+	}
+	var httpErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &httpErr) {
+		record.HTTPStatus = httpErr.HTTPStatusCode()
+	}
+	var cloudErr *cloud.APIError
+	if errors.As(err, &cloudErr) {
+		record.TraceID = cloudErr.TraceID
+	}
+	var rpcErr *mcp.RPCError
+	if errors.As(err, &rpcErr) {
+		record.RPCErrorCode = strconv.Itoa(rpcErr.Code)
+	}
+	a.recordDiagnostic(record)
 }
 
 func (a *Agent) syncDiagnosticApprovals() {

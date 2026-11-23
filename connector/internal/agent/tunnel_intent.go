@@ -64,6 +64,10 @@ func (a *Agent) ShouldAutoConnect() bool {
 
 // AutoConnect attempts to restore a previously selected connection once.
 func (a *Agent) AutoConnect() {
+	if a.opts.NativeRelay {
+		a.autoConnectNativeRelay()
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), startupConnectTimeout)
 	defer cancel()
 	_, _ = a.runConnect(ctx, false, true)
@@ -187,7 +191,9 @@ func (a *Agent) stopTunnel(ctx context.Context) error {
 
 	a.mu.Lock()
 	s := a.supervisor
+	native := a.native
 	stopHeartbeat := a.heartbeat
+	a.native = nil
 	a.heartbeat = nil
 	a.stoppingTunnels++
 	a.frpcAdminPort = 0
@@ -198,6 +204,9 @@ func (a *Agent) stopTunnel(ctx context.Context) error {
 	a.mu.Unlock()
 	if stopHeartbeat != nil {
 		stopHeartbeat()
+	}
+	if native != nil {
+		native.cancel()
 	}
 	var err error
 	if s != nil {

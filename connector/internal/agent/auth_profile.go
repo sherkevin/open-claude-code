@@ -347,6 +347,7 @@ func (a *Agent) statusLocked() Status {
 		TenantName:      a.identity.TenantName,
 		TenantID:        a.identity.TenantID,
 		Sources:         a.businessSourcesLocked(),
+		TransportMode:   "frp",
 		LastError:       a.lastError,
 		Version:         version.String(),
 		EdgeBase:        a.edgeBase(),
@@ -358,6 +359,19 @@ func (a *Agent) statusLocked() Status {
 	if a.supervisor != nil {
 		status.FrpcRunning = a.supervisor.Running()
 		status.FrpcRestarts = a.supervisor.Restarts()
+		status.TunnelRestarts = status.FrpcRestarts
+	}
+	if a.opts.NativeRelay {
+		status.TransportMode = "native"
+		if a.native != nil {
+			status.TunnelConnected = a.native.connected
+			status.TunnelRestarts = a.native.restarts
+			if status.TunnelConnected {
+				status.TunnelDetail = "原生中继已连接"
+			} else {
+				status.TunnelDetail = "原生中继正在重连"
+			}
+		}
 	}
 	return status
 }

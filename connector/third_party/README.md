@@ -2,7 +2,8 @@
 
 | Component | Version | License | Distribution |
 | --- | --- | --- | --- |
-| frp / frpc | 0.61.1 | Apache License 2.0 | `frp/` |
+| frp / frpc | 0.61.1 | Apache License 2.0 | FRP 交付包的 `frp/` |
+| coder/websocket | 1.8.15 | ISC | `go-deps/github.com/coder/websocket@v1.8.15/` |
 | Model Context Protocol Go SDK | 1.8.0 | Apache-2.0 / MIT transition; documentation contributions CC-BY-4.0 | `mcp-go-sdk/LICENSE` |
 | jsonschema-go | 0.4.3 | MIT | `go-deps/github.com/google/jsonschema-go@v0.4.3/` |
 | segmentio/asm | 1.1.3 | MIT | `go-deps/github.com/segmentio/asm@v1.1.3/` |

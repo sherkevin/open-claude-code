@@ -443,15 +443,15 @@ class Driver:
             raise RuntimeError(f"connector API {path} failed: {response.status_code} {body}")
         return body["data"]
 
-    def configure_connection(self) -> None:
+    def configure_connection(self, enrollment_options: dict | None = None) -> dict:
         enrollment = self.control.post(
             "/v1/enrollments",
-            json={"tenant_id": "tenant-huawi-synthetic", "tenant_name": "华微合成企业"},
+            json={"tenant_id": "tenant-huawi-synthetic", "tenant_name": "华微合成企业", **(enrollment_options or {})},
         )
         if enrollment.status_code != 200:
             raise RuntimeError(f"enrollment failed: {enrollment.status_code} {enrollment.text}")
-        code = enrollment.json()["code"]
-        self.identity = self.connector_post("/api/bind", {"code": code})
+        issued = enrollment.json()
+        self.identity = self.connector_post("/api/bind", {"code": issued["code"]})
         imported = self.connector_post("/api/import", {
             "config": json.dumps({
                 "mcpServers": {
@@ -473,6 +473,7 @@ class Driver:
             "tools": "lookup_order",
         })
         self.connector_post("/api/connect", {})
+        return issued
 
     def start_bridge(self, frps: Path, linux_frpc: Path) -> None:
         env = self.env()
@@ -859,11 +860,10 @@ class Driver:
             "content_type": response.headers.get("content-type", ""),
         }
 
-    def revoke_and_verify(self) -> dict:
+    def revoke_and_verify(self, enrollment_id: str | None = None) -> dict:
         started = time.monotonic()
-        response = self.control.post(
-            f"/v1/connectors/{self.identity['connector_id']}/revoke"
-        )
+        resource = f"enrollments/{enrollment_id}" if enrollment_id else f"connectors/{self.identity['connector_id']}"
+        response = self.control.post(f"/v1/{resource}/revoke")
         if response.status_code != 200:
             raise RuntimeError(f"connector revoke failed: {response.status_code} {response.text}")
         deadline = time.monotonic() + 8

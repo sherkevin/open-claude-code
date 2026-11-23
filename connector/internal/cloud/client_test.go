@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 type testSigner struct {
@@ -136,6 +139,68 @@ func TestDeviceClientSignsExactMethodPathAndBody(t *testing.T) {
 	}
 	if len(signer.body) != 0 {
 		t.Fatalf("GET 签名正文应为空: %q", signer.body)
+	}
+}
+
+func TestNativeRelaySignsSecureUpgradeAndDoesNotFollowRedirects(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	signer := &testSigner{}
+	const path = "/api/kaiwu/v1/connectors/conn_1/native-relay"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirected" {
+			t.Error("relay upgrade followed a redirect")
+			return
+		}
+		if r.URL.Path != path || r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer device-token" || r.Header.Get("Origin") != "" {
+			t.Error("relay upgrade request did not use the expected secure endpoint and device identity")
+		}
+		if r.Header.Get("X-Kaiwu-Device-Key") != signer.KeyID() || r.Header.Get("X-Kaiwu-Signature") != "synthetic-signature" {
+			t.Error("missing signature on relay upgrade")
+		}
+		if r.URL.RawQuery != "" {
+			t.Error("relay credentials must not appear in the URL")
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.CloseNow()
+		if err := wsjson.Write(ctx, conn, map[string]string{"type": "ready"}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	client, err := NewWithSigner(server.URL+"/api/kaiwu", "device-token", signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.HTTP = server.Client()
+	conn, err := client.DialNativeRelay(ctx, "conn_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ready map[string]string
+	if err := wsjson.Read(ctx, conn, &ready); err != nil || ready["type"] != "ready" {
+		t.Fatalf("expected ready from TLS relay: %v", err)
+	}
+	_ = conn.CloseNow()
+	if signer.method != http.MethodGet || signer.path != path || len(signer.body) != 0 {
+		t.Fatalf("wrong signed WebSocket request: %s %s", signer.method, signer.path)
+	}
+
+	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, server.URL+"/redirected", http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+	client.BaseURL, client.HTTP = redirect.URL+"/api/kaiwu", redirect.Client()
+	if _, err := client.DialNativeRelay(ctx, "conn_1"); err == nil || !strings.Contains(err.Error(), "HTTP 307") {
+		t.Fatalf("expected upgrade redirect to be rejected, got %v", err)
+	}
+	client.BaseURL = strings.Replace(server.URL, "https://", "http://", 1)
+	if _, err := client.DialNativeRelay(ctx, "conn_1"); err == nil {
+		t.Fatal("unencrypted relay upgrade was accepted")
 	}
 }
 

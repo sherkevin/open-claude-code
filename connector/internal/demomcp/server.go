@@ -14,13 +14,14 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/sherkevin/open-claude-code/connector/internal/version"
 )
 
 const (
 	SourceName = "开物内置测试服务（示例数据）"
 	Marker     = "KAIWU_BUILTIN_DEMO_V1"
+	// The cloud fingerprints the MCP handshake and tool definitions together.
+	// Keep the published demo version independent of connector package builds.
+	protocolImplementationVersion = "1.4.2"
 
 	ToolPing         = "kaiwu_demo_ping"
 	ToolOrderSummary = "kaiwu_demo_order_summary"
@@ -183,7 +184,7 @@ func (s *Server) InstanceID() string {
 func (s *Server) mcpServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "kaiwu-builtin-demo",
-		Version: version.Version,
+		Version: protocolImplementationVersion,
 	}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{},
 	})

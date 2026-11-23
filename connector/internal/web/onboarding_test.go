@@ -1,0 +1,158 @@
+package web
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestOnboardingCopiesImportableJSONAfterExplicitToolSelection(t *testing.T) {
+	_, after, found := strings.Cut(onboardingPage, "<script>")
+	pageScript, _, closed := strings.Cut(after, "</script>")
+	if !found || !closed || pageScript == "" {
+		t.Fatal("onboarding page has no script")
+	}
+	script := `
+const assert = require("node:assert/strict");
+const elements = new Map();
+function element(tagName = "div"){
+  const classes = new Set();
+  return {
+    tagName, textContent:"", value:"", children:[], dataset:{}, style:{},
+    hidden:false, disabled:false, checked:false,
+    classList:{
+      contains(name){ return classes.has(name); },
+      add(name){ classes.add(name); },
+      remove(name){ classes.delete(name); },
+      toggle(name, force){
+        const enabled = force === undefined ? !classes.has(name) : force;
+        if(enabled){ classes.add(name); }else{ classes.delete(name); }
+        return enabled;
+      }
+    },
+    addEventListener(name, callback){ this["on" + name] = callback; },
+    focus(){}, select(){},
+    setAttribute(name, value){ this[name] = value; },
+    hasAttribute(name){ return Object.hasOwn(this, name); },
+    removeAttribute(name){ delete this[name]; },
+    appendChild(child){ this.children.push(child); return child; },
+    append(...items){ this.children.push(...items); },
+    replaceChildren(...items){ this.children = items; },
+    querySelector(selector){ return this.querySelectorAll(selector)[0] || null; },
+    querySelectorAll(selector){
+      const descendants = this.children.flatMap(child => typeof child === "object"
+        ? [child, ...child.querySelectorAll("*")] : []);
+      if(selector === "*"){ return descendants; }
+      return descendants.filter(child => child.tagName === "input" && child.type === "checkbox" &&
+        (!selector.includes(":checked") || child.checked));
+    }
+  };
+}
+const document = {
+  visibilityState:"visible",
+  getElementById(id){
+    if(!elements.has(id)){ elements.set(id, element()); }
+    return elements.get(id);
+  },
+  createElement:element,
+  createTextNode:value=>value,
+  querySelectorAll(selector){
+    assert.match(selector, /#toolsList\s+/);
+    return this.getElementById("toolsList").querySelectorAll(selector);
+  },
+  addEventListener(){}
+};
+const location = new URL("http://127.0.0.1:17872/");
+const copiedJSON = [];
+const navigator = {clipboard:{writeText:async value=>{ copiedJSON.push(value); }}};
+const window = {location, navigator, addEventListener(){}};
+const setInterval = ()=>0;
+const control = {bound:false, cloud_configured:true, edge_configured:true,
+  state:"UNPAIRED", transport_mode:"native", sources:[], auth_profiles:[]};
+const calls = [];
+const mcpConfig = {mcpServers:{"只读示例":{
+  type:"http", url:"https://edge.example/sources/public/mcp", headers:{Authorization:"Bearer test-integration"}
+}}};
+let exportAttempts = 0;
+const fetch = async (path, options) => {
+  const body = options && options.body ? JSON.parse(options.body) : undefined;
+  calls.push({path, body});
+  let data;
+  if(path === "/api/status"){
+    data = control;
+  }else if(path === "/api/bind"){
+    assert.deepEqual(body, {code:"kwp_fixture"});
+    Object.assign(control, {bound:true,state:"CONFIGURING",tenant_name:"试测企业"});
+    data = control;
+  }else if(path === "/api/source/tools"){
+    data = [{name:"read_orders",title:"订单查询"},{name:"update_order",title:"修改订单"}];
+  }else if(path === "/api/source/save-and-connect"){
+    const source = {source_id:"source-test",display_name:"只读示例",upstream_url:body.upstream_url,tool_allowlist:body.tools};
+    Object.assign(control, {state:"READY",tunnel_connected:true,sources:[source]});
+    data = {source, status:control};
+  }else if(path === "/api/mcp-export"){
+    assert.deepEqual(body, {source_id:"source-test"});
+    exportAttempts++;
+    if(exportAttempts === 1){
+      return {ok:false,status:503,json:async()=>({ok:false,error:{message:"生成超时"}})};
+    }
+    data = {mcp_config:mcpConfig,platform_url:"https://flintw.com/project/kaiwu/"};
+  }else{
+    assert.fail("Unexpected onboarding API call: " + path);
+  }
+  if(path !== "/api/status"){
+    assert.equal(options.method, "POST");
+    assert.ok(options.headers["X-Connector-Token"]);
+  }
+  return {ok:true,status:200,json:async()=>({ok:true,data})};
+};
+` + pageScript + `
+async function verifyWorkflow(){
+  await new Promise(resolve=>setImmediate(resolve));
+  const ui = id=>document.getElementById(id);
+  const submit = () => ({preventDefault(){}});
+  ui("bindCode").value = "  kwp_fixture  ";
+  await ui("bindForm").onsubmit(submit());
+  assert.equal(calls.filter(call=>call.path === "/api/bind").length, 1);
+  assert.equal(ui("bindCode").value, "");
+
+  ui("upstreamAddress").value = "65536";
+  await readTools(submit());
+  assert.equal(calls.filter(call=>call.path === "/api/source/tools").length, 0);
+  ui("upstreamAddress").value = "http://127.0.0.1:3800/custom/mcp";
+  await readTools(submit());
+  assert.equal(calls.filter(call=>call.path === "/api/source/tools").at(-1).body.upstream_url,
+    "http://127.0.0.1:3800/custom/mcp");
+  ui("upstreamAddress").value = "3000";
+  await readTools(submit());
+  assert.equal(calls.filter(call=>call.path === "/api/source/tools").at(-1).body.upstream_url,
+    "http://127.0.0.1:3000/mcp");
+  const tools = ui("toolsList").querySelectorAll("input[type=checkbox]");
+  assert.deepEqual(tools.map(tool=>tool.value), ["read_orders", "update_order"]);
+  assert.ok(tools.every(tool=>!tool.checked), "new tools require explicit consent");
+  await generateJSON(submit());
+  assert.equal(calls.filter(call=>call.path === "/api/source/save-and-connect").length, 0);
+
+  tools[0].checked = true;
+  const change = {target:tools[0]};
+  tools[0].onchange?.(change);
+  ui("toolsList").onchange?.(change);
+  await generateJSON(submit());
+  const saved = calls.filter(call=>call.path === "/api/source/save-and-connect");
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].body.upstream_url, "http://127.0.0.1:3000/mcp");
+  assert.deepEqual(saved[0].body.tools, ["read_orders"]);
+  assert.notEqual(saved[0].body.dynamic_auth, true);
+  assert.equal(ui("mcpJSON").value, "", "failed export must not expose a partial JSON");
+  assert.equal(exportAttempts, 1);
+  await ui("retryExportBtn").onclick();
+  assert.equal(calls.filter(call=>call.path === "/api/source/save-and-connect").length, 1,
+    "export retry must not create or reconnect another source");
+  assert.equal(exportAttempts, 2);
+  assert.deepEqual(JSON.parse(ui("mcpJSON").value), mcpConfig);
+  await copyJSON();
+  assert.deepEqual(copiedJSON.map(value=>JSON.parse(value)), [mcpConfig]);
+}
+verifyWorkflow().catch(error=>{ console.error(error); process.exitCode = 1; });
+`
+	runNodeScript(t, script)
+}

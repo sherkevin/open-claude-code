@@ -6,7 +6,7 @@ $tokens = $null
 $errors = $null
 $sourceAst = [System.Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$tokens, [ref]$errors)
 if ($errors) { throw ($errors | Out-String) }
-$functionNames = @('Get-FileSha256', 'Get-PackageCheckErrorCode', 'Assert-PackageSourceFile', 'Set-InstallFailure', 'Write-InstallFailureDetails')
+$functionNames = @('Get-FileSha256', 'Get-PackageCheckErrorCode', 'Assert-PackageSourceFile', 'Assert-NativeTransportMarker', 'Set-InstallFailure', 'Write-InstallFailureDetails')
 $definitions = $sourceAst.FindAll({ param($ast) $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $ast.Name -in $functionNames }, $false)
 if ($definitions.Count -ne $functionNames.Count) { throw 'Missing installer function' }
 foreach ($definition in $definitions) { . ([scriptblock]::Create($definition.Extent.Text)) }
@@ -55,6 +55,20 @@ try {
         [IO.File]::Delete($inputPath)
         Write-Output "PASS $case $expectedReason"
     }
+    $marker = Join-Path $Work 'transport.txt'
+    [IO.File]::WriteAllText($marker, "native-wss`n")
+    $FrozenHashes = @{ 'transport.txt' = (Get-FileSha256 $marker) }
+    Assert-NativeTransportMarker $marker
+    [IO.File]::WriteAllText($marker, 'other-transport')
+    foreach ($case in @('replaced', 'wrong_transport', 'unlisted')) {
+        if ($case -eq 'wrong_transport') { $FrozenHashes['transport.txt'] = Get-FileSha256 $marker }
+        if ($case -eq 'unlisted') { $FrozenHashes = @{} }
+        $FailureReason = 'unknown'
+        $rejected = $false
+        try { Assert-NativeTransportMarker $marker } catch { $rejected = $true }
+        if (-not $rejected -or $FailureReason -ne 'manifest_invalid') { throw "Invalid transport marker accepted: $case" }
+    }
+    Write-Output 'PASS native transport marker validation'
 } finally {
     [IO.Directory]::Delete($Work, $true)
 }

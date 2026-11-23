@@ -1138,9 +1138,20 @@ try {
         "SHA256SUMS",
         "版本信息.txt",
         "bin\kaiwu-connector.exe",
-        "bin\frpc.exe",
         "docs\交付与运维说明.md"
     )
+    $transportPath = Join-Path $PackageRoot "transport.txt"
+    $frpcPath = Join-Path $PackageRoot "bin\frpc.exe"
+    $nativePackage = Test-Path -LiteralPath $transportPath -PathType Leaf
+    if ($nativePackage) {
+        if ([IO.File]::ReadAllText($transportPath).Trim() -cne "native-wss" -or
+            (Test-Path -LiteralPath $frpcPath)) {
+            throw "内置中继安装包的传输文件不匹配"
+        }
+        $required += "transport.txt"
+    } else {
+        $required += "bin\frpc.exe"
+    }
     foreach ($relative in $required) {
         $path = Join-Path $PackageRoot $relative
         if (-not (Test-Path -LiteralPath $path)) { throw "交付包缺少文件: $relative" }
@@ -1170,12 +1181,15 @@ try {
     }
     Add-Step -Name "binary_version" -Status "passed" -Detail "$versionOutput; metadata=$ExpectedVersion"
 
-    $frpcPath = Join-Path $PackageRoot "bin\frpc.exe"
-    $frpcVersion = (& $frpcPath -v 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $frpcVersion -notmatch '0\.61\.1') {
-        throw "官方 frpc 版本检查失败: $frpcVersion"
+    if (-not $nativePackage) {
+        $frpcVersion = (& $frpcPath -v 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $frpcVersion -notmatch '0\.61\.1') {
+            throw "官方 frpc 版本检查失败: $frpcVersion"
+        }
+        Add-Step -Name "frpc_binary_version" -Status "passed" -Detail $frpcVersion
+    } else {
+        Add-Step -Name "native_package_transport" -Status "passed" -Detail "native-wss"
     }
-    Add-Step -Name "frpc_binary_version" -Status "passed" -Detail $frpcVersion
 
     Start-SyntheticMcp
     Add-Step -Name "synthetic_mcp_start" -Status "passed" -Detail "http://127.0.0.1:$SyntheticPort/mcp"

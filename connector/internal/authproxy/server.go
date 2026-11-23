@@ -382,6 +382,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		flusher.Flush()
 		outcome, streamErr := s.streamSSE(resp.Body, w, flusher, envelope.Method, envelope.ID)
+		if streamErr != nil {
+			if relayWriter, ok := w.(interface{ AbortMCPStream() }); ok {
+				relayWriter.AbortMCPStream()
+			}
+		}
 		observation.HTTPStatus = resp.StatusCode
 		observation.RPCErrorCode = outcome.rpcErrorCode
 		observation.Failed = outcome.failed || streamErr != nil

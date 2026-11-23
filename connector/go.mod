@@ -4,6 +4,8 @@ go 1.25.0
 
 require golang.org/x/sys v0.41.0
 
+require github.com/coder/websocket v1.8.15
+
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/modelcontextprotocol/go-sdk v1.8.0

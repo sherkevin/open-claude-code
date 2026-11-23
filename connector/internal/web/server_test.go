@@ -57,44 +57,68 @@ func TestIndexSetsSessionCookie(t *testing.T) {
 	if len(cookies) == 0 || cookies[0].Name != "kconn" || cookies[0].Value != server.Token {
 		t.Fatalf("会话令牌未下发: %+v", cookies)
 	}
-	if !strings.Contains(recorder.Body.String(), "内网连接器") {
-		t.Fatal("页面内容不完整")
+	if !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatal("本机页面会话 Cookie 必须开启 HttpOnly 和 SameSite=Strict")
 	}
-	for _, expected := range []string{
-		"燧石开物",
-		`rel="icon" href="/flintworks-mark.png"`,
-		"连接器首次使用",
-		"先检查本机示例，绑定企业后再验证公网",
-		"一次性企业绑定码",
-		"保存并连接",
-		"读取工具列表",
-		"停用此来源",
-		"启用此来源",
-		"停用不会删除旧配置",
-		"企业接入配置",
-		"不包含 Authorization，也不是可以直接导入开物平台的完整 MCP JSON",
-		"运行日志",
-		"开物调用日志",
-		"内置测试服务（示例数据）",
-		"运行连接测试",
-		"使用随安装启动的固定示例检查连接，无需填写业务地址或凭据",
-		"技术支持确认接入后，在开物试问示例",
-		"https://flintw.com/project/kaiwu/",
-		"访问令牌和签名密钥只在本机填写",
-		"示例数据与华微业务数据无关",
-	} {
-		if !strings.Contains(recorder.Body.String(), expected) {
-			t.Fatalf("页面缺少普通接入流程或交付边界文案: %s", expected)
-		}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("包含本机会话令牌的页面禁止缓存")
 	}
 	body := recorder.Body.String()
-	binding := strings.Index(body, `id="bindForm"`)
-	advanced := strings.Index(body, `id="advancedPanel"`)
-	if binding < 0 || advanced < 0 || binding > advanced {
-		t.Fatal("企业绑定应在高级选项之前")
+	if !strings.Contains(body, "内网连接器") || !strings.Contains(body, `rel="icon" href="/flintworks-mark.png"`) {
+		t.Fatal("页面内容不完整")
 	}
-	if strings.Contains(recorder.Body.String(), "第 1 步") {
-		t.Fatal("页面不应继续把本机配置展示成六步技术向导")
+}
+
+func TestHomeShowsMCPSetupAndLinksToSupport(t *testing.T) {
+	server := newTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Host = loopbackHost
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET / returned %d", response.Code)
+	}
+	body := response.Body.String()
+	previous := -1
+	for _, id := range []string{"bindForm", "addressForm", "toolForm", "resultPanel"} {
+		index := strings.Index(body, `id="`+id+`"`)
+		if index <= previous {
+			t.Fatalf("homepage missing %s or showing it out of workflow order", id)
+		}
+		previous = index
+	}
+	for _, expected := range []string{`id="upstreamAddress"`, `id="copyJSONBtn"`, `href="/support"`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("homepage missing %s", expected)
+		}
+	}
+	for _, id := range []string{"builtinDemoPanel", "logsPanel", "advancedPanel"} {
+		if strings.Contains(body, `id="`+id+`"`) {
+			t.Fatalf("troubleshooting panel %s should live on /support", id)
+		}
+	}
+}
+
+func TestSupportPageKeepsSelfTestAndLocalAccess(t *testing.T) {
+	handler := newTestServer(t).Handler()
+	request := httptest.NewRequest(http.MethodGet, "/support", nil)
+	request.Host = "external.example"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("nonlocal Host may not access troubleshooting, got %d", response.Code)
+	}
+
+	request.Host = loopbackHost
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("support response: %d, cache-control %q", response.Code, response.Header().Get("Cache-Control"))
+	}
+	for _, id := range []string{"selfTestBtn", "logsPanel", "advancedPanel"} {
+		if !strings.Contains(response.Body.String(), `id="`+id+`"`) {
+			t.Fatalf("support page missing %s", id)
+		}
 	}
 }
 
@@ -161,6 +185,7 @@ func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 		"/api/bind",
 		"/api/import",
 		"/api/source/save",
+		"/api/source/save-and-connect",
 		"/api/source/tools",
 		"/api/source/enabled",
 		"/api/builtin-demo/enabled",
@@ -171,6 +196,7 @@ func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 		"/api/pause",
 		"/api/disconnect",
 		"/api/revoke",
+		"/api/mcp-export",
 		"/api/diagnostics/settings",
 	}
 	for _, path := range paths {
@@ -200,6 +226,7 @@ func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
 		"/api/bind",
 		"/api/import",
 		"/api/source/save",
+		"/api/source/save-and-connect",
 		"/api/source/tools",
 		"/api/source/enabled",
 		"/api/builtin-demo/enabled",
@@ -210,6 +237,7 @@ func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
 		"/api/pause",
 		"/api/disconnect",
 		"/api/revoke",
+		"/api/mcp-export",
 		"/api/diagnostics/settings",
 	}
 	for _, path := range paths {

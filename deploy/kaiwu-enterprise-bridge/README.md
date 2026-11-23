@@ -3,6 +3,25 @@
 本目录只包含部署模板，不包含真实中继令牌、STCP 密钥、企业集成凭据 K、
 客户 Bearer、华微 HMAC 密钥或域名证书。
 
+## 内置中继 Windows 安装包
+
+1. 按开物控制面部署配置启用 `AGENT_KAIWU_CONTROL_ENABLED` 和 `AGENT_KAIWU_NATIVE_RELAY_ENABLED`，提供既有独立管理员凭据和开物 Edge 公网地址。
+2. 使用带 WebSocket 支持的 ASGI 服务器，把 `/api/kaiwu/` 和 `/projects/kaiwu/mcp/` 路由到同一开物应用实例。Nginx 示例保留完整请求路径，转发 WebSocket Upgrade。设备握手复用控制面的设备令牌和签名。
+3. 给测试连接器签发企业绑定码。在 `AGENT_KAIWU_DEVICE_EXPORT_TENANTS` 填写允许设备生成 MCP JSON 的企业编号，多个编号用逗号分隔。内网配置页完成绑定后，用户可选择工具、生成配置并复制到开物原有的导入入口。开物部署配置的 `AGENT_MCP_ALLOWED_HOSTS` 应包含 Edge 公网域名。
+
+内置中继的出站连接和旧版 MCP 会话保存在应用进程内，本版部署使用一个 ASGI worker。使用 Uvicorn 时可将入站 WebSocket 消息上限设为 `--ws-max-size 24576`。设备离线后保留同一 Edge 地址。内置中继设备由共享开物应用接入。已有 FRP 设备仍可按下文部署和运行。
+
+## 长期绑定码
+
+用控制面管理员凭据调用 `POST /api/kaiwu/v1/enrollments`，填写 `tenant_id`、`tenant_name`、`persistent: true` 和 `issued_to`。长期码没有到期时间，明文只在签发时返回。将明文单独交给登记的接收人。
+
+- `GET /api/kaiwu/v1/enrollments` 查看签发对象、绑定设备数和撤销状态。
+- `GET /api/kaiwu/v1/enrollments/{enrollment_id}/devices` 查看绑定设备、设备公钥指纹、首次绑定时间和最近心跳。签发对象由管理员登记，设备身份由签名确认。
+- `POST /api/kaiwu/v1/connectors/{connector_id}/revoke` 撤销旧设备。一个长期码同时只允许绑定一台未撤销的设备，撤销旧设备后可以用原码绑定新设备。
+- `POST /api/kaiwu/v1/enrollments/{enrollment_id}/revoke` 停用长期码并断开由它绑定的设备。已撤销的码无法恢复。
+
+只验收公网连通性时，在客户端绑定企业后点击「运行连接测试」。页面显示「本机示例和公网验证已通过」即可。记录结果中的追踪编号，便于后台查询。
+
 ## 组件
 
 - `frps`：每个 Windows 连接器一个专属实例，只监听受控网络。

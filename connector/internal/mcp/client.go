@@ -81,6 +81,22 @@ func (e *RPCError) Error() string {
 	return fmt.Sprintf("MCP 错误 %d: %s", e.Code, e.Message)
 }
 
+// responseStatusError exposes a bounded status without retaining upstream data.
+type responseStatusError int
+
+func (e responseStatusError) Error() string {
+	switch {
+	case e >= 300 && e < 400:
+		return fmt.Sprintf("上游返回重定向 HTTP %d，连接器拒绝跟随", e)
+	case e == http.StatusUnauthorized || e == http.StatusForbidden:
+		return fmt.Sprintf("上游认证失败: HTTP %d", e)
+	default:
+		return fmt.Sprintf("上游返回 HTTP %d", e)
+	}
+}
+
+func (e responseStatusError) HTTPStatusCode() int { return int(e) }
+
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
 	ID      int64  `json:"id"`
@@ -185,14 +201,8 @@ func (c *Client) call(ctx context.Context, method, tool string, params any, out 
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		c.sessionID = sid
 	}
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		return fmt.Errorf("上游返回重定向 HTTP %d，连接器拒绝跟随", resp.StatusCode)
-	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("上游认证失败: HTTP %d", resp.StatusCode)
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("上游返回 HTTP %d", resp.StatusCode)
+		return responseStatusError(resp.StatusCode)
 	}
 
 	contentType := resp.Header.Get("Content-Type")

@@ -198,6 +198,17 @@ http {{
       proxy_send_timeout 300s;
       proxy_buffering off;
     }}
+
+    location /api/kaiwu/ {{
+      proxy_pass http://127.0.0.1:{self.server_port};
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_buffering off;
+      proxy_read_timeout 90s;
+    }}
   }}
 }}
 """

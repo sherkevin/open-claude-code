@@ -1,12 +1,12 @@
 package web
 
-// page 是本机配置界面的单页模板。__CONNECTOR_TOKEN__ 处写入本机会话令牌。
+// page provides the support and advanced settings screen.
 const page = `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>燧石开物 · 内网连接器</title>
+<title>连接测试与诊断 · 开物内网连接器</title>
 <link rel="icon" href="/flintworks-mark.png" type="image/png">
 <style>
 :root{--ink:#17223b;--muted:#5b6785;--line:#dfe4ef;--bg:#f5f7fb;--card:#fff;--brand:#1f4fd8;--brand-soft:#eef2ff;--ok:#0f7a4f;--warn:#a86a00;--err:#b3261e}
@@ -104,12 +104,12 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
     <span class="brand-icon"><img src="/flintworks-mark.png" width="25" height="25" alt=""></span>
     <div><span class="brand-name">燧石开物</span><small>内网连接器</small></div>
   </div>
-  <span class="pill" id="statePill">读取中…</span>
+  <div class="row"><a href="/">返回接入 MCP</a><span class="pill" id="statePill">读取中…</span></div>
 </header>
 <main>
 <section class="card intro">
-  <h1>连接器首次使用</h1>
-  <p>先检查本机示例，绑定企业后再验证公网，最后接入业务服务并到开物试问。</p>
+  <h1>连接测试与诊断</h1>
+  <p>运行内置示例检查连通性，或查看日志和高级设置。</p>
 </section>
 
 <section class="card" id="builtinDemoPanel">
@@ -131,7 +131,7 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
     <div class="bind-panel">
       <p class="subtle" id="bindHint"></p>
       <form class="row hidden" id="bindForm">
-        <label class="field grow"><span>一次性企业绑定码</span><input id="bindCode" type="password" autocomplete="off" required></label>
+        <label class="field grow"><span>企业绑定码</span><input id="bindCode" type="password" autocomplete="off" required></label>
         <button id="bindBtn" type="submit" disabled>绑定企业</button>
       </form>
       <div class="message" id="firstRunNotice" role="status"></div>
@@ -201,7 +201,12 @@ ul.issues{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--muted)}ul.
     <div class="stage" id="tunnelStage"><b>连接器公网隧道</b><small id="tunnelState">尚未连接</small><p id="tunnelDetail">需要完成企业绑定后建立。</p></div>
     <div class="stage" id="platformStage"><b>开物业务接入</b><small id="platformState">等待管理员配置</small><p id="platformDetail">联系开物技术支持确认业务来源和助手授权。</p></div>
   </div>
-  <p class="subtle">业务服务连接后，请开物技术支持确认业务来源和助手授权。收到确认后，使用已分配的账号<a href="https://flintw.com/project/kaiwu/" target="_blank" rel="noopener noreferrer">登录开物</a>，选择指定助手，试问一条已知正确结果的业务问题，并与原业务系统核对。</p>
+  <div class="action-bar hidden" id="platformHandoff">
+    <button id="platformHandoffBtn" type="button" disabled>生成开物导入链接</button>
+    <a class="hidden" id="platformHandoffLink" target="_blank" rel="noopener noreferrer">在开物打开导入链接</a>
+    <div class="message" id="platformHandoffNotice" role="status"></div>
+  </div>
+  <p class="subtle" id="legacyPlatformHelp">业务服务连接后，请开物技术支持确认业务来源和助手授权。收到确认后，使用已分配的账号<a href="https://flintw.com/project/kaiwu/" target="_blank" rel="noopener noreferrer">登录开物</a>，选择指定助手，试问一条已知正确结果的业务问题，并与原业务系统核对。</p>
 </section>
 
 <section class="card" id="logsPanel">
@@ -400,7 +405,7 @@ function renderSelfTest(status, stages, outcome){
   if(revoked){
     setStage("selfBinding", "已撤销", "请开物技术支持确认服务器身份并重新签发接入码。", "error");
   }else if(status){
-    setStage("selfBinding", bound ? "已绑定" : "待绑定", bound ? (status.tenant_name || "已加载企业身份。") : "需要一次性企业绑定码。", bound ? "ready" : "warn");
+    setStage("selfBinding", bound ? "已绑定" : "待绑定", bound ? (status.tenant_name || "已加载企业身份。") : "需要企业绑定码。", bound ? "ready" : "warn");
   }else{
     setStage("selfBinding", "待确认", "读取连接器状态后确认企业绑定。", "");
   }
@@ -505,7 +510,7 @@ function firstRunStep(status, demo, stages, outcome){
   }
   if(!status.bound){
     return status.cloud_configured
-      ? [status.state === "REVOKED" ? "重新绑定企业" : "绑定企业以验证公网", "本机示例已通过。请在下方填写一次性企业绑定码。", "bind"]
+      ? [status.state === "REVOKED" ? "重新绑定企业" : "绑定企业以验证公网", "本机示例已通过。请在下方填写企业绑定码。", "bind"]
       : ["请技术支持提供接入安装包", "本机示例已通过。当前安装包未配置企业绑定，请联系开物技术支持获取接入安装包。"];
   }
   if(outcome === "local-passed"){
@@ -570,7 +575,7 @@ function renderFirstRun(){
   $("bindBtn").disabled = busy || !canBind;
   $("bindBtn").classList.toggle("primary", action === "bind");
   $("bindHint").textContent = canBind
-    ? "接入码由开物技术支持签发，只能使用一次。缺少、过期或已使用时请联系技术支持。"
+    ? "企业绑定码由开物签发。若缺少绑定码，请联系技术支持。"
     : (!status || status.bound ? "" : "当前安装包未配置企业绑定，请联系开物技术支持。");
 }
 function stateClass(value){
@@ -781,8 +786,15 @@ function switchLogTab(next){
 function renderStageSummary(){
   if(!currentStatus){ return; }
   const sourceID = $("sourceSelect").value;
+  const native = currentStatus.transport_mode === "native";
+  const source = sourceByID(sourceID);
+  const canHandoff = native && currentStatus.tunnel_connected && !!source && !source.disabled;
+  $("platformHandoff").classList.toggle("hidden", !native);
+  $("legacyPlatformHelp").classList.toggle("hidden", native);
+  $("platformHandoffBtn").disabled = !canHandoff;
+  if(!canHandoff || $("platformHandoffLink").dataset.sourceId !== sourceID){ clearPlatformHandoff(); }
   const report = diagnosisBySource[sourceID];
-  if(sourceByID(sourceID)?.disabled){
+  if(source?.disabled){
     setStage("local", "已停用", "此来源当前不参与连接。", "warn");
   }else if(report){
     if(report.ok){ setStage("local", "可访问", "MCP 初始化、认证和工具目录检查通过。", "ready"); }
@@ -800,11 +812,11 @@ function renderStageSummary(){
   }
 
   if(currentStatus.tunnel_connected){
-    setStage("tunnel", "已连接", currentStatus.tunnel_detail || "官方 frpc 来源代理已运行。", "ready");
+    setStage("tunnel", "已连接", currentStatus.tunnel_detail || "连接器可以接收开物请求。", "ready");
   }else if(currentStatus.state === "DEGRADED_RELAY"){
     setStage("tunnel", "连接失败", currentStatus.last_error || currentStatus.tunnel_detail || "公网中继连接失败。", "error");
-  }else if(currentStatus.frpc_running){
-    setStage("tunnel", "连接中", currentStatus.tunnel_detail || "frpc 进程已启动，但中继尚未就绪。", "warn");
+  }else if(currentStatus.frpc_running || currentStatus.state === "CONNECTING"){
+    setStage("tunnel", "连接中", currentStatus.tunnel_detail || "正在等待开物连接就绪。", "warn");
   }else if(currentStatus.state === "PAUSED"){
     setStage("tunnel", "已暂停", "确认可以恢复后，点击“恢复连接”。", "warn");
   }else{
@@ -818,10 +830,19 @@ function renderStageSummary(){
   }else if(!(currentStatus.sources || []).some(source=>!source.disabled)){
     setStage("platform", "等待业务配置", "请添加并启用业务服务。", "");
   }else if(currentStatus.tunnel_connected){
-    setStage("platform", "待管理员确认", "请开物技术支持确认业务来源和助手授权。", "warn");
+    setStage("platform", "待导入", native ? "选择业务服务，生成链接后由开物管理员确认导入。" : "请开物技术支持确认业务来源和助手授权。", "warn");
   }else{
-    setStage("platform", "等待公网隧道", "隧道建立后仍需开物管理员确认企业接入配置和来源路由。", "");
+    setStage("platform", "等待连接", native ? "连接后即可生成开物导入链接。" : "隧道建立后仍需开物管理员确认企业接入配置和来源路由。", "");
   }
+}
+
+function clearPlatformHandoff(){
+  const link = $("platformHandoffLink");
+  if(!link.hasAttribute("href")){ return; }
+  link.removeAttribute("href");
+  delete link.dataset.sourceId;
+  link.classList.add("hidden");
+  $("platformHandoffNotice").textContent = "";
 }
 
 function keepLocalSelfTest(){
@@ -842,7 +863,8 @@ function renderStatus(status){
     selfTestError = "";
   }else if((previous?.bound && (!status.bound || previous.connector_id !== status.connector_id)) ||
            (status.state === "REVOKED" && previous?.state !== "REVOKED") ||
-           (selfTestResult?.ok && (!status.frpc_running ||
+           (selfTestResult?.ok && (status.transport_mode === "native" ? !status.tunnel_connected ||
+             previous?.tunnel_restarts !== status.tunnel_restarts : !status.frpc_running ||
              (previous?.frpc_running && previous.frpc_restarts !== status.frpc_restarts)))){
     // The live status reports the whole tunnel, not the exact demo route.
     // Discard the public result only when the identity or process changed.
@@ -859,7 +881,8 @@ function renderStatus(status){
   pill.className = "pill " + stateClass(status.state);
   $("tenant").textContent = status.tenant_name || "未绑定";
   $("connector").textContent = status.connector_id || "—";
-  $("frpc").textContent = status.frpc_running
+  $("frpc").textContent = status.transport_mode === "native" ?
+    (status.tunnel_connected ? "已连接" : "未连接") : status.frpc_running
     ? (status.tunnel_connected ? "已连接" : "进程运行中，中继尚未就绪") + "，重启 " + (status.frpc_restarts || 0) + " 次"
     : "未运行";
   $("version").textContent = status.version || "—";
@@ -1033,7 +1056,8 @@ async function refresh(initial){
     $("statePill").textContent = "当前服务器服务未就绪";
     $("statePill").className = "pill err";
     setMessage("无法读取当前服务器连接器状态：" + error.message, "err");
-    ["saveConnectBtn","readToolsBtn","diagnoseBtn","toggleSourceBtn"].forEach(id=>$(id).disabled=true);
+    ["saveConnectBtn","readToolsBtn","diagnoseBtn","toggleSourceBtn","platformHandoffBtn"].forEach(id=>$(id).disabled=true);
+    clearPlatformHandoff();
     renderFirstRun();
   }
 }
@@ -1136,7 +1160,7 @@ $("saveConnectBtn").onclick = async ()=>{
     }else if(!latest.bound){
       setMessage("业务配置已通过本机检查并保存。请先在页面上方绑定企业。", "warn");
     }else if(latest.tunnel_connected){
-      setMessage("业务配置已通过本机检查并保存，公网隧道已建立。请开物技术支持确认业务来源和助手授权。", "ok");
+      setMessage(latest.transport_mode === "native" ? "业务检查通过，已连接开物。可以生成导入链接。" : "业务配置已通过本机检查并保存，公网隧道已建立。请开物技术支持确认业务来源和助手授权。", "ok");
     }else{
       setMessage("业务配置已保存，正在等待公网隧道就绪。", "warn");
     }
@@ -1258,6 +1282,34 @@ $("exportBtn").onclick = async ()=>{
     $("exportOut").textContent = text;
     $("exportOut").classList.remove("hidden");
   }catch(error){ setMessage("Edge 地址预览失败：" + error.message, "err"); }
+};
+
+$("platformHandoffBtn").onclick = async ()=>{
+  if(busy || statusUnavailable){ return; }
+  const sourceID = $("sourceSelect").value;
+  const notice = $("platformHandoffNotice");
+  if(formDirty){ notice.textContent = "请先保存更改，再生成导入链接。"; return; }
+  busy = true;
+  $("platformHandoffBtn").disabled = true;
+  clearPlatformHandoff();
+  notice.textContent = "正在生成导入链接…";
+  try{
+    const result = await api("/api/platform-handoff", {source_id:sourceID});
+    if($("sourceSelect").value !== sourceID){ notice.textContent = ""; return; }
+    const url = new URL(result.url);
+    if(url.protocol !== "https:" || !/^#kaiwu-mcp=kw_link_[A-Za-z0-9_-]{43}$/.test(url.hash)){
+      throw new Error("开物返回的导入链接无效");
+    }
+    const link = $("platformHandoffLink");
+    link.href = url.href;
+    link.dataset.sourceId = sourceID;
+    link.classList.remove("hidden");
+    notice.textContent = "链接 5 分钟内有效，请使用开物管理员账号打开。";
+  }catch(error){ notice.textContent = error.message; }
+  finally{
+    busy = false;
+    renderStageSummary();
+  }
 };
 
 $("demoToggleBtn").onclick = async ()=>{

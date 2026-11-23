@@ -89,12 +89,11 @@ func (a *Agent) saveSource(ctx context.Context, input SourceInput, connect bool)
 		if err != nil {
 			code = "source_save_failed"
 		}
-		a.recordDiagnostic(diagnostics.Record{
-			EventCode:   code,
-			OperationID: operationID,
-			SourceID:    input.SourceID,
-			DurationMS:  diagnosticDuration(started),
-		})
+		sourceID := input.SourceID
+		if result.Source.SourceID != "" {
+			sourceID = result.Source.SourceID
+		}
+		a.recordOperationDiagnostic(code, operationID, sourceID, started, err)
 	}()
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
@@ -337,17 +336,9 @@ func (a *Agent) SetSourceEnabled(sourceID string, enabled bool) (result SourceSa
 func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (toolsResult []ToolSummary, err error) {
 	started := time.Now()
 	operationID := diagnostics.NewOperationID()
+	code := "source_tools_failed"
 	defer func() {
-		code := "source_tools_loaded"
-		if err != nil {
-			code = "source_tools_failed"
-		}
-		a.recordDiagnostic(diagnostics.Record{
-			EventCode:   code,
-			OperationID: operationID,
-			SourceID:    input.SourceID,
-			DurationMS:  diagnosticDuration(started),
-		})
+		a.recordOperationDiagnostic(code, operationID, input.SourceID, started, err)
 	}()
 	a.mu.RLock()
 	prepared, err := a.prepareSourceLocked(input)
@@ -374,12 +365,15 @@ func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (too
 	discoveryCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if _, err := client.Initialize(discoveryCtx); err != nil {
+		code = "source_tools_initialize_failed"
 		return nil, fmt.Errorf("MCP 初始化失败，请检查 MCP 地址和访问令牌: %w", err)
 	}
 	tools, err := client.ListTools(discoveryCtx)
 	if err != nil {
+		code = "source_tools_list_failed"
 		return nil, fmt.Errorf("工具列表读取失败，请检查访问令牌和动态签名配置: %w", err)
 	}
+	code = "source_tools_result_invalid"
 	if len(tools) > 256 {
 		return nil, errors.New("工具数量超过 256 个，请联系开物管理员调整来源")
 	}
@@ -398,6 +392,10 @@ func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (too
 		out = append(out, ToolSummary{Name: name, Title: strings.TrimSpace(tool.Title), Description: strings.TrimSpace(tool.Description)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	code = "source_tools_loaded"
+	if len(out) == 0 {
+		code = "source_tools_empty"
+	}
 	return out, nil
 }
 

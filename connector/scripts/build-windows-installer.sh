@@ -24,6 +24,14 @@ if [[ ! "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
 fi
 
 MAKENSIS="${MAKENSIS:-$(command -v makensis || true)}"
+transport_define=()
+if [[ -f "$PAYLOAD_DIR/transport.txt" ]]; then
+  if [[ "$(< "$PAYLOAD_DIR/transport.txt")" != native-wss || -e "$PAYLOAD_DIR/bin/frpc.exe" ]]; then
+    echo "内置中继安装包的传输文件不匹配: $PAYLOAD_DIR" >&2
+    exit 1
+  fi
+  transport_define=(-DNATIVE_TRANSPORT)
+fi
 
 if [[ ! -f "$PAYLOAD_DIR/connector.ico" ]]; then
   echo "缺少安装器图标: $PAYLOAD_DIR/connector.ico" >&2
@@ -88,6 +96,7 @@ run_makensis_plain() {
   echo "makensis 临时目录：$NSIS_TMPDIR" >&2
   TMPDIR="$NSIS_TMPDIR" TMP="$NSIS_TMPDIR" TEMP="$NSIS_TMPDIR" \
     "$MAKENSIS" -V2 -NOCD -INPUTCHARSET UTF8 \
+      "${transport_define[@]}" \
       -DPAYLOAD_DIR="$PAYLOAD_DIR" \
       -DJOURNAL_PLUGIN_DIR="$plugin_dir" \
       -DVERSION="$VERSION" \
@@ -107,6 +116,7 @@ if [[ "$ISOLATE_NSIS" == 1 ]]; then
     shift
     exec "$@"
   ' bash "$NSIS_TMPDIR" "$MAKENSIS" -V2 -NOCD -INPUTCHARSET UTF8 \
+    "${transport_define[@]}" \
     -DPAYLOAD_DIR="$PAYLOAD_DIR" \
     -DJOURNAL_PLUGIN_DIR="/tmp/${plugin_dir##*/}" \
     -DVERSION="$VERSION" \

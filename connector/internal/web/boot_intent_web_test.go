@@ -74,7 +74,7 @@ func TestUpgradePageKeepsUserPause(t *testing.T) {
 			script := pageScriptFragment(t, "function renderStageSummary(){", "\nfunction keepLocalSelfTest")
 			runNodeScript(t, `
 const currentStatus = `+string(envelopeDataForUpgradeIntent(t, status))+`;
-const $ = () => ({value:""});
+const $ = () => ({value:"", classList:{toggle(){}}, dataset:{}, hasAttribute:()=>false});
 const diagnosisBySource = {};
 const sourceByID = () => null;
 const labels = {};

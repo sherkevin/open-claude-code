@@ -94,6 +94,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/support", s.handleIndex)
 	mux.HandleFunc("GET /flintworks-mark.png", s.guard(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(flintworksMark)
@@ -114,6 +115,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/disconnect", s.guard(postOnly(s.handleDisconnect)))
 	mux.HandleFunc("/api/revoke", s.guard(postOnly(s.handleRevoke)))
 	mux.HandleFunc("/api/export", s.guard(s.handleExport))
+	mux.HandleFunc("/api/platform-handoff", s.guard(postOnly(s.handlePlatformHandoff)))
+	mux.HandleFunc("/api/mcp-export", s.guard(postOnly(s.handleMCPExport)))
 	mux.HandleFunc("/api/logs", s.guard(s.handleLogs))
 	mux.HandleFunc("/api/logs/download", s.guard(s.handleLogsDownload))
 	mux.HandleFunc("/api/platform-logs", s.guard(s.handlePlatformLogs))
@@ -142,7 +145,13 @@ func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	var template string
+	switch r.URL.Path {
+	case "/":
+		template = onboardingPage
+	case "/support":
+		template = page
+	default:
 		http.NotFound(w, r)
 		return
 	}
@@ -169,7 +178,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	setSecurityHeaders(w)
-	io.WriteString(w, strings.Replace(page, "__CONNECTOR_TOKEN__", s.Token, 1))
+	io.WriteString(w, strings.Replace(template, "__CONNECTOR_TOKEN__", s.Token, 1))
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -409,6 +418,40 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	w.Write(raw)
+}
+
+func (s *Server) handlePlatformHandoff(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SourceID string `json:"source_id"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	link, err := s.Agent.CreatePlatformHandoff(ctx, body.SourceID)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": map[string]string{"url": link}})
+}
+
+func (s *Server) handleMCPExport(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SourceID string `json:"source_id"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	result, err := s.Agent.ExportPlatformMCP(ctx, body.SourceID)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": result})
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {

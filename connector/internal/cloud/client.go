@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // TLSConfig 描述中继的 TLS 材料位置。
@@ -196,6 +198,47 @@ func (c *Client) TransportSecrets(ctx context.Context, connectorID string) (Desi
 	return state, err
 }
 
+// DialNativeRelay signs the WebSocket upgrade with the same device identity as
+// the control plane. The connection does not inherit the HTTP API deadline.
+func (c *Client) DialNativeRelay(ctx context.Context, connectorID string) (*websocket.Conn, error) {
+	if c.Signer == nil || c.DeviceToken == "" {
+		return nil, fmt.Errorf("中继需要已绑定的设备签名身份")
+	}
+	target, err := url.Parse(c.BaseURL + "/v1/connectors/" + url.PathEscape(connectorID) + "/native-relay")
+	if err != nil || target.Scheme != "https" || target.User != nil || target.RawQuery != "" || target.ForceQuery || target.Fragment != "" {
+		return nil, fmt.Errorf("原生中继只接受 HTTPS 云端地址")
+	}
+	request := &http.Request{URL: target, Header: http.Header{}, Method: http.MethodGet}
+	if err := c.applyIdentityHeaders(request, nil); err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{}
+	if c.HTTP != nil {
+		*client = *c.HTTP
+	}
+	client.Timeout = 0
+	client.Jar = nil
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if client.Transport == nil {
+		// The default HTTP transport honours the standard proxy environment.
+		client.Transport = http.DefaultTransport
+	}
+	conn, response, err := websocket.Dial(ctx, target.String(), &websocket.DialOptions{
+		HTTPClient: client, HTTPHeader: request.Header,
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if response != nil {
+			return nil, fmt.Errorf("原生中继握手失败（HTTP %d）", response.StatusCode)
+		}
+		return nil, fmt.Errorf("无法建立原生中继连接")
+	}
+	return conn, nil
+}
+
 // RegisterSource registers only opaque metadata and a local target digest.
 func (c *Client) RegisterSource(ctx context.Context, source SourceRegistration) (map[string]any, error) {
 	var result map[string]any
@@ -321,25 +364,8 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any) 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.DeviceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.DeviceToken)
-	}
-	if c.Signer != nil && c.DeviceToken != "" {
-		targetURL, parseErr := url.Parse(target)
-		if parseErr != nil {
-			return 0, nil, parseErr
-		}
-		timestamp, nonce, signature, signErr := c.Signer.SignRequest(method, targetURL.EscapedPath(), rawBody)
-		if signErr != nil {
-			return 0, nil, signErr
-		}
-		req.Header.Set("X-Kaiwu-Device-Key", c.Signer.KeyID())
-		req.Header.Set("X-Kaiwu-Timestamp", timestamp)
-		req.Header.Set("X-Kaiwu-Nonce", nonce)
-		req.Header.Set("X-Kaiwu-Signature", signature)
-	}
-	if c.UserAgent != "" {
-		req.Header.Set("User-Agent", c.UserAgent)
+	if err := c.applyIdentityHeaders(req, rawBody); err != nil {
+		return 0, nil, err
 	}
 	client := c.HTTP
 	if client == nil {
@@ -355,6 +381,26 @@ func (c *Client) rawRequest(ctx context.Context, method, path string, body any) 
 		return 0, nil, err
 	}
 	return resp.StatusCode, payload, nil
+}
+
+func (c *Client) applyIdentityHeaders(req *http.Request, rawBody []byte) error {
+	if c.DeviceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.DeviceToken)
+	}
+	if c.Signer != nil && c.DeviceToken != "" {
+		timestamp, nonce, signature, err := c.Signer.SignRequest(req.Method, req.URL.EscapedPath(), rawBody)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("X-Kaiwu-Device-Key", c.Signer.KeyID())
+		req.Header.Set("X-Kaiwu-Timestamp", timestamp)
+		req.Header.Set("X-Kaiwu-Nonce", nonce)
+		req.Header.Set("X-Kaiwu-Signature", signature)
+	}
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
+	return nil
 }
 
 func apiErrorFromResponse(status int, payload []byte) error {

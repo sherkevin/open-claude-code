@@ -46,6 +46,7 @@ typedef struct {
     DWORD cleanup_error;
 } SummaryResult;
 static SummaryResult logs_failure = {.step = L"准备日志目录"};
+static SummaryResult workspace_failure;
 static DWORD attempt_error;
 static WCHAR checkpoint_notice[192] = L"本次没有可保存的安装包检查记录。";
 static PSID admins, system_account, trusted_installer;
@@ -214,18 +215,27 @@ static BOOL open_journal_dir(const WCHAR *name, PSECURITY_DESCRIPTOR sd, DWORD a
 }
 
 static BOOL create_workspace(DirectoryChain *chain, WCHAR *path, const WCHAR *name) {
-    if (!append_path(path, name)) return FALSE;
+    if (!append_path(path, name)) {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return FALSE;
+    }
     PSECURITY_DESCRIPTOR sd = NULL;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(PRIVATE_DIRECTORY, SDDL_REVISION_1, &sd, NULL))
         return FALSE;
     SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};
     BOOL created = CreateDirectoryW(path, &sa);
+    DWORD error = created ? ERROR_SUCCESS : GetLastError();
     LocalFree(sd);
-    if (!created) return FALSE;
+    if (!created) {
+        SetLastError(error);
+        return FALSE;
+    }
     HANDLE dir = CreateFileW(path, DIR_ACCESS, READ_SHARE, NULL, OPEN_EXISTING,
                              FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     if (keep_directory(chain, dir, 0)) return TRUE;
-    if (created) RemoveDirectoryW(path);
+    error = GetLastError();
+    RemoveDirectoryW(path);
+    SetLastError(error);
     return FALSE;
 }
 
@@ -547,7 +557,7 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
         {L"unsupported_host", L"安装脚本需要 64 位 Windows PowerShell。"},
         {L"lock_busy", L"已有开物安装或卸载任务正在运行。"},
         {L"lock_unavailable", L"无法取得或确认安装事务锁。"},
-        {L"workspace_unavailable", L"无法建立安全的安装临时目录。请确认 C:\\ProgramData\\Kaiwu 未被替换或占用，且当前安装账号可以创建子目录。"},
+        {L"workspace_unavailable", L"安装器未能建立用于解包的受保护临时目录。"},
         {L"extract_write_failed", L"无法完整解包安装文件。"},
         {L"install_script_missing", L"解包后找不到安装脚本。"},
         {L"manifest_missing", L"缺少校验清单 SHA256SUMS。"},
@@ -591,16 +601,24 @@ static BOOL format_failure(WCHAR *summary, const WCHAR *stage_code, const WCHAR 
     const WCHAR *support_note = L"";
     if (*file && (!wcscmp(reason_code, L"file_missing") || !wcscmp(reason_code, L"file_missing_after_check")))
         support_note = L"排查提示：请提供同一时段涉及该文件的终端防护处置记录（如有）。\r\n";
+    WCHAR workspace_note[128] = L"";
+    if (!wcscmp(known_code, L"workspace_unavailable") && workspace_failure.step) {
+        if (workspace_failure.error)
+            wsprintfW(workspace_note, L"临时目录检查：%ls（系统错误码 %lu）。\r\n",
+                      workspace_failure.step, workspace_failure.error);
+        else
+            wsprintfW(workspace_note, L"临时目录检查：%ls（未返回系统错误码）。\r\n", workspace_failure.step);
+    }
     SYSTEMTIME utc;
     GetSystemTime(&utc);
     /* The launcher passes its own error level. Never print arbitrary input from the stack. */
     const WCHAR *reported_exit = !wcscmp(exit_code, L"1") ? L"1" : L"未确认";
     int length = _snwprintf(summary, SUMMARY_TEXT_LENGTH,
         L"安装失败\r\n安装编号：%ls\r\n失败阶段：%ls\r\n原因：%ls%ls%ls\r\n恢复结果：%ls\r\n"
-        L"原因码：%ls\r\n安装器退出码：%ls\r\n记录时间（UTC）：%04u-%02u-%02uT%02u:%02u:%02uZ\r\n%ls",
+        L"原因码：%ls\r\n安装器退出码：%ls\r\n记录时间（UTC）：%04u-%02u-%02uT%02u:%02u:%02uZ\r\n%ls%ls",
         *attempt ? attempt : L"未生成", stage, reason, *file ? L" 涉及文件：" : L"", file, recovery,
         known_code, reported_exit, (unsigned)utc.wYear, (unsigned)utc.wMonth, (unsigned)utc.wDay,
-        (unsigned)utc.wHour, (unsigned)utc.wMinute, (unsigned)utc.wSecond, support_note);
+        (unsigned)utc.wHour, (unsigned)utc.wMinute, (unsigned)utc.wSecond, support_note, workspace_note);
     return length > 0 && length < SUMMARY_TEXT_LENGTH;
 }
 
@@ -756,26 +774,41 @@ EXPORT(ExplainFailure) {
 }
 
 EXPORT(Workspace) {
-    WCHAR name[36];
-    if (*attempt && admins && system_account && trusted_installer) {
-        wsprintfW(name, L"kw-%ls", attempt);
-        /* Program Files roots cannot be excluded by endpoint protection policies
-           that refuse to trust those roots, so stage under the product's
-           ProgramData directory instead. Kaiwu may already exist: journal setup
-           creates it, and site operators pre-create it to register the trust
-           zone. Accept the same create-child rights the journal directory
-           accepts; safe_permissions still requires an administrator-owned
-           directory, so a user-planted Kaiwu is rejected. Private SDDL and
-           reparse-point checks are unchanged. */
-        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, SHGFP_TYPE_CURRENT, workspace)) &&
-            append_path(workspace, L"Kaiwu") && wcslen(workspace) < MAX_PATH - 128 &&
-            pin_known_path(&workspace_dirs, workspace, COMMON_DATA_WRITES) &&
-            create_workspace(&workspace_dirs, workspace, name)) {
-            push(stack, size, workspace);
-            return;
-        }
-        close_chain(&workspace_dirs);
+    workspace_failure = (SummaryResult){.step = L"初始化安装临时目录", .error = attempt_error};
+    if (!*attempt || !admins || !system_account || !trusted_installer) goto failed;
+
+    workspace_failure.step = L"定位 Windows 公共应用数据目录";
+    HRESULT folder = SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, SHGFP_TYPE_CURRENT, workspace);
+    if (FAILED(folder)) {
+        workspace_failure.error = HRESULT_FACILITY(folder) == FACILITY_WIN32 ? HRESULT_CODE(folder) : (DWORD)folder;
+        goto failed;
     }
+
+    /* Use the journal's policy for the known ProgramData directory itself.
+       Appending Kaiwu first would apply the stricter ancestor policy there. */
+    workspace_failure.step = L"校验 Windows 公共应用数据目录";
+    if (!pin_known_path(&workspace_dirs, workspace, COMMON_DATA_WRITES)) goto windows_error;
+    workspace_failure.step = L"打开并校验 Kaiwu 目录";
+    if (!append_path(workspace, L"Kaiwu") || wcslen(workspace) >= MAX_PATH - 128) {
+        workspace_failure.error = ERROR_FILENAME_EXCED_RANGE;
+        goto failed;
+    }
+    HANDLE product = open_child(parent_handle(&workspace_dirs), L"Kaiwu", DIR_ACCESS,
+                                FILE_OPEN, FILE_DIRECTORY_FILE, NULL);
+    if (!keep_directory(&workspace_dirs, product, COMMON_DATA_WRITES)) goto windows_error;
+
+    WCHAR name[36];
+    wsprintfW(name, L"kw-%ls", attempt);
+    workspace_failure.step = L"创建并校验私有暂存目录";
+    if (!create_workspace(&workspace_dirs, workspace, name)) goto windows_error;
+    workspace_failure = (SummaryResult){0};
+    push(stack, size, workspace);
+    return;
+
+windows_error:
+    workspace_failure.error = GetLastError();
+failed:
+    close_chain(&workspace_dirs);
     *workspace = 0;
     push(stack, size, L"");
 }

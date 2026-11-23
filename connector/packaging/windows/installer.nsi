@@ -311,7 +311,11 @@ Section "安装" SecInstall
   ${EndIf}
   !insertmacro Attempt "extract" "ok" "ok"
 
+!ifdef NATIVE_TRANSPORT
+  DetailPrint "校验并安装内置中继连接器和 Windows 服务..."
+!else
   DetailPrint "校验并安装连接器、官方 frpc 和 Windows 服务..."
+!endif
   StrCpy $AttemptStage "precheck"
   StrCpy $FailureRecovery ""
   SetOutPath "$WorkDir"

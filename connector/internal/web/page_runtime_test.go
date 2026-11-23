@@ -64,7 +64,7 @@ const elements = new Map();
 function element(){
   const classes = new Set();
   return {
-    textContent:"", className:"", value:"", style:{}, children:[],
+    textContent:"", className:"", value:"", style:{}, children:[], dataset:{},
     classList:{
       contains(name){ return classes.has(name); },
       add(name){ classes.add(name); },
@@ -72,6 +72,8 @@ function element(){
       toggle(name, force){ force ? classes.add(name) : classes.delete(name); }
     },
     addEventListener(){},
+    hasAttribute(name){ return Object.hasOwn(this, name); },
+    removeAttribute(name){ delete this[name]; },
     replaceChildren(){ this.children = []; },
     appendChild(child){ this.children.push(child); }
   };
@@ -99,6 +101,7 @@ const bound = {...unbound, state:"CONFIGURING", bound:true, connector_id:"connec
   builtin_demo:{...unbound.builtin_demo, source_id:"bound-demo"}};
 let status = unbound;
 let testResult;
+let handoffUrl;
 const fetch = async (path, options) => {
   calls.push(path);
   let data;
@@ -116,6 +119,9 @@ const fetch = async (path, options) => {
   }else if(path === "/api/connect"){
     status = {...bound, state:"READY", frpc_running:true, tunnel_connected:true};
     data = status;
+  }else if(path === "/api/platform-handoff"){
+    assert.equal(JSON.parse(options.body).source_id, "business");
+    data = {url:handoffUrl};
   }else{ assert.fail("Unexpected API call: " + path); }
   return {json:async ()=>({ok:true,data})};
 };
@@ -244,6 +250,21 @@ async function check(){
   await refresh(false);
   assert.equal($("builtinDemoPill").textContent, "来源冲突");
   assert.ok($("selfTestBtn").disabled);
+
+  status = {...bound, state:"READY", transport_mode:"native", tunnel_connected:true, sources:[{source_id:"business"}]};
+  await refresh(false);
+  assert.ok($("platformHandoffBtn").disabled);
+  $("sourceSelect").value = "business";
+  renderStageSummary();
+  assert.ok(!$("platformHandoffBtn").disabled);
+  handoffUrl = "https://platform.example/project/kaiwu/#kaiwu-mcp=kw_link_" + "a".repeat(43);
+  await $("platformHandoffBtn").onclick();
+  assert.equal($("platformHandoffLink").href, handoffUrl);
+  assert.match($("platformHandoffNotice").textContent, /5 分钟/);
+  status = {...status, tunnel_connected:false};
+  await refresh(false);
+  assert.ok($("platformHandoffBtn").disabled);
+  assert.equal($("platformHandoffLink").href, undefined);
 }
 check().catch(error=>{ console.error(error); process.exitCode = 1; });
 `

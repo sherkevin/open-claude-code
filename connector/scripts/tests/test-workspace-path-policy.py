@@ -41,9 +41,13 @@ def main():
 
     if body:
         check("CSIDL_COMMON_APPDATA" in body, "Workspace 必须从公共应用数据目录定位暂存根")
-        check('append_path(workspace, L"Kaiwu")' in body, "Workspace 必须在暂存根后追加产品目录 Kaiwu")
-        check("pin_known_path(&workspace_dirs, workspace, COMMON_DATA_WRITES)" in body,
-              "Workspace 的目录校验必须允许与日志目录一致的创建子目录权限")
+        common_data = body.find("pin_known_path(&workspace_dirs, workspace, COMMON_DATA_WRITES)")
+        product_path = body.find('append_path(workspace, L"Kaiwu")')
+        product_handle = body.find('open_child(parent_handle(&workspace_dirs), L"Kaiwu"')
+        check(0 <= common_data < product_path < product_handle,
+              "必须先按日志规则校验 ProgramData，再从已验证的句柄打开 Kaiwu")
+        check("keep_directory(&workspace_dirs, product, COMMON_DATA_WRITES)" in body,
+              "Kaiwu 必须校验属主、权限及目录属性")
         check("CSIDL_PROGRAM_FILES" not in body, "Workspace 不能回到 Program Files 根目录")
         check("create_workspace(&workspace_dirs, workspace, name)" in body, "Workspace 必须仍创建私有 SDDL 的暂存子目录")
 

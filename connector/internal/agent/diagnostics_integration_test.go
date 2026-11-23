@@ -60,6 +60,90 @@ func TestAgentDiagnosticOperationsExcludeSecrets(t *testing.T) {
 	}
 }
 
+func TestSourceDiscoveryDiagnosticsCaptureStageAndSafeProtocolStatus(t *testing.T) {
+	const remoteCanary = "SYNTHETIC_PRIVATE_MCP_RESPONSE"
+	instance, err := New(Options{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(instance.Close)
+
+	unauthorized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, remoteCanary, http.StatusUnauthorized)
+	}))
+	t.Cleanup(unauthorized.Close)
+	if _, err := instance.DiscoverSourceTools(context.Background(), SourceInput{UpstreamURL: unauthorized.URL}); err == nil {
+		t.Fatal("expected authentication failure")
+	}
+	event := requireOperationEvent(t, instance, "source_tools_initialize_failed")
+	if event.HTTPStatus != http.StatusUnauthorized {
+		t.Fatalf("initialize event did not record HTTP 401: %+v", event)
+	}
+
+	badList := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid synthetic request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": request.ID,
+				"result": map[string]string{"protocolVersion": "2025-06-18"},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": request.ID,
+				"error": map[string]any{"code": -32601, "message": remoteCanary},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(badList.Close)
+	if _, err := instance.DiscoverSourceTools(context.Background(), SourceInput{UpstreamURL: badList.URL}); err == nil {
+		t.Fatal("expected tools/list failure")
+	}
+	if event := requireOperationEvent(t, instance, "source_tools_list_failed"); event.RPCErrorCode != "-32601" {
+		t.Fatalf("tool list event did not record the safe JSON-RPC code: %+v", event)
+	}
+	assertNoDiagnosticValues(t, instance, remoteCanary, unauthorized.URL, badList.URL)
+}
+
+func requireOperationEvent(t *testing.T, instance *Agent, code string) diagnostics.Event {
+	t.Helper()
+	for _, item := range instance.DiagnosticLogs(diagnostics.Query{}) {
+		if item.EventCode == code {
+			if item.OperationID == "" {
+				t.Fatalf("event %s lacks an operation ID", code)
+			}
+			return item.Event
+		}
+	}
+	t.Fatalf("event %s was not recorded", code)
+	return diagnostics.Event{}
+}
+
+func assertNoDiagnosticValues(t *testing.T, instance *Agent, markers ...string) {
+	t.Helper()
+	raw, err := json.Marshal(instance.DiagnosticLogs(diagnostics.Query{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range markers {
+		if strings.Contains(string(raw), marker) {
+			t.Fatal("connector diagnostics contained private test data")
+		}
+	}
+}
+
 func TestHeartbeatPayloadUsesBoundedStateCode(t *testing.T) {
 	instance := &Agent{}
 	const canary = "SYNTHETIC_STDERR http://10.19.20.21/private?credential=ABC"
