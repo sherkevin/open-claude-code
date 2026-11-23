@@ -103,6 +103,25 @@ describe('public model selection', () => {
     expect(html).toMatch(/type="range"[^>]*max="5"/);
     expect(html).toContain('>很高</span>');
   });
+  it('fills the track to the selected stop and reserves peak motion for the last available level', () => {
+    function renderLevels(ids: string[], selected: string) {
+      const model = { ...models[0], reasoning_levels: ids.map(id => ({ id, label: id })) };
+      return renderToStaticMarkup(<ModelSelector models={[model]} value={{ model_id: model.id, reasoning_level: selected }} onChange={() => {}}/>);
+    }
+    const dano = ['light', 'high', 'max'];
+    const high = renderLevels(dano, 'high');
+    expect(high).toContain('--fw-stop:50%');
+    expect(high.match(/<i /g)).toHaveLength(3);
+    expect(high.match(/<i data-filled=/g)).toHaveLength(2);
+    expect(high).not.toContain('data-peak=');
+    expect(renderLevels(dano, 'max')).toContain('data-peak="true"');
+
+    const six = ['light', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+    expect(renderLevels(six, 'max')).not.toContain('data-peak=');
+    expect(renderLevels(six, 'ultra')).toContain('--fw-stop:100%');
+    expect(renderLevels(six, 'ultra')).toContain('data-peak="true"');
+    expect(renderLevels(['default'], 'default')).not.toContain('data-peak=');
+  });
   it('explicitly reconnects an unchanged public selection with PATCH and never submits a message', async () => {
     const selection = { model_id: 'glm-5.3', reasoning_level: 'default' };
     const canonical = { id: 'chat-id', ...selection, has_native_session: true };

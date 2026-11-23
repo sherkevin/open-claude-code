@@ -56,10 +56,13 @@ export function ModelSettingsDisclosure({ automatic, selection, models, loading 
   }, []);
   const model = models.find(item => item.id === selection.model_id);
   const level = reasoningLevelLabel(model?.reasoning_levels.find(item => item.id === selection.reasoning_level));
-  const label = loading ? '正在读取模型设置…' : automatic ? '自动选择' : `${publicModelLabel(models, selection.model_id)}${level ? ` · ${level}` : ''}`;
+  const name = publicModelLabel(models, selection.model_id);
+  const label = loading ? '正在读取模型设置…' : automatic ? '自动选择' : `${name}${level ? ` · ${level}` : ''}`;
+  const levels = model?.reasoning_levels || [];
+  const showPeak = !loading && !automatic && levels.length > 1 && levels[levels.length - 1].id === selection.reasoning_level;
   return <details ref={disclosure} className="chat-model-settings fw-model-settings" data-automatic={automatic || undefined} aria-busy={pending} onToggle={positionPanel}>
     <summary className="fw-model-pill" aria-label={`模型设置：${label}`}>
-      <SlidersHorizontal size={14}/><span className="model-settings-current">{label}</span>
+      <SlidersHorizontal size={14}/><span className="model-settings-current">{showPeak ? <>{name} · <span className="fw-model-peak-label">{level}</span></> : label}</span>
       <span className="model-settings-action">{pending ? <LoaderCircle size={14} className="spin" aria-label="正在保存模型设置"/> : <ChevronDown size={14}/>}</span>
     </summary>
     <div className="model-settings-body fw-model-panel" role="group" aria-label="模型与推理设置">{children}</div>

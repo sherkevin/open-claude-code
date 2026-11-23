@@ -1,5 +1,5 @@
 import { Check, ChevronDown, RotateCcw, Sparkles, Zap } from 'lucide-react';
-import { useEffect, useId, useRef, useState } from 'react';
+import { type CSSProperties, useEffect, useId, useRef, useState } from 'react';
 import type { ModelOption, ModelSelection } from './types';
 import { modelDisplayName, modelSwitchRequiresNewConversation } from './models';
 import './model-picker.css';
@@ -30,6 +30,8 @@ export default function ModelSelector({ models, value, disabled = false, disable
     || modelDisplayName(first).localeCompare(modelDisplayName(second), 'zh-CN', { numeric: true, sensitivity: 'base' }));
   const previewIndex = Math.min(draftIndex, Math.max(0, levels.length - 1));
   const level = levels[previewIndex] || levels[selectedIndex];
+  const lastStop = levels.length - 1;
+  const atPeak = lastStop > 0 && previewIndex === lastStop;
 
   useEffect(() => {
     if (locked) setOpen(false);
@@ -89,10 +91,15 @@ export default function ModelSelector({ models, value, disabled = false, disable
         </button>;
       })}</div>
     </div>
-    {model && <div className="fw-reasoning-control" data-effort={level?.id}>
+    {model && <div className="fw-reasoning-control" data-effort={level?.id} data-peak={atPeak || undefined}>
       <div className="fw-reasoning-heading"><span id={reasoningId}><Zap size={15}/>推理强度</span><strong aria-live="polite">{reasoningLevelLabel(level) || '未提供档位'}</strong>{levels.length > 1 && <button type="button" className="fw-reasoning-reset" aria-label="恢复默认推理级别" title="恢复默认推理级别" disabled={locked || !model.available || value.reasoning_level === model.default_reasoning_level} onClick={() => { const index = levels.findIndex(item => item.id === model.default_reasoning_level); if (index >= 0) { preview(index); commit(index); } }}><RotateCcw size={16}/></button>}</div>
-      {levels.length > 1 ? <><div className="fw-reasoning-track">
-        <span className="fw-reasoning-knob-rail" aria-hidden="true"><span className="fw-reasoning-knob" style={{ left: `${previewIndex / (levels.length - 1) * 100}%` }}/></span>
+      {levels.length > 1 ? <><div className="fw-reasoning-track" style={{ '--fw-stop': `${previewIndex / lastStop * 100}%` } as CSSProperties}>
+        <span className="fw-reasoning-groove" aria-hidden="true">
+          <span className="fw-reasoning-fill-rail"><span className="fw-reasoning-fill"><span className="fw-reasoning-peak"/></span></span>
+          <span className="fw-reasoning-ticks">{levels.map((item, index) =>
+            <i key={item.id} data-filled={index <= previewIndex || undefined} style={{ left: `${index / lastStop * 100}%` }}/>)}</span>
+        </span>
+        <span className="fw-reasoning-knob-rail" aria-hidden="true"><span className="fw-reasoning-knob"/></span>
         <input type="range" aria-label="推理级别" aria-labelledby={reasoningId} aria-valuetext={reasoningLevelLabel(level)} min={0} max={levels.length - 1} step={1} value={previewIndex} disabled={disabled || loading || !model.available} aria-disabled={pending || undefined} onChange={event => { if (!locked) preview(Number(event.target.value)); }} onPointerDown={event => { if (locked) event.preventDefault(); }} onPointerUp={() => commit()} onPointerCancel={cancelPreview} onBlur={() => commit()} onKeyDown={event => {
         if (locked) { if (event.key !== 'Tab' && event.key !== 'Escape') event.preventDefault(); return; }
         if (event.key === 'Escape') { cancelPreview(); return; }
