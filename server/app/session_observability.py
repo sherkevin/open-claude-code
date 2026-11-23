@@ -69,8 +69,8 @@ def _prompt(reported, buckets):
 
 
 def _run_usage(row):
-    entry = _entry(row)
     usage = _object(row.get('usage'))
+    entry = _entry({**row, 'usage': usage})
     ledger = _object(usage.get('token_accounting'))
     raw_stages = ledger.get('stages')
     http_capture = ledger.get('receipt_schema') == 'harness-http-usage/v1'
@@ -340,7 +340,7 @@ def overview(service, user):
         metrics = []
         def add(identity, title, reading, unit, note, scope=None):
             if scope and reading['total_count']:
-                note = f"覆盖 {reading['observed_count']}/{reading['total_count']} {scope}。" + note
+                note = f"{reading['observed_count']}/{reading['total_count']} {scope}有可用记录。" + note
             metrics.append({'id': identity, 'title': title, **reading, 'unit': unit, 'note': note})
 
         add('session_count', '会话总数', _reading(count, None, count, count), '个', '包含当前账号的已归档会话。')
@@ -369,7 +369,7 @@ def overview(service, user):
         add('output_tokens', '输出 Token', all_usage['output_tokens'], 'Token',
             '统计模型回执记录的输出 Token。', '条执行记录')
         add('cost_usd', '花费（美元）', all_usage['cost_usd'], 'USD',
-            '汇总服务已报告的费用估算，结算以账单为准。', '条执行记录')
+            '汇总服务已报告的费用估算。只有本地执行时费用为零，结算以账单为准。', '条执行记录')
         return {'schema': 'session-observability/v1', 'generated_at': now(), 'metrics': metrics, 'sessions': sessions,
             'coverage': {'scope': 'self', 'total_sessions': count, 'sessions_returned': len(sessions),
                 'sessions_truncated': count > len(sessions), 'total_runs': total, 'runs_included': len(rows),

@@ -732,6 +732,16 @@ def test_real_harness_automatically_compacts_and_resumes(tmp_path, monkeypatch, 
         assert continued["compaction"] is None
         assert len(requests) == 5
         assert service.require("conversations", cid)["harness_session_id"] == session_id
+        response = client.get("/api/v1/conversations/overview")
+        assert response.status_code == 200, response.text
+        cards = {metric["id"]: metric for metric in response.json()["metrics"]}
+        assert cards["request_count"]["value"] == len(requests)
+        assert cards["compression_count"]["value"] == 1
+        assert cards["compression_count"]["precision"] == "observed"
+        difference = result["compaction"]["pre_tokens"] - result["compaction"]["post_tokens"]
+        assert cards["compression_saved_tokens"]["value"] == difference
+        assert cards["compression_saved_tokens"]["precision"] == "estimated"
+        assert cards["net_saved_tokens"]["value"] is None
         for request in requests[-2:]:
             model_input = json.dumps(request["messages"])
             assert "COMPACT_SUMMARY_SENTINEL The P-900 pressure limit is 7 bar The calibration batch is B-482" in model_input
@@ -889,6 +899,12 @@ def test_real_harness_raw_usage_presence(tmp_path, monkeypatch, model_server, ma
         assert usage['cache_creation_input_tokens'] == expected
         assert usage['token_accounting']['capture_complete'] is True
         assert usage['token_accounting']['known_model_calls'] == 1
+        cards = {metric['id']: metric for metric in client.get('/api/v1/conversations/overview').json()['metrics']}
+        assert cards['request_count']['value'] == 1
+        assert cards['compression_count']['value'] == 0
+        for field in ('input_tokens', 'output_tokens', 'cache_read_tokens'):
+            assert cards[field]['value'] == expected and cards[field].get('known_value') is None
+        assert cards['cost_usd']['value'] is None and cards['cache_hit_rate']['value'] is None
 
 
 def test_real_harness_forks_at_completed_turn(tmp_path, model_server):
