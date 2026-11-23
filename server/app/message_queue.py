@@ -67,6 +67,11 @@ class MessageQueue:
         self.service.require_trial_fields(auto_route=payload.get("auto_route"), file_ids=payload.get("file_ids"), skill_ids=payload.get("skill_ids"))
         if payload["client_request_id"].startswith("schedule-"):
             raise AppError(409, "SCHEDULE_NOT_DUE", "此任务由计划队列启动")
+        if self.service.prompt_safety.enabled:
+            self._authorize(conversation_id, user)
+            prior = self.db.one("SELECT id FROM message_queue WHERE conversation_id=? AND id=?", (conversation_id, payload["client_request_id"]))
+            if not prior:
+                self.service.prompt_safety.require_allowed(payload["text"], user["id"])
         with self.db.transaction():
             conversation = self._authorize(conversation_id, user)
             if conversation["archived"]:
@@ -88,6 +93,9 @@ class MessageQueue:
             return self.view(self.db.one("SELECT * FROM message_queue WHERE conversation_id=? AND id=?", (conversation_id, payload["client_request_id"])))
 
     def change(self, conversation_id, item_id, revision, user, text=None):
+        if text is not None and self.service.prompt_safety.enabled:
+            self._authorize(conversation_id, user)
+            self.service.prompt_safety.require_allowed(text, user["id"])
         with self.db.transaction():
             self._authorize(conversation_id, user)
             self._reconcile(conversation_id)
@@ -106,30 +114,48 @@ class MessageQueue:
                 self.db.execute("UPDATE message_queue SET payload=?,revision=revision+1,error=NULL,updated_at=? WHERE sequence=?", (dump(payload), now(), row["sequence"]))
         return self.snapshot(conversation_id, user)
 
+    def _dispatch_candidate(self, conversation_id, item_id, data, user):
+        state = self.snapshot(conversation_id, user)
+        row = self.db.one("SELECT * FROM message_queue WHERE conversation_id=? AND id=?", (conversation_id, item_id))
+        if not row:
+            raise AppError(404, "NOT_FOUND", "待发消息不存在")
+        if row["status"] == "accepted":
+            return row, {"status": "accepted", "run_id": row["run_id"], "queue": state}
+        if row["status"] != "pending" or not state["items"] or state["items"][0]["id"] != item_id or row["revision"] != data["revision"]:
+            return row, {"status": "changed", "queue": state}
+        latest = state["latest_run"]
+        if state["archived"] or state["active_run_id"] or (latest["id"] if latest else None) != data.get("after_run_id"):
+            return row, {"status": "waiting", "queue": state}
+        if (row["error"] or latest and latest["status"] != "succeeded") and not data["resume"]:
+            return row, {"status": "paused", "queue": state}
+        return row, None
+
     def dispatch(self, conversation_id, item_id, data, user):
-        # The application supports one server process. Its shared re-entrant DB
-        # lock keeps head selection, run preparation and acceptance ordered.
-        # prepare_run owns its transaction; do not nest a second BEGIN here.
-        with self.db.lock:
-            state = self.snapshot(conversation_id, user)
-            row = self.db.one("SELECT * FROM message_queue WHERE conversation_id=? AND id=?", (conversation_id, item_id))
-            if not row:
-                raise AppError(404, "NOT_FOUND", "待发消息不存在")
-            if row["status"] == "accepted":
-                return {"status": "accepted", "run_id": row["run_id"], "queue": state}
-            if row["status"] != "pending" or not state["items"] or state["items"][0]["id"] != item_id or row["revision"] != data["revision"]:
-                return {"status": "changed", "queue": state}
-            latest = state["latest_run"]
-            if state["archived"] or state["active_run_id"] or (latest["id"] if latest else None) != data.get("after_run_id"):
-                return {"status": "waiting", "queue": state}
-            if (row["error"] or latest and latest["status"] != "succeeded") and not data["resume"]:
-                return {"status": "paused", "queue": state}
+        rejection = None
+        if self.service.prompt_safety.enabled:
+            with self.db.lock:
+                row, response = self._dispatch_candidate(conversation_id, item_id, data, user)
+            if response:
+                return response
             try:
+                self.service.prompt_safety.require_allowed(json.loads(row["payload"])["text"], user["id"])
+            except AppError as exc:
+                rejection = exc
+
+        # Recheck the queue head and immutable draft revision after review.
+        # Never hold the database lock while waiting for the classifier.
+        with self.db.lock:
+            row, response = self._dispatch_candidate(conversation_id, item_id, data, user)
+            if response:
+                return response
+            try:
+                if rejection:
+                    raise rejection
                 result, _created = self.service.prepare_run(conversation_id, json.loads(row["payload"]), user,
                                                             queue_sequence=row["sequence"])
             except AppError as exc:
                 if exc.code in {"CONTEXT_BUSY", "MEMORY_BUSY", "CONVERSATION_BUSY"}:
-                    return {"status": "waiting", "queue": state}
+                    return {"status": "waiting", "queue": self.snapshot(conversation_id, user)}
                 self.db.execute("UPDATE message_queue SET error=?,updated_at=? WHERE sequence=?", (exc.message, now(), row["sequence"]))
                 return {"status": "paused", "queue": self.snapshot(conversation_id, user)}
             return {"status": "accepted", **result, "queue": self.snapshot(conversation_id, user)}

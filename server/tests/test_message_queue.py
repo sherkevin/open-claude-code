@@ -18,6 +18,11 @@ def configured(tmp_path):
     return Settings(data_dir=tmp_path, provider_settings="", runtime_type="claude", origins=("http://testserver",))
 
 
+@pytest.fixture
+def manual_queue(monkeypatch):
+    monkeypatch.setattr(RunManager, "start_queue_worker", lambda _manager: None)
+
+
 def add(client, cid, identity, text="queued message"):
     response = client.post(f"/api/v1/conversations/{cid}/queue", json={"client_request_id": identity, "text": text})
     assert response.status_code == 201, response.text
@@ -75,6 +80,7 @@ def test_startup_reconciles_a_pending_head_after_a_durable_success(configured, m
         assert service.db.one("SELECT status FROM message_queue WHERE conversation_id=? AND id=?", (cid, item["id"])) == {"status": "accepted"}
 
 
+@pytest.mark.usefixtures("manual_queue")
 def test_fifo_edit_cancel_and_duplicate_dispatch(client):
     cid = conversation(client)["id"]
     first, second, third = (add(client, cid, f"queue-test-{i}", str(i)) for i in range(3))
@@ -142,6 +148,7 @@ def test_queue_is_private_and_bound_to_conversation(client, role):
     assert client.post(f"/api/v1/conversations/{cid}/queue/{item['id']}/cancel", json={"revision": 1}).status_code == 404
 
 
+@pytest.mark.usefixtures("manual_queue")
 def test_cancelled_draft_cannot_be_reintroduced_by_lost_add_response(client):
     cid = conversation(client)["id"]
     item = add(client, cid, "queue-cancelled-item")

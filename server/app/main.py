@@ -27,6 +27,7 @@ from .deployment_policy import DeploymentPolicy
 from .models import *
 from .run_steering import SteerTurn, dispatch_steer, list_steers
 from .middleware import BodyLimitMiddleware, TrustedProxySchemeMiddleware, is_streaming_upload
+from .prompt_safety import PromptPolicyUpdate
 from .runtime import RunManager
 from .security import AppError, password_hash, password_matches, safe_name, token_hash
 from .service import Service, TERMINAL, user_view, connection_view, assistant_view, conversation_view, message_view, file_view, approval_view
@@ -306,6 +307,21 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         available = registration_available(settings)
         return {"enabled": available, "invite_code": settings.registration_invite_code if available else None}
 
+    @app.get(prefix + "/admin/prompt-safety")
+    def read_prompt_safety(user_id: str | None = Query(default=None, min_length=1, max_length=100), user=Depends(admin), service: Service = Depends(svc)):
+        return service.prompt_safety.admin_view(user_id)
+
+    @app.put(prefix + "/admin/prompt-safety")
+    def save_prompt_safety(data: PromptPolicyUpdate, user_id: str | None = Query(default=None, min_length=1, max_length=100), user=Depends(admin), service: Service = Depends(svc)):
+        return service.prompt_safety.save_policy(data, user["id"], user_id)
+
+    @app.get(prefix + "/admin/activity")
+    def admin_activity(user_id: str | None = Query(default=None, max_length=100),
+                       before: str | None = Query(default=None, max_length=220),
+                       limit: int = Query(default=50, ge=1, le=100), user=Depends(admin), service: Service = Depends(svc)):
+        from .admin_activity import activity_page
+        return activity_page(service, user_id=user_id, before=before, limit=limit)
+
     @app.get(prefix + "/models")
     def models(user=Depends(authenticated), service: Service = Depends(svc)):
         return service.catalog.public()
@@ -313,6 +329,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     @app.post(prefix + "/models/recommend")
     async def recommend_model(data: ModelRecommendationRequest, user=Depends(authenticated), service: Service = Depends(svc)):
         """Return an advisory model recommendation without changing a session."""
+        await offload(service.prompt_safety.require_allowed, data.task_summary, user["id"])
         from .model_recommendation import provider_router, public_router_result
         return public_router_result(await provider_router(service, data.task_summary, data.candidate_model_ids, user_id=user["id"]))
 
@@ -341,6 +358,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         coded phrase. If the authorized router route is unavailable, the
         response carries an evidence gap and a null suggestion.
         """
+        await offload(service.prompt_safety.require_allowed, data.text, user["id"])
         from .model_recommendation import provider_completion, public_router_result
         return public_router_result(await provider_completion(service, data.text, user_id=user["id"]))
 
@@ -582,26 +600,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
 
     @app.post(prefix + "/conversations/{item_id}/messages", status_code=202)
     async def message_send(item_id: str, data: SendMessage, user=Depends(authenticated), service: Service = Depends(svc)):
-        payload = data.model_dump()
-        # Trial mode refuses advanced routing and attachments before any model,
-        # run or database side effect (the service layer re-checks as well).
-        service.require_trial_fields(
-            auto_route=bool(payload.get("auto_route")),
-            skill_ids=payload.get("skill_ids"),
-            file_ids=payload.get("file_ids"),
-        )
-        conversation = await offload(service.require, "conversations", item_id, user)
-        route_enabled = False if service.policy.is_trial else (payload.get("auto_route") if payload.get("auto_route") is not None else bool(conversation.get("auto_model_routing")))
-        duplicate = await offload(service.db.one, "SELECT id FROM runs WHERE conversation_id=? AND client_request_id=?", (item_id, payload["client_request_id"]))
-        if (not duplicate and route_enabled and not payload.get("recovery_run_id") and not payload.get("model_id")
-                and payload.get("text", "").strip() and not conversation.get("active_run_id")):
-            # Provider-backed fitness routing is asynchronous at the API edge;
-            # prepare_run consumes the bounded result and records its evidence.
-            from .model_recommendation import message_route_candidates, provider_router
-            candidates = await offload(message_route_candidates, service, payload.get("file_ids"), user)
-            if candidates:
-                payload["_route_recommendation"] = await provider_router(service, payload.get("text", ""), candidates, user_id=user["id"])
-        result, created = await service.prepare_and_submit_async(item_id, payload, user)
+        result, _ = await service.prepare_and_submit_async(item_id, data.model_dump(), user, provider_routing=True)
         return result
 
     @app.get(prefix + "/runs/{item_id}")

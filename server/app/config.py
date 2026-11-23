@@ -17,6 +17,7 @@ PROVIDER_KEYS = {
     "API_TIMEOUT_MS", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 }
 DEFAULT_MODEL = "deepseek-v4.1-flash-1017"
+DEFAULT_PROMPT_SAFETY_MODEL = "Qwen/Qwen3Guard-Gen-0.6B"
 RUNTIME_TYPES = frozenset({"claude", "harness"})
 
 
@@ -103,6 +104,12 @@ class Settings:
     # The fitness router is opt-in. Disabled deployments never make an extra
     # provider call and use the bounded local scorer instead.
     model_router_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_MODEL_ROUTER_ENABLED", "false").lower() == "true")
+    # Prompt moderation is independent of the main model and only uses a local reviewer.
+    prompt_safety_mode: str = field(default_factory=lambda: os.getenv("AGENT_PROMPT_SAFETY_MODE", "off").strip().lower())
+    prompt_safety_policy: str = field(default_factory=lambda: os.getenv("AGENT_PROMPT_SAFETY_POLICY", "").strip())
+    prompt_safety_qwen_url: str = field(default_factory=lambda: os.getenv("AGENT_PROMPT_SAFETY_QWEN_URL", "http://127.0.0.1:8091/v1").strip())
+    prompt_safety_qwen_model: str = field(default_factory=lambda: os.getenv("AGENT_PROMPT_SAFETY_QWEN_MODEL", DEFAULT_PROMPT_SAFETY_MODEL).strip())
+    prompt_safety_timeout_seconds: str = field(default_factory=lambda: os.getenv("AGENT_PROMPT_SAFETY_TIMEOUT_SECONDS", "10"))
     # Public catalog id used for fitness recommendations. Deployments may pin
     # an exact authorized route (for example a 1007 deployment); an unavailable
     # id is reported as evidence gap and never fabricated.

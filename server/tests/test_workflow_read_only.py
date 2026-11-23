@@ -441,7 +441,7 @@ def test_definition_cache_is_bounded_hash_only_and_mutation_changes_key():
 
 @pytest.mark.parametrize("mutation,code", [
     ("allowed", "TOOL_DENIED"), ("automatic", "WORKFLOW_TOOL_NOT_AUTO_APPROVED"),
-    ("credential", "READ_ONLY_CONNECTION_UNVERIFIED"), ("connection_status", "READ_ONLY_CONNECTION_UNVERIFIED"),
+    ("credential", "MCP_CONNECTION_UNAVAILABLE"), ("connection_status", "MCP_CONNECTION_UNAVAILABLE"),
     ("user_disabled", "USER_DISABLED"),
 ])
 def test_initialized_session_cannot_outlive_current_permission_or_credential(env, monkeypatch, mutation, code):

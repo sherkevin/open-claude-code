@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "category": "fictional_civic_election",
+      "enabled": true,
+      "terms": ["议会选举", "議會選舉", "议员换届", "选议员"],
+      "require_any": ["澄湾", "澄灣"],
+      "except_exact": ["请打开澄湾议会选举档案的目录模板"],
+      "message": "此工作区限制讨论该主题，请调整问题后再发送。"
+    },
+    {
+      "category": "fictional_unreleased_program",
+      "enabled": true,
+      "terms": ["补贴草案", "補貼草案", "补贴还没公开"],
+      "require_any": ["松桥", "松橋"],
+      "message": "该主题不在当前工作区的对话范围内，请改用公开资料。"
+    }
+  ],
+  "qwen_block_levels": ["Unsafe"],
+  "blocked_message": "这条消息因内容安全策略未发送，请调整后重试。"
+}
