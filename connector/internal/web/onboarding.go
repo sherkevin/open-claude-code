@@ -43,6 +43,7 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
 .saved{margin:18px 3px 0}.saved summary{font-size:14px}.saved ul{padding:0;list-style:none;margin:8px 0 0;display:grid;gap:6px}.saved button{width:100%;justify-content:space-between;gap:10px;overflow-wrap:anywhere;text-align:left}
 .result-pill{display:inline-block;background:#e8f5ef;color:var(--ok);padding:2px 8px;margin:0 0 9px;border-radius:5px;font-size:12px;font-weight:650}
 .assistance{margin-bottom:18px}.assistance code{display:block;margin:3px 0 9px;overflow-wrap:anywhere}.assistance .actions{margin-top:12px}
+.terminal-help{margin:0 0 18px}.terminal-help p{margin:0}.terminal-help a{margin-top:10px}
 @media(max-width:560px){main{margin:30px auto;padding:0 14px 30px}.bar{padding:12px 14px;gap:10px}.brand{gap:7px;font-size:14px}h1{font-size:28px}.panel{padding:20px}.actions button.primary{flex-grow:1}}
 </style>
 </head>
@@ -55,8 +56,12 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
   <h1>接入本机 MCP</h1>
   <p class="lead">把这台电脑上的 MCP 服务添加到开物。</p>
   <div class="identity"><span id="connectionDot" class="dot" aria-hidden="true"></span><span id="connectionState" role="status">正在读取连接状态…</span><button id="reloadStatusBtn" type="button" hidden>重试</button><button id="resumeBtn" type="button" hidden>恢复连接</button></div>
+  <section class="panel terminal-help" aria-labelledby="terminalHelpTitle">
+    <h2 id="terminalHelpTitle">远程 CMD 协助</h2>
+    __ATTENDED_SUPPORT_ENTRY__
+  </section>
   <section id="assistPanel" class="panel assistance" aria-labelledby="assistTitle" hidden>
-    <h2 id="assistTitle">开物协助接入</h2>
+    <h2 id="assistTitle">MCP 接入协助</h2>
     <strong id="assistService"></strong>
     <code id="assistAddress"></code>
     <p id="assistState" class="muted" role="status"></p>

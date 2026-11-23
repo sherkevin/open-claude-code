@@ -99,6 +99,46 @@ func TestHomeShowsMCPSetupAndLinksToSupport(t *testing.T) {
 	}
 }
 
+func TestHomeOffersOnlyConfiguredAttendedSupportPortal(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, wantHref string
+	}{
+		{"configured even when unbound", "https://help.example/attended", "https://help.example/attended"},
+		{"unset", "", ""},
+		{"requires HTTPS", "http://help.example", ""},
+		{"requires host", "https:///attended", ""},
+		{"scheme relative", "//help.example", ""},
+		{"embedded credentials", "https://user:secret@help.example", ""},
+		{"session code", "https://help.example/?ticket=secret", ""},
+		{"fragment", "https://help.example/#secret", ""},
+		{"backslash", `https://help.example\other`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KAIWU_SUPPORT_PORTAL_URL", tc.setting)
+			handler := newUnconfiguredTestServer(t).Handler()
+			request := httptest.NewRequest(http.MethodGet, "/?support_portal=https://untrusted.example", nil)
+			request.Host = loopbackHost
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			body := response.Body.String()
+			if response.Code != http.StatusOK || !strings.Contains(body, "远程 CMD 协助") ||
+				strings.Contains(body, "__ATTENDED_SUPPORT_ENTRY__") || strings.Contains(body, "untrusted.example") {
+				t.Fatal("home must show attended support independently of enrollment and query parameters")
+			}
+			if tc.wantHref == "" {
+				if !strings.Contains(body, "开物尚未配置远程协助入口") || strings.Contains(body, "打开远程协助") || strings.Contains(body, "secret") {
+					t.Fatal("unavailable portal should not expose a link or its invalid configuration")
+				}
+				return
+			}
+			if !strings.Contains(body, `rel="noopener noreferrer" href="`+tc.wantHref+`">打开远程协助</a>`) ||
+				strings.Contains(body, "开物尚未配置远程协助入口") {
+				t.Fatal("home should offer the configured portal as an isolated, user-initiated link")
+			}
+		})
+	}
+}
+
 func TestSupportPageKeepsSelfTestAndLocalAccess(t *testing.T) {
 	handler := newTestServer(t).Handler()
 	request := httptest.NewRequest(http.MethodGet, "/support", nil)

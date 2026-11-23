@@ -1185,7 +1185,7 @@ $BackupDataNames = @(
   "identity.json", "device_key.json", "secrets.json", "auth_profiles.json", "config.json",
   "frpc.toml", "state.json", "revoked.json", "install-state.json", "builtin_demo.json", "diagnostics.json"
 )
-$ManagedEnvNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")
+$ManagedEnvNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE", "KAIWU_SUPPORT_PORTAL_URL")
 $BackupProgramNames = @(
   "kaiwu-connector.exe", "frpc.exe", "transport.txt", "版本信息.txt", "install.ps1", "uninstall.ps1",
   "service-handoff.ps1", "windows-smoke.ps1", "open-config.cmd", "uninstall.exe"
@@ -1321,7 +1321,7 @@ $ManifestPath = Join-Path (Join-Path $BackupDir "manifest") "backup-manifest.jso
 $ServiceName = "KaiwuConnector"
 $InstallDir = Join-Path $env:ProgramFiles "Kaiwu\Connector"
 $DataDir = Join-Path $env:ProgramData "Kaiwu\Connector"
-$ManagedEnvNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")
+$ManagedEnvNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE", "KAIWU_SUPPORT_PORTAL_URL")
 $Listen = "127.0.0.1:17872"
 $MaintenanceRegistryNames = @(__MAINTENANCE_REGISTRY_NAMES__)
 

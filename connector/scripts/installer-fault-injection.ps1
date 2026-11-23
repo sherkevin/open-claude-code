@@ -42,6 +42,7 @@ $script:OriginalEnvironment = @{
   TEMP = [Environment]::GetEnvironmentVariable("TEMP", "Process")
   KAIWU_CLOUD_BASE = [Environment]::GetEnvironmentVariable("KAIWU_CLOUD_BASE", "Process")
   KAIWU_EDGE_BASE = [Environment]::GetEnvironmentVariable("KAIWU_EDGE_BASE", "Process")
+  KAIWU_SUPPORT_PORTAL_URL = [Environment]::GetEnvironmentVariable("KAIWU_SUPPORT_PORTAL_URL", "Process")
 }
 $script:InstallerSource = $null
 $script:Root = $null
@@ -107,7 +108,7 @@ function Set-CaseEnvironment {
 }
 
 function Restore-ProcessEnvironment {
-  foreach ($name in @("ProgramFiles", "ProgramData", "TEMP", "KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")) {
+  foreach ($name in $script:OriginalEnvironment.Keys) {
     $value = $script:OriginalEnvironment[$name]
     if ($null -eq $value) {
       Remove-Item -Path ("Env:" + $name) -ErrorAction SilentlyContinue
@@ -141,7 +142,7 @@ function New-TestCase {
     "bin/frpc.exe" = "fault-test-frpc-binary"
     "docs/readme.md" = "fault-test documentation"
     "compliance/LICENSE" = "fault-test license"
-    "config/connector.env.example" = "KAIWU_CLOUD_BASE=`r`nKAIWU_EDGE_BASE=`r`n"
+    "config/connector.env.example" = "KAIWU_CLOUD_BASE=`r`nKAIWU_EDGE_BASE=`r`nKAIWU_SUPPORT_PORTAL_URL=`r`n"
     "版本信息.txt" = "fault-test-version"
   }
   foreach ($relative in $payload.Keys) {
@@ -1142,7 +1143,7 @@ function New-UpgradeFixture {
   Reset-MockState
   $global:Case = $case
   $sources = [ordered]@{
-    "config/connector.env.example" = "KAIWU_CLOUD_BASE=https://preset-cloud.invalid`nKAIWU_EDGE_BASE=https://preset-edge.invalid"
+    "config/connector.env.example" = "KAIWU_CLOUD_BASE=https://preset-cloud.invalid`nKAIWU_EDGE_BASE=https://preset-edge.invalid`nKAIWU_SUPPORT_PORTAL_URL=https://preset-support.invalid"
     "uninstall.ps1" = "# candidate uninstaller"
     "windows-smoke.ps1" = "# candidate health entry"
   }
@@ -1160,6 +1161,7 @@ function New-UpgradeFixture {
   $global:MockMachineEnvironment = @{
     KAIWU_CLOUD_BASE = "https://customer-cloud.invalid"
     KAIWU_EDGE_BASE = "https://customer-edge.invalid"
+    KAIWU_SUPPORT_PORTAL_URL = "https://customer-support.invalid"
   }
   $global:MockMaintenanceRegistration = [ordered]@{
     DisplayVersion = [ordered]@{ kind = "String"; value = "1.3.6" }
@@ -1182,7 +1184,8 @@ function New-UpgradeFixture {
 
 function Assert-CustomerEndpoints {
   Assert-True ($global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] -ceq "https://customer-cloud.invalid" -and
-    $global:MockMachineEnvironment["KAIWU_EDGE_BASE"] -ceq "https://customer-edge.invalid") "customer machine endpoints were overwritten"
+    $global:MockMachineEnvironment["KAIWU_EDGE_BASE"] -ceq "https://customer-edge.invalid" -and
+    $global:MockMachineEnvironment["KAIWU_SUPPORT_PORTAL_URL"] -ceq "https://customer-support.invalid") "customer machine endpoints were overwritten"
 }
 
 function Assert-MaintenanceFiles {
@@ -1254,7 +1257,8 @@ function Run-UpgradeCase {
       Assert-True ($run.ResultCode -eq "INSTALLED" -and $global:MockService.StartMode -eq "Auto" -and
         $global:MockService.Status -eq "Running") "first install did not start automatically: $($run.Error)"
       Assert-True ($global:MockMachineEnvironment["KAIWU_CLOUD_BASE"] -ceq "https://preset-cloud.invalid" -and
-        $global:MockMachineEnvironment["KAIWU_EDGE_BASE"] -ceq "https://preset-edge.invalid") "first install did not use presets"
+        $global:MockMachineEnvironment["KAIWU_EDGE_BASE"] -ceq "https://preset-edge.invalid" -and
+        $global:MockMachineEnvironment["KAIWU_SUPPORT_PORTAL_URL"] -ceq "https://preset-support.invalid") "first install did not use presets"
       $checks = @{ result = $run.ResultCode; service = $global:MockService.Status; endpoints = "presets" }
     }
     "ambiguous" {
@@ -1372,6 +1376,7 @@ function Run-UpgradeCase {
       }
       [IO.File]::WriteAllText((Join-Path $case.InstallDir "uninstall.exe"), "candidate wrapper")
       $global:MockMachineEnvironment["KAIWU_EDGE_BASE"] = "https://candidate.invalid"
+      $global:MockMachineEnvironment["KAIWU_SUPPORT_PORTAL_URL"] = "https://candidate-support.invalid"
       [IO.File]::WriteAllText($frpc, "port = 18888")
       $global:StartServiceCalls = 0
       if ($Id -eq "manual") {
