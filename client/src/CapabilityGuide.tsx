@@ -1,5 +1,6 @@
 import { BookOpen, ChevronDown, Database, MessageSquare, ShieldCheck } from 'lucide-react';
 import { readOnlyConfirmationState, remoteReadOnlyLabel } from './ToolReadOnlyConfirmation';
+import { BusinessIcon, businessIconFor, type BusinessIconName } from './BusinessIcon';
 import type { Assistant, AssistantBinding, Connection, KnowledgeBase, MCPTool } from './types';
 import './capability-guide.css';
 
@@ -61,7 +62,7 @@ export function usableAssistantTools(assistant: Assistant, connections: Connecti
   });
 }
 
-export type CapabilityExample = { id: string; title: string; question: string; detail: string };
+export type CapabilityExample = { id: string; title: string; question: string; detail: string; icon?: BusinessIconName };
 export function toolExample(connection: Connection, tool: MCPTool, binding?: AssistantBinding): CapabilityExample {
   const parameters = toolParameters(tool);
   const description = tool.description.trim();
@@ -70,7 +71,8 @@ export function toolExample(connection: Connection, tool: MCPTool, binding?: Ass
   const dangerous = tool.annotations?.readOnlyHint !== true || tool.annotations?.destructiveHint === true;
   const specialTest = /取消验收|超限验收|故意返回|故障注入/.test(description);
   const id = `${connection.id}:${tool.name}`;
-  if (dangerous || specialTest || !description) return { id, title: description ? '先了解使用条件' : '了解这个工具', detail: tool.name,
+  const icon = businessIconFor(tool.name, description);
+  if (dangerous || specialTest || !description) return { id, icon, title: description ? '先了解使用条件' : '了解这个工具', detail: tool.name,
     question: `请说明「${connection.name}」的「${tool.name}」工具用途、需要提供的信息和审批要求。先不要调用或执行该工具。` };
   const preset = (key: string) => {
     const param = parameters.find(item => item.key === key);
@@ -84,11 +86,11 @@ export function toolExample(connection: Connection, tool: MCPTool, binding?: Ass
   // Business wording requires an explicit description, never a suggestive tool name.
   const shipment = /发货/.test(description) && /客户/.test(description) && /数量|件/.test(description);
   const orders = /订单/.test(description) && /总额|金额/.test(description);
-  if (!shipment && !orders && !/查询|检索|读取|搜索/.test(description)) return { id, title: '了解工具与数据', detail: tool.name,
+  if (!shipment && !orders && !/查询|检索|读取|搜索/.test(description)) return { id, icon, title: '了解工具与数据', detail: tool.name,
     question: `请根据「${connection.name}」的「${tool.name}」工具说明，介绍适用数据、需要的条件和输出内容。先不要调用该工具。` };
   const title = shipment ? '按客户查看发货数量' : orders ? '查看订单金额汇总' : '按工具说明查询';
   const action = shipment ? '按客户查看发货数量和合计' : orders ? '查看订单金额汇总' : `按照工具说明使用「${tool.name}」查询`;
-  return { id, title, detail: `${connection.name} · ${tool.name}`,
+  return { id, icon, title, detail: `${connection.name} · ${tool.name}`,
     question: `请使用「${connection.name}」${scope ? `，在${scope}范围内` : '，在已授权范围内'}${action}，并注明数据范围和来源。${constrained || parameters.some(p => p.required && p.defaultValue === undefined) ? '缺少必要条件时请先问我，不要自行推定。' : ''}` };
 }
 
@@ -102,7 +104,7 @@ export function assistantExamples(assistant: Assistant, connections: Connection[
 
 export function ExampleQuestions({ examples, disabled = false, onChoose }: { examples: CapabilityExample[]; disabled?: boolean; onChoose: (question: string) => void }) {
   if (!examples.length) return null;
-  return <div className="capability-examples"><div className="capability-section-heading"><h3>可以这样问</h3><span>点击填入新会话，确认后再发送</span></div><div className="capability-example-grid">{examples.map(example => <button type="button" key={example.id} disabled={disabled} className="capability-example" onClick={() => onChoose(example.question)}><span><MessageSquare size={16}/><strong>{example.title}</strong></span><small>{example.detail}</small><p>{example.question}</p></button>)}</div></div>;
+  return <div className="capability-examples"><div className="capability-section-heading"><h3>可以这样问</h3><span>点击填入新会话，确认后再发送</span></div><div className="capability-example-grid">{examples.map(example => <button type="button" key={example.id} disabled={disabled} className="capability-example" onClick={() => onChoose(example.question)}><span>{example.icon ? <BusinessIcon icon={example.icon} size={16}/> : <MessageSquare size={16}/>}<strong>{example.title}</strong></span><small>{example.detail}</small><p>{example.question}</p></button>)}</div></div>;
 }
 
 export function ToolCapability({ connection, tool, binding, onChoose }: { connection: Connection; tool: MCPTool; binding?: AssistantBinding; onChoose?: (question: string) => void }) {
@@ -110,8 +112,9 @@ export function ToolCapability({ connection, tool, binding, onChoose }: { connec
   const description = displayToolDescription(tool.description);
   const metadataNames: Record<string, string> = { database: '数据库', table: '数据表', tables: '数据表', timezone: '时区', organization: '组织', region: '区域', factory: '工厂', time_range: '时间范围', data_scope: '数据范围', data_type: '数据类型' };
   const metadata = Object.entries(connection.source_metadata || {}).filter(([key]) => key in metadataNames);
+  const icon = businessIconFor(tool.name, description);
   return <details className="capability-tool" open={connection.tools.length === 1}>
-    <summary><div><strong>{description?.split(/[。\n]/)[0] || '工具尚未提供用途说明'}</strong><code>{tool.name}</code></div><ChevronDown size={17}/></summary>
+    <summary><div className="capability-tool-label">{icon && <BusinessIcon icon={icon} size={18}/>}<div><strong>{description?.split(/[。\n]/)[0] || '工具尚未提供用途说明'}</strong><code>{tool.name}</code></div></div><ChevronDown size={17}/></summary>
     <div className="capability-tool-body"><p className="capability-purpose">{description || '请让 MCP 服务提供工具说明，或先向维护人员核实用途。'}</p>
       <div className="capability-access"><ShieldCheck size={16}/><span>{approval.readOnly}<small>{approval.approval}</small></span></div>
       <p className="capability-note">服务的只读提示不等于权限保证；免确认也不代表只读。</p>

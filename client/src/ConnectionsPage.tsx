@@ -7,6 +7,7 @@ import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources
 import McpImportDialog from './McpImportDialog';
 import KaiwuHandoffDialog from './KaiwuHandoffDialog';
 import { displayToolDescription, toolParameters } from './CapabilityGuide';
+import { BusinessIcon, businessIconFor } from './BusinessIcon';
 import './connections-onboarding.css';
 
 export function connectionDiscoveryState(item: Connection) {
@@ -41,7 +42,8 @@ export function mcpToolPurpose(tool: MCPTool) {
 }
 export function McpToolDetails({ item, tool }: { item: Connection; tool: MCPTool }) {
   const parameters = toolParameters(tool);
-  return <details className="mcp-tool-detail capability-tool"><summary><div><strong>{tool.name}</strong><span>{mcpToolPurpose(tool)}</span></div><ChevronDown size={16}/></summary><div className="capability-tool-body">
+  const icon = businessIconFor(tool.name, tool.description);
+  return <details className="mcp-tool-detail capability-tool"><summary><div className="capability-tool-label">{icon && <BusinessIcon icon={icon} size={18}/>}<div><strong>{tool.name}</strong><span>{mcpToolPurpose(tool)}</span></div></div><ChevronDown size={16}/></summary><div className="capability-tool-body">
     {parameters.length > 0 && <div className="table-container"><table><thead><tr><th>参数</th><th>要求</th><th>说明</th></tr></thead><tbody>{parameters.map(parameter => <tr key={parameter.key}><td>{parameter.label}<small>{parameter.key}</small></td><td>{parameter.required ? '必填' : '可选'} · {parameter.type}</td><td>{parameter.description || '—'}{parameter.choices.length > 0 && <small>可选值：{parameter.choices.map(String).join('、')}</small>}{parameter.defaultValue !== undefined && <small>默认值：{String(parameter.defaultValue)}</small>}</td></tr>)}</tbody></table></div>}
     <details className="resource-advanced"><summary>原始定义与数据来源</summary><pre className="text-preview">{JSON.stringify({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations, source_metadata: item.source_metadata }, null, 2)}</pre></details>
   </div></details>;
@@ -61,7 +63,7 @@ export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = 
   const businessPurposes = purposes.filter(purpose => !purpose.startsWith('连接诊断：') && !purpose.startsWith('连接诊断专用：'));
   const functions = (businessPurposes.length ? businessPurposes : purposes).slice(0, 4);
   return <article className={`connection-card onboarding-card ${!item.enabled ? 'disabled-card' : ''}`} aria-labelledby={`connection-${item.id}`} data-connection-id={item.id} data-highlighted={highlighted || undefined} tabIndex={highlighted ? -1 : undefined}>
-    <header className="connection-card-head"><span className="connection-icon"><Link2 size={21}/></span><span className={`badge ${currentTestPassed ? 'green' : testError || discovery.tone === 'warning' ? 'amber' : ''}`} role="status">{testing ? <LoaderCircle size={13} className="spin"/> : currentTestPassed ? <CheckCircle2 size={13}/> : testError || discovery.tone === 'warning' ? <AlertCircle size={13}/> : <Clock3 size={13}/>} {statusLabel}</span></header>
+    <header className="connection-card-head"><span className="connection-icon"><BusinessIcon icon="data-connect" size={21}/></span><span className={`badge ${currentTestPassed ? 'green' : testError || discovery.tone === 'warning' ? 'amber' : ''}`} role="status">{testing ? <LoaderCircle size={13} className="spin"/> : currentTestPassed ? <CheckCircle2 size={13}/> : testError || discovery.tone === 'warning' ? <AlertCircle size={13}/> : <Clock3 size={13}/>} {statusLabel}</span></header>
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
     <div className="connection-capability-preview">{functions.length ? <ul>{functions.map(description => <li key={description}>{description}</li>)}</ul> : <p className="section-help">{discovery.detail}</p>}</div>
     {(testError || item.last_error) && <p className="inline-error">{testError || item.last_error}</p>}
