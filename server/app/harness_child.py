@@ -52,12 +52,16 @@ class HarnessChild(HarnessRuntime):
         await offload(self.recheck)
         usage_run = {"id": self.child["child_id"]}
         began = False
+        subscription = None
         usage, status = None, "failed"
         try:
             await self.connect()
             await offload(self.recheck)
             client = self.client
             ledger = HarnessUsageLedger(self.session_id, usage_run["id"])
+            subscription = client.subscribe_notifications(lambda event:
+                event.method == "workspace.usage" and event.payload.get("sessionId") == self.session_id
+                and event.payload.get("runId") == usage_run["id"])
             await self._usage_snapshot(client, usage_run, ledger, "begin")
             began = True
             await offload_write(self.service.db.execute, "INSERT INTO model_usage_calls VALUES(?,?,?,?,?,?,?,?,?)",
@@ -117,12 +121,27 @@ class HarnessChild(HarnessRuntime):
             raise
         finally:
             try:
-                await self.close()
+                if began and usage is None:
+                    # Capture while the worker still owns its SDK process. A broken
+                    # transport can still have delivered partial HTTP receipts.
+                    if status != "cancelled":
+                        try:
+                            await self._usage_snapshot(client, usage_run, ledger)
+                        except Exception:
+                            ledger.complete = False
+                    self._drain_usage(subscription, ledger)
+                    if ledger.attempts or ledger.complete:
+                        usage = ledger.receipt()
             finally:
-                if began:
-                    await offload_write(self.service.db.execute,
-                        "UPDATE model_usage_calls SET status=?,usage=?,completed_at=? WHERE id=?",
-                        (status, dump(usage) if usage else None, now(), usage_run["id"]))
+                if subscription is not None:
+                    subscription.close()
+                try:
+                    await self.close()
+                finally:
+                    if began:
+                        await offload_write(self.service.db.execute,
+                            "UPDATE model_usage_calls SET status=?,usage=?,completed_at=? WHERE id=?",
+                            (status, dump(usage) if usage else None, now(), usage_run["id"]))
 
 
 async def execute_harness_child(service, child, task, output_limit):

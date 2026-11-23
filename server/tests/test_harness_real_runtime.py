@@ -298,6 +298,15 @@ def test_real_harness_child_output_limit(tmp_path, model_server):
             expected_children.append({"status": "interrupted", "reason": "max_tokens", "output": output, "usage": usage})
         broken = plan["children"][2]
         assert broken["status"] == "failed" and broken["stop_reason"] == "executor_error" and "result" not in broken
+        incomplete = service.db.one("SELECT status,usage FROM model_usage_calls WHERE id=?", (broken["child_id"],))
+        assert incomplete["status"] == "failed"
+        receipt = json.loads(incomplete["usage"])
+        assert receipt["token_accounting"]["known_model_calls"] == 1
+        assert receipt["input_tokens"] == 12 and receipt["output_tokens"] is None
+        summary = client.get("/api/v1/usage").json()
+        group = next(row for row in summary["by_kind"] if row["kind"] == "subagent")
+        assert group["known_model_calls"] == 3 and group["known_subtotals"]["input_tokens"] == 36
+        assert group["output_tokens"] is None and group["known_subtotals"]["output_tokens"] == 1600
         expected_children.append({"status": "failed", "reason": "executor_error"})
 
         parent_replies = [block for request in requests if request.get("tools")
@@ -615,8 +624,27 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         record_property("paid_model_requests", 0)
 
 
+def automatic_compaction_reply():
+    def reply(body, blocks, _result):
+        prompt = " ".join(item.get("text", "") for item in blocks)
+        context = json.dumps(body["messages"])
+        pressure = re.search(r"The P-900 pressure limit is (\d+ bar)", context)
+        batch = re.search(r"The calibration batch is (B-\d+)", context)
+        if "You are now acting as a compaction engine" in prompt:
+            facts = " ".join(match[0] for match in (pressure, batch) if match)
+            return f"COMPACT_SUMMARY_SENTINEL {facts}", None
+        if "CASE_RESUME" in prompt:
+            return pressure[1] if pressure else "Pressure fact missing", None
+        if "CASE_FOLLOWUP" in prompt:
+            return batch[1] if batch else "Batch fact missing", None
+        return "History acknowledged", None
+
+    return reply
+
+
+@pytest.mark.parametrize("model_server", [automatic_compaction_reply], indirect=True, ids=["fact-aware-upstream"])
 @pytest.mark.parametrize("trigger", ["context-overflow", "pressure"])
-def test_real_harness_automatically_compacts_and_resumes(tmp_path, monkeypatch, model_server, trigger):
+def test_real_harness_automatically_compacts_and_resumes(tmp_path, monkeypatch, model_server, trigger, record_property):
     node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
     if not node or not source:
         pytest.skip("requires explicitly installed pinned Harness runtime")
@@ -641,18 +669,29 @@ def test_real_harness_automatically_compacts_and_resumes(tmp_path, monkeypatch, 
         harness_source_dir=source, model_catalog=str(catalog), default_model_id="", harness_max_output_tokens=512,
         provider_settings="", provider_test_mode=True, origins=("http://testserver",), model_router_enabled=False,
         knowledge_vision_enabled=False, image_generation_enabled=False)
+    from app.harness_runtime import HarnessRuntime
+
+    original_connect, processes = HarnessRuntime.connect, []
+
+    async def track_process(runtime):
+        await original_connect(runtime)
+        processes.append(runtime.client._proc)
+
+    monkeypatch.setattr(HarnessRuntime, "connect", track_process)
     with TestClient(create_app(settings)) as client:
         service = client.app.state.service
         user = service.create_user({"username": "admin", "display_name": "Compaction", "password": PASSWORD, "role": "admin"})
         login(client)
         assistant = service.save_assistant({"name": "Compaction"}, user=user)
         cid = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()["id"]
-        history = "OLD_HISTORY_SENTINEL The P-900 pressure limit is 7 bar and must be preserved when you continue. " * 240
+        history = ("The P-900 pressure limit is 7 bar. The calibration batch is B-482.\n"
+                   + "OLD_HISTORY_SENTINEL Preserve the established requirement and continue the migration. " * 240)
         if trigger == "pressure":
             history = "CASE_PRESSURE_SOURCE " + history
         first = send(client, cid, history, "auto-compaction-history")["run_id"]
         assert wait_run(client, first)["status"] == "succeeded"
         session_id = service.require("conversations", cid)["harness_session_id"]
+        assert session_id
         if trigger == "pressure":
             # Give upstream a recent tail large enough to preserve without
             # retaining the entire old turn. One oversized newest turn has
@@ -660,10 +699,23 @@ def test_real_harness_automatically_compacts_and_resumes(tmp_path, monkeypatch, 
             tail = "CASE_PRESSURE_SOURCE " + "RECENT_TAIL_SENTINEL The current task also has an approved test plan. " * 125
             recent = send(client, cid, tail, "auto-compaction-recent")["run_id"]
             assert wait_run(client, recent)["status"] == "succeeded"
-        prompt = "CASE_RESUME CASE_AUTO_OVERFLOW" if trigger == "context-overflow" else "CASE_RESUME after pressure"
+        messages_path = f"/api/v1/conversations/{cid}/messages"
+        original_messages = client.get(messages_path).json()
+        assert original_messages[0]["text"] == history
+        session_root = settings.data_dir / "harness" / cid / "sessions"
+        session_log, = session_root.glob(f"*/{session_id}/session.v*.jsonl")
+        original_log = session_log.read_bytes()
+        original_event, = (entry for entry in map(json.loads, original_log.splitlines())
+                           if entry.get("type") == "user/message"
+                           and entry["data"]["content"] == [{"type": "text", "text": history}])
+
+        prompt = "CASE_RESUME What is the pressure limit?"
+        if trigger == "context-overflow":
+            prompt += " CASE_AUTO_OVERFLOW"
         second = send(client, cid, prompt, "auto-compaction-resume")["run_id"]
         result = wait_run(client, second)
         assert result["status"] == "succeeded", result
+        assert result["kind"] == "chat"
         assert result["compaction"]["trigger"] == trigger
         assert result["compaction"]["shadowed_items"] > 0
         assert result["compaction"]["post_tokens"] < result["compaction"]["pre_tokens"]
@@ -672,6 +724,39 @@ def test_real_harness_automatically_compacts_and_resumes(tmp_path, monkeypatch, 
         assert "OLD_HISTORY_SENTINEL" not in json.dumps(requests[-1])
         assert service.require("conversations", cid)["harness_session_id"] == session_id
         assert len([stage for stage in result["usage"]["token_accounting"]["stages"] if stage["stage"] == "compression"]) == 1
+
+        followup = "CASE_FOLLOWUP What is the calibration batch?"
+        third = send(client, cid, followup, "auto-compaction-followup")["run_id"]
+        continued = wait_run(client, third)
+        assert continued["status"] == "succeeded", continued
+        assert continued["compaction"] is None
+        assert len(requests) == 5
+        assert service.require("conversations", cid)["harness_session_id"] == session_id
+        for request in requests[-2:]:
+            model_input = json.dumps(request["messages"])
+            assert "COMPACT_SUMMARY_SENTINEL The P-900 pressure limit is 7 bar The calibration batch is B-482" in model_input
+            assert "OLD_HISTORY_SENTINEL" not in model_input
+
+        messages = client.get(messages_path).json()
+        assert messages[:len(original_messages)] == original_messages
+        assert [(message["role"], message["text"]) for message in messages[len(original_messages):]] == [
+            ("user", prompt), ("assistant", "7 bar"), ("user", followup), ("assistant", "B-482"),
+        ]
+        assert list(session_root.glob(f"*/{session_id}/session.v*.jsonl")) == [session_log]
+        persisted_log = session_log.read_bytes()
+        assert persisted_log.startswith(original_log)
+        appended = [json.loads(line) for line in persisted_log[len(original_log):].splitlines()]
+        summary, = (entry for entry in appended if entry["type"] == "compaction/summary")
+        assert original_event["seq"] in summary["data"]["shadowedSeqs"]
+
+    assert len(processes) == len(original_messages) // 2 + 2
+    assert len({process.pid for process in processes}) == len(processes)
+    assert all(process.poll() is not None for process in processes)
+    record_property("harness_session_id", session_id)
+    record_property("real_harness_processes", len(processes))
+    record_property("compaction_measurement", json.dumps(result["compaction"], ensure_ascii=False))
+    record_property("local_synthetic_model_requests", len(requests))
+    record_property("paid_model_requests", 0)
 
 
 @pytest.mark.parametrize("cancel_compaction", [False, True])
