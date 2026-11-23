@@ -22,10 +22,25 @@ type AssistOffer struct {
 	LocalActive bool      `json:"local_active,omitempty"`
 }
 
+// AssistCommand is the local-only view of a command the control plane sent to
+// this device. It is never sent by the control plane.
+type AssistCommand struct {
+	ID         string     `json:"id"`
+	Command    string     `json:"command"`
+	State      string     `json:"state"`
+	Output     string     `json:"output,omitempty"`
+	ExitCode   *int       `json:"exit_code,omitempty"`
+	Truncated  bool       `json:"truncated,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
+	StartedAt  time.Time  `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
 type AssistStatus struct {
-	Enabled          bool         `json:"enabled"`
-	Offer            *AssistOffer `json:"offer"`
-	TargetAfterStart bool         `json:"target_after_start,omitempty"`
+	Enabled          bool           `json:"enabled"`
+	Offer            *AssistOffer   `json:"offer"`
+	TargetAfterStart bool           `json:"target_after_start,omitempty"`
+	LastCommand      *AssistCommand `json:"last_command,omitempty"`
 }
 
 type AssistTarget struct {
@@ -34,11 +49,13 @@ type AssistTarget struct {
 }
 
 type AssistJob struct {
-	ID          string              `json:"id"`
-	Action      string              `json:"action"`
-	BearerToken string              `json:"bearer_token,omitempty"`
-	DynamicAuth *huaweiauth.Profile `json:"dynamic_auth,omitempty"`
-	Tools       []string            `json:"tools,omitempty"`
+	ID             string              `json:"id"`
+	Action         string              `json:"action"`
+	BearerToken    string              `json:"bearer_token,omitempty"`
+	DynamicAuth    *huaweiauth.Profile `json:"dynamic_auth,omitempty"`
+	Tools          []string            `json:"tools,omitempty"`
+	Command        string              `json:"command,omitempty"`
+	TimeoutSeconds int                 `json:"timeout_seconds,omitempty"`
 }
 
 type AssistPoll struct {
@@ -56,6 +73,10 @@ type AssistResult struct {
 	Authorization *bool    `json:"authorization,omitempty"`
 	Tools         []string `json:"tools,omitempty"`
 	SourceID      string   `json:"source_id,omitempty"`
+	Output        string   `json:"output,omitempty"`
+	ExitCode      *int     `json:"exit_code,omitempty"`
+	Truncated     bool     `json:"truncated,omitempty"`
+	DurationMS    int64    `json:"duration_ms,omitempty"`
 }
 
 func (c *Client) AssistStatus(ctx context.Context, connectorID string) (AssistStatus, error) {

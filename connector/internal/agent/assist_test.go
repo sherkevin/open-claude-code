@@ -486,10 +486,11 @@ func TestAssistDynamicSigningStaysWithTheApprovedSource(t *testing.T) {
 	t.Cleanup(a.Close)
 	ctx := context.Background()
 	offer := cloud.AssistOffer{ID: testAssistID, Name: "销售合同", URL: service.URL + "/mcp/sales"}
+	session := &assistSession{offer: offer}
 	var draft *SourceInput
 	var tools []string
 	profile := &huaweiauth.Profile{Channel: " sales ", UserID: " reader ", HMACKey: key}
-	result := a.runAssistJob(ctx, offer, cloud.AssistJob{
+	result := a.runAssistJob(ctx, session, cloud.AssistJob{
 		ID: testAssistJobID, Action: "discover", BearerToken: testAssistToken, DynamicAuth: profile,
 	}, &draft, &tools)
 	if result.Code != "tools_loaded" || draft == nil || !draft.DynamicAuth || draft.AppID != "MCP" ||
@@ -500,7 +501,7 @@ func TestAssistDynamicSigningStaysWithTheApprovedSource(t *testing.T) {
 	if err != nil || strings.Contains(string(wire), key) || strings.Contains(string(wire), testAssistToken) {
 		t.Fatal("diagnostic response contained authentication material")
 	}
-	badConnect := a.runAssistJob(ctx, offer, cloud.AssistJob{
+	badConnect := a.runAssistJob(ctx, session, cloud.AssistJob{
 		ID: testAssistJobID, Action: "connect", Tools: tools, DynamicAuth: profile,
 	}, &draft, &tools)
 	if badConnect.Code != "connect_failed" || draft == nil || len(a.Status().Sources) != 0 {

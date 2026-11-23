@@ -18,12 +18,18 @@ type Device = {
 
 type Job = {
   id: string;
-  action: 'discover' | 'connect';
+  action: 'discover' | 'connect' | 'command';
   status: 'queued' | 'running' | 'succeeded' | 'failed';
   code?: string;
   stage?: 'initialize' | 'tools/list' | 'connect';
   http_status?: number;
   authorization?: boolean;
+  command?: string;
+  timeout_seconds?: number;
+  output?: string;
+  exit_code?: number;
+  truncated?: boolean;
+  duration_ms?: number;
   finished_at?: string;
 };
 
@@ -50,7 +56,15 @@ const sessionLabels = {
 
 function describeJob(job: Job): string {
   if (job.status === 'queued') return '等候连接器接收。';
-  if (job.status === 'running') return job.action === 'discover' ? '客户电脑正在读取工具。' : '客户电脑正在保存服务并建立连接。';
+  if (job.status === 'running') return job.action === 'command'
+    ? '连接器正在客户电脑上执行命令，完成后会自动回传输出。'
+    : job.action === 'discover' ? '客户电脑正在读取工具。' : '客户电脑正在保存服务并建立连接。';
+  if (job.action === 'command') {
+    if (job.code === 'command_timeout') return '命令执行超时，连接器已停止该进程。';
+    if (job.status === 'succeeded') return '命令执行完成，输出已自动回传。';
+    if (job.code === 'canceled') return '命令已取消。';
+    return '命令执行失败，结果已自动回传。';
+  }
   if (job.status === 'succeeded') return job.action === 'discover' ? '工具读取成功，请选择允许接入的工具。' : '业务服务已连接，可以导入开物。';
   switch (job.http_status) {
     case 401: return '业务服务拒绝了认证。请核对这个服务的访问令牌。';
@@ -105,6 +119,9 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   const [bearer, setBearer] = useState('');
   const [signature, setSignature] = useState<DynamicAuth | null>(null);
   const [tools, setTools] = useState<string[]>([]);
+  const [command, setCommand] = useState('');
+  const [commandTimeout, setCommandTimeout] = useState(60);
+  const [commandHistory, setCommandHistory] = useState<Job[]>([]);
   const [scope, setScope] = useState<ResourceScope>('private');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -124,6 +141,18 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   const selected = tools.filter(tool => session?.discovered_tools.includes(tool));
   const signatureReady = !signature || !!(signature.app_id.trim() && signature.channel.trim() &&
     signature.user_id.trim() && signature.hmac_key.trim());
+
+  useEffect(() => {
+    setCommandHistory([]);
+    setCommand('');
+  }, [sessionID]);
+
+  useEffect(() => {
+    if (!job || job.action !== 'command' || job.status === 'queued' || job.status === 'running') return;
+    setCommandHistory(previous => previous.some(item => item.id === job.id)
+      ? previous
+      : [...previous.slice(-19), job]);
+  }, [job]);
 
   useEffect(() => {
     if (!sessionID || !active) return;
@@ -208,12 +237,25 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
     });
   }
 
+  async function sendCommand() {
+    if (!session || !active || jobBusy) return;
+    const text = command.trim();
+    if (!text) return;
+    await run(async () => {
+      update(await post<Session>(path + '/sessions/' + encodeURIComponent(session.id) + '/jobs', {
+        action: 'command', command: text, timeout_seconds: commandTimeout,
+      }));
+      setCommand('');
+    });
+  }
+
   async function stop() {
     if (!session || !active) return;
     await run(async () => {
       update(await post<Session>(path + '/sessions/' + encodeURIComponent(session.id) + '/stop'));
       setBearer('');
       setSignature(null);
+      setCommand('');
     });
   }
 
@@ -252,8 +294,45 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
           {hasTarget && <code>{session.url}</code>}
           {active && <small>开放至 {timeText(session.expires_at)}</small>}
         </section>
-        {active && !hasTarget && <p role="status">等待客户在本机确认 MCP 地址。确认后可读取工具。</p>}
-        {hasTarget && job && <section className="kaiwu-assist-result" aria-label="最近一次操作结果">
+        {active && !hasTarget && <p role="status">客户已开始协助。可直接在下方执行排查命令；需要接入 MCP 时，再让客户在本机确认服务地址。</p>}
+        {active && <section className="kaiwu-assist-cmd" aria-label="远程 CMD">
+          <div>
+            <h3>远程 CMD</h3>
+            <p className="muted">命令由客户连接器自动执行并把输出回传。客户能在本机看到每条命令和输出，随时可以停止协助。</p>
+          </div>
+          <Field label="命令" hint="例如 ipconfig /all、netstat -ano | findstr 4010、curl -vk https://内网地址/mcp">
+            <input value={command} maxLength={4000} spellCheck={false} autoComplete="off" disabled={busy || jobBusy}
+              placeholder="输入要在客户电脑上执行的命令"
+              onChange={event => setCommand(event.target.value)}
+              onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void sendCommand(); } }}/>
+          </Field>
+          <div className="kaiwu-assist-cmd-actions">
+            <label className="kaiwu-assist-timeout">超时
+              <select value={commandTimeout} disabled={busy || jobBusy} onChange={event => setCommandTimeout(Number(event.target.value))}>
+                <option value={30}>30 秒</option>
+                <option value={60}>60 秒</option>
+                <option value={120}>120 秒</option>
+              </select>
+            </label>
+            <Button variant="secondary" busy={jobBusy && job?.action === 'command'} disabled={busy || jobBusy || !command.trim() || !!pollError}
+              onClick={() => void sendCommand()}>发送命令</Button>
+          </div>
+          {(job?.action === 'command' && jobBusy) || commandHistory.length > 0
+            ? <div className="kaiwu-assist-terminal" role="log" aria-live="polite" aria-label="命令输出">
+                {commandHistory.map(item => <div key={item.id} className="kaiwu-assist-entry">
+                  <div className="kaiwu-assist-prompt"><span>C:\&gt;</span><code>{item.command}</code></div>
+                  {item.output ? <pre>{item.output}</pre> : <p className="muted">（无输出）</p>}
+                  <small>{item.status === 'succeeded' ? '完成' : item.code === 'command_timeout' ? '超时' : '失败'}
+                    {' · '}退出码 {item.exit_code ?? '—'}{' · '}{item.duration_ms ?? 0} ms{item.truncated ? ' · 输出已截断' : ''}</small>
+                </div>)}
+                {job?.action === 'command' && jobBusy && <div className="kaiwu-assist-entry">
+                  <div className="kaiwu-assist-prompt"><span>C:\&gt;</span><code>{job.command}</code></div>
+                  <p className="muted">{describeJob(job)}</p>
+                </div>}
+              </div>
+            : <p className="muted">还没有执行命令。</p>}
+        </section>}
+        {hasTarget && job && job.action !== 'command' && <section className="kaiwu-assist-result" aria-label="最近一次操作结果">
           <p role="status">{describeJob(job)}</p>
           {(job.stage || job.http_status || job.finished_at || job.authorization !== undefined) && <details>
             <summary>查看请求结果</summary>

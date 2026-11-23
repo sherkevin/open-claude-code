@@ -44,6 +44,10 @@ type assistSession struct {
 	target          cloud.AssistTarget
 	targetSetting   bool
 	targetConfirmed bool
+
+	// command is the local view of the last command job. It is never restored
+	// after a service restart and disappears when assistance stops.
+	command *cloud.AssistCommand
 }
 
 // AssistStatus returns the current local grant or the server's availability and
@@ -107,7 +111,26 @@ func (s *assistSession) localOffer() cloud.AssistOffer {
 
 func (s *assistSession) localStatus() cloud.AssistStatus {
 	offer := s.localOffer()
-	return cloud.AssistStatus{Enabled: true, Offer: &offer, TargetAfterStart: s.targetAfterStart}
+	return cloud.AssistStatus{
+		Enabled: true, Offer: &offer, TargetAfterStart: s.targetAfterStart,
+		LastCommand: copyAssistCommand(s.command),
+	}
+}
+
+func copyAssistCommand(command *cloud.AssistCommand) *cloud.AssistCommand {
+	if command == nil {
+		return nil
+	}
+	copied := *command
+	if command.ExitCode != nil {
+		value := *command.ExitCode
+		copied.ExitCode = &value
+	}
+	if command.FinishedAt != nil {
+		value := *command.FinishedAt
+		copied.FinishedAt = &value
+	}
+	return &copied
 }
 
 func (a *Agent) canAssistLocked() bool {
@@ -352,18 +375,18 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 		offer := session.localOffer()
 		a.mu.RUnlock()
 		request, done := context.WithTimeout(ctx, assistControlTimeout)
-		poll, err := session.client.PollAssist(request, session.connectorID, offer.ID, offer.URL != "")
+		poll, err := session.client.PollAssist(request, session.connectorID, offer.ID, true)
 		done()
 		if err != nil || !poll.Active || ctx.Err() != nil {
 			return
 		}
 		if job := poll.Job; job != nil {
-			if busy || offer.URL == "" || !assistJobID.MatchString(job.ID) {
+			if busy || !assistJobID.MatchString(job.ID) {
 				return
 			}
 			busy = true
 			go func() {
-				completed <- a.runAssistJob(ctx, offer, *job, &draft, &verifiedTools)
+				completed <- a.runAssistJob(ctx, session, *job, &draft, &verifiedTools)
 			}()
 		}
 		select {
@@ -382,12 +405,29 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 	}
 }
 
-func (a *Agent) runAssistJob(ctx context.Context, offer cloud.AssistOffer, job cloud.AssistJob, draft **SourceInput, verifiedTools *[]string) cloud.AssistResult {
+func (a *Agent) runAssistJob(ctx context.Context, session *assistSession, job cloud.AssistJob, draft **SourceInput, verifiedTools *[]string) cloud.AssistResult {
+	offer := session.offer
 	result := cloud.AssistResult{SessionID: offer.ID, JobID: job.ID, Status: "failed", Code: "canceled"}
 	if ctx.Err() != nil {
 		return result
 	}
 	switch job.Action {
+	case "command":
+		result.Code = "command_failed"
+		a.setAssistCommand(session, &cloud.AssistCommand{
+			ID: job.ID, Command: job.Command, State: "running", StartedAt: time.Now().UTC(),
+		})
+		executed := a.runAssistCommand(ctx, job.Command, job.TimeoutSeconds)
+		finished := time.Now().UTC()
+		a.setAssistCommand(session, &cloud.AssistCommand{
+			ID: job.ID, Command: job.Command, State: executed.state, Output: executed.output,
+			ExitCode: executed.exitCode, Truncated: executed.truncated,
+			DurationMS: executed.duration.Milliseconds(), StartedAt: finished.Add(-executed.duration),
+			FinishedAt: &finished,
+		})
+		result.Status, result.Code = executed.status, executed.code
+		result.Output, result.ExitCode, result.Truncated = executed.output, executed.exitCode, executed.truncated
+		result.DurationMS = executed.duration.Milliseconds()
 	case "discover":
 		*draft = nil
 		*verifiedTools = nil
@@ -443,6 +483,14 @@ func (a *Agent) runAssistJob(ctx context.Context, offer cloud.AssistOffer, job c
 		result.Code, result.Status, result.SourceID = "connected", "succeeded", saved.Source.SourceID
 	}
 	return result
+}
+
+func (a *Agent) setAssistCommand(session *assistSession, command *cloud.AssistCommand) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.assistActive == session {
+		session.command = command
+	}
 }
 
 func (a *Agent) assistSourceInput(offer cloud.AssistOffer, bearer string, dynamic *huaweiauth.Profile) (SourceInput, error) {

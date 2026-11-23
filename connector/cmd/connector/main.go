@@ -32,6 +32,8 @@ func main() {
 	switch os.Args[1] {
 	case "serve", "run":
 		serve(os.Args[2:])
+	case "assist":
+		assistCommand(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println(version.String())
 	case "import":
@@ -56,6 +58,7 @@ func usage() {
 
 用法:
   connector serve       启动本机界面与通道守护（默认）
+  connector assist      在 CMD 中主动建立一次开物协助（客户只执行这一条命令）
   connector import      校验并导入 MCP 配置文件
   connector export      生成平台可导入的配置
   connector diagnose    执行一次内网诊断
@@ -70,6 +73,10 @@ func usage() {
   --platform   开物导入页面地址
   --native-relay 使用开物内置 MCP 中继
   --frpc       frpc 可执行文件路径（默认与主程序同目录）
+
+assist 专用参数:
+  --code       首次使用时的企业绑定码
+  --direct     不使用已运行的本机界面，直接在当前进程建立协助
 `)
 }
 

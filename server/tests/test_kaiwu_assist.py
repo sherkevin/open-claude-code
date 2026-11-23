@@ -326,3 +326,100 @@ def test_restart_with_assistance_disabled_cancels_and_erases_pending_credentials
         assert db.one("SELECT status,sealed_bearer FROM kaiwu_assist_jobs WHERE id=?", (queued["id"],)) == {
             "status": "failed", "sealed_bearer": None,
         }
+
+
+def _command_session(env):
+    _, client, _, device, _, _, _ = env
+    assert device("start", {}).status_code == 200
+    offer = device("start", {}).json()
+    local = {"session_id": offer["id"]}
+    assert device("poll", local).json() == {"active": True, "job": None}
+    assert client.post("/api/v1/auth/login", json={"username": "owner", "password": PASSWORD}).status_code == 200
+    route = PORTAL + "/sessions/" + offer["id"]
+    assert client.post(route + "/claim").status_code == 200
+    return local, route
+
+
+def test_command_job_works_without_target_and_returns_output(env):
+    _, client, db, device, *_ = env
+    local, route = _command_session(env)
+
+    assert client.post(route + "/jobs", json={"action": "command"}).status_code == 422
+    assert client.post(route + "/jobs", json={"action": "command", "command": "   "}).status_code == 422
+    assert client.post(route + "/jobs", json={"action": "command", "command": "whoami", "tools": ["x"]}).status_code == 422
+    assert client.post(route + "/jobs", json={"action": "command", "command": "whoami", "bearer_token": TOKEN}).status_code == 422
+    assert client.post(route + "/jobs", json={"action": "command", "command": "whoami", "timeout_seconds": 4}).status_code == 422
+
+    queued = client.post(route + "/jobs", json={"action": "command", "command": "whoami", "timeout_seconds": 30})
+    assert queued.status_code == 200, queued.text
+    job = queued.json()["latest_job"]
+    assert job["action"] == "command" and job["command"] == "whoami" and job["timeout_seconds"] == 30
+    polled = device("poll", local).json()
+    assert polled == {"active": True, "job": {
+        "id": job["id"], "action": "command", "command": "whoami", "timeout_seconds": 30,
+    }}
+    assert client.post(route + "/jobs", json={"action": "command", "command": "hostname"}).status_code == 409
+
+    result = {**local, "job_id": job["id"], "status": "succeeded", "code": "command_completed",
+              "output": "desktop\\zhao", "duration_ms": 120}
+    assert device("result", result).status_code == 422
+    result["exit_code"] = 0
+    assert device("result", result).status_code == 200
+    latest = client.get(route).json()["latest_job"]
+    assert latest["output"] == "desktop\\zhao"
+    assert latest["exit_code"] == 0 and latest["duration_ms"] == 120
+
+    assert client.post(route + "/jobs", json={"action": "command", "command": "hostname"}).status_code == 200
+    assert db.one("SELECT count(*) AS n FROM kaiwu_assist_jobs")["n"] == 2
+
+
+def test_command_timeout_cancel_and_stop(env):
+    _, client, db, device, *_ = env
+    local, route = _command_session(env)
+
+    queued = client.post(route + "/jobs", json={"action": "command", "command": "ping -t 127.0.0.1"}).json()["latest_job"]
+    assert device("poll", local).json()["job"]["id"] == queued["id"]
+    result = {**local, "job_id": queued["id"], "status": "failed", "code": "command_timeout", "duration_ms": 60000}
+    assert device("result", result).status_code == 200
+    assert client.get(route).json()["latest_job"]["code"] == "command_timeout"
+
+    queued = client.post(route + "/jobs", json={"action": "command", "command": "dir"}).json()["latest_job"]
+    assert device("poll", local).json()["job"]["id"] == queued["id"]
+    assert device("stop", local).status_code == 200
+    assert device("result", {**local, "job_id": queued["id"], "status": "failed", "code": "canceled"}).status_code == 409
+    assert db.one("SELECT status FROM kaiwu_assist_jobs WHERE id=?", (queued["id"],))["status"] == "failed"
+
+
+def test_old_assist_job_table_rebuild_adds_command_action(tmp_path):
+    import sqlite3
+
+    from app.db import Database
+
+    path = tmp_path / "legacy.sqlite"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        "CREATE TABLE kaiwu_assist_jobs("
+        "seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "id TEXT NOT NULL UNIQUE,"
+        "session_id TEXT NOT NULL,"
+        "action TEXT NOT NULL CHECK(action IN ('discover','connect')),"
+        "status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed')),"
+        "selected_tools TEXT NOT NULL DEFAULT '[]',"
+        "sealed_bearer TEXT,"
+        "result TEXT,"
+        "source_revision INTEGER,"
+        "expires_at TEXT NOT NULL,"
+        "finished_at TEXT"
+        ")"
+    )
+    legacy.commit()
+    legacy.close()
+
+    db = Database(path)
+    columns = {row["name"] for row in db.conn.execute("PRAGMA table_info(kaiwu_assist_jobs)")}
+    assert {"command", "timeout_seconds"} <= columns
+    definition = db.conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='kaiwu_assist_jobs'"
+    ).fetchone()["sql"]
+    assert "'command'" in definition
+    db.conn.close()

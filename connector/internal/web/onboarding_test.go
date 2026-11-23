@@ -66,6 +66,8 @@ const copiedJSON = [];
 const navigator = {clipboard:{writeText:async value=>{ copiedJSON.push(value); }}};
 const window = {location, navigator, addEventListener(){}};
 const setInterval = ()=>0;
+const setTimeout = ()=>0;
+const clearTimeout = ()=>0;
 const control = {bound:false, cloud_configured:true, edge_configured:true,
   state:"UNPAIRED", transport_mode:"native", sources:[], auth_profiles:[]};
 const calls = [];
@@ -83,7 +85,8 @@ const fetch = async (path, options) => {
     data = control;
   }else if(path === "/api/assist/offer"){
     assert.ok(options.headers["X-Connector-Token"]);
-    data = {enabled:control.bound,offer:assistance,target_after_start:control.bound};
+    data = {enabled:control.bound,offer:assistance,target_after_start:control.bound,
+      last_command:assistance?.last_command};
   }else if(path === "/api/assist/start"){
     assert.deepEqual(body, {});
     assistance = {id:"as_fixture",name:"内网接入协助",url:"",status:"active",local_active:true};
@@ -146,6 +149,14 @@ async function verifyWorkflow(){
   assert.equal(ui("assistTarget").hidden, false);
   assert.equal(ui("assistStop").hidden, false);
   assert.equal(ui("assistAddress").textContent, "");
+  for(let i = 0; i < 20 && assistRefreshing; i++){ await new Promise(resolve=>setImmediate(resolve)); }
+  assistance.last_command = {id:"asjob_fixture",command:"ipconfig /all",state:"succeeded",output:"Windows IP Configuration"};
+  await refreshAssist();
+  assert.equal(ui("assistCommandPanel").hidden, false);
+  assert.equal(ui("assistCommand").textContent, "ipconfig /all");
+  assert.match(ui("assistCommandState").textContent, /执行完成/);
+  assert.equal(ui("assistOutputDetails").hidden, false);
+  assert.equal(ui("assistOutput").textContent, "Windows IP Configuration");
   await ui("assistTarget").onclick();
   assert.equal(calls.filter(call=>call.path === "/api/assist/target").length, 0);
   assert.equal(document.activeElement, ui("upstreamAddress"));
@@ -162,6 +173,7 @@ async function verifyWorkflow(){
   await ui("assistStop").onclick();
   assert.equal(ui("assistStart").hidden, false);
   assert.equal(ui("assistStop").hidden, true);
+  assert.equal(ui("assistCommandPanel").hidden, true);
   assert.equal(ui("assistNotice").textContent, "协助已停止。");
   await ui("assistStart").onclick();
   assert.equal(ui("assistAddress").textContent, assistTarget.url);

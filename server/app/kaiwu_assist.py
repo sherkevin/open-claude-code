@@ -149,10 +149,12 @@ class DynamicAuth(StrictModel):
 
 
 class JobInput(StrictModel):
-    action: Literal["discover", "connect"]
+    action: Literal["discover", "connect", "command"]
     bearer_token: str | None = Field(default=None, max_length=8192, repr=False)
     dynamic_auth: DynamicAuth | None = Field(default=None, repr=False)
     tools: list[ToolName] = Field(default_factory=list, max_length=MAX_TOOL_COUNT)
+    command: str | None = Field(default=None, max_length=4000)
+    timeout_seconds: int | None = Field(default=None, ge=5, le=120, strict=True)
 
     @field_validator("bearer_token")
     @classmethod
@@ -165,12 +167,26 @@ class JobInput(StrictModel):
 class JobResult(SessionInput):
     job_id: str = Field(pattern=JOB_ID_RE)
     status: Literal["succeeded", "failed"]
-    code: Literal["tools_loaded", "no_tools", "upstream_failed", "connect_failed", "connected", "canceled"]
+    code: Literal[
+        "tools_loaded", "no_tools", "upstream_failed", "connect_failed", "connected",
+        "canceled", "command_completed", "command_failed", "command_timeout",
+    ]
     stage: Literal["initialize", "tools/list", "connect"] | None = None
     http_status: int | None = Field(default=None, ge=100, le=599, strict=True)
     authorization: StrictBool | None = None
     tools: list[ToolName] = Field(default_factory=list, max_length=256)
     source_id: str | None = Field(default=None, pattern=SOURCE_ID_RE.pattern)
+    output: str | None = Field(default=None, max_length=65536)
+    exit_code: int | None = Field(default=None, ge=-2147483648, le=2147483647, strict=True)
+    truncated: StrictBool | None = None
+    duration_ms: int | None = Field(default=None, ge=0, le=180000, strict=True)
+
+    @field_validator("output")
+    @classmethod
+    def valid_output(cls, value):
+        if value is not None and len(value.encode("utf-8")) > 131072:
+            raise ValueError("output too large")
+        return value
 
 
 class ImportInput(StrictModel):
@@ -298,6 +314,9 @@ def _job_view(job):
     if not job:
         return None
     view = {key: job[key] for key in ("id", "action", "status", "finished_at") if job[key] is not None}
+    if job["action"] == "command":
+        view["command"] = job["command"]
+        view["timeout_seconds"] = job["timeout_seconds"]
     if job["result"]:
         view.update(json.loads(job["result"]))
     return view
@@ -340,6 +359,20 @@ def _stop(service, row, *, owner=None):
 
 
 def _accept_result(service, row, job, data):
+    if job["action"] == "command":
+        acceptable = {"command_completed"} if data.status == "succeeded" else {
+            "command_failed", "command_timeout", "canceled",
+        }
+        if (
+            data.code not in acceptable
+            or data.tools or data.source_id or data.stage or data.authorization is not None
+            or data.http_status is not None
+            or (data.code == "command_completed" and data.exit_code is None)
+        ):
+            raise AppError(422, "ASSIST_RESULT_INVALID", "设备返回的命令结果无效")
+        return None
+    if data.output is not None or data.exit_code is not None or data.truncated is not None or data.duration_ms is not None:
+        raise AppError(422, "ASSIST_RESULT_INVALID", "设备返回的协助结果无效")
     acceptable = (
         {"tools_loaded"} if job["action"] == "discover" else {"connected"}
     ) if data.status == "succeeded" else (
@@ -480,14 +513,18 @@ def add_device_assist(router, service_dependency, device):
             if not _active(row):
                 return {"active": False, "job": None}
             service.db.execute("UPDATE kaiwu_assist_sessions SET last_poll_at=? WHERE id=?", (now(), row["id"]))
-            if not data.accept_jobs or not row["url"]:
-                return {"active": True, "job": None}
             job = _job(service, row["id"])
-            if not job or job["status"] != "queued":
+            if not job or job["status"] != "queued" or not data.accept_jobs:
+                return {"active": True, "job": None}
+            # Command jobs deliberately work before an MCP target is chosen.
+            if job["action"] != "command" and not row["url"]:
                 return {"active": True, "job": None}
             response = {"id": job["id"], "action": job["action"]}
             if job["action"] == "connect":
                 response["tools"] = json.loads(job["selected_tools"])
+            if job["action"] == "command":
+                response["command"] = job["command"]
+                response["timeout_seconds"] = job["timeout_seconds"]
             if job["sealed_bearer"]:
                 plaintext = service.secrets.decrypt(job["sealed_bearer"])
                 # Older jobs queued before this release stored the compact
@@ -496,9 +533,15 @@ def add_device_assist(router, service_dependency, device):
                 for field in ("bearer_token", "dynamic_auth"):
                     if field in credentials:
                         response[field] = credentials[field]
+            # Command jobs may run for the full command timeout; keep the running
+            # lease alive longer than the command itself so a slow process is not
+            # marked canceled just before it reports.
+            ttl = RUN_TTL
+            if job["action"] == "command":
+                ttl = max(ttl, int(job["timeout_seconds"] or 60) + 30)
             service.db.execute(
                 "UPDATE kaiwu_assist_jobs SET status='running', sealed_bearer=NULL, expires_at=? WHERE id=?",
-                (_future(RUN_TTL), job["id"]),
+                (_future(ttl), job["id"]),
             )
             return {"active": True, "job": response}
 
@@ -639,25 +682,43 @@ def _assist_router(service_dependency, admin, *, prefix: str, bridge: bool = Fal
             _expire(service)
             row = _session(service, session_id, owner=user["id"])
             _require_recent_consent(row)
-            _require_target(row)
+            if data.action == "command":
+                if data.tools or data.bearer_token is not None or data.dynamic_auth is not None:
+                    raise AppError(422, "ASSIST_JOB_INVALID", "命令作业不能同时携带 MCP 凭据或工具")
+                command = (data.command or "").strip()
+                if not command or "\x00" in command:
+                    raise AppError(422, "ASSIST_JOB_INVALID", "请填写要执行的命令")
+            else:
+                if data.command is not None or data.timeout_seconds is not None:
+                    raise AppError(422, "ASSIST_JOB_INVALID", "只有命令作业可以携带命令")
+                _require_target(row)
             latest = _job(service, row["id"])
-            if latest and (latest["status"] in {"queued", "running"} or latest["source_revision"] is not None):
+            if latest and (
+                latest["status"] in {"queued", "running"}
+                or (data.action != "command" and latest["source_revision"] is not None)
+            ):
                 raise AppError(409, "ASSIST_JOB_BUSY", "当前协助已有任务，请查看该任务的结果")
-            discovered = json.loads(row["discovered_tools"])
             credentials = data.model_dump(include={"bearer_token", "dynamic_auth"}, exclude_none=True)
             if data.action == "discover":
                 if data.tools:
                     raise AppError(422, "ASSIST_JOB_INVALID", "读取工具时无需选择工具")
                 service.db.execute("UPDATE kaiwu_assist_sessions SET discovered_tools='[]' WHERE id=?", (row["id"],))
-            elif credentials or not data.tools or len(set(data.tools)) != len(data.tools) or not set(data.tools) <= set(discovered):
+            elif data.action == "connect" and (
+                credentials or not data.tools or len(set(data.tools)) != len(data.tools)
+                or not set(data.tools) <= set(json.loads(row["discovered_tools"]))
+            ):
                 raise AppError(422, "ASSIST_JOB_INVALID", "请选择本次读取到的工具")
             job_id = "asjob_" + uid()
             service.db.execute(
-                "INSERT INTO kaiwu_assist_jobs(id,session_id,action,status,selected_tools,sealed_bearer,expires_at) "
-                "VALUES(?,?,?,'queued',?,?,?)",
+                "INSERT INTO kaiwu_assist_jobs"
+                "(id,session_id,action,status,selected_tools,sealed_bearer,command,timeout_seconds,expires_at) "
+                "VALUES(?,?,?,'queued',?,?,?,?,?)",
                 (
                     job_id, row["id"], data.action, dump(data.tools),
-                    service.secrets.encrypt(dump(credentials)) if credentials else None, _future(QUEUE_TTL),
+                    service.secrets.encrypt(dump(credentials)) if credentials else None,
+                    command if data.action == "command" else None,
+                    data.timeout_seconds or 60,
+                    _future(QUEUE_TTL),
                 ),
             )
             _event(service, row, f"{data.action}_queued", owner=user["id"], job_id=job_id)

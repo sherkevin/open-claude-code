@@ -402,10 +402,12 @@ CREATE TABLE IF NOT EXISTS kaiwu_assist_jobs(
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
     session_id TEXT NOT NULL REFERENCES kaiwu_assist_sessions(id),
-    action TEXT NOT NULL CHECK(action IN ('discover','connect')),
+    action TEXT NOT NULL CHECK(action IN ('discover','connect','command')),
     status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed')),
     selected_tools TEXT NOT NULL DEFAULT '[]',
     sealed_bearer TEXT,
+    command TEXT,
+    timeout_seconds INTEGER NOT NULL DEFAULT 60,
     result TEXT,
     source_revision INTEGER,
     expires_at TEXT NOT NULL,
@@ -505,6 +507,54 @@ class Database:
         # migrated schema separately.  executescript() commits a pending
         # transaction before it runs, so COMMIT before every script.
         self.conn.execute("BEGIN IMMEDIATE")
+        assist_job_columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(kaiwu_assist_jobs)")
+        }
+        if "command" not in assist_job_columns:
+            # SQLite cannot widen a CHECK constraint in place. Rebuild the one
+            # live job table so command jobs are accepted by databases that
+            # predate remote CMD assistance. No other table references it.
+            # Keep every statement on the open transaction: executescript()
+            # would commit first and could leave a half-rebuilt table.
+            self.conn.execute(
+                "CREATE TABLE kaiwu_assist_jobs_new("
+                "seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "id TEXT NOT NULL UNIQUE,"
+                "session_id TEXT NOT NULL REFERENCES kaiwu_assist_sessions(id),"
+                "action TEXT NOT NULL CHECK(action IN ('discover','connect','command')),"
+                "status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed')),"
+                "selected_tools TEXT NOT NULL DEFAULT '[]',"
+                "sealed_bearer TEXT,"
+                "command TEXT,"
+                "timeout_seconds INTEGER NOT NULL DEFAULT 60,"
+                "result TEXT,"
+                "source_revision INTEGER,"
+                "expires_at TEXT NOT NULL,"
+                "finished_at TEXT"
+                ")"
+            )
+            self.conn.execute(
+                "INSERT INTO kaiwu_assist_jobs_new"
+                "(seq,id,session_id,action,status,selected_tools,sealed_bearer,result,"
+                "source_revision,expires_at,finished_at,command,timeout_seconds) "
+                "SELECT seq,id,session_id,action,status,selected_tools,sealed_bearer,result,"
+                "source_revision,expires_at,finished_at,NULL,60 FROM kaiwu_assist_jobs"
+            )
+            self.conn.execute("DROP TABLE kaiwu_assist_jobs")
+            self.conn.execute("ALTER TABLE kaiwu_assist_jobs_new RENAME TO kaiwu_assist_jobs")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS kaiwu_assist_jobs_session "
+                "ON kaiwu_assist_jobs(session_id,seq DESC)"
+            )
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS kaiwu_assist_job_live "
+                "ON kaiwu_assist_jobs(session_id) WHERE status IN ('queued','running')"
+            )
+        elif "timeout_seconds" not in assist_job_columns:
+            self.conn.execute(
+                "ALTER TABLE kaiwu_assist_jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 60"
+            )
         diagnostic_columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(kaiwu_diagnostic_events)")

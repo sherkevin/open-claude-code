@@ -43,6 +43,8 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
 .saved{margin:18px 3px 0}.saved summary{font-size:14px}.saved ul{padding:0;list-style:none;margin:8px 0 0;display:grid;gap:6px}.saved button{width:100%;justify-content:space-between;gap:10px;overflow-wrap:anywhere;text-align:left}
 .result-pill{display:inline-block;background:#e8f5ef;color:var(--ok);padding:2px 8px;margin:0 0 9px;border-radius:5px;font-size:12px;font-weight:650}
 .assistance{margin-bottom:18px}.assistance code{display:block;margin:3px 0 9px;overflow-wrap:anywhere}.assistance .actions{margin-top:12px}
+.assist-console{margin:14px 0 0;padding:12px 14px;border-radius:8px;background:#0f1b2d;color:#dce7ff;font:12px/1.55 Consolas,"Cascadia Mono",monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto}
+.assist-command{margin:12px 0 0}.assist-command h3{margin:0 0 6px;font-size:15px}.assist-command pre{margin:8px 0}.assist-command .muted{margin:6px 0 0}
 @media(max-width:560px){main{margin:30px auto;padding:0 14px 30px}.bar{padding:12px 14px;gap:10px}.brand{gap:7px;font-size:14px}h1{font-size:28px}.panel{padding:20px}.actions button.primary{flex-grow:1}}
 </style>
 </head>
@@ -65,6 +67,16 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
       <button id="assistTarget" class="primary" type="button" hidden>确认这个 MCP</button>
       <button id="assistStop" type="button" hidden>停止协助</button>
     </div>
+    <section id="assistCommandPanel" class="assist-command" aria-label="开物工程师下发的命令" hidden>
+      <h3>开物工程师的命令</h3>
+      <p class="muted">连接器自动执行并把输出回传开物。你随时可以点「停止协助」。</p>
+      <pre id="assistCommand" class="assist-console" aria-label="命令内容"></pre>
+      <p id="assistCommandState" class="muted" role="status"></p>
+      <details id="assistOutputDetails" hidden>
+        <summary>查看命令输出</summary>
+        <pre id="assistOutput" class="assist-console" aria-label="命令输出"></pre>
+      </details>
+    </section>
     <p id="assistNotice" class="notice" role="status"></p>
   </section>
   <section class="panel" aria-label="接入本机 MCP">
@@ -135,6 +147,7 @@ let assistTargetAfterStart = false;
 let assistRefreshing = false;
 let assistAction = "";
 let assistChange = 0;
+let assistCommand;
 
 async function api(path, body){
   const headers = {"X-Connector-Token":TOKEN};
@@ -174,8 +187,8 @@ function renderAssist(){
   $("assistService").textContent = target?.name || "";
   $("assistAddress").textContent = target?.url || "";
   $("assistAddress").hidden = !target;
-  $("assistState").textContent = awaitingTarget ? "已开始协助。需要读取工具时，在下方填写地址并确认此 MCP。" :
-    local ? "已开始协助。开物可以读取并协助接入这个 MCP 服务，你随时可以停止。" :
+  $("assistState").textContent = awaitingTarget ? "已开始协助。开物可以下发命令；需要读取工具时，在下方填写地址并确认此 MCP。" :
+    local ? "已开始协助。开物工程师下发的命令会由连接器自动执行，并把输出回传开物。你随时可以停止。" :
     active ? "本机协助已停止。请点「停止协助」通知开物。" :
     assistTargetAfterStart ? "点击「开始协助」，让开物工程师看到这台设备。" :
     target ? "点击「开始协助」，允许开物工程师读取并协助接入这个 MCP 服务。" :
@@ -186,6 +199,18 @@ function renderAssist(){
   $("assistStart").disabled = !!assistAction;
   $("assistTarget").disabled = !!assistAction;
   $("assistStop").disabled = !!assistAction && assistAction !== "target";
+  const command = local ? assistCommand : undefined;
+  $("assistCommandPanel").hidden = !command;
+  if(command){
+    $("assistCommand").textContent = command.command || "";
+    $("assistCommandState").textContent = command.state === "running" ? "正在本机执行，完成后会自动回传开物。" :
+      command.state === "succeeded" ? "执行完成，输出已自动回传开物。" :
+      command.state === "timeout" ? "执行超时，结果已自动回传开物。" :
+      command.state === "canceled" ? "命令已取消。" :
+      "执行失败，结果已自动回传开物。";
+    $("assistOutputDetails").hidden = !command.output;
+    $("assistOutput").textContent = command.output || "";
+  }
 }
 
 async function refreshAssist(){
@@ -193,10 +218,11 @@ async function refreshAssist(){
   assistRefreshing = true;
   const revision = assistChange;
   try{
-    const {enabled, offer, target_after_start} = await api("/api/assist/offer");
+    const {enabled, offer, target_after_start, last_command} = await api("/api/assist/offer");
     if(assistAction || revision !== assistChange){ return; }
     assistEnabled = enabled;
     assistTargetAfterStart = !!target_after_start;
+    assistCommand = last_command;
     assistOffer = offer?.status === "active" || (!assistEnabled && offer?.status === "pending") ? offer : undefined;
     renderAssist();
   }catch(_error){
@@ -240,6 +266,7 @@ async function changeAssist(action){
     if(revision !== assistChange){ return; }
     if(action === "stop"){
       assistOffer = undefined;
+      assistCommand = undefined;
       $("assistNotice").textContent = "协助已停止。";
     }else{
       assistOffer = offer || { ...assistOffer, status:"active", local_active:true };
@@ -400,6 +427,7 @@ async function loadStatus(){
       assistEnabled = false;
       assistTargetAfterStart = false;
       assistAction = "";
+      assistCommand = undefined;
       $("assistNotice").textContent = "";
       renderAssist();
     }
@@ -540,7 +568,13 @@ $("resumeBtn").onclick = ()=>operate("正在恢复连接…", async()=>{
 
 renderAssist();
 loadStatus();
-setInterval(refreshAssist, 5000);
+let assistRefreshTimer;
+async function scheduleAssistRefresh(){
+  clearTimeout(assistRefreshTimer);
+  await refreshAssist();
+  assistRefreshTimer = setTimeout(scheduleAssistRefresh, assistOffer?.local_active ? 1500 : 5000);
+}
+void scheduleAssistRefresh();
 </script>
 </body>
 </html>`

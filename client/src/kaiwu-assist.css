@@ -86,3 +86,103 @@
   gap: 8px;
   padding: 6px 0;
 }
+
+.kaiwu-assist-cmd {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f1b2d;
+  color: #dce7ff;
+}
+
+.kaiwu-assist-cmd h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.kaiwu-assist-cmd p {
+  margin: 0;
+}
+
+.kaiwu-assist-cmd .muted {
+  color: #9fb2d4;
+}
+
+.kaiwu-assist-cmd .field {
+  width: 100%;
+  color: #dce7ff;
+}
+
+.kaiwu-assist-cmd .field small {
+  color: #9fb2d4;
+}
+
+.kaiwu-assist-cmd input {
+  background: #081221;
+  border-color: #2d4162;
+  color: #eef4ff;
+}
+
+.kaiwu-assist-cmd-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.kaiwu-assist-timeout {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #9fb2d4;
+  font-size: 13px;
+}
+
+.kaiwu-assist-timeout select {
+  padding: 7px 9px;
+  border: 1px solid #2d4162;
+  border-radius: 6px;
+  background: #081221;
+  color: #eef4ff;
+}
+
+.kaiwu-assist-terminal {
+  display: grid;
+  gap: 14px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #2d4162;
+  border-radius: 6px;
+  background: #081221;
+  font: 12px/1.55 Consolas, "Cascadia Mono", monospace;
+}
+
+.kaiwu-assist-entry {
+  display: grid;
+  gap: 6px;
+}
+
+.kaiwu-assist-entry pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #c8d8f8;
+}
+
+.kaiwu-assist-entry small {
+  color: #7e93b8;
+}
+
+.kaiwu-assist-prompt {
+  display: flex;
+  gap: 8px;
+  color: #7ee0a1;
+}
+
+.kaiwu-assist-prompt code {
+  color: #f4f7ff;
+  overflow-wrap: anywhere;
+}
