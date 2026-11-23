@@ -1,0 +1,292 @@
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { RefreshCw } from 'lucide-react';
+import { api, errorText, post, timeText } from './api';
+import { Button, ErrorNotice, Field, Loader, Modal, SuccessNotice } from './components';
+import { ScopeField, type ResourceScope } from './resources';
+import type { Connection } from './types';
+import './kaiwu-assist.css';
+
+const path = '/connections/kaiwu-assist';
+
+type Device = {
+  id: string;
+  tenant_name: string;
+  device_label?: string;
+  online: boolean;
+  session_id?: string;
+};
+
+type Job = {
+  id: string;
+  action: 'discover' | 'connect';
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  code?: string;
+  stage?: 'initialize' | 'tools/list' | 'connect';
+  http_status?: number;
+  authorization?: boolean;
+  finished_at?: string;
+};
+
+type Session = {
+  id: string;
+  name: string;
+  url: string;
+  status: 'pending' | 'active' | 'stopped' | 'expired';
+  expires_at: string;
+  tenant_name: string;
+  latest_job: Job | null;
+  discovered_tools: string[];
+  imported_connection_id?: string;
+};
+
+const sessionLabels = {
+  pending: '等待客户授权',
+  active: '协助中',
+  stopped: '协助已结束',
+  expired: '授权已到期',
+};
+
+function describeJob(job: Job): string {
+  if (job.status === 'queued') return '等候连接器接收。';
+  if (job.status === 'running') return job.action === 'discover' ? '客户电脑正在读取工具。' : '客户电脑正在保存服务并建立连接。';
+  if (job.status === 'succeeded') return job.action === 'discover' ? '工具读取成功，请选择允许接入的工具。' : '业务服务已连接，可以导入开物。';
+  switch (job.http_status) {
+    case 401: return '业务服务拒绝了认证。请核对这个服务的访问令牌。';
+    case 403: return '业务服务拒绝了访问。请核对服务权限和来源限制。';
+    case 404: return '业务服务返回 404。请核对部署地址和完整路径。';
+    case 405: return '该地址不接受 MCP 读取工具所需的 POST 请求。请核对接入地址。';
+  }
+  if (job.code === 'no_tools') return '服务没有返回工具。';
+  if (job.code === 'canceled') return '这次操作已取消。';
+  return job.action === 'discover' ? '工具读取失败，请核对服务地址、认证和连接状态。' : '连接失败，请确认客户电脑和开物的连接状态。';
+}
+
+function deviceName(device: Device): string {
+  return [device.tenant_name, device.device_label || device.id, device.online ? '在线' : '暂未连接'].join(' · ');
+}
+
+export function useKaiwuAssistDevices(enabled: boolean) {
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [error, setError] = useState('');
+  const refresh = useCallback(async (signal?: AbortSignal, showError = false) => {
+    try {
+      const response = await api<{devices: Device[]}>(path + '/devices', { signal, redirect: 'error' });
+      if (!signal?.aborted) {
+        setDevices(response.devices);
+        setError('');
+      }
+    } catch (cause) {
+      if (!signal?.aborted && showError) setError(errorText(cause));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const controller = new AbortController();
+    void refresh(controller.signal);
+    return () => controller.abort();
+  }, [enabled, refresh]);
+
+  return { devices, error, refresh };
+}
+
+export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, onImported }: {
+  devices: Device[];
+  devicesError: string;
+  onRefresh: () => void;
+  onClose: () => void;
+  onImported: (connection: Connection) => void;
+}) {
+  const [deviceID, setDeviceID] = useState('');
+  const [sessionID, setSessionID] = useState('');
+  const [session, setSession] = useState<Session | null>(null);
+  const [name, setName] = useState('');
+  const [url, setURL] = useState('');
+  const [bearer, setBearer] = useState('');
+  const [tools, setTools] = useState<string[]>([]);
+  const [scope, setScope] = useState<ResourceScope>('private');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [pollError, setPollError] = useState('');
+  const [imported, setImported] = useState<Connection | null>(null);
+  const mutating = useRef(false);
+  const epoch = useRef(0);
+  const device = devices.find(item => item.id === deviceID);
+  const job = session?.latest_job;
+  const active = session?.status === 'active';
+  const live = active || session?.status === 'pending';
+  const canPoll = !!sessionID && (!session || live);
+  const jobBusy = job?.status === 'queued' || job?.status === 'running';
+  const connected = job?.action === 'connect' && job.status === 'succeeded';
+  const importedID = imported?.id || session?.imported_connection_id;
+  const selected = tools.filter(tool => session?.discovered_tools.includes(tool));
+
+  useEffect(() => {
+    if (!canPoll) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const requestEpoch = epoch.current;
+      try {
+        if (mutating.current) return;
+        const next = await api<Session>(path + '/sessions/' + encodeURIComponent(sessionID), { signal: controller.signal, redirect: 'error' });
+        if (!controller.signal.aborted && requestEpoch === epoch.current) {
+          setSession(next);
+          setPollError('');
+          if (next.status !== 'active') setBearer('');
+        }
+      } catch (cause) {
+        if (!controller.signal.aborted && requestEpoch === epoch.current) setPollError(errorText(cause));
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(poll, 2500);
+      }
+    };
+    void poll();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [canPoll, sessionID]);
+
+  async function run(action: () => Promise<void>) {
+    if (mutating.current) return;
+    epoch.current += 1;
+    mutating.current = true;
+    setBusy(true);
+    setError('');
+    try { await action(); }
+    catch (cause) { setError(errorText(cause)); }
+    finally { mutating.current = false; setBusy(false); }
+  }
+
+  function switchDevice(id: string) {
+    epoch.current += 1;
+    setDeviceID(id);
+    setSessionID(devices.find(item => item.id === id)?.session_id || '');
+    setSession(null);
+    setName('');
+    setURL('');
+    setBearer('');
+    setTools([]);
+    setError('');
+    setPollError('');
+    setImported(null);
+  }
+
+  function update(next: Session) {
+    setSessionID(next.id);
+    setSession(next);
+    setPollError('');
+  }
+
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    if (!device || !name.trim() || !url.trim()) return;
+    await run(async () => {
+      update(await post<Session>(path + '/sessions', { connector_id: device.id, name: name.trim(), url: url.trim() }));
+    });
+  }
+
+  async function submitJob(action: Job['action']) {
+    if (!session || !active || jobBusy) return;
+    await run(async () => {
+      const payload = action === 'discover' ? { action, ...(bearer.trim() && { bearer_token: bearer.trim() }) } : { action, tools: selected };
+      if (action === 'discover') setBearer('');
+      update(await post<Session>(path + '/sessions/' + encodeURIComponent(session.id) + '/jobs', payload));
+      if (action === 'discover') setTools([]);
+    });
+  }
+
+  async function stop() {
+    if (!session || !live) return;
+    await run(async () => {
+      update(await post<Session>(path + '/sessions/' + encodeURIComponent(session.id) + '/stop'));
+      setBearer('');
+    });
+  }
+
+  async function importConnection() {
+    if (!session || !active || !connected || importedID) return;
+    await run(async () => {
+      const result = await post<{connection: Connection}>(path + '/sessions/' + encodeURIComponent(session.id) + '/import', { scope });
+      setImported(result.connection);
+    });
+  }
+
+  function close() {
+    if (mutating.current) return;
+    onClose();
+    if (imported) onImported(imported);
+  }
+
+  const formID = 'kaiwu-assist-request';
+  return <Modal title="内网接入协助" wide onClose={close}>
+    <div className="modal-body kaiwu-assist">
+      <ErrorNotice message={error || pollError || devicesError}/>
+      {!session && <>
+        <Field label="客户设备" required>
+          <select value={deviceID} onChange={event => switchDevice(event.target.value)} disabled={busy}>
+            <option value="">选择客户设备</option>
+            {devices.map(item => <option key={item.id} value={item.id}>{deviceName(item)}</option>)}
+          </select>
+        </Field>
+        {sessionID ? <>{!pollError && <Loader text="正在读取该设备的协助状态…"/>}</> :
+          <form id={formID} onSubmit={create}>
+            <Field label="服务名称" required><input value={name} maxLength={80} required disabled={busy} onChange={event => setName(event.target.value)} /></Field>
+            <Field label="完整 MCP 地址" required hint="客户将在连接器上看到并确认这个地址。">
+              <input value={url} type="url" maxLength={1024} autoComplete="off" spellCheck={false} required disabled={busy} onChange={event => setURL(event.target.value)} />
+            </Field>
+          </form>}
+      </>}
+      {session && <>
+        <section className="kaiwu-assist-status" aria-label="协助状态">
+          <strong role="status">{sessionLabels[session.status]}</strong>
+          <p>{session.tenant_name} · {session.name}</p>
+          <code>{session.url}</code>
+          {live && <small>开放至 {timeText(session.expires_at)}</small>}
+        </section>
+        {session.status === 'pending' && <p>请客户在 Windows 开物连接器上点击「开始协助」。授权后可以读工具。</p>}
+        {job && <section className="kaiwu-assist-result" aria-label="最近一次操作结果">
+          <p role="status">{describeJob(job)}</p>
+          {(job.stage || job.http_status || job.finished_at || job.authorization !== undefined) && <details>
+            <summary>查看请求结果</summary>
+            <dl>
+              {job.stage && <><dt>步骤</dt><dd>{job.stage === 'initialize' ? '初始化 (initialize)' : job.stage === 'tools/list' ? '读取工具 (tools/list)' : '连接服务'}</dd></>}
+              {job.http_status && <><dt>响应</dt><dd>HTTP {job.http_status}</dd></>}
+              {job.authorization !== undefined && <><dt>认证</dt><dd>{job.authorization ? '已使用 Bearer 访问令牌' : '未使用 Bearer 访问令牌'}</dd></>}
+              {job.finished_at && <><dt>完成时间</dt><dd>{timeText(job.finished_at)}</dd></>}
+            </dl>
+          </details>}
+        </section>}
+        {active && !connected && !importedID && <div className="kaiwu-assist-action">
+          <Field label="Bearer 访问令牌" hint="留空可使用同一地址在客户设备上已保存的令牌。">
+            <input type="password" value={bearer} autoComplete="new-password" spellCheck={false} maxLength={8192} disabled={busy || jobBusy} onChange={event => setBearer(event.target.value)} />
+          </Field>
+          <Button variant="secondary" busy={jobBusy && job?.action === 'discover'} disabled={busy || jobBusy || !!pollError} onClick={() => void submitJob('discover')}>读取工具</Button>
+        </div>}
+        {active && !connected && !importedID && !!session.discovered_tools.length && <fieldset className="kaiwu-assist-tools" disabled={busy || jobBusy}>
+          <legend>允许开物调用的工具</legend>
+          {session.discovered_tools.map(tool => <label key={tool}>
+            <input type="checkbox" checked={selected.includes(tool)} onChange={event => {
+              const checked = event.target.checked;
+              setTools(previous => checked ? [...previous, tool] : previous.filter(item => item !== tool));
+            }} />
+            <code>{tool}</code>
+          </label>)}
+        </fieldset>}
+        {active && connected && !importedID && <ScopeField admin value={scope} onChange={setScope} disabled={busy || !!pollError}/>}
+        {importedID && <SuccessNotice message="已导入开物。可在 MCP 列表查看这项连接。"/>}
+      </>}
+    </div>
+    <footer className="modal-footer">
+      <Button variant="secondary" disabled={busy} onClick={close}>{imported ? '查看连接' : '关闭窗口'}</Button>
+      {!session && !sessionID && <>
+        <Button variant="ghost" disabled={busy} onClick={onRefresh}><RefreshCw size={15}/>刷新设备</Button>
+        <Button type="submit" form={formID} busy={busy} disabled={!device || !name.trim() || !url.trim()}>发送协助请求</Button>
+      </>}
+      {session && !live && !importedID && <Button onClick={() => {
+        setSessionID(''); setSession(null); setError(''); setPollError(''); setTools([]); setBearer(''); onRefresh();
+      }}>新建请求</Button>}
+      {live && <Button variant="secondary" disabled={busy} onClick={() => void stop()}>{session?.status === 'pending' ? '撤回请求' : '结束协助'}</Button>}
+      {active && !connected && !importedID && !!session.discovered_tools.length && <Button busy={jobBusy && job?.action === 'connect'} disabled={busy || jobBusy || !selected.length || !!pollError} onClick={() => void submitJob('connect')}>保存并连接</Button>}
+      {active && connected && !importedID && <Button busy={busy} disabled={!!pollError} onClick={() => void importConnection()}>导入开物</Button>}
+    </footer>
+  </Modal>;
+}

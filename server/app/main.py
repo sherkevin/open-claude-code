@@ -108,6 +108,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     @asynccontextmanager
     async def lifespan(app):
         service = app.state.service = Service(settings)
+        expire_assist_on_startup(service)
         service.catalog.require_credentials = runtime_factory is None
         manager = app.state.manager = RunManager(service, runtime_factory)
         service.manager = manager
@@ -223,6 +224,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     app.include_router(create_import_router(svc, authenticated))
     from .kaiwu_platform_export import create_kaiwu_platform_export_router
     app.include_router(create_kaiwu_platform_export_router(svc, admin))
+    from .kaiwu_assist import create_kaiwu_assist_router, expire_assist_on_startup
+    app.include_router(create_kaiwu_assist_router(svc, admin))
     from .skills import create_skill_router
     app.include_router(create_skill_router(svc, authenticated))
     from .plugins import create_plugin_router

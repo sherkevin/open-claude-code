@@ -1,0 +1,74 @@
+.kaiwu-assist {
+  display: grid;
+  gap: 14px;
+}
+
+.kaiwu-assist-status {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--brand-soft);
+}
+
+.kaiwu-assist p,
+.kaiwu-assist dl {
+  margin: 0;
+}
+
+.kaiwu-assist code {
+  overflow-wrap: anywhere;
+}
+
+.kaiwu-assist-status small,
+.kaiwu-assist-result dt {
+  color: var(--muted);
+}
+
+.kaiwu-assist-result details {
+  margin-top: 6px;
+}
+
+.kaiwu-assist-result summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.kaiwu-assist-result dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.kaiwu-assist-result dd {
+  margin: 0;
+}
+
+.kaiwu-assist-action {
+  display: grid;
+  justify-items: start;
+}
+
+.kaiwu-assist-action .field {
+  width: 100%;
+}
+
+.kaiwu-assist-tools {
+  min-width: 0;
+  max-height: 248px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 0;
+}
+
+.kaiwu-assist-tools label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+}

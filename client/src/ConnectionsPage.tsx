@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { AlertCircle, CheckCircle2, ChevronDown, CircleHelp, Clock3, LoaderCircle, Link2, Network, Pencil, PlugZap, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronDown, CircleHelp, Clock3, Handshake, LoaderCircle, Link2, Network, Pencil, PlugZap, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { api, ApiError, errorText, patch, post, remove, timeText } from './api';
 import type { Connection, MCPTool } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import McpImportDialog from './McpImportDialog';
 import KaiwuHandoffDialog from './KaiwuHandoffDialog';
+import { KaiwuAssistDialog, useKaiwuAssistDevices } from './KaiwuAssistDialog';
 import { displayToolDescription, toolParameters } from './CapabilityGuide';
 import { BusinessIcon, businessIconFor } from './BusinessIcon';
 import './connections-onboarding.css';
@@ -85,6 +86,8 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
 }) {
   const [items, setItems] = useState<Connection[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const [importing, setImporting] = useState(false), [success, setSuccess] = useState(''), [editor, setEditor] = useState<Connection | 'new' | null>(null);
+  const [assisting, setAssisting] = useState(false);
+  const assistance = useKaiwuAssistDevices(admin);
   const [testing, setTesting] = useState(''), [testErrors, setTestErrors] = useState<Record<string, string>>({}), [toolsId, setToolsId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null), [busyDelete, setBusyDelete] = useState(false), [localFocusId, setLocalFocusId] = useState<string>();
   const [oauthProfiles, setOAuthProfiles] = useState<string[]>([]);
@@ -139,7 +142,14 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
     finally { setTesting(''); }
   };
   return <div className="page connections-onboarding mcp-catalog">
-    <PageHeader eyebrow="" title="MCP" description="查看与管理已接入的工具服务。" actions={<><Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入配置</Button><Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>接入 MCP</Button></>}/>
+    <PageHeader eyebrow="" title="MCP" description="查看与管理已接入的工具服务。" actions={<>
+      {admin && !!assistance.devices.length && <Button variant="secondary" disabled={!!testing || loading} onClick={() => {
+        setAssisting(true);
+        void assistance.refresh(undefined, true);
+      }}><Handshake size={17}/>内网接入协助</Button>}
+      <Button variant="secondary" disabled={!!testing || loading} onClick={() => setImporting(true)}><Upload size={17}/>导入配置</Button>
+      <Button disabled={!!testing || loading} onClick={() => setEditor('new')}><Plus size={17}/>接入 MCP</Button>
+    </>}/>
     <ErrorNotice message={error} onDismiss={() => setError('')}/><SuccessNotice message={success}/>
     {oauthReturn?.status === 'failed' && <ErrorNotice message="OAuth 授权未完成，请在对应连接上重新授权。" onDismiss={clearOAuthReturn}/>}
     {oauthReturn?.status === 'linked' && <SuccessNotice message="已返回工作台。请查看连接卡片上的工具发现结果。"/>}
@@ -148,6 +158,13 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
     {editor && <ConnectionEditor admin={admin} oauthProfiles={oauthProfiles} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => { setEditor(null); focusConnection(saved.id); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]); setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; }); setSuccess('MCP 配置已保存。'); if (shouldTest && saved.auth_type === 'oauth' && !saved.credential_present) await manageOAuth(saved); else if (shouldTest) await test(saved); }}/ >}
     {unlinking && <Modal title="断开 OAuth 授权" onClose={() => { if (!oauthAction) setUnlinking(null); }}><div className="modal-body"><p>断开「{unlinking.name}」后，已绑定的助手将停止使用该连接，直到你再次授权。</p><ErrorNotice message={error}/></div><footer className="modal-footer"><Button variant="secondary" disabled={!!oauthAction} onClick={() => setUnlinking(null)}>取消</Button><Button variant="danger" busy={!!oauthAction} onClick={() => void revokeOAuth(unlinking)}>断开授权</Button></footer></Modal>}
     {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); if (result.connections[0]) focusConnection(result.connections[0].id); setSuccess(`已导入 ${result.connections.length} 个 MCP。`); void load(); }}/ >}
+    {admin && assisting && <KaiwuAssistDialog devices={assistance.devices} devicesError={assistance.error} onRefresh={() => void assistance.refresh(undefined, true)}
+      onClose={() => { setAssisting(false); void assistance.refresh(); }} onImported={async item => {
+        focusConnection(item.id);
+        await load();
+        if (item.status === 'untested') await test(item);
+        else setSuccess(`已导入「${item.name}」。`);
+      }}/>}
     {handoffCode && onCloseHandoff && <KaiwuHandoffDialog code={handoffCode} admin={admin} onClose={onCloseHandoff} onImported={async item => {
       onCloseHandoff();
       focusConnection(item.id);

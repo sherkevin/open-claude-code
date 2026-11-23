@@ -196,6 +196,9 @@ class Settings:
     kaiwu_device_export_tenants: tuple[str, ...] = field(default_factory=lambda: tuple(
         value.strip() for value in os.getenv("AGENT_KAIWU_DEVICE_EXPORT_TENANTS", "").split(",") if value.strip()
     ))
+    kaiwu_assist_tenants: tuple[str, ...] = field(default_factory=lambda: tuple(
+        value.strip() for value in os.getenv("AGENT_KAIWU_ASSIST_TENANTS", "").split(",") if value.strip()
+    ))
     kaiwu_control_admin_token: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ADMIN_TOKEN", "").strip(), repr=False)
     kaiwu_control_admin_token_file: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ADMIN_TOKEN_FILE", "").strip())
     kaiwu_control_relay_address: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_ADDRESS", "").strip())

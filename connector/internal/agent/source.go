@@ -33,6 +33,8 @@ type SourceInput struct {
 	UserID      string   `json:"user_id,omitempty"`
 	HMACKey     string   `json:"hmac_key,omitempty"`
 	Tools       []string `json:"tools,omitempty"`
+
+	assistRevision *int
 }
 
 // SourceSaveResult contains only non-secret source metadata.
@@ -333,7 +335,17 @@ func (a *Agent) SetSourceEnabled(sourceID string, enabled bool) (result SourceSa
 // DiscoverSourceTools validates the current form values and performs the same
 // MCP initialize + tools/list calls used by diagnosis. It does not persist the
 // draft or call any business tool.
-func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (toolsResult []ToolSummary, err error) {
+func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) ([]ToolSummary, error) {
+	var stages sourceDiscovery
+	return a.discoverSourceTools(ctx, input, &stages)
+}
+
+type sourceDiscovery struct {
+	stage         string
+	authorization *bool
+}
+
+func (a *Agent) discoverSourceTools(ctx context.Context, input SourceInput, stages *sourceDiscovery) (toolsResult []ToolSummary, err error) {
 	started := time.Now()
 	operationID := diagnostics.NewOperationID()
 	code := "source_tools_failed"
@@ -346,6 +358,9 @@ func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (too
 	if err != nil {
 		return nil, err
 	}
+	hasAuthorization := prepared.secret["Authorization"] != ""
+	stages.authorization = &hasAuthorization
+	stages.stage = "initialize"
 
 	client := &mcp.Client{
 		Endpoint: prepared.source.UpstreamURL,
@@ -368,6 +383,7 @@ func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (too
 		code = "source_tools_initialize_failed"
 		return nil, fmt.Errorf("MCP 初始化失败，请检查 MCP 地址和访问令牌: %w", err)
 	}
+	stages.stage = "tools/list"
 	tools, err := client.ListTools(discoveryCtx)
 	if err != nil {
 		code = "source_tools_list_failed"
@@ -380,8 +396,15 @@ func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (too
 
 	out := make([]ToolSummary, 0, len(tools))
 	seen := map[string]bool{}
+	var assistCredential string
+	if input.assistRevision != nil {
+		_, assistCredential, _ = strings.Cut(prepared.secret["Authorization"], " ")
+	}
 	for _, tool := range tools {
 		name := strings.TrimSpace(tool.Name)
+		if assistCredential != "" && strings.Contains(name, assistCredential) {
+			return nil, errors.New("工具名称不能包含访问凭据")
+		}
 		if name == "" || strings.ContainsAny(name, "\r\n,* \t") {
 			return nil, fmt.Errorf("上游返回了无效工具名称: %q", tool.Name)
 		}
@@ -405,6 +428,9 @@ func (a *Agent) DiscoverSourceTools(ctx context.Context, input SourceInput) (too
 func (a *Agent) prepareSourceLocked(input SourceInput) (preparedSource, error) {
 	displayName := strings.TrimSpace(input.DisplayName)
 	upstreamURL := strings.TrimSpace(input.UpstreamURL)
+	if input.assistRevision != nil && *input.assistRevision != a.config.Revision {
+		return preparedSource{}, errors.New("本机 MCP 配置已改变，请重新读取工具")
+	}
 	index := -1
 	var existing config.Source
 	if sourceID := strings.TrimSpace(input.SourceID); sourceID != "" {
@@ -420,6 +446,9 @@ func (a *Agent) prepareSourceLocked(input SourceInput) (preparedSource, error) {
 		}
 		if index < 0 {
 			return preparedSource{}, errors.New("要编辑的 MCP 服务不存在，请刷新页面后重试")
+		}
+		if input.assistRevision != nil && (upstreamURL != existing.UpstreamURL || existing.Disabled) {
+			return preparedSource{}, errors.New("本机 MCP 服务与已授权的协助目标不符")
 		}
 		if displayName == "" {
 			displayName = existing.DisplayName

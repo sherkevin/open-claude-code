@@ -2352,7 +2352,9 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
         # events, and the administrator token is only entered into page memory.
         return HTMLResponse(OPS_PAGE, headers=ops_page_headers())
 
+    from .kaiwu_assist import add_device_assist
     from .kaiwu_platform_export import add_device_handoff
 
+    add_device_assist(router, service, device)
     add_device_handoff(router, service, device)
     return router

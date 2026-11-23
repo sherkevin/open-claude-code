@@ -179,6 +179,24 @@ func TestPostRequiresToken(t *testing.T) {
 	}
 }
 
+func TestAssistOfferRequiresLocalSessionToken(t *testing.T) {
+	server := newTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/assist/offer", nil)
+	request.Host = loopbackHost
+	unauthorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthorized, request)
+	if unauthorized.Code != http.StatusForbidden {
+		t.Fatalf("assistance offer must require the local token: %d", unauthorized.Code)
+	}
+
+	request.Header.Set("X-Connector-Token", server.Token)
+	authorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(authorized, request)
+	if authorized.Code != http.StatusOK || !strings.Contains(authorized.Body.String(), `"data":null`) {
+		t.Fatalf("an unbound device should show no offer: %d %s", authorized.Code, authorized.Body)
+	}
+}
+
 func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 	server := &Server{Token: "test-token", Addr: loopbackHost}
 	paths := []string{
@@ -197,6 +215,8 @@ func TestStateChangingEndpointsRejectNonPostBeforeHandler(t *testing.T) {
 		"/api/disconnect",
 		"/api/revoke",
 		"/api/mcp-export",
+		"/api/assist/start",
+		"/api/assist/stop",
 		"/api/diagnostics/settings",
 	}
 	for _, path := range paths {
@@ -238,6 +258,8 @@ func TestStateChangingEndpointsRejectPostWithoutToken(t *testing.T) {
 		"/api/disconnect",
 		"/api/revoke",
 		"/api/mcp-export",
+		"/api/assist/start",
+		"/api/assist/stop",
 		"/api/diagnostics/settings",
 	}
 	for _, path := range paths {

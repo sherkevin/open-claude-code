@@ -117,11 +117,53 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/export", s.guard(s.handleExport))
 	mux.HandleFunc("/api/platform-handoff", s.guard(postOnly(s.handlePlatformHandoff)))
 	mux.HandleFunc("/api/mcp-export", s.guard(postOnly(s.handleMCPExport)))
+	mux.HandleFunc("GET /api/assist/offer", s.guard(s.handleAssistOffer))
+	mux.HandleFunc("/api/assist/start", s.guard(postOnly(s.handleAssistStart)))
+	mux.HandleFunc("/api/assist/stop", s.guard(postOnly(s.handleAssistStop)))
 	mux.HandleFunc("/api/logs", s.guard(s.handleLogs))
 	mux.HandleFunc("/api/logs/download", s.guard(s.handleLogsDownload))
 	mux.HandleFunc("/api/platform-logs", s.guard(s.handlePlatformLogs))
 	mux.HandleFunc("/api/diagnostics/settings", s.guard(postOnly(s.handleDiagnosticsSettings)))
 	return mux
+}
+
+func (s *Server) handleAssistOffer(w http.ResponseWriter, r *http.Request) {
+	if !tokenMatches(r.Header.Get("X-Connector-Token"), s.Token) {
+		writeError(w, http.StatusForbidden, "TOKEN_REQUIRED", "缺少本机会话令牌，请刷新页面后重试")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
+	defer cancel()
+	offer, err := s.Agent.AssistOffer(ctx)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "ASSIST_UNAVAILABLE", "暂时无法查询协助请求")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": offer})
+}
+
+func (s *Server) handleAssistStart(w http.ResponseWriter, r *http.Request) {
+	s.handleAssistAction(w, r, s.Agent.StartAssist)
+}
+
+func (s *Server) handleAssistStop(w http.ResponseWriter, r *http.Request) {
+	s.handleAssistAction(w, r, s.Agent.StopAssist)
+}
+
+func (s *Server) handleAssistAction(w http.ResponseWriter, r *http.Request, action func(context.Context, string) error) {
+	var body struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := action(ctx, body.SessionID); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {

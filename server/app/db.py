@@ -382,6 +382,38 @@ CREATE TABLE IF NOT EXISTS kaiwu_platform_handoffs(
 );
 CREATE INDEX IF NOT EXISTS kaiwu_platform_handoffs_expiry ON kaiwu_platform_handoffs(expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS kaiwu_platform_handoffs_pending ON kaiwu_platform_handoffs(connector_id,source_id) WHERE redeemed_by IS NULL;
+CREATE TABLE IF NOT EXISTS kaiwu_assist_sessions(
+    id TEXT PRIMARY KEY,
+    connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
+    tenant_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','active','stopped','expired')),
+    expires_at TEXT NOT NULL,
+    last_poll_at TEXT,
+    discovered_tools TEXT NOT NULL DEFAULT '[]',
+    imported_connection_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS kaiwu_assist_device_live
+    ON kaiwu_assist_sessions(connector_id) WHERE status IN ('pending','active');
+CREATE TABLE IF NOT EXISTS kaiwu_assist_jobs(
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    session_id TEXT NOT NULL REFERENCES kaiwu_assist_sessions(id),
+    action TEXT NOT NULL CHECK(action IN ('discover','connect')),
+    status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed')),
+    selected_tools TEXT NOT NULL DEFAULT '[]',
+    sealed_bearer TEXT,
+    result TEXT,
+    source_revision INTEGER,
+    expires_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS kaiwu_assist_jobs_session ON kaiwu_assist_jobs(session_id,seq DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS kaiwu_assist_job_live
+    ON kaiwu_assist_jobs(session_id) WHERE status IN ('queued','running');
 CREATE TABLE IF NOT EXISTS kaiwu_edge_routes(
     connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
     source_id TEXT NOT NULL,

@@ -42,6 +42,7 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
 .notice{margin:16px 0 0;color:var(--muted);font-size:13px}.notice:empty{display:none}.notice.error{color:var(--error)}.notice.ok{color:var(--ok)}
 .saved{margin:18px 3px 0}.saved summary{font-size:14px}.saved ul{padding:0;list-style:none;margin:8px 0 0;display:grid;gap:6px}.saved button{width:100%;justify-content:space-between;gap:10px;overflow-wrap:anywhere;text-align:left}
 .result-pill{display:inline-block;background:#e8f5ef;color:var(--ok);padding:2px 8px;margin:0 0 9px;border-radius:5px;font-size:12px;font-weight:650}
+.assistance{margin-bottom:18px}.assistance code{display:block;margin:3px 0 9px;overflow-wrap:anywhere}.assistance .actions{margin-top:12px}
 @media(max-width:560px){main{margin:30px auto;padding:0 14px 30px}.bar{padding:12px 14px;gap:10px}.brand{gap:7px;font-size:14px}h1{font-size:28px}.panel{padding:20px}.actions button.primary{flex-grow:1}}
 </style>
 </head>
@@ -54,6 +55,17 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
   <h1>接入本机 MCP</h1>
   <p class="lead">把这台电脑上的 MCP 服务添加到开物。</p>
   <div class="identity"><span id="connectionDot" class="dot" aria-hidden="true"></span><span id="connectionState" role="status">正在读取连接状态…</span><button id="reloadStatusBtn" type="button" hidden>重试</button><button id="resumeBtn" type="button" hidden>恢复连接</button></div>
+  <section id="assistPanel" class="panel assistance" aria-labelledby="assistTitle" hidden>
+    <h2 id="assistTitle">开物协助接入</h2>
+    <strong id="assistService"></strong>
+    <code id="assistAddress"></code>
+    <p id="assistState" class="muted" role="status"></p>
+    <div class="actions">
+      <button id="assistStart" class="primary" type="button" hidden>开始协助</button>
+      <button id="assistStop" type="button" hidden>停止协助</button>
+    </div>
+    <p id="assistNotice" class="notice" role="status"></p>
+  </section>
   <section class="panel" aria-label="接入本机 MCP">
     <form id="bindForm" hidden>
       <h2>绑定企业</h2>
@@ -116,6 +128,10 @@ let busy = false;
 let sourceID = "";
 let draft;
 let pendingExport = "";
+let assistOffer;
+let assistRefreshing = false;
+let assistBusy = false;
+let assistChange = 0;
 
 async function api(path, body){
   const headers = {"X-Connector-Token":TOKEN};
@@ -138,6 +154,63 @@ async function api(path, body){
 function notice(text, kind = ""){
   $("notice").textContent = text;
   $("notice").className = "notice" + (kind ? " " + kind : "");
+}
+
+function renderAssist(){
+  $("assistPanel").hidden = !assistOffer && !$("assistNotice").textContent;
+  $("assistService").textContent = assistOffer?.name || "";
+  $("assistAddress").textContent = assistOffer?.url || "";
+  const pending = assistOffer?.status === "pending";
+  const active = assistOffer?.status === "active";
+  const local = !!assistOffer?.local_active;
+  $("assistState").textContent = pending ?
+    "允许开物工程师测试这个 MCP 服务、选择工具并导入开物。你可以随时停止。" :
+    local ? "正在协助。你无需操作，随时可以停止。" :
+    active ? "本机协助已停止。你可以再次发送停止通知。" : "";
+  $("assistStart").hidden = !pending;
+  $("assistStop").hidden = !active && !local;
+  $("assistStart").disabled = assistBusy;
+  $("assistStop").disabled = assistBusy;
+}
+
+async function refreshAssist(){
+  if(!status?.bound || status.state === "REVOKED" || assistBusy || assistRefreshing){ return; }
+  assistRefreshing = true;
+  const revision = assistChange;
+  try{
+    const offer = await api("/api/assist/offer");
+    if(assistBusy || revision !== assistChange){ return; }
+    assistOffer = offer?.status === "pending" || offer?.status === "active" ? offer : undefined;
+    renderAssist();
+  }catch(_error){
+    // Keep the displayed target and Stop available when the cloud is unreachable.
+  }finally{
+    assistRefreshing = false;
+  }
+}
+
+async function changeAssist(action){
+  if(!assistOffer || assistBusy){ return; }
+  assistBusy = true;
+  assistChange++;
+  $("assistNotice").textContent = "";
+  renderAssist();
+  try{
+    await api("/api/assist/" + action, {session_id:assistOffer.id});
+    if(action === "stop"){
+      assistOffer = undefined;
+      $("assistNotice").textContent = "协助已停止。";
+    }else{
+      assistOffer = { ...assistOffer, status:"active", local_active:true };
+    }
+  }catch(error){
+    if(action === "stop"){ assistOffer = { ...assistOffer, local_active:false }; }
+    $("assistNotice").textContent = error.message;
+  }finally{
+    assistBusy = false;
+    renderAssist();
+    void refreshAssist();
+  }
 }
 
 function selectedTools(){
@@ -271,6 +344,12 @@ async function loadStatus(){
     status = await api("/api/status");
     updateSources();
     const revoked = status.state === "REVOKED";
+    if(revoked || !status.bound){
+      assistChange++;
+      assistOffer = undefined;
+      $("assistNotice").textContent = "";
+      renderAssist();
+    }
     notice(revoked && status.bound ? "企业绑定已撤销，请联系开物技术支持。" :
       (!status.bound && !status.cloud_configured ? "当前安装包未配置开物服务，请联系技术支持。" : ""));
   }catch(error){
@@ -278,6 +357,7 @@ async function loadStatus(){
     notice(error.message, "error");
   }
   render();
+  void refreshAssist();
 }
 
 async function readTools(event){
@@ -374,7 +454,7 @@ $("bindForm").onsubmit = event=>{
     $("bindCode").value = "";
     updateSources();
     notice("");
-  }).then(()=>{ if(status?.bound){ $("upstreamAddress").focus(); } });
+  }).then(()=>{ if(status?.bound){ $("upstreamAddress").focus(); void refreshAssist(); } });
 };
 $("addressForm").onsubmit = readTools;
 $("toolForm").onsubmit = generateJSON;
@@ -392,6 +472,8 @@ $("editAddressBtn").onclick = ()=>{
   $("upstreamAddress").focus();
 };
 $("addAnotherBtn").onclick = ()=>editSource();
+$("assistStart").onclick = ()=>changeAssist("start");
+$("assistStop").onclick = ()=>changeAssist("stop");
 $("dynamicAuth").onchange = render;
 $("reloadStatusBtn").onclick = loadStatus;
 $("resumeBtn").onclick = ()=>operate("正在恢复连接…", async()=>{
@@ -400,7 +482,9 @@ $("resumeBtn").onclick = ()=>operate("正在恢复连接…", async()=>{
   notice(status.tunnel_connected ? "已恢复连接。" : (status.last_error || "还未连到开物，请查看诊断。"), status.tunnel_connected ? "ok" : "error");
 });
 
+renderAssist();
 loadStatus();
+setInterval(refreshAssist, 5000);
 </script>
 </body>
 </html>`

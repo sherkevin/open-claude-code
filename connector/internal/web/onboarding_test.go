@@ -73,12 +73,22 @@ const mcpConfig = {mcpServers:{"只读示例":{
   type:"http", url:"https://edge.example/sources/public/mcp", headers:{Authorization:"Bearer test-integration"}
 }}};
 let exportAttempts = 0;
+let assistance = {id:"as_fixture",name:"销售合同",url:"https://customer.example/mcp/sales",status:"pending"};
 const fetch = async (path, options) => {
   const body = options && options.body ? JSON.parse(options.body) : undefined;
   calls.push({path, body});
   let data;
   if(path === "/api/status"){
     data = control;
+  }else if(path === "/api/assist/offer"){
+    assert.ok(options.headers["X-Connector-Token"]);
+    data = assistance;
+  }else if(path === "/api/assist/start"){
+    assert.deepEqual(body, {session_id:"as_fixture"});
+    assistance = {...assistance, status:"active", local_active:true};
+  }else if(path === "/api/assist/stop"){
+    assert.deepEqual(body, {session_id:"as_fixture"});
+    assistance = null;
   }else if(path === "/api/bind"){
     assert.deepEqual(body, {code:"kwp_fixture"});
     Object.assign(control, {bound:true,state:"CONFIGURING",tenant_name:"试测企业"});
@@ -102,7 +112,7 @@ const fetch = async (path, options) => {
   }else{
     assert.fail("Unexpected onboarding API call: " + path);
   }
-  if(path !== "/api/status"){
+  if(!["/api/status", "/api/assist/offer"].includes(path)){
     assert.equal(options.method, "POST");
     assert.ok(options.headers["X-Connector-Token"]);
   }
@@ -113,10 +123,21 @@ async function verifyWorkflow(){
   await new Promise(resolve=>setImmediate(resolve));
   const ui = id=>document.getElementById(id);
   const submit = () => ({preventDefault(){}});
+  assert.equal(ui("assistPanel").hidden, true);
   ui("bindCode").value = "  kwp_fixture  ";
   await ui("bindForm").onsubmit(submit());
   assert.equal(calls.filter(call=>call.path === "/api/bind").length, 1);
   assert.equal(ui("bindCode").value, "");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ui("assistStart").hidden, false);
+  assert.equal(ui("assistStop").hidden, true);
+  assert.equal(ui("assistAddress").textContent, assistance.url);
+  await ui("assistStart").onclick();
+  assert.equal(ui("assistStart").hidden, true);
+  assert.equal(ui("assistStop").hidden, false);
+  await ui("assistStop").onclick();
+  assert.equal(ui("assistStop").hidden, true);
+  assert.equal(ui("assistNotice").textContent, "协助已停止。");
 
   ui("upstreamAddress").value = "65536";
   await readTools(submit());

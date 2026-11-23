@@ -116,6 +116,9 @@ type Agent struct {
 	frpcProxyCount    int
 	stoppingTunnels   int
 	registeredSources map[string]map[string]bool
+	assistSeen        *cloud.AssistOffer
+	assistActive      *assistSession
+	assistStopped     string
 
 	// mu guards the startup worker and cancellation of the active attempt.
 	startupConnectPending bool
@@ -320,6 +323,8 @@ func (a *Agent) CloseContext(ctx context.Context) {
 		if a.runtimeCancel != nil {
 			a.runtimeCancel()
 		}
+		a.assistActive = nil
+		a.assistSeen = nil
 		s := a.supervisor
 		native := a.native
 		stopHeartbeat := a.heartbeat
@@ -1626,6 +1631,13 @@ func (a *Agent) Revoke(ctx context.Context) (Status, error) {
 
 // revokeLocally is shared by explicit and cloud revocation. connectMu is held.
 func (a *Agent) revokeLocally(ctx context.Context, connectorID, reason string) error {
+	a.mu.Lock()
+	if a.assistActive != nil {
+		a.assistActive.cancel()
+		a.assistActive = nil
+	}
+	a.assistSeen = nil
+	a.mu.Unlock()
 	tombstoneErr := a.store.WriteJSON(fileRevoked, map[string]string{
 		"connector_id": connectorID,
 		"revoked_at":   time.Now().UTC().Format(time.RFC3339Nano),
@@ -1639,6 +1651,11 @@ func (a *Agent) revokeLocally(ctx context.Context, connectorID, reason string) e
 	if a.diagMgr != nil {
 		a.diagMgr.ClearOwner()
 	}
+	if a.assistActive != nil {
+		a.assistActive.cancel()
+		a.assistActive = nil
+	}
+	a.assistSeen = nil
 	a.identity = cloud.Identity{}
 	a.cloud = nil
 	a.secrets = map[string]map[string]string{}
