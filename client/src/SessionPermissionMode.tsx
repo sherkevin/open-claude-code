@@ -50,6 +50,14 @@ export default function SessionPermissionMode({ conversation, disabled }: { conv
       const opensUp = above >= panel.scrollHeight || above >= below;
       panel.dataset.side = opensUp ? 'top' : 'bottom';
       panel.style.maxHeight = `${Math.max(0, opensUp ? above : below)}px`;
+      // Scroll the list itself so its current option stays visible on a short screen.
+      const row = panel.querySelector<HTMLElement>('[role="option"]:focus') ?? panel.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (row) {
+        const bounds = panel.getBoundingClientRect();
+        const item = row.getBoundingClientRect();
+        if (item.top < bounds.top) panel.scrollTop += item.top - bounds.top - 4;
+        else if (item.bottom > bounds.bottom) panel.scrollTop += item.bottom - bounds.bottom + 4;
+      }
     }
     position();
     panel.querySelector<HTMLElement>('[aria-selected="true"]')?.focus({ preventScroll: true });
