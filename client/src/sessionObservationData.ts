@@ -1,12 +1,20 @@
 export type MetricPrecision = 'observed' | 'estimated' | 'unavailable' | 'partial';
-export type OverviewMetric = { id:string; title:string; value:number|null; unit:string; precision:MetricPrecision; note:string };
+export type OverviewMetric = {
+  id:string; title:string; value:number|null; unit:string; precision:MetricPrecision; note:string;
+  known_value?:number|null; known_estimated?:boolean;
+};
+type SessionUsageField = 'request_count' | 'input_tokens' | 'total_input_tokens' | 'output_tokens' |
+  'cache_read_tokens' | 'cache_write_tokens' | 'cost_usd' | 'compression_count' |
+  'compression_saved_tokens' | 'net_saved_tokens' | 'compression_return_usd';
 export type SessionUsage = {
   id:string; title:string; updated_at:string; status:'running'|'idle'|'archived'; run_count:number;
   request_count:number|null; input_tokens:number|null; total_input_tokens:number|null; output_tokens:number|null;
   cache_read_tokens:number|null; cache_write_tokens:number|null; cost_usd:number|null;
-  compression_count:number; compression_saved_tokens:number|null; net_saved_tokens:number|null;
+  compression_count:number|null; compression_saved_tokens:number|null; net_saved_tokens:number|null;
   compression_return_usd:number|null; token_precision:MetricPrecision; request_precision:MetricPrecision;
   cost_precision:MetricPrecision; compression_precision:MetricPrecision;
+  known_values?:Partial<Record<SessionUsageField, number|null>>;
+  known_estimated_fields?:SessionUsageField[];
 };
 export type SessionOverview = {
   schema:string; metrics:OverviewMetric[]; sessions:SessionUsage[];
@@ -15,15 +23,22 @@ export type SessionOverview = {
     unknown_request_records:number;missing_usage_records:number;note:string};
 };
 export const metricDefinitions = [
-  ['session_count','会话总数','count'], ['request_count','请求总数','count'],
-  ['compression_saved_tokens','压缩上下文减少','tokens'], ['net_saved_tokens','净节省','tokens'],
-  ['compression_return_usd','压缩回本','USD'], ['cache_hit_rate','全局缓存命中率','ratio'],
-  ['input_tokens','输入 token','tokens'], ['cache_read_tokens','缓存命中 token','tokens'],
-  ['output_tokens','输出 token','tokens'], ['cost_usd','花费（美元）','USD'],
+  ['request_count','模型请求总数','count'], ['input_tokens','输入 token','tokens'],
+  ['cache_read_tokens','缓存命中 token','tokens'], ['output_tokens','输出 token','tokens'],
+  ['compression_count','压缩次数','count'], ['session_count','会话总数','count'],
+  ['cache_hit_rate','缓存命中率','ratio'], ['compression_saved_tokens','压缩上下文减少','tokens'],
+  ['net_saved_tokens','净节省','tokens'], ['compression_return_usd','压缩回本','USD'],
+  ['cost_usd','花费（美元）','USD'],
 ] as const;
 
-export const metricPrecisionLabel = (precision?:MetricPrecision) => precision === 'estimated' ? '估算' : precision === 'partial' ? '部分记录' : precision === 'unavailable' ? '未记录' : '';
 export const validMetricValue = (value:unknown):value is number => typeof value === 'number' && Number.isFinite(value);
+export function metricReading(value:number|null|undefined, precision?:MetricPrecision, knownValue?:number|null, knownEstimated?:boolean) {
+  const partial = precision === 'partial';
+  const amount = partial && knownValue !== undefined ? knownValue : value;
+  if (precision === 'unavailable' || !validMetricValue(amount)) return null;
+  return {value:amount, partial, estimated:precision === 'estimated' || (partial && knownEstimated === true)};
+}
+
 export function metricValue(value:number|null|undefined, unit:string, precision?:MetricPrecision) {
   if (!validMetricValue(value) || precision === 'unavailable') return '未记录';
   const prefix = precision === 'estimated' ? '≈ ' : '';

@@ -5,9 +5,11 @@ import json
 import pytest
 
 from app.db import dump, uid
+from app.harness_usage import HarnessUsageLedger
 from app.session_observability import overview, trajectory
 from app.token_savings import TokenAccounting
 from test_api import PASSWORD, client, configured, conversation, login
+from test_harness_usage_capture import frame
 
 
 STAMP = '2026-01-01T00:00:00+00:00'
@@ -60,11 +62,11 @@ def test_empty_metrics_are_known_empty_but_savings_not_invented(env):
     _, service, user, cid = env
     report = overview(service, user)
     values = metrics(report)
-    assert list(values) == ['session_count', 'request_count', 'compression_saved_tokens', 'net_saved_tokens',
+    assert list(values) == ['session_count', 'request_count', 'compression_count', 'compression_saved_tokens', 'net_saved_tokens',
         'compression_return_usd', 'cache_hit_rate', 'input_tokens', 'cache_read_tokens', 'output_tokens', 'cost_usd']
     assert values['session_count']['value'] == 1
     assert values['input_tokens']['value'] == values['output_tokens']['value'] == 0
-    assert values['request_count']['value'] == 0
+    assert values['request_count']['value'] == values['compression_count']['value'] == 0
     for key in ['compression_saved_tokens', 'net_saved_tokens', 'compression_return_usd', 'cache_hit_rate', 'cost_usd']:
         assert values[key]['value'] is None
     assert report['sessions'][0]['id'] == cid
@@ -92,7 +94,10 @@ def test_incomplete_or_invalid_input_bucket_keeps_total_and_rate_unknown(env, fi
     run(service, user, cid, usage=receipt(**{field: invalid}))
     values = metrics(overview(service, user))
     assert values['input_tokens']['value'] is None
+    assert values['input_tokens']['known_value'] == sum(
+        value for name, value in [('input', 10), ('read', 80), ('write', 10)] if name != field)
     assert values['cache_hit_rate']['value'] is None
+    assert values['cache_hit_rate'].get('known_value') is None
     assert values['output_tokens']['value'] == 2
 
 
@@ -106,6 +111,7 @@ def test_sdk_aggregate_never_becomes_a_provider_call_count_and_auxiliary_not_all
     assert metrics(report)['input_tokens']['value'] == 200
     assert metrics(report)['request_count']['value'] is None
     assert metrics(report)['request_count']['precision'] == 'partial'
+    assert metrics(report)['request_count']['known_value'] == 1
     assert report['coverage']['known_request_count'] == 1 and report['coverage']['unknown_request_records'] == 1
     assert 'Tab' in report['coverage']['note']
 
@@ -120,6 +126,94 @@ def test_missing_or_zero_initialized_usage_never_invents_provider_tokens(env):
     assert metrics(report)['output_tokens']['value'] is None
     assert metrics(report)['request_count']['value'] is None
     assert report['coverage']['missing_usage_records'] == 1
+    assert metrics(report)['input_tokens']['known_value'] == 100
+    assert metrics(report)['output_tokens']['known_value'] == 2
+
+
+def test_overview_subtotals_and_detail_use_the_same_current_http_receipts(env):
+    client, service, user, cid = env
+    ledger = HarnessUsageLedger('session', 'run')
+    ledger.settle([
+        frame('complete', phase='finished', usage={'input_tokens': 100, 'cache_read_input_tokens': 0,
+            'cache_creation_input_tokens': 0, 'output_tokens': 0, 'reported_prompt_tokens': 100}),
+        frame('only-prompt', phase='finished', usage={'reported_prompt_tokens': 200}),
+        frame('only-read', phase='finished', usage={'cache_read_input_tokens': 50}),
+    ])
+    run(service, user, cid, usage={**ledger.receipt(), 'estimated_cost_usd': .04})
+    run(service, user, cid)
+    response = client.get('/api/v1/conversations/overview')
+    assert response.status_code == 200, response.text
+    report = response.json()
+    expected = {'request_count': 3, 'input_tokens': 350, 'output_tokens': 0,
+                'cache_read_tokens': 50, 'cache_hit_rate': 0, 'cost_usd': .04}
+    for key, amount in expected.items():
+        metric = metrics(report)[key]
+        assert metric['value'] is None and metric['precision'] == 'partial'
+        assert metric['known_value'] == amount
+        assert (metric['observed_count'], metric['total_count']) == (1, 2)
+        assert metric.get('known_estimated', False) is (key == 'cost_usd')
+    session = report['sessions'][0]
+    assert session['total_input_tokens'] is None and session['known_values']['total_input_tokens'] == 350
+    assert session['known_values']['output_tokens'] == 0
+    detail = client.get(f'/api/v1/conversations/{cid}/trajectory').json()
+    assert detail['summary']['request_count'] is None and detail['summary']['known_values'] == {'request_count': 3}
+    models = [item['details'] for item in detail['items'] if item['kind'] == 'model']
+    recorded = next(model for model in models if model['request_count'] == 3)
+    assert recorded['total_input_tokens'] is None and recorded['known_values']['total_input_tokens'] == 350
+    assert recorded['known_values']['output_tokens'] == 0
+    assert 'known_values' not in next(model for model in models if model['request_count'] is None)
+
+
+def test_partial_capture_counts_attempts_without_inventing_provider_zero(env):
+    _, service, user, cid = env
+    ledger = HarnessUsageLedger('session', 'run')
+    ledger.observe(frame(usage={'input_tokens': 0, 'output_tokens': 0}))
+    run(service, user, cid, usage=ledger.receipt(), status='cancelled')
+    cards = metrics(overview(service, user))
+    assert cards['request_count']['value'] is None and cards['request_count']['known_value'] == 1
+    assert cards['input_tokens']['value'] is None and cards['input_tokens']['known_value'] == 0
+    for field in ('output_tokens', 'cache_read_tokens', 'cache_hit_rate', 'cost_usd', 'compression_count'):
+        assert cards[field]['precision'] == 'unavailable'
+        assert cards[field]['value'] is None and cards[field].get('known_value') is None
+
+
+def test_verified_no_requests_is_a_real_zero_in_mixed_history(env):
+    _, service, user, cid = env
+    ledger = HarnessUsageLedger('session', 'run')
+    ledger.settle([])
+    run(service, user, cid, usage=ledger.receipt())
+    run(service, user, cid)
+    cards = metrics(overview(service, user))
+    for field in ('request_count', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'compression_count'):
+        assert cards[field]['value'] is None and cards[field]['known_value'] == 0
+        assert cards[field]['precision'] == 'partial'
+    assert cards['cost_usd'].get('known_value') is None
+
+
+def test_cache_ratio_weights_complete_pairs_without_combining_unrelated_samples(env):
+    _, service, user, cid = env
+    run(service, user, cid, usage=receipt(input=10, read=60, write=30))
+    run(service, user, cid, usage={'reported_prompt_tokens': 300, 'cache_read_input_tokens': 60})
+    run(service, user, cid, usage={'reported_prompt_tokens': 500})
+    run(service, user, cid, usage={'cache_read_input_tokens': 400})
+    cards = metrics(overview(service, user))
+    assert cards['input_tokens']['known_value'] == 1300
+    assert cards['cache_read_tokens']['known_value'] == 520
+    assert cards['cache_hit_rate']['value'] is None
+    assert cards['cache_hit_rate']['known_value'] == .3
+    assert cards['cache_hit_rate']['observed_count'] == 2
+
+
+def test_contradictory_http_prompt_counters_do_not_become_input_or_rate(env):
+    _, service, user, cid = env
+    ledger = HarnessUsageLedger('session', 'run')
+    ledger.settle([frame(phase='finished', usage={'input_tokens': 60, 'cache_read_input_tokens': 50,
+        'cache_creation_input_tokens': 0, 'reported_prompt_tokens': 100, 'output_tokens': 1})])
+    run(service, user, cid, usage=ledger.receipt())
+    cards = metrics(overview(service, user))
+    for field in ('input_tokens', 'cache_hit_rate'):
+        assert cards[field]['value'] is None and cards[field].get('known_value') is None
+    assert cards['cache_read_tokens']['value'] == 50
 
 
 @pytest.mark.parametrize('source,precision', [('native_runtime', 'observed'), ('harness_token_meter', 'estimated')])
@@ -133,6 +227,7 @@ def test_compression_boundary_and_result_are_one_receipt_not_tool_savings(env, s
     report = overview(service, user)
     assert report['sessions'][0]['compression_count'] == 1
     values = metrics(report)
+    assert values['compression_count']['value'] == 1 and values['compression_count']['precision'] == 'observed'
     assert values['compression_saved_tokens']['value'] == 800
     assert values['compression_saved_tokens']['precision'] == precision
     assert values['net_saved_tokens']['value'] is values['compression_return_usd']['value'] is None
@@ -182,6 +277,64 @@ def test_compression_cost_coverage_never_uses_answer_usage_or_invents_old_cost(e
     assert metrics(report)['compression_return_usd']['value'] is None
 
 
+def test_automatic_compressions_are_counted_from_each_commit_and_measured_as_estimates(env):
+    _, service, user, cid = env
+    automatic = {'status': 'completed', 'trigger': 'pressure', 'measurement_schema': 'harness-estimated/v1',
+                 'pre_tokens': 900, 'post_tokens': 700, 'shadowed_tokens': 777777}
+    rid = run(service, user, cid, compaction=automatic)
+    event(service, rid, 1, 'context.compaction_started', {'trigger': 'auto'})
+    event(service, rid, 2, 'context.compaction_result', automatic)
+    event(service, rid, 3, 'context.compaction_result', automatic)
+    cards = metrics(overview(service, user))
+    assert cards['compression_count']['value'] == 2
+    assert cards['compression_saved_tokens']['value'] == 400
+    assert cards['compression_saved_tokens']['precision'] == 'estimated'
+    assert cards['net_saved_tokens']['value'] is None and cards['net_saved_tokens'].get('known_value') is None
+
+
+def test_compression_subtotals_only_pair_costs_and_differences_within_each_operation(env):
+    _, service, user, cid = env
+    source = 'harness_token_meter'
+    run(service, user, cid, compaction=compact(200, 100, source=source,
+        measurement_schema='compaction-measurement/v1', cost_usage=compression_cost()))
+    run(service, user, cid, compaction=compact(200, 200))
+    cost_only = compact(measurement_schema='compaction-measurement/v1', cost_usage=compression_cost(input=500))
+    cost_only.pop('after')
+    run(service, user, cid, compaction=cost_only)
+    run(service, user, cid, status='interrupted', compaction={'status': 'interrupted', 'boundary_observed': False})
+    report = overview(service, user)
+    expected = {'compression_count': 3, 'compression_saved_tokens': 100, 'net_saved_tokens': -20}
+    for key, amount in expected.items():
+        card = metrics(report)[key]
+        assert card['value'] is None and card['known_value'] == amount
+        assert card['precision'] == 'partial'
+        assert card.get('known_estimated', False) is (key != 'compression_count')
+    assert metrics(report)['net_saved_tokens']['observed_count'] == 1
+    assert metrics(report)['net_saved_tokens']['total_count'] == 3
+    assert report['sessions'][0]['known_values']['net_saved_tokens'] == -20
+
+
+def test_no_op_compaction_and_unverified_completion_are_different(env):
+    _, service, user, cid = env
+    rid = run(service, user, cid)
+    event(service, rid, 1, 'context.compaction_result', {'status': 'not_needed', 'boundary_observed': False})
+    assert metrics(overview(service, user))['compression_count']['value'] == 0
+    run(service, user, cid, compaction={'status': 'completed'})
+    card = metrics(overview(service, user))['compression_count']
+    assert card['value'] is None and card['known_value'] == 0 and card['precision'] == 'partial'
+
+
+def test_a_finished_summary_request_without_a_commit_does_not_prove_zero_compressions(env):
+    _, service, user, cid = env
+    ledger = HarnessUsageLedger('session', 'run')
+    ledger.settle([frame(phase='finished', purpose='compaction')])
+    rid = run(service, user, cid, usage=ledger.receipt())
+    event(service, rid, 1, 'context.compaction_started', {'trigger': 'auto'})
+    cards = metrics(overview(service, user))
+    assert cards['request_count']['value'] == 1
+    assert cards['compression_count']['value'] is None and cards['compression_count'].get('known_value') is None
+
+
 @pytest.mark.parametrize('mutation', ['missing_after', 'changed_model', 'changed_binding', 'stale', 'unproven', 'boundary_only'])
 def test_unverifiable_compression_does_not_claim_savings(env, mutation):
     _, service, user, cid = env
@@ -213,6 +366,7 @@ def test_owner_only_even_admin_and_static_route_before_identifier(env):
     assert response.status_code == 200, response.text
     assert [item['id'] for item in response.json()['sessions']] == [cid]
     assert response.json()['sessions'][0]['status'] == 'archived'
+    assert metrics(response.json())['input_tokens']['value'] == 100
     assert client.get('/api/v1/conversations/' + own + '/trajectory').status_code == 404
     client.post('/api/v1/auth/logout')
     assert client.get('/api/v1/conversations/overview').status_code == 401
@@ -299,6 +453,29 @@ def test_limits_report_partial_and_do_not_present_recent_subset_as_total(env, mo
     assert report['coverage']['runs_truncated'] and report['coverage']['sessions_truncated']
     for key in ['request_count', 'input_tokens', 'output_tokens', 'cost_usd', 'compression_saved_tokens']:
         assert metrics(report)[key]['value'] is None
+    for key, amount in {'request_count': 1, 'input_tokens': 100, 'output_tokens': 2,
+                        'compression_count': 1, 'compression_saved_tokens': 800}.items():
+        assert metrics(report)[key]['known_value'] == amount
+
+
+def test_compression_event_limit_reports_only_retained_operations_and_preserves_empty_sessions(env, monkeypatch):
+    _, service, user, cid = env
+    import app.session_observability as module
+    empty = conversation(env[0])['id']
+    rid = run(service, user, cid)
+    event(service, rid, 1, 'context.compacted', {'trigger': 'auto', 'pre_tokens': 1000})
+    event(service, rid, 2, 'context.compacted', {'trigger': 'auto', 'pre_tokens': 500})
+    monkeypatch.setattr(module, 'MAX_COMPACTION_EVENTS', 2)
+    report = overview(service, user)
+    assert report['coverage']['compression_events_truncated'] is False
+    assert metrics(report)['compression_count']['value'] == 2
+    monkeypatch.setattr(module, 'MAX_COMPACTION_EVENTS', 1)
+    report = overview(service, user)
+    assert report['coverage']['compression_events_truncated'] is True
+    assert metrics(report)['compression_count']['value'] is None
+    assert metrics(report)['compression_count']['known_value'] == 1
+    assert metrics(report)['compression_saved_tokens'].get('known_value') is None
+    assert next(item for item in report['sessions'] if item['id'] == empty)['compression_count'] == 0
 
 
 def test_no_model_local_product_execution_is_explicit_zero(env):

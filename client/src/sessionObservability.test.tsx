@@ -2,36 +2,141 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { SessionOverviewCards, SessionRowUsage } from './SessionObservability';
 import { TrajectoryContent } from './SessionTrajectory';
-import { appendTrajectory, durationText, filterTrajectory, metricDefinitions, metricValue, overviewMetrics, trajectoryDetails, trajectoryPath, trajectoryPositions, type SessionOverview, type SessionUsage, type TrajectoryItem } from './sessionObservationData';
+import { appendTrajectory, durationText, filterTrajectory, metricValue, overviewMetrics, trajectoryDetails, trajectoryPath, trajectoryPositions, type OverviewMetric, type SessionOverview, type SessionUsage, type TrajectoryItem } from './sessionObservationData';
 
-const overview:SessionOverview={schema:'session-overview/v1',metrics:metricDefinitions.map(([id,title,unit])=>({id,title,unit,value:id==='session_count'?2:id==='cache_hit_rate'?.97:null,precision:id==='session_count'||id==='cache_hit_rate'?'observed':'unavailable',note:'未记录的值不按零统计。'})),sessions:[],coverage:{scope:'self',total_sessions:2,sessions_returned:2,sessions_truncated:false,total_runs:3,runs_included:3,runs_truncated:false,known_request_count:1,unknown_request_records:2,missing_usage_records:2,note:'只包含当前账号会话。'}};
+const overview: SessionOverview = {
+  schema: 'session-observability/v1',
+  metrics: [],
+  sessions: [],
+  coverage: {
+    scope: 'self', total_sessions: 2, sessions_returned: 2, sessions_truncated: false,
+    total_runs: 3, runs_included: 3, runs_truncated: false, known_request_count: 1,
+    unknown_request_records: 2, missing_usage_records: 2, note: '只包含当前账号会话。',
+  },
+};
+const completeMetrics = overviewMetrics(overview).map(metric => ({
+  ...metric, value: metric.id === 'cache_hit_rate' ? 0.25 : 12,
+  precision: metric.id === 'cost_usd' ? 'estimated' as const : 'observed' as const,
+}));
+function renderOverview(metrics: OverviewMetric[], loading = false, error = '') {
+  return renderToStaticMarkup(<SessionOverviewCards value={{...overview, metrics}} loading={loading} error={error} onRefresh={()=>{}}/>);
+}
+function card(html: string, id: string) {
+  return html.match(new RegExp(`<article[^>]+data-metric="${id}"[^>]*>.*?</article>`))?.[0];
+}
+
 const items:TrajectoryItem[]=[
   {id:'input-1',kind:'input',at:'2026-11-15T10:00:00Z',title:'用户输入',status:'received',text:'查询本周发货情况'},
   {id:'tool-1',kind:'tool',at:'2026-11-15T10:00:02Z',title:'查询发货',status:'succeeded',text:'已完成查询',details:{tool_name:'shipment_summary',authorization:'must-not-render',request_headers:'must-not-render',system_prompt:'must-not-render'}},
   {id:'model-1',kind:'model',at:'2026-11-15T10:00:05Z',title:'业务答复',status:'completed',text:'本周发货已汇总。'},
 ];
 
-describe('session metric evidence boundaries',()=>{
-  it('renders actual totals and a visibly qualified estimate',()=>{
-    const value: SessionOverview = {...overview, metrics: overview.metrics.map(metric =>
-      metric.id === 'request_count' ? {...metric,value:3,precision:'partial'} :
-      metric.id === 'cost_usd' ? {...metric,value:0.07,precision:'estimated'} : metric
-    )};
-    const html=renderToStaticMarkup(<SessionOverviewCards value={value} loading={false} error="" onRefresh={()=>{}}/>);
-    expect(html).toContain('<strong title="2 count">2</strong>');
-    expect(html).toContain('<strong title="3 count">3</strong>');
-    expect(html).toContain('<small>部分记录</small>');
-    expect(html).toContain('<strong title="0.07 USD">≈ $0.07</strong>');
-    expect(html).toContain('97%');
-    expect(html).not.toContain('$0.42');
-    expect(html).not.toContain('展示数据');
+describe('session metric evidence boundaries', () => {
+  it('shows the exact recorded token subtotal on the overview card', () => {
+    const input: OverviewMetric = { id: 'input_tokens', title: '输入 Token', unit: 'tokens', value: null,
+      known_value: 1341601, precision: 'partial', note: '部分请求有回执。' };
+    const html = renderToStaticMarkup(<SessionOverviewCards value={{...overview, metrics: [input]}}
+      loading={false} error="" onRefresh={() => {}}/>);
+    expect(card(html, 'input_tokens')).toContain('>1,341,601</strong>');
+    expect(card(html, 'input_tokens')).toContain('已记录小计');
   });
-  it('keeps all ten requested metrics, ignores unexpected fields and retains the fixed display order',()=>{
-    const values=overviewMetrics({...overview,metrics:[{id:'private_extra',title:'Private',unit:'count',value:999,precision:'observed' as const,note:'hidden'},...overview.metrics].reverse()});
-    expect(values.map(v=>v.id)).toEqual(metricDefinitions.map(([id])=>id));
-    expect(values).toHaveLength(10);
+
+  it('renders the recorded metrics with the core usage first and preserves their explanations', () => {
+    const value = completeMetrics.map(metric => metric.id === 'input_tokens' ?
+      {...metric, title: '输入 Token', note: '供应商报告的总输入。', known_value: 3} : metric);
+    const html = renderOverview(value);
+    expect([...html.matchAll(/data-metric="([^"]+)"/g)].map(match => match[1])).toEqual([
+      'request_count', 'input_tokens', 'cache_read_tokens', 'output_tokens', 'compression_count',
+      'session_count', 'cache_hit_rate', 'compression_saved_tokens', 'net_saved_tokens', 'compression_return_usd', 'cost_usd',
+    ]);
+    expect(card(html, 'input_tokens')).toContain('<strong title="12 tokens">12</strong>');
+    expect(card(html, 'input_tokens')).toContain('输入 Token');
+    expect(card(html, 'input_tokens')).toContain('供应商报告的总输入。');
+    expect(card(html, 'cost_usd')).toContain('≈ $12.00');
+    expect(card(html, 'cost_usd')).toContain('估算');
+    expect(card(html, 'cache_hit_rate')).toContain('25%');
+    expect(html).toContain('<summary>指标说明</summary>');
+    expect(html).toContain('<dd>供应商报告的总输入。</dd>');
+    expect(html).toContain('只包含当前账号会话。');
+    expect(html).toContain('我的全部会话 · 含已归档会话');
+    expect(html).toContain('aria-label="刷新会话概览"');
   });
-  it('distinguishes missing or unavailable values from known zero and marks estimates',()=>{
+
+  it('uses recorded subtotals without changing full values and qualifies partial amounts and rates', () => {
+    const partialValues: Record<string, number> = {request_count: 3, input_tokens: 0, cost_usd: 0.07, cache_hit_rate: 0.97};
+    const metrics = overviewMetrics(overview).map(metric => metric.id in partialValues ? {
+      ...metric, title: metric.id === 'cache_hit_rate' ? '全局缓存命中率' : metric.title,
+      precision: 'partial' as const, known_value: partialValues[metric.id], known_estimated: metric.id === 'cost_usd',
+    } : metric);
+    const html = renderOverview(metrics);
+    expect(card(html, 'request_count')).toContain('<strong title="3 count">3</strong>');
+    expect(card(html, 'request_count')).toContain('已记录小计');
+    expect(card(html, 'request_count')).not.toContain('请求总数');
+    expect(card(html, 'input_tokens')).toContain('<strong title="0 tokens">0</strong>');
+    expect(card(html, 'input_tokens')).toContain('已记录小计');
+    expect(card(html, 'cache_hit_rate')).toContain('97%');
+    expect(card(html, 'cache_hit_rate')).toContain('按已记录用量计算');
+    expect(card(html, 'cache_hit_rate')).not.toContain('全局');
+    expect(card(html, 'cache_hit_rate')).not.toContain('小计');
+    expect(card(html, 'cost_usd')).toContain('≈ $0.07');
+    expect(card(html, 'cost_usd')).toContain('已记录金额');
+    expect(card(html, 'cost_usd')).toContain('估算');
+    expect(card(html, 'cost_usd')).not.toContain('小计');
+    expect(card(html, 'compression_return_usd')).toBeUndefined();
+    expect(html).toMatch(/<details[^>]*>.*压缩回本.*未记录/);
+    expect(overviewMetrics({...overview, metrics})[0]).toMatchObject({value: null, known_value: 3});
+  });
+
+  it('keeps an older partial numeric reading and ignores an unknown metric', () => {
+    const metric = {...completeMetrics[0], value: 3, precision: 'partial' as const};
+    const privateMetric = {...metric, id: 'private_extra', title: 'Private', value: 999};
+    const html = renderOverview([privateMetric, metric]);
+    expect(card(html, 'request_count')).toContain('3</strong>');
+    expect(card(html, 'request_count')).toContain('已记录小计');
+    expect(html).not.toContain('Private');
+  });
+
+  it('shows an empty state with missing metrics and their reasons in the disclosure', () => {
+    const html = renderOverview(overviewMetrics(overview).map(metric => metric.id === 'cost_usd' ? {
+      ...metric, precision: 'partial', known_value: null, note: '供应商未返回费用。',
+    } : metric));
+    expect(html).toContain('暂无会话用量记录。');
+    expect(html).not.toContain('data-metric=');
+    expect(html).not.toContain('session-metric-grid');
+    expect(html).toMatch(/<details[^>]*>.*花费（美元）.*未记录.*供应商未返回费用。/);
+  });
+
+  it('shows complete zero counts, zero USD and zero ratios as readings', () => {
+    const html = renderOverview(completeMetrics.map(metric => ({...metric, value: 0, precision: 'observed'})));
+    expect(card(html, 'compression_count')).toContain('<strong title="0 count">0</strong>');
+    expect(card(html, 'cost_usd')).toContain('$0.00');
+    expect(card(html, 'cache_hit_rate')).toContain('0%');
+    expect(html).not.toContain('暂无会话用量记录');
+    expect(html).not.toContain('未记录</small>');
+  });
+
+  it('uses a dedicated loading status and keeps stale values out of the overview', () => {
+    const html = renderOverview(completeMetrics, true);
+    expect(html).toContain('role="status"');
+    expect(html).toContain('正在加载会话概览');
+    expect(html).toMatch(/<button[^>]*aria-label="刷新会话概览"[^>]*disabled/);
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain('data-metric=');
+    expect(html).not.toContain('暂无会话用量记录');
+    expect(html).not.toContain('指标说明');
+  });
+
+  it('shows the fetch error as an alert with refresh available and hides stale readings', () => {
+    const html = renderOverview(completeMetrics, false, '会话概览读取失败');
+    expect(html).toMatch(/role="alert".*会话概览读取失败/);
+    expect(html).toContain('aria-label="刷新会话概览"');
+    expect(html).not.toMatch(/<button[^>]*disabled/);
+    expect(html).not.toContain('data-metric=');
+    expect(html).not.toContain('正在加载');
+    expect(html).not.toContain('暂无会话用量记录');
+  });
+
+  it('distinguishes invalid or unavailable readings from zero when formatting values', () => {
     expect(metricValue(null,'tokens')).toBe('未记录');
     expect(metricValue(undefined,'USD')).toBe('未记录');
     expect(metricValue(NaN,'count')).toBe('未记录');
@@ -42,30 +147,38 @@ describe('session metric evidence boundaries',()=>{
     expect(metricValue(.00003,'USD','estimated')).toBe('≈ $0.00003');
     expect(metricValue(.97,'ratio')).toBe('97%');
   });
-  it('marks values unavailable while receipts load',()=>{
-    const html=renderToStaticMarkup(<SessionOverviewCards value={null} loading={true} error="" onRefresh={()=>{}}/>);
-    expect(html.match(/data-metric=/g)).toHaveLength(10);
-    expect(html).toContain('我的全部会话');expect(html).toContain('含已归档会话');
-    expect(html.match(/<strong title="未记录">未记录<\/strong>/g)).toHaveLength(10);
-    expect(html).not.toContain('70%');expect(html).not.toContain('$0.42');
-    expect(html).toContain('指标说明');
-  });
-  it('shows unavailable per-session readings instead of deriving them from visible message lengths',()=>{
-    const html=renderToStaticMarkup(<SessionRowUsage/>);
-    expect(html.match(/未记录/g)?.length).toBeGreaterThanOrEqual(6);
+
+  it('uses a compact empty state for a session without usage records', () => {
+    const html = renderToStaticMarkup(<SessionRowUsage/>);
+    expect(html).toContain('暂无用量记录。');
+    expect(html).not.toContain('<dd');
     expect(html).not.toContain('>0<');
   });
-  it('uses complete input for the row and respects server labels for distinct measurement meanings',()=>{
-    const html=renderToStaticMarkup(<SessionRowUsage value={{id:'one',input_tokens:10,total_input_tokens:100,cache_read_tokens:70,cache_write_tokens:20,token_precision:'observed'} as SessionUsage}/>);
+
+  it('keeps legacy complete values and individual zeros even when the token group is incomplete', () => {
+    const html = renderToStaticMarkup(<SessionRowUsage value={{
+      id: 'one', input_tokens: 10, total_input_tokens: 100,
+      cache_read_tokens: 0, output_tokens: 0, token_precision: 'unavailable',
+    } as SessionUsage}/>);
     expect(html).toContain('<dt>输入 token</dt><dd title="100 token">100');
-    const metric=overviewMetrics({...overview,metrics:overview.metrics.map(m=>m.id==='compression_saved_tokens'?{...m,title:'累计上下文减少'}:m)}).find(m=>m.id==='compression_saved_tokens');
-    expect(metric?.title).toBe('累计上下文减少');
-  });
-  it('preserves individually known zero token counts when another input bucket is unavailable',()=>{
-    const html=renderToStaticMarkup(<SessionRowUsage value={{id:'missing-input',total_input_tokens:null,cache_read_tokens:0,output_tokens:0,token_precision:'unavailable'} as SessionUsage}/>);
-    expect(html).toContain('<dt>输入 token</dt><dd title="未记录">未记录');
     expect(html).toContain('<dt>缓存命中</dt><dd title="0 token">0');
     expect(html).toContain('<dt>输出 token</dt><dd title="0 token">0');
+    expect(html).not.toContain('已记录小计');
+  });
+
+  it('uses the matching session API fields for partial readings and prefers complete fields', () => {
+    const html = renderToStaticMarkup(<SessionRowUsage value={{
+      id: 'partial', request_count: null, request_precision: 'partial', input_tokens: 850,
+      total_input_tokens: null, cache_read_tokens: null, output_tokens: 2,
+      compression_count: 0, compression_saved_tokens: null,
+      known_values: {request_count: 0, input_tokens: 600, cache_read_tokens: 34, output_tokens: 99},
+    } as SessionUsage}/>);
+    expect(html).toMatch(/<dt>请求<\/dt><dd title="0">0<small[^>]*>已记录小计/);
+    expect(html).toMatch(/<dt>缓存命中<\/dt><dd title="34 token">34<small[^>]*>已记录小计/);
+    expect(html).toContain('<dt>输出 token</dt><dd title="2 token">2</dd>');
+    expect(html).toContain('<dt>压缩次数</dt><dd title="0">0</dd>');
+    expect(html).not.toContain('<dt>输入 token</dt>');
+    expect(html).not.toContain('<dt>上下文减少</dt>');
   });
 });
 

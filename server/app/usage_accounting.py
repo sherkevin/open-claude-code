@@ -111,6 +111,31 @@ async def metered_post(http, endpoint, *, service, kind, selection, payload, use
                 (status, dump(receipt) if receipt is not None else None, now(), call_id))
 
 
+def recover_terminal_usage(db, rows):
+    """Fill an empty run snapshot from the same run's final event, in memory only."""
+    missing = {row["id"]: row for row in rows
+               if row.get("status") in {"succeeded", "failed", "cancelled", "interrupted"}
+               and row.get("usage") in (None, "", "{}", {})}
+    ids = list(missing)
+    for start in range(0, len(ids), 400):
+        batch = ids[start:start + 400]
+        # The final event is a cumulative receipt. Adding usage.updated events
+        # here would count the same requests more than once.
+        records = db.all("""
+            SELECT r.id, (
+                SELECT CASE WHEN json_valid(e.data) THEN
+                    CASE WHEN json_extract(e.data,'$.status') = r.status
+                          AND json_type(e.data,'$.usage') = 'object'
+                         THEN json_extract(e.data,'$.usage') END END
+                FROM events e WHERE e.run_id=r.id AND e.type='run.completed'
+                ORDER BY e.id DESC LIMIT 1
+            ) AS receipt
+            FROM runs r WHERE r.id IN (""" + ",".join("?" for _ in batch) + ")", batch)
+        for record in records:
+            if record["receipt"] and record["receipt"] != "{}":
+                missing[record["id"]]["usage"] = record["receipt"]
+
+
 def _entry(row, *, auxiliary=False):
     usage = _object(row.get("usage"))
     metadata = _object(row.get("execution_meta"))
@@ -218,6 +243,8 @@ def usage_summary(service, user, *, scope="self", model_id=None, date_from=None,
     entries = []
     for table, auxiliary in (("runs", False), ("model_usage_calls", True)):
         rows = service.db.all(f"SELECT t.*,users.display_name FROM {table} t JOIN users ON users.id=t.user_id" + predicate, tuple(values))
+        if not auxiliary:
+            recover_terminal_usage(service.db, rows)
         entries.extend(_entry(row, auxiliary=auxiliary) for row in rows)
     available = {item["model_id"]: item["model_label"] for item in entries}
     if model_id:
