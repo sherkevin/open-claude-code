@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import ipaddress
 import json
 import re
@@ -10,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import Field, StrictBool, ValidationInfo, field_validator
 
 from .db import dump, now, uid
@@ -21,15 +22,13 @@ from .kaiwu_control import (
     IntegrationCreateRequest,
     StrictModel,
     _audit,
+    _available_native_source,
     _control_settings,
     _issue_platform_integration,
     new_trace_id,
 )
 from .kaiwu_diagnostics import SOURCE_ID_RE
-from .kaiwu_platform_export import _available_source
-from .mcp_import import ImportRequest, plan_mcp_import
 from .security import AppError
-from .service import connection_view
 
 SESSION_TTL = 30 * 60
 DEVICE_LEASE = 15
@@ -38,6 +37,8 @@ RUN_TTL = 120
 SESSION_ID_RE = r"^asst_[0-9a-f]{32}$"
 JOB_ID_RE = r"^asjob_[0-9a-f]{32}$"
 LIVE_STATES = ("pending", "active")
+BRIDGE_OPERATOR_PREFIX = "workbench:"
+BRIDGE_OPERATOR_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}")
 ToolName = Annotated[str, Field(pattern=TOOL_NAME_RE.pattern)]
 
 
@@ -224,9 +225,11 @@ def _expire(service):
         "UPDATE kaiwu_assist_sessions SET status='expired' "
         "WHERE status IN ('pending','active') AND (expires_at<=? OR connector_id IN "
         "(SELECT id FROM kaiwu_connectors WHERE revoked=1 OR draining=1) "
-        "OR NOT EXISTS (SELECT 1 FROM users WHERE id=created_by AND role='admin' AND enabled=1) "
+        "OR (instr(created_by, ?) = 1 AND ? = 0) "
+        "OR (instr(created_by, ?) != 1 AND NOT EXISTS "
+        "(SELECT 1 FROM users WHERE id=created_by AND role='admin' AND enabled=1)) "
         "OR tenant_id NOT IN (SELECT value FROM json_each(?)))",
-        (timestamp, dump(allowed)),
+        (timestamp, BRIDGE_OPERATOR_PREFIX, bool(settings.kaiwu_assist_bridge_secret()), BRIDGE_OPERATOR_PREFIX, dump(allowed)),
     )
     db.execute(
         "UPDATE kaiwu_assist_jobs SET status='failed', result=?, finished_at=?, sealed_bearer=NULL "
@@ -440,7 +443,30 @@ def add_device_assist(router, service_dependency, device):
 
 
 def create_kaiwu_assist_router(service_dependency, admin):
-    router = APIRouter(prefix="/api/v1/connections/kaiwu-assist", tags=["MCP assistance"])
+    return _assist_router(service_dependency, admin, prefix="/api/v1/connections/kaiwu-assist")
+
+
+def create_kaiwu_assist_bridge_router(service_dependency):
+    def bridge_operator(request: Request, service=Depends(service_dependency)):
+        secret = service.settings.kaiwu_assist_bridge_secret()
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        operator = request.headers.get("x-kaiwu-operator", "")
+        if (
+            request.client is None
+            or request.client.host not in {"127.0.0.1", "::1"}
+            or not secret
+            or scheme.lower() != "bearer"
+            or not hmac.compare_digest(token.encode("utf-8"), secret.encode("utf-8"))
+            or not BRIDGE_OPERATOR_RE.fullmatch(operator)
+        ):
+            raise AppError(403, "ASSIST_BRIDGE_DENIED", "协助服务凭据无效")
+        return {"id": BRIDGE_OPERATOR_PREFIX + operator}
+
+    return _assist_router(service_dependency, bridge_operator, prefix="/internal/kaiwu-assist/v1", bridge=True)
+
+
+def _assist_router(service_dependency, admin, *, prefix: str, bridge: bool = False):
+    router = APIRouter(prefix=prefix, tags=["MCP assistance"], include_in_schema=not bridge)
 
     @router.get("/devices")
     def devices(request: Request, service=Depends(service_dependency), user=Depends(admin)):
@@ -527,11 +553,16 @@ def create_kaiwu_assist_router(service_dependency, admin):
             return _session_view(service, _session(service, session_id, owner=user["id"]))
 
     @router.post("/sessions/{session_id}/import")
-    def import_source(session_id: str, data: ImportInput, request: Request, service=Depends(service_dependency), user=Depends(admin)):
+    def import_source(
+        session_id: str, data: ImportInput, request: Request, response: Response,
+        service=Depends(service_dependency), user=Depends(admin),
+    ):
         with service.db.transaction():
             _expire(service)
             row = _session(service, session_id, owner=user["id"])
-            if row["imported_connection_id"]:
+            if not bridge and row["imported_connection_id"]:
+                from .service import connection_view
+
                 existing = service.require_resource("connections", row["imported_connection_id"], user, edit=True)
                 return {"connection": connection_view(existing, user)}
             _require_recent_consent(row)
@@ -540,13 +571,19 @@ def create_kaiwu_assist_router(service_dependency, admin):
                 raise AppError(409, "ASSIST_NOT_CONNECTED", "请先保存已选择的 MCP 工具")
             source_id = json.loads(job["result"])["source_id"]
             connector = _connector(service, row["connector_id"], row["tenant_id"])
-            source = _available_source(request, service, connector, source_id)
+            source = _available_native_source(request, service, connector, source_id)
             if source["revision"] != job["source_revision"]:
                 raise AppError(409, "ASSIST_SOURCE_CHANGED", "MCP 服务配置发生变化，请重新发起协助")
             integration = IntegrationCreateRequest(
                 tenant_id=row["tenant_id"], connector_id=row["connector_id"],
                 display_name=row["name"], source_ids=[source_id],
             )
+            if bridge:
+                issued = _issue_platform_integration(service, integration, [source], user["id"], assist_session_id=row["id"])
+                response.headers["Cache-Control"] = "no-store"
+                return {"mcp_config": issued["mcp_config"]}
+            from .mcp_import import ImportRequest, plan_mcp_import
+
             issued = _issue_platform_integration(service, integration, [source], user["id"])
             plan = plan_mcp_import(ImportRequest(config=issued["mcp_config"], scope=data.scope), service, user)
             connection = service.save_connection({**plan.connections[0].create_fields(), "scope": data.scope}, user=user)

@@ -15,9 +15,8 @@ from .kaiwu_control import (
     SOURCE_ID_RE,
     IntegrationCreateRequest,
     StrictModel,
-    _builtin_demo_source_id,
+    _available_native_source,
     _hash_secret,
-    _integration_rows,
     _issue_platform_integration,
 )
 from .mcp_import import ImportRequest, parse_mcp_config, plan_mcp_import
@@ -44,20 +43,6 @@ class RedeemRequest(HandoffRequest):
         return IntegrationCreateRequest.valid_display_name(name)
 
 
-def _available_source(request: Request, service, connector, source_id: str) -> dict:
-    connector_id = connector["id"]
-    relay = getattr(request.app.state, "kaiwu_native_relay", None)
-    if (not service.settings.kaiwu_native_relay_enabled or connector["revoked"] or connector["draining"]
-            or relay is None or not relay.is_online(connector_id)):
-        raise AppError(409, "NATIVE_RELAY_OFFLINE", "Windows 连接器暂未连接，请在本机建立连接后重试")
-    if source_id == _builtin_demo_source_id(connector_id):
-        raise AppError(403, "BUILTIN_DEMO_HANDOFF_DENIED", "请选择要导入的业务 MCP")
-    source = _integration_rows(service.db, connector_id, [source_id])[0]
-    if source["transport"] != "streamable_http":
-        raise AppError(409, "HANDOFF_TRANSPORT_UNSUPPORTED", "请使用 Streamable HTTP 业务 MCP")
-    return source
-
-
 def add_device_handoff(router: APIRouter, service_dependency, device):
     @router.post("/v1/connectors/{connector_id}/platform-handoff", status_code=201)
     def create_handoff(
@@ -76,7 +61,7 @@ def add_device_handoff(router: APIRouter, service_dependency, device):
             connector = service.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
             if not connector:
                 raise AppError(403, "DEVICE_REVOKED", "设备身份已失效")
-            source = _available_source(request, service, connector, data.source_id)
+            source = _available_native_source(request, service, connector, data.source_id)
             service.db.execute("DELETE FROM kaiwu_platform_handoffs WHERE expires_at<=?", (now(),))
             service.db.execute(
                 "DELETE FROM kaiwu_platform_handoffs WHERE connector_id=? AND source_id=? AND redeemed_by IS NULL",
@@ -101,7 +86,7 @@ def _current_handoff(request, service, ticket):
     connector = service.db.one("SELECT * FROM kaiwu_connectors WHERE id=? AND tenant_id=?", (ticket["connector_id"], ticket["tenant_id"]))
     if not connector:
         raise AppError(404, "HANDOFF_EXPIRED", "此导入链接已失效，请在连接器上重新生成")
-    source = _available_source(request, service, connector, ticket["source_id"])
+    source = _available_native_source(request, service, connector, ticket["source_id"])
     if ticket["source_revision"] != source["revision"]:
         raise AppError(409, "HANDOFF_SOURCE_CHANGED", "业务来源已更新，请在连接器上重新生成导入链接")
     return connector, source

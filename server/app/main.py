@@ -224,8 +224,14 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     app.include_router(create_import_router(svc, authenticated))
     from .kaiwu_platform_export import create_kaiwu_platform_export_router
     app.include_router(create_kaiwu_platform_export_router(svc, admin))
-    from .kaiwu_assist import create_kaiwu_assist_router, expire_assist_on_startup
-    app.include_router(create_kaiwu_assist_router(svc, admin))
+    from .kaiwu_assist import create_kaiwu_assist_bridge_router, create_kaiwu_assist_router, expire_assist_on_startup
+    if settings.kaiwu_assist_control_origin:
+        from .kaiwu_assist_workbench import create_kaiwu_assist_workbench_router
+        app.include_router(create_kaiwu_assist_workbench_router(svc, admin))
+    else:
+        app.include_router(create_kaiwu_assist_router(svc, admin))
+        if settings.kaiwu_control_enabled and settings.kaiwu_assist_bridge_secret_file:
+            app.include_router(create_kaiwu_assist_bridge_router(svc))
     from .skills import create_skill_router
     app.include_router(create_skill_router(svc, authenticated))
     from .plugins import create_plugin_router

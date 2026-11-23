@@ -199,6 +199,8 @@ class Settings:
     kaiwu_assist_tenants: tuple[str, ...] = field(default_factory=lambda: tuple(
         value.strip() for value in os.getenv("AGENT_KAIWU_ASSIST_TENANTS", "").split(",") if value.strip()
     ))
+    kaiwu_assist_control_origin: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_ASSIST_CONTROL_ORIGIN", "").strip())
+    kaiwu_assist_bridge_secret_file: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_ASSIST_BRIDGE_SECRET_FILE", "").strip())
     kaiwu_control_admin_token: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ADMIN_TOKEN", "").strip(), repr=False)
     kaiwu_control_admin_token_file: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_ADMIN_TOKEN_FILE", "").strip())
     kaiwu_control_relay_address: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_RELAY_ADDRESS", "").strip())
@@ -230,6 +232,10 @@ class Settings:
     kaiwu_control_edge_public_key: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_EDGE_PUBLIC_KEY", "").strip())
 
     def __post_init__(self) -> None:
+        if self.kaiwu_assist_control_origin:
+            address = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", self.kaiwu_assist_control_origin)
+            if not address or int(address[1]) > 65535:
+                raise ValueError("AGENT_KAIWU_ASSIST_CONTROL_ORIGIN must be an HTTP loopback origin with a port")
         if type(self.chat_attachment_upload_max_bytes) is not int or self.chat_attachment_upload_max_bytes <= 0:
             raise ValueError("AGENT_CHAT_ATTACHMENT_UPLOAD_MAX_BYTES must be a positive integer")
         if not isinstance(self.session_cookie_name, str) or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,100}", self.session_cookie_name):
@@ -313,6 +319,16 @@ class Settings:
             if value:
                 return value
         return self.feishu_bridge_token.strip()
+
+    def kaiwu_assist_bridge_secret(self) -> str:
+        if not self.kaiwu_assist_bridge_secret_file:
+            return ""
+        try:
+            with Path(self.kaiwu_assist_bridge_secret_file).open(encoding="ascii") as source:
+                key = source.read(160).strip()
+        except (OSError, UnicodeError):
+            return ""
+        return key if re.fullmatch(r"[A-Za-z0-9_-]{43,128}", key) else ""
 
     def kaiwu_control_token(self) -> str:
         """Return the dedicated control-plane administrator token."""

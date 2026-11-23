@@ -630,23 +630,52 @@ def _device_export_token(settings: Settings, connector_id: str, integration_id: 
     return "kw_int_" + _derive_secret(settings, "device-mcp-export-v1", f"{connector_id}:{integration_id}")
 
 
-def _issue_platform_integration(service_obj, data, sources: list[dict], actor_id: str, *, device_export: bool = False) -> dict:
+def _issue_platform_integration(
+    service_obj, data, sources: list[dict], actor_id: str, *,
+    device_export: bool = False, assist_session_id: str | None = None,
+) -> dict:
     """Issue within the caller's transaction so authorization and creation are atomic."""
     settings = service_obj.settings
     _assert_business_source_limit(data.connector_id, sources)
+    db = service_obj.db
+    trace_id = "tr_" + uid()
     integration_id = "int_" + uid()
     if device_export:
         token = _device_export_token(settings, data.connector_id, integration_id)
         created_by = DEVICE_EXPORT_ACTOR_PREFIX + data.connector_id
+    elif assist_session_id is not None:
+        # The workbench can retry after the control transaction has committed.
+        # Reconstruct the integration token without storing it in either log or control DB.
+        integration_id = "int_" + _hash_secret("assist-platform-import-v1:" + assist_session_id)[:32]
+        token = "kw_int_" + _derive_secret(settings, "assist-platform-import-v1", assist_session_id)
+        created_by = actor_id
     else:
         token = _new_integration_token()
         created_by = actor_id
     config = _platform_config(settings, sources, token, data.display_name)
+    if assist_session_id is not None and not device_export:
+        existing = db.one("SELECT * FROM kaiwu_integrations WHERE id=?", (integration_id,))
+        if existing:
+            registered = db.all(
+                "SELECT connector_id,source_id FROM kaiwu_integration_sources WHERE integration_id=?",
+                (integration_id,),
+            )
+            if (
+                existing["tenant_id"] != data.tenant_id
+                or existing["connector_id"] != data.connector_id
+                or existing["display_name"] != data.display_name
+                or existing["created_by"] != created_by
+                or existing["revoked_at"] is not None
+                or existing["expires_at"] <= now()
+                or not hmac.compare_digest(existing["token_hash"], _hash_secret(token))
+                or {(item["connector_id"], item["source_id"]) for item in registered}
+                != {(data.connector_id, source_id) for source_id in data.source_ids}
+            ):
+                raise AppError(409, "ASSIST_INTEGRATION_CHANGED", "协助导入授权已更新，请重新发起协助")
+            return {"mcp_config": config}
     ttl = data.ttl_seconds or settings.kaiwu_integration_default_ttl_seconds
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
     timestamp = now()
-    trace_id = "tr_" + uid()
-    db = service_obj.db
     db.execute(
         "INSERT INTO kaiwu_integrations"
         "(id,tenant_id,connector_id,display_name,token_hash,token_prefix,expires_at,"
@@ -676,6 +705,20 @@ def _issue_platform_integration(service_obj, data, sources: list[dict], actor_id
         "mcp_config_json": json.dumps(config, ensure_ascii=False, indent=2),
         "trace_id": trace_id,
     }
+
+
+def _available_native_source(request: Request, service, connector, source_id: str) -> dict:
+    connector_id = connector["id"]
+    relay = getattr(request.app.state, "kaiwu_native_relay", None)
+    if (not service.settings.kaiwu_native_relay_enabled or connector["revoked"] or connector["draining"]
+            or relay is None or not relay.is_online(connector_id)):
+        raise AppError(409, "NATIVE_RELAY_OFFLINE", "Windows 连接器暂未连接，请在本机建立连接后重试")
+    if source_id == _builtin_demo_source_id(connector_id):
+        raise AppError(403, "BUILTIN_DEMO_HANDOFF_DENIED", "请选择要导入的业务 MCP")
+    source = _integration_rows(service.db, connector_id, [source_id])[0]
+    if source["transport"] != "streamable_http":
+        raise AppError(409, "HANDOFF_TRANSPORT_UNSUPPORTED", "请使用 Streamable HTTP 业务 MCP")
+    return source
 
 
 def _allocate_visitor_port(db: Database, settings: Settings) -> int:

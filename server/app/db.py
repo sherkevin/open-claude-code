@@ -414,6 +414,11 @@ CREATE TABLE IF NOT EXISTS kaiwu_assist_jobs(
 CREATE INDEX IF NOT EXISTS kaiwu_assist_jobs_session ON kaiwu_assist_jobs(session_id,seq DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS kaiwu_assist_job_live
     ON kaiwu_assist_jobs(session_id) WHERE status IN ('queued','running');
+CREATE TABLE IF NOT EXISTS kaiwu_assist_workbench_imports(
+    session_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    connection_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kaiwu_edge_routes(
     connector_id TEXT NOT NULL REFERENCES kaiwu_connectors(id),
     source_id TEXT NOT NULL,
