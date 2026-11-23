@@ -7,7 +7,7 @@
       "upstream_model": "deepseek-v4.1-flash",
       "enabled": true,
       "capabilities": ["general", "coding", "reasoning", "multimodal"],
-      "reasoning_levels": {"default": null},
+      "reasoning_levels": {"default": null, "light": "low", "high": "high", "max": "max"},
       "default_reasoning_level": "default"
     },
     {
@@ -17,7 +17,7 @@
       "upstream_model": "glm-5.3",
       "enabled": true,
       "capabilities": ["general", "chinese"],
-      "reasoning_levels": {"default": null},
+      "reasoning_levels": {"default": null, "light": "low", "high": "high", "max": "max"},
       "default_reasoning_level": "default"
     },
     {
@@ -46,7 +46,7 @@
       "upstream_model": "hy4",
       "enabled": false,
       "capabilities": ["general", "chinese", "multimodal", "reasoning"],
-      "reasoning_levels": {"default": null},
+      "reasoning_levels": {"default": null, "high": "high"},
       "default_reasoning_level": "default",
       "unavailable_reason": "管理员尚未配置此模型"
     },
@@ -56,7 +56,7 @@
       "upstream_model": "kimi-k3.1-pro",
       "enabled": false,
       "capabilities": ["general", "chinese", "long_context", "coding", "reasoning", "multimodal"],
-      "reasoning_levels": {"default": null},
+      "reasoning_levels": {"default": null, "light": "low", "high": "high", "max": "max"},
       "default_reasoning_level": "default",
       "unavailable_reason": "管理员尚未验证并启用此模型线路"
     },
@@ -66,7 +66,7 @@
       "upstream_model": "minimax-m3.1-flash",
       "enabled": false,
       "capabilities": ["general", "chinese", "reasoning", "multimodal"],
-      "reasoning_levels": {"light": "low"},
+      "reasoning_levels": {"light": "low", "high": "high", "max": "max"},
       "default_reasoning_level": "light",
       "unavailable_reason": "管理员尚未验证并启用此模型线路"
     },
