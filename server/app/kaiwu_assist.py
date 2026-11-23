@@ -177,24 +177,35 @@ class ImportInput(StrictModel):
     scope: Literal["private", "team"] = "private"
 
 
+def _configured_scope(settings):
+    if settings.kaiwu_control_enabled and settings.kaiwu_native_relay_enabled:
+        return settings.kaiwu_assist_tenants, settings.kaiwu_assist_devices
+    return (), ()
+
+
 def _scope(service):
-    settings = _control_settings(service)
-    if not settings.kaiwu_native_relay_enabled or not settings.kaiwu_assist_tenants:
+    scope = _configured_scope(_control_settings(service))
+    if not any(scope):
         raise AppError(403, "ASSIST_DISABLED", "当前平台未开放 MCP 协助")
-    return settings.kaiwu_assist_tenants
+    return scope
+
+
+def _eligible(tenant_id, connector_id, scope):
+    tenants, devices = scope
+    return tenant_id in tenants or connector_id in devices
 
 
 def _device_scope(service, device, connector_id):
     connector = device["connector"]
-    if connector["id"] != connector_id or connector["tenant_id"] not in _scope(service):
+    if connector["id"] != connector_id or not _eligible(connector["tenant_id"], connector_id, _scope(service)):
         raise AppError(403, "ASSIST_DEVICE_DENIED", "此设备无法使用 MCP 协助")
     return connector
 
 
 def _connector(service, connector_id, tenant_id=None):
     row = service.db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
-    tenants = _scope(service)
-    if not row or row["tenant_id"] not in tenants or tenant_id and row["tenant_id"] != tenant_id:
+    scope = _scope(service)
+    if not row or not _eligible(row["tenant_id"], connector_id, scope) or tenant_id and row["tenant_id"] != tenant_id:
         raise AppError(404, "ASSIST_DEVICE_MISSING", "未找到可协助的设备")
     return row
 
@@ -205,10 +216,10 @@ def _session(service, session_id, *, connector_id=None, owner=None):
         "JOIN kaiwu_connectors c ON c.id=s.connector_id AND c.tenant_id=s.tenant_id WHERE s.id=?",
         (session_id,),
     )
-    tenants = _scope(service)
+    scope = _scope(service)
     if (
         not row
-        or row["tenant_id"] not in tenants
+        or not _eligible(row["tenant_id"], row["connector_id"], scope)
         or connector_id and row["connector_id"] != connector_id
         or owner and row["created_by"] != owner
     ):
@@ -233,11 +244,7 @@ def _cancel_jobs(db, session_id, timestamp):
 def _expire(service):
     db = service.db
     settings = service.settings
-    allowed = (
-        settings.kaiwu_assist_tenants
-        if settings.kaiwu_control_enabled and settings.kaiwu_native_relay_enabled
-        else ()
-    )
+    tenants, devices = _configured_scope(settings)
     timestamp = now()
     db.execute(
         "UPDATE kaiwu_assist_sessions SET status='expired' "
@@ -246,10 +253,11 @@ def _expire(service):
         "OR (instr(created_by, ?) = 1 AND ? = 0) "
         "OR (instr(created_by, ?) != 1 AND created_by != ? || connector_id AND NOT EXISTS "
         "(SELECT 1 FROM users WHERE id=created_by AND role='admin' AND enabled=1)) "
-        "OR tenant_id NOT IN (SELECT value FROM json_each(?)))",
+        "OR (tenant_id NOT IN (SELECT value FROM json_each(?)) "
+        "AND connector_id NOT IN (SELECT value FROM json_each(?))))",
         (
             timestamp, BRIDGE_OPERATOR_PREFIX, bool(settings.kaiwu_assist_bridge_secret()),
-            BRIDGE_OPERATOR_PREFIX, DEVICE_OWNER_PREFIX, dump(allowed),
+            BRIDGE_OPERATOR_PREFIX, DEVICE_OWNER_PREFIX, dump(tenants), dump(devices),
         ),
     )
     db.execute(
@@ -261,7 +269,7 @@ def _expire(service):
 
 
 def expire_assist_on_startup(service):
-    # Clear queued credentials for tenants removed while the server was down.
+    # Clear queued credentials for tenants or devices removed while the server was down.
     with service.db.transaction():
         _expire(service)
 
@@ -368,13 +376,8 @@ def add_device_assist(router, service_dependency, device):
         connector_id: str, device_first: bool = False, target_after_start: bool = False,
         identity=Depends(device), service=Depends(service_dependency),
     ):
-        if (
-            identity["connector"]["id"] == connector_id
-            and (
-                not service.settings.kaiwu_native_relay_enabled
-                or identity["connector"]["tenant_id"] not in service.settings.kaiwu_assist_tenants
-            )
-        ):
+        connector = identity["connector"]
+        if connector["id"] == connector_id and not _eligible(connector["tenant_id"], connector_id, _configured_scope(service.settings)):
             return {"offer": None}
         _device_scope(service, identity, connector_id)
         with service.db.transaction():
@@ -558,20 +561,20 @@ def _assist_router(service_dependency, admin, *, prefix: str, bridge: bool = Fal
 
     @router.get("/devices")
     def devices(request: Request, service=Depends(service_dependency), user=Depends(admin)):
-        tenants = _scope(service)
-        placeholders = ",".join("?" for _ in tenants)
+        tenants, devices = _scope(service)
         with service.db.transaction():
             _expire(service)
             rows = service.db.all(
-                f"SELECT c.id,c.tenant_id,c.tenant_name,h.received_at AS last_seen_at, "
-                f"CASE WHEN s.created_by=? THEN s.id END AS session_id, "
-                f"CASE WHEN s.status='active' AND s.last_poll_at>? THEN s.id END AS active_session_id "
-                f"FROM kaiwu_connectors c LEFT JOIN kaiwu_heartbeats h ON h.connector_id=c.id "
-                f"LEFT JOIN kaiwu_assist_sessions s ON s.connector_id=c.id "
-                f"AND (s.created_by=? OR s.created_by=? || c.id) "
-                f"AND s.status IN ('pending','active') WHERE c.revoked=0 AND c.draining=0 "
-                f"AND c.tenant_id IN ({placeholders}) ORDER BY c.created_at DESC",
-                (user["id"], _future(-DEVICE_LEASE), user["id"], DEVICE_OWNER_PREFIX, *tenants),
+                "SELECT c.id,c.tenant_id,c.tenant_name,h.received_at AS last_seen_at, "
+                "CASE WHEN s.created_by=? THEN s.id END AS session_id, "
+                "CASE WHEN s.status='active' AND s.last_poll_at>? THEN s.id END AS active_session_id "
+                "FROM kaiwu_connectors c LEFT JOIN kaiwu_heartbeats h ON h.connector_id=c.id "
+                "LEFT JOIN kaiwu_assist_sessions s ON s.connector_id=c.id "
+                "AND (s.created_by=? OR s.created_by=? || c.id) "
+                "AND s.status IN ('pending','active') WHERE c.revoked=0 AND c.draining=0 "
+                "AND (c.tenant_id IN (SELECT value FROM json_each(?)) "
+                "OR c.id IN (SELECT value FROM json_each(?))) ORDER BY c.created_at DESC",
+                (user["id"], _future(-DEVICE_LEASE), user["id"], DEVICE_OWNER_PREFIX, dump(tenants), dump(devices)),
             )
         relay = getattr(request.app.state, "kaiwu_native_relay", None)
         for row in rows:

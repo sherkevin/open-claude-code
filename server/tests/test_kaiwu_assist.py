@@ -176,6 +176,34 @@ def test_assist_presence_and_target_authorization_are_independent(env):
     assert client.post(route + "/jobs", json=discovery).status_code == 409
 
 
+def test_selected_device_can_use_assist_without_enabling_its_tenant(env):
+    app, client, db, device, _, connector_id, _ = env
+    service = app.state.service
+    service.settings = replace(service.settings, kaiwu_assist_tenants=(), kaiwu_assist_devices=(connector_id,))
+    key, public_key, key_id = key_material()
+    issued = client.post(BASE + "/v1/enrollments", headers={"Authorization": "Bearer " + ADMIN_TOKEN},
+                         json={"tenant_id": "tenant-assist", "tenant_name": "合成企业"})
+    peer = client.post(BASE + "/v1/enrollments/redeem",
+                       json={"code": issued.json()["code"], "device_public_key": public_key}).json()
+    assert db.one("SELECT tenant_id FROM kaiwu_connectors WHERE id=?", (peer["connector_id"],))["tenant_id"] == "tenant-assist"
+    path = BASE + "/v1/connectors/" + peer["connector_id"] + "/assist/"
+    assert device(path + "start", {}, credentials=(peer, key, key_id)).status_code == 403
+    assert device(path + "offer?device_first=1&target_after_start=1", credentials=(peer, key, key_id)).json() == {"offer": None}
+    assert client.post("/api/v1/auth/login", json={"username": "owner", "password": PASSWORD}).status_code == 200
+    assert [row["id"] for row in client.get(PORTAL + "/devices").json()["devices"]] == [connector_id]
+    session = device("start", {"name": "销售合同", "url": TARGET}).json()
+    local = {"session_id": session["id"]}
+    assert device("poll", local).json()["active"] is True
+    route = PORTAL + "/sessions/" + session["id"]
+    assert client.post(route + "/claim").status_code == 200
+    queued = client.post(route + "/jobs", json={"action": "discover", "bearer_token": TOKEN}).json()["latest_job"]
+    service.settings = replace(service.settings, kaiwu_assist_devices=())
+    with TestClient(create_app(service.settings), base_url="https://testserver"):
+        assert db.one("SELECT status FROM kaiwu_assist_sessions WHERE id=?", (session["id"],))["status"] == "expired"
+        job = db.one("SELECT status,sealed_bearer FROM kaiwu_assist_jobs WHERE id=?", (queued["id"],))
+        assert job == {"status": "failed", "sealed_bearer": None}
+
+
 def test_credential_delivery_once_stop_and_expiry(env):
     app, client, db, device, *_ = env
     local, route = request_assist(env)
