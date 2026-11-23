@@ -27,8 +27,9 @@ TOOL_CALL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("works
 APPROVAL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("workspace_approval_id", default=None)
 
 DELEGATE_TASKS_GUIDANCE = (
-    "\n\n若用户需要两项以上可独立交付、值得分别分析的结论，就主动调用 delegate_tasks，一次分工，再核对汇总。"
-    "简单问答、前后依赖或用户要求独立作答时直接完成。缺资料先取证。"
+    "\n\n用户已给出分析所需事实时，用题内资料即可。如果一轮中有分别可交付、互不依赖的工作成果，"
+    "第一步就主动调用 delegate_tasks，让各子任务分别完成相应成果，收到后核对并综合回答。"
+    "简单问答、步骤相依或用户要求自行完成时直接回答。"
 )
 
 
