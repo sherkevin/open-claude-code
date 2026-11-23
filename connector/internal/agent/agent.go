@@ -118,6 +118,7 @@ type Agent struct {
 	registeredSources map[string]map[string]bool
 	assistSeen        *cloud.AssistOffer
 	assistActive      *assistSession
+	assistStarting    bool
 	assistStopped     string
 
 	// mu guards the startup worker and cancellation of the active attempt.

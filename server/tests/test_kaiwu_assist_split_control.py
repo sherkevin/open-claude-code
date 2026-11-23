@@ -114,3 +114,20 @@ def test_split_control_import_only_returns_same_config_with_live_consent(split_c
         assert import_source().json()["error"]["code"] == "ASSIST_INTEGRATION_CHANGED"
         assert device("stop", session).status_code == 200
         assert import_source().status_code == 409
+
+
+def test_split_control_local_start_is_claimed_once_by_one_operator(split_control):
+    _, db, device, _, connector_id, _, client, headers, _ = split_control
+    offer = device("start", {"name": "销售合同", "url": TARGET})
+    assert offer.status_code == 200, offer.text
+    sid = offer.json()["id"]
+    route = BRIDGE + "/sessions/" + sid
+    other = {**headers, "X-Kaiwu-Operator": "other-operator"}
+    assert client.get(route, headers=headers).status_code == 404
+    assert device("poll", {"session_id": sid}).json() == {"active": True, "job": None}
+    device_row = client.get(BRIDGE + "/devices", headers=other).json()["devices"][0]
+    assert (device_row["id"], device_row["active_session_id"]) == (connector_id, sid)
+    assert client.post(route + "/claim", headers=headers).json()["url"] == TARGET
+    assert client.post(route + "/claim", headers=other).status_code == 404
+    assert client.get(BRIDGE + "/devices", headers=other).json()["devices"][0]["active_session_id"] is None
+    assert db.one("SELECT created_by FROM kaiwu_assist_sessions WHERE id=?", (sid,))["created_by"] == "workbench:test-operator"

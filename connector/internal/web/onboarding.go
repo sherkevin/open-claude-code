@@ -129,6 +129,7 @@ let sourceID = "";
 let draft;
 let pendingExport = "";
 let assistOffer;
+let assistEnabled = false;
 let assistRefreshing = false;
 let assistBusy = false;
 let assistChange = 0;
@@ -157,18 +158,24 @@ function notice(text, kind = ""){
 }
 
 function renderAssist(){
-  $("assistPanel").hidden = !assistOffer && !$("assistNotice").textContent;
-  $("assistService").textContent = assistOffer?.name || "";
-  $("assistAddress").textContent = assistOffer?.url || "";
+  const eligible = status?.bound && status.state !== "REVOKED" && assistEnabled;
+  $("assistPanel").hidden = !eligible && !assistOffer && !$("assistNotice").textContent;
   const pending = assistOffer?.status === "pending";
   const active = assistOffer?.status === "active";
   const local = !!assistOffer?.local_active;
-  $("assistState").textContent = pending ?
-    "允许开物工程师测试这个 MCP 服务、选择工具并导入开物。你可以随时停止。" :
-    local ? "正在协助。你无需操作，随时可以停止。" :
-    active ? "本机协助已停止。你可以再次发送停止通知。" : "";
-  $("assistStart").hidden = !pending;
-  $("assistStop").hidden = !active && !local;
+  let target = assistOffer;
+  if(eligible && !target && $("upstreamAddress").value.trim()){
+    try{ target = localServiceTarget(); }catch(_error){}
+  }
+  $("assistService").textContent = target?.name || "";
+  $("assistAddress").textContent = target?.url || "";
+  $("assistAddress").hidden = !target;
+  $("assistState").textContent = local ? "已开始协助。开物可以读取并协助接入这个 MCP 服务，你随时可以停止。" :
+    active ? "本机协助已停止。请点「停止协助」通知开物。" :
+    target ? "点击「开始协助」，允许开物工程师读取并协助接入这个 MCP 服务。" :
+    "先在下方填写 MCP 地址，再点击「开始协助」。";
+  $("assistStart").hidden = active || (!eligible && !pending);
+  $("assistStop").hidden = !active;
   $("assistStart").disabled = assistBusy;
   $("assistStop").disabled = assistBusy;
 }
@@ -178,9 +185,10 @@ async function refreshAssist(){
   assistRefreshing = true;
   const revision = assistChange;
   try{
-    const offer = await api("/api/assist/offer");
+    const {enabled, offer} = await api("/api/assist/offer");
     if(assistBusy || revision !== assistChange){ return; }
-    assistOffer = offer?.status === "pending" || offer?.status === "active" ? offer : undefined;
+    assistEnabled = enabled;
+    assistOffer = offer?.status === "active" || (!assistEnabled && offer?.status === "pending") ? offer : undefined;
     renderAssist();
   }catch(_error){
     // Keep the displayed target and Stop available when the cloud is unreachable.
@@ -190,18 +198,33 @@ async function refreshAssist(){
 }
 
 async function changeAssist(action){
-  if(!assistOffer || assistBusy){ return; }
+  if(assistBusy){ return; }
+  let request;
+  if(action === "stop" || (!assistEnabled && assistOffer?.status === "pending")){
+    if(!assistOffer){ return; }
+    request = {session_id:assistOffer.id};
+  }else{
+    if(!assistEnabled || assistOffer?.status === "active"){ return; }
+    try{
+      if(!$("upstreamAddress").value.trim()){ throw new Error("请先在下方填写 MCP 地址。"); }
+      request = localServiceTarget();
+    }catch(error){
+      $("assistNotice").textContent = error.message;
+      $("upstreamAddress").focus();
+      return;
+    }
+  }
   assistBusy = true;
   assistChange++;
   $("assistNotice").textContent = "";
   renderAssist();
   try{
-    await api("/api/assist/" + action, {session_id:assistOffer.id});
+    const offer = await api("/api/assist/" + action, request);
     if(action === "stop"){
       assistOffer = undefined;
       $("assistNotice").textContent = "协助已停止。";
     }else{
-      assistOffer = { ...assistOffer, status:"active", local_active:true };
+      assistOffer = offer || { ...assistOffer, status:"active", local_active:true };
     }
   }catch(error){
     if(action === "stop"){ assistOffer = { ...assistOffer, local_active:false }; }
@@ -218,6 +241,7 @@ function selectedTools(){
 }
 
 function render(){
+  renderAssist();
   const bound = status?.bound && status.state !== "REVOKED";
   $("bindForm").hidden = !status || status.bound || !status.cloud_configured;
   $("workflow").hidden = !bound;
@@ -309,13 +333,18 @@ function localURL(value){
   return url;
 }
 
-function sourceInput(){
+function localServiceTarget(){
   const endpoint = localURL($("upstreamAddress").value);
+  return {name:$("sourceName").value.trim() || (endpoint.port ? "MCP " + endpoint.port : "本机 MCP"), url:endpoint.href};
+}
+
+function sourceInput(){
+  const target = localServiceTarget();
   const dynamicAuth = $("dynamicAuth").checked;
   return {
     source_id: sourceID,
-    display_name: $("sourceName").value.trim() || (endpoint.port ? "MCP " + endpoint.port : "本机 MCP"),
-    upstream_url: endpoint.href,
+    display_name: target.name,
+    upstream_url: target.url,
     bearer_token: $("bearerToken").value.trim(),
     dynamic_auth: dynamicAuth,
     app_id: $("authAppID").value.trim(), channel: $("authChannel").value.trim(), user_id: $("authUserID").value.trim(),
@@ -347,6 +376,7 @@ async function loadStatus(){
     if(revoked || !status.bound){
       assistChange++;
       assistOffer = undefined;
+      assistEnabled = false;
       $("assistNotice").textContent = "";
       renderAssist();
     }
@@ -474,6 +504,8 @@ $("editAddressBtn").onclick = ()=>{
 $("addAnotherBtn").onclick = ()=>editSource();
 $("assistStart").onclick = ()=>changeAssist("start");
 $("assistStop").onclick = ()=>changeAssist("stop");
+$("upstreamAddress").oninput = renderAssist;
+$("sourceName").oninput = renderAssist;
 $("dynamicAuth").onchange = render;
 $("reloadStatusBtn").onclick = loadStatus;
 $("resumeBtn").onclick = ()=>operate("正在恢复连接…", async()=>{

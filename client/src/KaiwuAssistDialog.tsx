@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { api, errorText, post, timeText } from './api';
-import { Button, ErrorNotice, Field, Loader, Modal, SuccessNotice } from './components';
+import { Button, ErrorNotice, Field, Modal, SuccessNotice } from './components';
 import { ScopeField, type ResourceScope } from './resources';
 import type { Connection } from './types';
 import './kaiwu-assist.css';
@@ -13,7 +13,7 @@ type Device = {
   tenant_name: string;
   device_label?: string;
   online: boolean;
-  session_id?: string;
+  active_session_id?: string;
 };
 
 type Job = {
@@ -64,7 +64,9 @@ function describeJob(job: Job): string {
 }
 
 function deviceName(device: Device): string {
-  return [device.tenant_name, device.device_label || device.id, device.online ? '在线' : '暂未连接'].join(' · ');
+  const parts = [device.tenant_name, device.device_label || device.id, device.online ? '在线' : '暂未连接'];
+  if (device.active_session_id) parts.push('已发起协助');
+  return parts.join(' · ');
 }
 
 export function useKaiwuAssistDevices(enabled: boolean) {
@@ -100,10 +102,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   onImported: (connection: Connection) => void;
 }) {
   const [deviceID, setDeviceID] = useState('');
-  const [sessionID, setSessionID] = useState('');
   const [session, setSession] = useState<Session | null>(null);
-  const [name, setName] = useState('');
-  const [url, setURL] = useState('');
   const [bearer, setBearer] = useState('');
   const [signature, setSignature] = useState<DynamicAuth | null>(null);
   const [tools, setTools] = useState<string[]>([]);
@@ -117,8 +116,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   const device = devices.find(item => item.id === deviceID);
   const job = session?.latest_job;
   const active = session?.status === 'active';
-  const live = active || session?.status === 'pending';
-  const canPoll = !!sessionID && (!session || live);
+  const sessionID = session?.id;
   const jobBusy = job?.status === 'queued' || job?.status === 'running';
   const connected = job?.action === 'connect' && job.status === 'succeeded';
   const importedID = imported?.id || session?.imported_connection_id;
@@ -127,7 +125,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
     signature.user_id.trim() && signature.hmac_key.trim());
 
   useEffect(() => {
-    if (!canPoll) return;
+    if (!sessionID || !active) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -151,7 +149,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
     };
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [canPoll, sessionID]);
+  }, [active, sessionID]);
 
   async function run(action: () => Promise<void>) {
     if (mutating.current) return;
@@ -167,10 +165,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   function switchDevice(id: string) {
     epoch.current += 1;
     setDeviceID(id);
-    setSessionID(devices.find(item => item.id === id)?.session_id || '');
     setSession(null);
-    setName('');
-    setURL('');
     setBearer('');
     setSignature(null);
     setTools([]);
@@ -180,16 +175,15 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   }
 
   function update(next: Session) {
-    setSessionID(next.id);
     setSession(next);
     setPollError('');
   }
 
-  async function create(event: FormEvent) {
-    event.preventDefault();
-    if (!device || !name.trim() || !url.trim()) return;
+  async function join() {
+    const offeredSession = device?.active_session_id;
+    if (!offeredSession) return;
     await run(async () => {
-      update(await post<Session>(path + '/sessions', { connector_id: device.id, name: name.trim(), url: url.trim() }));
+      update(await post<Session>(path + '/sessions/' + encodeURIComponent(offeredSession) + '/claim'));
     });
   }
 
@@ -214,7 +208,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   }
 
   async function stop() {
-    if (!session || !live) return;
+    if (!session || !active) return;
     await run(async () => {
       update(await post<Session>(path + '/sessions/' + encodeURIComponent(session.id) + '/stop'));
       setBearer('');
@@ -236,7 +230,6 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
     if (imported) onImported(imported);
   }
 
-  const formID = 'kaiwu-assist-request';
   return <Modal title="内网接入协助" wide onClose={close}>
     <div className="modal-body kaiwu-assist">
       <ErrorNotice message={error || pollError || devicesError}/>
@@ -247,22 +240,17 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
             {devices.map(item => <option key={item.id} value={item.id}>{deviceName(item)}</option>)}
           </select>
         </Field>
-        {sessionID ? <>{!pollError && <Loader text="正在读取该设备的协助状态…"/>}</> :
-          <form id={formID} onSubmit={create}>
-            <Field label="服务名称" required><input value={name} maxLength={80} required disabled={busy} onChange={event => setName(event.target.value)} /></Field>
-            <Field label="完整 MCP 地址" required hint="客户将在连接器上看到并确认这个地址。">
-              <input value={url} type="url" maxLength={1024} autoComplete="off" spellCheck={false} required disabled={busy} onChange={event => setURL(event.target.value)} />
-            </Field>
-          </form>}
+        {device?.active_session_id
+          ? <p role="status">客户已在连接器发起协助，可以进入协助。</p>
+          : <p role="status">请客户先在本机连接器点击「开始协助」，再刷新设备。</p>}
       </>}
       {session && <>
         <section className="kaiwu-assist-status" aria-label="协助状态">
           <strong role="status">{sessionLabels[session.status]}</strong>
           <p>{session.tenant_name} · {session.name}</p>
           <code>{session.url}</code>
-          {live && <small>开放至 {timeText(session.expires_at)}</small>}
+          {active && <small>开放至 {timeText(session.expires_at)}</small>}
         </section>
-        {session.status === 'pending' && <p>请客户在 Windows 开物连接器上点击「开始协助」。授权后可以读工具。</p>}
         {job && <section className="kaiwu-assist-result" aria-label="最近一次操作结果">
           <p role="status">{describeJob(job)}</p>
           {(job.stage || job.http_status || job.finished_at || job.authorization !== undefined) && <details>
@@ -317,14 +305,14 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
     </div>
     <footer className="modal-footer">
       <Button variant="secondary" disabled={busy} onClick={close}>{imported ? '查看连接' : '关闭窗口'}</Button>
-      {!session && !sessionID && <>
-        <Button variant="ghost" disabled={busy} onClick={onRefresh}><RefreshCw size={15}/>刷新设备</Button>
-        <Button type="submit" form={formID} busy={busy} disabled={!device || !name.trim() || !url.trim()}>发送协助请求</Button>
+      {!session && <>
+        <Button variant="ghost" disabled={busy} onClick={() => { setError(''); onRefresh(); }}><RefreshCw size={15}/>刷新设备</Button>
+        <Button busy={busy} disabled={!device?.active_session_id} onClick={() => void join()}>进入协助</Button>
       </>}
-      {session && !live && !importedID && <Button onClick={() => {
-        setSessionID(''); setSession(null); setError(''); setPollError(''); setTools([]); setBearer(''); setSignature(null); onRefresh();
-      }}>新建请求</Button>}
-      {live && <Button variant="secondary" disabled={busy} onClick={() => void stop()}>{session?.status === 'pending' ? '撤回请求' : '结束协助'}</Button>}
+      {session && !active && !importedID && <Button onClick={() => {
+        switchDevice(''); onRefresh();
+      }}>返回设备列表</Button>}
+      {active && <Button variant="secondary" disabled={busy} onClick={() => void stop()}>结束协助</Button>}
       {active && !connected && !importedID && !!session.discovered_tools.length && <Button busy={jobBusy && job?.action === 'connect'} disabled={busy || jobBusy || !selected.length || !!pollError} onClick={() => void submitJob('connect')}>保存并连接</Button>}
       {active && connected && !importedID && <Button busy={busy} disabled={!!pollError} onClick={() => void importConnection()}>导入开物</Button>}
     </footer>

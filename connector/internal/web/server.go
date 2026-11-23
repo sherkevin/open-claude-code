@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/agent"
+	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 )
@@ -134,23 +135,45 @@ func (s *Server) handleAssistOffer(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
 	defer cancel()
-	offer, err := s.Agent.AssistOffer(ctx)
+	status, err := s.Agent.AssistStatus(ctx)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "ASSIST_UNAVAILABLE", "暂时无法查询协助请求")
+		writeError(w, http.StatusBadGateway, "ASSIST_UNAVAILABLE", "暂时无法查询协助状态")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": status})
+}
+
+func (s *Server) handleAssistStart(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionID string `json:"session_id"`
+		cloud.AssistTarget
+	}
+	if err := decode(w, r, &body); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if body.SessionID != "" {
+		if body.Name != "" || body.URL != "" {
+			writeError(w, http.StatusBadRequest, "ASSIST_TARGET_INVALID", "协助请求包含多个目标")
+			return
+		}
+		if err := s.Agent.StartAssist(ctx, body.SessionID); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	offer, err := s.Agent.StartAssistForTarget(ctx, body.AssistTarget)
+	if err != nil {
+		writeAPIError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": offer})
 }
 
-func (s *Server) handleAssistStart(w http.ResponseWriter, r *http.Request) {
-	s.handleAssistAction(w, r, s.Agent.StartAssist)
-}
-
 func (s *Server) handleAssistStop(w http.ResponseWriter, r *http.Request) {
-	s.handleAssistAction(w, r, s.Agent.StopAssist)
-}
-
-func (s *Server) handleAssistAction(w http.ResponseWriter, r *http.Request, action func(context.Context, string) error) {
 	var body struct {
 		SessionID string `json:"session_id"`
 	}
@@ -159,7 +182,7 @@ func (s *Server) handleAssistAction(w http.ResponseWriter, r *http.Request, acti
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if err := action(ctx, body.SessionID); err != nil {
+	if err := s.Agent.StopAssist(ctx, body.SessionID); err != nil {
 		writeAPIError(w, err)
 		return
 	}

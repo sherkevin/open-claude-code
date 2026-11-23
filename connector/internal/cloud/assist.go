@@ -21,6 +21,16 @@ type AssistOffer struct {
 	LocalActive bool      `json:"local_active,omitempty"`
 }
 
+type AssistStatus struct {
+	Enabled bool         `json:"enabled"`
+	Offer   *AssistOffer `json:"offer"`
+}
+
+type AssistTarget struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
 type AssistJob struct {
 	ID          string              `json:"id"`
 	Action      string              `json:"action"`
@@ -46,16 +56,20 @@ type AssistResult struct {
 	SourceID      string   `json:"source_id,omitempty"`
 }
 
-func (c *Client) AssistOffer(ctx context.Context, connectorID string) (*AssistOffer, error) {
-	var data struct {
-		Offer *AssistOffer `json:"offer"`
-	}
-	err := c.assistRequest(ctx, http.MethodGet, connectorID, "offer", nil, &data)
-	return data.Offer, err
+func (c *Client) AssistStatus(ctx context.Context, connectorID string) (AssistStatus, error) {
+	var data AssistStatus
+	err := c.assistRequest(ctx, http.MethodGet, connectorID, "offer?device_first=1", nil, &data)
+	return data, err
 }
 
 func (c *Client) StartAssist(ctx context.Context, connectorID, sessionID string) error {
 	return c.assistRequest(ctx, http.MethodPost, connectorID, "start", assistSessionRequest{sessionID}, nil)
+}
+
+func (c *Client) StartAssistForTarget(ctx context.Context, connectorID string, target AssistTarget) (AssistOffer, error) {
+	var offer AssistOffer
+	err := c.assistRequest(ctx, http.MethodPost, connectorID, "start", target, &offer)
+	return offer, err
 }
 
 func (c *Client) PollAssist(ctx context.Context, connectorID, sessionID string) (AssistPoll, error) {

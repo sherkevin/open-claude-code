@@ -23,14 +23,15 @@ const (
 )
 
 type assistanceFixture struct {
-	cloudURL  string
-	active    atomic.Bool
-	jobSent   atomic.Bool
-	stopCalls atomic.Int32
-	results   chan cloud.AssistResult
+	cloudURL   string
+	active     atomic.Bool
+	jobSent    atomic.Bool
+	offerCalls atomic.Int32
+	stopCalls  atomic.Int32
+	results    chan cloud.AssistResult
 }
 
-func newAssistanceFixture(t *testing.T, upstream string, rejectFirstStop bool) *assistanceFixture {
+func newAssistanceFixture(t *testing.T, upstream string, rejectFirstStop, deviceFirst bool) *assistanceFixture {
 	t.Helper()
 	f := &assistanceFixture{results: make(chan cloud.AssistResult, 2)}
 	offer := cloud.AssistOffer{ID: testAssistID, Name: "销售合同", URL: upstream, ExpiresAt: time.Now().Add(time.Minute)}
@@ -42,8 +43,20 @@ func newAssistanceFixture(t *testing.T, upstream string, rejectFirstStop bool) *
 		if r.Method != http.MethodGet {
 			var data struct{ SessionID string }
 			var wire map[string]json.RawMessage
-			if err := json.NewDecoder(r.Body).Decode(&wire); err != nil ||
-				json.Unmarshal(wire["session_id"], &data.SessionID) != nil || data.SessionID != offer.ID {
+			if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+				t.Error("signed request has no JSON body")
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			if deviceFirst && strings.HasSuffix(r.URL.Path, "/start") {
+				var target cloud.AssistTarget
+				if len(wire) != 2 || json.Unmarshal(wire["name"], &target.Name) != nil || target.Name != offer.Name ||
+					json.Unmarshal(wire["url"], &target.URL) != nil || target.URL != offer.URL {
+					t.Error("device-first start should send only the approved name and address")
+					http.Error(w, "invalid target", http.StatusBadRequest)
+					return
+				}
+			} else if json.Unmarshal(wire["session_id"], &data.SessionID) != nil || data.SessionID != offer.ID {
 				t.Error("signed request is missing the approved session")
 				http.Error(w, "invalid session", http.StatusBadRequest)
 				return
@@ -65,14 +78,32 @@ func newAssistanceFixture(t *testing.T, upstream string, rejectFirstStop bool) *
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/connectors/conn_assist/assist/offer":
+			f.offerCalls.Add(1)
 			view := offer
 			view.Status = "pending"
 			if f.active.Load() {
 				view.Status = "active"
 			}
+			if deviceFirst {
+				if r.URL.Query().Get("device_first") != "1" {
+					t.Error("missing device-first capability query")
+				}
+				status := cloud.AssistStatus{Enabled: true}
+				if f.active.Load() {
+					status.Offer = &view
+				}
+				_ = json.NewEncoder(w).Encode(status)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"offer": view})
 		case "/v1/connectors/conn_assist/assist/start":
 			f.active.Store(true)
+			if deviceFirst {
+				view := offer
+				view.Status = "active"
+				_ = json.NewEncoder(w).Encode(view)
+				return
+			}
 			_, _ = w.Write([]byte("{}"))
 		case "/v1/connectors/conn_assist/assist/poll":
 			active := f.active.Load()
@@ -129,15 +160,15 @@ func TestAssistRequiresLocalConsentAndReportsBoundedDiscovery(t *testing.T) {
 		http.Error(w, "kept local", http.StatusUnauthorized)
 	}))
 	t.Cleanup(upstream.Close)
-	f := newAssistanceFixture(t, upstream.URL+"/mcp", false)
+	f := newAssistanceFixture(t, upstream.URL+"/mcp", false, false)
 	a := newAssistTestAgent(t, f)
 	ctx := context.Background()
 	if err := a.StartAssist(ctx, testAssistID); err == nil || f.active.Load() {
 		t.Fatal("device accepted an offer that the local page never displayed")
 	}
-	offer, err := a.AssistOffer(ctx)
-	if err != nil || offer == nil || offer.URL != upstream.URL+"/mcp" || offer.LocalActive || f.jobSent.Load() {
-		t.Fatalf("unexpected pending offer: %+v %v", offer, err)
+	assist, err := a.AssistStatus(ctx)
+	if err != nil || assist.Enabled || assist.Offer == nil || assist.Offer.URL != upstream.URL+"/mcp" || assist.Offer.LocalActive || f.jobSent.Load() {
+		t.Fatalf("unexpected pending offer: %+v %v", assist, err)
 	}
 	if err := a.StartAssist(ctx, testAssistID); err != nil {
 		t.Fatal(err)
@@ -154,6 +185,45 @@ func TestAssistRequiresLocalConsentAndReportsBoundedDiscovery(t *testing.T) {
 	}
 }
 
+func TestDeviceStartsAssistForLocalTargetWithoutPendingOffer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" || r.Method != http.MethodPost ||
+			r.Header.Get("Authorization") != "Bearer "+testAssistToken {
+			t.Error("unexpected request to the locally chosen service")
+		}
+		http.Error(w, "kept local", http.StatusUnauthorized)
+	}))
+	t.Cleanup(upstream.Close)
+	target := cloud.AssistTarget{Name: "销售合同", URL: upstream.URL + "/mcp"}
+	f := newAssistanceFixture(t, target.URL, false, true)
+	a := newAssistTestAgent(t, f)
+	ctx := context.Background()
+
+	assist, err := a.AssistStatus(ctx)
+	if err != nil || !assist.Enabled || assist.Offer != nil || f.offerCalls.Load() != 1 || f.active.Load() {
+		t.Fatalf("expected a device-first idle state: %+v %v", assist, err)
+	}
+	offer, err := a.StartAssistForTarget(ctx, target)
+	if err != nil || offer == nil || offer.URL != target.URL || !offer.LocalActive {
+		t.Fatalf("could not start from the local target: %+v %v", offer, err)
+	}
+	select {
+	case result := <-f.results:
+		if result.HTTPStatus != http.StatusUnauthorized || result.SessionID != offer.ID {
+			t.Fatalf("unexpected result for the locally approved target: %+v", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("device did not send the discovery result")
+	}
+	if err := a.StopAssist(ctx, offer.ID); err != nil {
+		t.Fatal(err)
+	}
+	assist, err = a.AssistStatus(ctx)
+	if err != nil || !assist.Enabled || assist.Offer != nil || f.active.Load() {
+		t.Fatalf("expected a device-first idle state after stopping: %+v %v", assist, err)
+	}
+}
+
 func TestAssistStopCancelsDiscoveryEvenWhenFirstNotificationFails(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})
@@ -165,10 +235,10 @@ func TestAssistStopCancelsDiscoveryEvenWhenFirstNotificationFails(t *testing.T) 
 		close(canceled)
 	}))
 	t.Cleanup(upstream.Close)
-	f := newAssistanceFixture(t, upstream.URL+"/mcp", true)
+	f := newAssistanceFixture(t, upstream.URL+"/mcp", true, false)
 	a := newAssistTestAgent(t, f)
 	ctx := context.Background()
-	if _, err := a.AssistOffer(ctx); err != nil {
+	if _, err := a.AssistStatus(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.StartAssist(ctx, testAssistID); err != nil {
@@ -183,8 +253,8 @@ func TestAssistStopCancelsDiscoveryEvenWhenFirstNotificationFails(t *testing.T) 
 	// Simulate the service restarting while the control plane still remembers
 	// the previous grant. The replacement process must require fresh consent.
 	reloaded := newAssistTestAgent(t, f)
-	offer, err := reloaded.AssistOffer(ctx)
-	if err != nil || offer == nil || offer.Status != "active" || offer.LocalActive ||
+	assist, err := reloaded.AssistStatus(ctx)
+	if err != nil || assist.Offer == nil || assist.Offer.Status != "active" || assist.Offer.LocalActive ||
 		reloaded.StartAssist(ctx, testAssistID) == nil {
 		t.Fatal("a cloud grant silently resumed after restart")
 	}
@@ -204,8 +274,8 @@ func TestAssistStopCancelsDiscoveryEvenWhenFirstNotificationFails(t *testing.T) 
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	if offer, err := a.AssistOffer(ctx); err != nil || offer != nil {
-		t.Fatalf("stopped session resurfaced: %+v %v", offer, err)
+	if assist, err := a.AssistStatus(ctx); err != nil || assist.Offer != nil {
+		t.Fatalf("stopped session resurfaced: %+v %v", assist, err)
 	}
 	select {
 	case result := <-f.results:

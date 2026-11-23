@@ -53,7 +53,8 @@ def env(tmp_path):
             method = "POST" if payload is not None else "GET"
             body = json_body(payload) if payload is not None else b""
             return client.request(method, endpoint, content=body,
-                                  headers={"Content-Type": "application/json", **identity_headers(endpoint, method, body, credentials)})
+                                  headers={"Content-Type": "application/json",
+                                           **identity_headers(endpoint.split("?", 1)[0], method, body, credentials)})
 
         def connect():
             ws_path = path + "/native-relay"
@@ -88,6 +89,47 @@ def request_assist(env):
     assert device("start", local, credentials=outsider).status_code == 403
     assert device("start", local).status_code == 200
     return local, route
+
+
+def test_device_starts_target_before_any_operator_and_controls_stop(env):
+    _, client, db, device, _, connector_id, outsider = env
+    target = {"name": "销售合同", "url": TARGET}
+    assert device("offer").json() == {"offer": None}
+    assert device("offer?device_first=1").json() == {"enabled": True, "offer": None}
+    assert device("start", target, credentials=outsider).status_code == 403
+    assert device("start", {**target, "bearer_token": TOKEN}).status_code == 422
+    opened = device("start", target)
+    assert opened.status_code == 200, opened.text
+    offer = opened.json()
+    assert offer["status"] == "active" and offer["url"] == TARGET
+    assert device("start", target).json() == offer
+    assert device("start", {**target, "url": TARGET + "_other"}).status_code == 409
+    assert db.one("SELECT count(*) AS n FROM kaiwu_assist_sessions")["n"] == 1
+
+    route = PORTAL + "/sessions/" + offer["id"]
+    local = {"session_id": offer["id"]}
+    assert client.post(route + "/claim").status_code == 401
+    assert client.post("/api/v1/auth/login", json={"username": "owner", "password": PASSWORD}).status_code == 200
+    assert client.get(PORTAL + "/devices").json()["devices"][0]["active_session_id"] is None
+    assert client.post(route + "/claim").status_code == 409
+    assert client.post(route + "/jobs", json={"action": "discover"}).status_code == 404
+
+    assert device("poll", local).json() == {"active": True, "job": None}
+    visible = client.get(PORTAL + "/devices").json()["devices"][0]
+    assert visible["id"] == connector_id and visible["active_session_id"] == offer["id"]
+    claimed = client.post(route + "/claim")
+    assert claimed.status_code == 200 and claimed.json()["url"] == TARGET
+    assert client.post(route + "/claim").json() == claimed.json()
+    assert device("stop", local).status_code == 200
+    assert client.post(route + "/jobs", json={"action": "discover"}).status_code == 409
+    assert client.post(route + "/claim").status_code == 409
+    assert client.get(PORTAL + "/devices").json()["devices"][0]["active_session_id"] is None
+    events = db.all("SELECT actor_id,action FROM kaiwu_control_audit WHERE action LIKE 'assist.%' ORDER BY rowid")
+    assert events == [
+        {"actor_id": connector_id, "action": "assist.started"},
+        {"actor_id": "owner", "action": "assist.claimed"},
+        {"actor_id": connector_id, "action": "assist.stopped"},
+    ]
 
 
 def test_credential_delivery_once_stop_and_expiry(env):

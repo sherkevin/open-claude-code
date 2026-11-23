@@ -192,7 +192,7 @@ func TestAssistOfferRequiresLocalSessionToken(t *testing.T) {
 	request.Header.Set("X-Connector-Token", server.Token)
 	authorized := httptest.NewRecorder()
 	server.Handler().ServeHTTP(authorized, request)
-	if authorized.Code != http.StatusOK || !strings.Contains(authorized.Body.String(), `"data":null`) {
+	if authorized.Code != http.StatusOK || !strings.Contains(authorized.Body.String(), `"data":{"enabled":false,"offer":null}`) {
 		t.Fatalf("an unbound device should show no offer: %d %s", authorized.Code, authorized.Body)
 	}
 }

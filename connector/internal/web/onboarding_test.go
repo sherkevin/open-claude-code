@@ -73,7 +73,8 @@ const mcpConfig = {mcpServers:{"只读示例":{
   type:"http", url:"https://edge.example/sources/public/mcp", headers:{Authorization:"Bearer test-integration"}
 }}};
 let exportAttempts = 0;
-let assistance = {id:"as_fixture",name:"销售合同",url:"https://customer.example/mcp/sales",status:"pending"};
+const assistTarget = {name:"销售合同",url:"https://customer.example/mcp/sales"};
+let assistance = null;
 const fetch = async (path, options) => {
   const body = options && options.body ? JSON.parse(options.body) : undefined;
   calls.push({path, body});
@@ -82,10 +83,11 @@ const fetch = async (path, options) => {
     data = control;
   }else if(path === "/api/assist/offer"){
     assert.ok(options.headers["X-Connector-Token"]);
-    data = assistance;
+    data = {enabled:control.bound,offer:assistance};
   }else if(path === "/api/assist/start"){
-    assert.deepEqual(body, {session_id:"as_fixture"});
-    assistance = {...assistance, status:"active", local_active:true};
+    assert.deepEqual(body, assistTarget);
+    assistance = {id:"as_fixture",...assistTarget,status:"active",local_active:true};
+    data = assistance;
   }else if(path === "/api/assist/stop"){
     assert.deepEqual(body, {session_id:"as_fixture"});
     assistance = null;
@@ -129,15 +131,28 @@ async function verifyWorkflow(){
   assert.equal(calls.filter(call=>call.path === "/api/bind").length, 1);
   assert.equal(ui("bindCode").value, "");
   await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ui("assistPanel").hidden, false);
   assert.equal(ui("assistStart").hidden, false);
   assert.equal(ui("assistStop").hidden, true);
-  assert.equal(ui("assistAddress").textContent, assistance.url);
+  assert.equal(ui("assistAddress").textContent, "");
+  await ui("assistStart").onclick();
+  assert.equal(calls.filter(call=>call.path === "/api/assist/start").length, 0);
+  assert.equal(document.activeElement, ui("upstreamAddress"));
+  ui("upstreamAddress").value = assistTarget.url;
+  ui("sourceName").value = assistTarget.name;
+  ui("bearerToken").value = "kept-on-device";
+  ui("upstreamAddress").oninput();
+  assert.equal(ui("assistAddress").textContent, assistTarget.url);
   await ui("assistStart").onclick();
   assert.equal(ui("assistStart").hidden, true);
   assert.equal(ui("assistStop").hidden, false);
+  assert.equal(ui("assistAddress").textContent, assistTarget.url);
   await ui("assistStop").onclick();
+  assert.equal(ui("assistStart").hidden, false);
   assert.equal(ui("assistStop").hidden, true);
   assert.equal(ui("assistNotice").textContent, "协助已停止。");
+  ui("sourceName").value = "";
+  ui("bearerToken").value = "";
 
   ui("upstreamAddress").value = "65536";
   await readTools(submit());

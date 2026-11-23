@@ -38,6 +38,8 @@ SESSION_ID_RE = r"^asst_[0-9a-f]{32}$"
 JOB_ID_RE = r"^asjob_[0-9a-f]{32}$"
 LIVE_STATES = ("pending", "active")
 BRIDGE_OPERATOR_PREFIX = "workbench:"
+# Locally started sessions use a device owner until an administrator joins.
+DEVICE_OWNER_PREFIX = "device:"
 BRIDGE_OPERATOR_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}")
 ToolName = Annotated[str, Field(pattern=TOOL_NAME_RE.pattern)]
 
@@ -81,8 +83,7 @@ def _target_url(value: str) -> str:
     return urlunsplit((url.scheme, address, url.path, "", ""))
 
 
-class OfferInput(StrictModel):
-    connector_id: str = Field(pattern=CONNECTOR_ID_RE.pattern)
+class TargetInput(StrictModel):
     name: str = Field(min_length=1, max_length=100)
     url: str = Field(min_length=1, max_length=2048)
 
@@ -98,6 +99,10 @@ class OfferInput(StrictModel):
     @classmethod
     def valid_url(cls, value):
         return _target_url(value)
+
+
+class OfferInput(TargetInput):
+    connector_id: str = Field(pattern=CONNECTOR_ID_RE.pattern)
 
 
 class SessionInput(StrictModel):
@@ -226,10 +231,13 @@ def _expire(service):
         "WHERE status IN ('pending','active') AND (expires_at<=? OR connector_id IN "
         "(SELECT id FROM kaiwu_connectors WHERE revoked=1 OR draining=1) "
         "OR (instr(created_by, ?) = 1 AND ? = 0) "
-        "OR (instr(created_by, ?) != 1 AND NOT EXISTS "
+        "OR (instr(created_by, ?) != 1 AND created_by != ? || connector_id AND NOT EXISTS "
         "(SELECT 1 FROM users WHERE id=created_by AND role='admin' AND enabled=1)) "
         "OR tenant_id NOT IN (SELECT value FROM json_each(?)))",
-        (timestamp, BRIDGE_OPERATOR_PREFIX, bool(settings.kaiwu_assist_bridge_secret()), BRIDGE_OPERATOR_PREFIX, dump(allowed)),
+        (
+            timestamp, BRIDGE_OPERATOR_PREFIX, bool(settings.kaiwu_assist_bridge_secret()),
+            BRIDGE_OPERATOR_PREFIX, DEVICE_OWNER_PREFIX, dump(allowed),
+        ),
     )
     db.execute(
         "UPDATE kaiwu_assist_jobs SET status='failed', result=?, finished_at=?, sealed_bearer=NULL "
@@ -338,7 +346,7 @@ def add_device_assist(router, service_dependency, device):
     path = "/v1/connectors/{connector_id}/assist"
 
     @router.get(path + "/offer")
-    def read_offer(connector_id: str, identity=Depends(device), service=Depends(service_dependency)):
+    def read_offer(connector_id: str, device_first: bool = False, identity=Depends(device), service=Depends(service_dependency)):
         if (
             identity["connector"]["id"] == connector_id
             and (
@@ -354,13 +362,44 @@ def add_device_assist(router, service_dependency, device):
                 "SELECT * FROM kaiwu_assist_sessions WHERE connector_id=? AND status IN ('pending','active')",
                 (connector_id,),
             )
-            return {"offer": _offer(row) if row else None}
+            result = {"offer": _offer(row) if row else None}
+            if device_first:
+                result["enabled"] = True
+            return result
 
     @router.post(path + "/start")
-    def start(connector_id: str, data: SessionInput, identity=Depends(device), service=Depends(service_dependency)):
-        _device_scope(service, identity, connector_id)
+    def start(connector_id: str, data: TargetInput | SessionInput, identity=Depends(device), service=Depends(service_dependency)):
+        connector = _device_scope(service, identity, connector_id)
         with service.db.transaction():
             _expire(service)
+            if isinstance(data, TargetInput):
+                connector = _connector(service, connector_id, connector["tenant_id"])
+                if connector["revoked"] or connector["draining"]:
+                    raise AppError(409, "ASSIST_DEVICE_UNAVAILABLE", "此设备当前无法开始协助")
+                existing = service.db.one(
+                    "SELECT * FROM kaiwu_assist_sessions WHERE connector_id=? AND status IN ('pending','active')",
+                    (connector_id,),
+                )
+                if existing and existing["status"] == "active":
+                    if (existing["name"], existing["url"]) != (data.name, data.url):
+                        raise AppError(409, "ASSIST_ALREADY_OPEN", "请先结束本机正在进行的协助")
+                    return _offer(existing)
+                if existing:
+                    _stop(service, existing)
+                session_id = "asst_" + uid()
+                # Only the first authenticated poll makes this grant usable by an operator.
+                service.db.execute(
+                    "INSERT INTO kaiwu_assist_sessions"
+                    "(id,connector_id,tenant_id,name,url,created_by,status,expires_at,created_at) "
+                    "VALUES(?,?,?,?,?,?,'active',?,?)",
+                    (
+                        session_id, connector_id, connector["tenant_id"], data.name, data.url,
+                        DEVICE_OWNER_PREFIX + connector_id, _future(SESSION_TTL), now(),
+                    ),
+                )
+                row = _session(service, session_id, connector_id=connector_id)
+                _event(service, row, "started")
+                return _offer(row)
             row = _session(service, data.session_id, connector_id=connector_id)
             if _active(row):
                 return {}
@@ -475,12 +514,15 @@ def _assist_router(service_dependency, admin, *, prefix: str, bridge: bool = Fal
         with service.db.transaction():
             _expire(service)
             rows = service.db.all(
-                f"SELECT c.id,c.tenant_id,c.tenant_name,h.received_at AS last_seen_at,s.id AS session_id "
+                f"SELECT c.id,c.tenant_id,c.tenant_name,h.received_at AS last_seen_at, "
+                f"CASE WHEN s.created_by=? THEN s.id END AS session_id, "
+                f"CASE WHEN s.status='active' AND s.last_poll_at>? THEN s.id END AS active_session_id "
                 f"FROM kaiwu_connectors c LEFT JOIN kaiwu_heartbeats h ON h.connector_id=c.id "
-                f"LEFT JOIN kaiwu_assist_sessions s ON s.connector_id=c.id AND s.created_by=? "
+                f"LEFT JOIN kaiwu_assist_sessions s ON s.connector_id=c.id "
+                f"AND (s.created_by=? OR s.created_by=? || c.id) "
                 f"AND s.status IN ('pending','active') WHERE c.revoked=0 AND c.draining=0 "
                 f"AND c.tenant_id IN ({placeholders}) ORDER BY c.created_at DESC",
-                (user["id"], *tenants),
+                (user["id"], _future(-DEVICE_LEASE), user["id"], DEVICE_OWNER_PREFIX, *tenants),
             )
         relay = getattr(request.app.state, "kaiwu_native_relay", None)
         for row in rows:
@@ -515,6 +557,22 @@ def _assist_router(service_dependency, admin, *, prefix: str, bridge: bool = Fal
         with service.db.transaction():
             _expire(service)
             return _session_view(service, _session(service, session_id, owner=user["id"]))
+
+    @router.post("/sessions/{session_id}/claim")
+    def claim(session_id: str, service=Depends(service_dependency), user=Depends(admin)):
+        with service.db.transaction():
+            _expire(service)
+            row = _session(service, session_id)
+            unclaimed = row["created_by"] == DEVICE_OWNER_PREFIX + row["connector_id"]
+            if row["created_by"] != user["id"] and not unclaimed:
+                raise AppError(404, "ASSIST_SESSION_MISSING", "未找到此协助")
+            _require_recent_consent(row)
+            if unclaimed:
+                service.db.execute(
+                    "UPDATE kaiwu_assist_sessions SET created_by=? WHERE id=?", (user["id"], row["id"]),
+                )
+                _event(service, row, "claimed", owner=user["id"])
+            return _session_view(service, row)
 
     @router.post("/sessions/{session_id}/stop")
     def end(session_id: str, service=Depends(service_dependency), user=Depends(admin)):

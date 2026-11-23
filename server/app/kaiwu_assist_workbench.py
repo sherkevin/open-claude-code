@@ -74,6 +74,14 @@ def create_kaiwu_assist_workbench_router(service_dependency, admin):
             result["imported_connection_id"] = connection_id
         return result
 
+    @router.post("/sessions/{session_id}/claim")
+    def claim(session_id: SessionID, service=Depends(service_dependency), user=Depends(admin)):
+        result = _forward(service, user["id"], "POST", f"/sessions/{session_id}/claim")
+        connection_id = _imported_id(service, session_id, user)
+        if connection_id:
+            result["imported_connection_id"] = connection_id
+        return result
+
     @router.post("/sessions/{session_id}/jobs")
     def queue(session_id: SessionID, data: JobInput, service=Depends(service_dependency), user=Depends(admin)):
         return _forward(service, user["id"], "POST", f"/sessions/{session_id}/jobs", data.model_dump(exclude_none=True))

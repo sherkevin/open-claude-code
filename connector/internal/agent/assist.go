@@ -38,49 +38,135 @@ type assistSession struct {
 	cancel      context.CancelFunc
 }
 
-// AssistOffer returns only the service awaiting approval or the current local
-// session. An offline device owner can still see and end local consent.
-func (a *Agent) AssistOffer(ctx context.Context) (*cloud.AssistOffer, error) {
+// AssistStatus returns the current local grant or the server's availability and
+// any pending offer. An offline device owner can still end local consent.
+func (a *Agent) AssistStatus(ctx context.Context) (cloud.AssistStatus, error) {
 	a.mu.RLock()
 	if active := a.assistActive; active != nil {
-		view := active.offer
-		view.Status = "active"
-		view.LocalActive = true
+		view := active.localOffer()
 		a.mu.RUnlock()
-		return &view, nil
+		return cloud.AssistStatus{Enabled: true, Offer: &view}, nil
 	}
 	client, connectorID := a.cloud, a.identity.ConnectorID
-	available := !a.closed && a.opts.NativeRelay && a.identity.DeviceToken != ""
+	available := a.canAssistLocked()
 	a.mu.RUnlock()
-	if !available || client == nil || connectorID == "" {
-		return nil, nil
+	if !available {
+		return cloud.AssistStatus{}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, assistControlTimeout)
 	defer cancel()
-	offer, err := client.AssistOffer(ctx, connectorID)
+	status, err := client.AssistStatus(ctx, connectorID)
 	if err != nil {
 		var apiErr *cloud.APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
-			return nil, nil
+		if errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound ||
+			apiErr.Code == "ASSIST_DISABLED" || apiErr.Code == "ASSIST_DEVICE_DENIED") {
+			return cloud.AssistStatus{}, nil
 		}
-		return nil, errors.New("暂时无法读取协助请求")
+		return cloud.AssistStatus{}, errors.New("暂时无法读取协助状态")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.closed || client != a.cloud || a.assistActive != nil {
-		return nil, nil
+	if !a.canAssistLocked() || client != a.cloud || connectorID != a.identity.ConnectorID {
+		return cloud.AssistStatus{}, nil
+	}
+	if active := a.assistActive; active != nil {
+		view := active.localOffer()
+		return cloud.AssistStatus{Enabled: true, Offer: &view}, nil
 	}
 	a.assistSeen = nil
+	offer := status.Offer
 	if offer == nil || (offer.Status != "pending" && offer.Status != "active") || offer.ID == a.assistStopped {
-		return nil, nil
+		status.Offer = nil
+		return status, nil
 	}
 	if !validAssistOffer(*offer, time.Now()) {
-		return nil, errors.New("协助请求的 MCP 服务地址无效或已过期")
+		return cloud.AssistStatus{}, errors.New("协助请求的 MCP 服务地址无效或已过期")
 	}
 	offer.LocalActive = false
 	seen := *offer
 	a.assistSeen = &seen
-	return offer, nil
+	return status, nil
+}
+
+func (s *assistSession) localOffer() cloud.AssistOffer {
+	offer := s.offer
+	offer.Status = "active"
+	offer.LocalActive = true
+	return offer
+}
+
+func (a *Agent) canAssistLocked() bool {
+	current := a.state.Current()
+	return !a.closed && a.opts.NativeRelay && a.cloud != nil && a.identity.ConnectorID != "" &&
+		a.identity.DeviceToken != "" && current != state.Revoked && current != state.Draining
+}
+
+// StartAssistForTarget opens a session for the MCP address supplied on this
+// device. Local consent is never restored after restarting the service.
+func (a *Agent) StartAssistForTarget(ctx context.Context, target cloud.AssistTarget) (*cloud.AssistOffer, error) {
+	target.Name, target.URL = strings.TrimSpace(target.Name), strings.TrimSpace(target.URL)
+	if !validAssistTarget(target.Name, target.URL) {
+		return nil, errors.New("请填写有效的 MCP 服务名称和地址。内网服务使用 HTTPS，本机服务也可填写端口")
+	}
+	a.mu.Lock()
+	if !a.canAssistLocked() || a.assistActive != nil || a.assistStarting {
+		a.mu.Unlock()
+		return nil, errors.New("当前无法开始协助，请确认设备已绑定且没有正在进行的协助")
+	}
+	client, connectorID := a.cloud, a.identity.ConnectorID
+	a.assistStarting = true
+	a.mu.Unlock()
+
+	request, done := context.WithTimeout(a.runtimeCtx, assistControlTimeout)
+	stopRequest := context.AfterFunc(ctx, done)
+	offer, err := client.StartAssistForTarget(request, connectorID, target)
+	stopRequest()
+	done()
+
+	a.mu.Lock()
+	a.assistStarting = false
+	if err != nil {
+		a.mu.Unlock()
+		return nil, assistStartError(err)
+	}
+	if offer.Status != "active" || offer.Name != target.Name || offer.URL != target.URL ||
+		!validAssistOffer(offer, time.Now()) {
+		a.mu.Unlock()
+		return nil, errors.New("开物返回的协助内容与本机填写的服务不一致，请刷新后重试")
+	}
+	session := &assistSession{offer: offer, client: client, connectorID: connectorID}
+	if !a.canAssistLocked() || client != a.cloud || connectorID != a.identity.ConnectorID ||
+		ctx.Err() != nil || offer.ID == a.assistStopped {
+		a.mu.Unlock()
+		go a.notifyAssistStop(session)
+		return nil, errors.New("开始协助时本机连接状态已变化，请刷新后重试")
+	}
+	deadline := offer.ExpiresAt
+	if localDeadline := time.Now().Add(assistLifetime); localDeadline.Before(deadline) {
+		deadline = localDeadline
+	}
+	sessionCtx, cancel := context.WithDeadline(a.runtimeCtx, deadline)
+	session.cancel = cancel
+	a.assistSeen = nil
+	a.assistActive = session
+	a.mu.Unlock()
+	go a.runAssist(sessionCtx, session)
+	view := session.localOffer()
+	return &view, nil
+}
+
+func assistStartError(err error) error {
+	var apiErr *cloud.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Code {
+		case "ASSIST_DISABLED", "ASSIST_DEVICE_DENIED":
+			return errors.New("这台设备尚未开通协助，请联系开物技术支持")
+		}
+		if apiErr.Status == http.StatusConflict {
+			return errors.New("已有一项协助正在进行，请先停止后重试")
+		}
+	}
+	return errors.New("开物未确认开始协助，请检查连接后重试")
 }
 
 // StartAssist requires the local user to approve exactly the offer the UI read.
@@ -88,9 +174,8 @@ func (a *Agent) AssistOffer(ctx context.Context) (*cloud.AssistOffer, error) {
 func (a *Agent) StartAssist(ctx context.Context, sessionID string) error {
 	a.mu.Lock()
 	offer := a.assistSeen
-	if a.closed || !a.opts.NativeRelay || a.cloud == nil || a.identity.ConnectorID == "" || a.identity.DeviceToken == "" ||
-		a.state.Current() == state.Revoked || a.state.Current() == state.Draining ||
-		a.assistActive != nil || offer == nil || offer.ID != sessionID || sessionID == a.assistStopped ||
+	if !a.canAssistLocked() || a.assistActive != nil || a.assistStarting ||
+		offer == nil || offer.ID != sessionID || sessionID == a.assistStopped ||
 		offer.Status != "pending" || !validAssistOffer(*offer, time.Now()) {
 		a.mu.Unlock()
 		return errors.New("这项协助请求已更新或无法开始，请刷新后重试")
@@ -341,15 +426,20 @@ func validAssistSelection(selected, available []string) bool {
 }
 
 func validAssistOffer(offer cloud.AssistOffer, now time.Time) bool {
-	if !assistSessionID.MatchString(offer.ID) || offer.Name == "" ||
-		len([]rune(offer.Name)) > 100 || strings.IndexFunc(offer.Name, unicode.IsControl) >= 0 ||
-		!offer.ExpiresAt.After(now) || len(offer.URL) > 2048 || strings.ContainsAny(offer.URL, "?#\\") ||
-		strings.IndexFunc(offer.URL, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+	return assistSessionID.MatchString(offer.ID) && offer.ExpiresAt.After(now) &&
+		validAssistTarget(offer.Name, offer.URL)
+}
+
+func validAssistTarget(name, address string) bool {
+	if name == "" || len([]rune(name)) > 100 ||
+		strings.IndexFunc(name, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) >= 0 ||
+		len(address) > 2048 || strings.ContainsAny(address, "?#\\") ||
+		strings.IndexFunc(address, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
 		return false
 	}
-	target, err := url.Parse(offer.URL)
+	target, err := url.Parse(address)
 	if err != nil || target.Opaque != "" || target.User != nil || target.Hostname() == "" ||
-		target.Path == "" || target.Path == "/" || target.String() != offer.URL {
+		target.Path == "" || target.Path == "/" || target.String() != address {
 		return false
 	}
 	if port := target.Port(); port != "" {

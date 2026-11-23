@@ -52,6 +52,9 @@ def test_workbench_forwards_only_signed_in_admin_and_imports_locally(tmp_path, m
         assert client.get(BRIDGE_PATH + "/devices").status_code == 404
         assert client.get(PORTAL + "/sessions/not-a-valid-session").status_code == 422
         assert len(requests) == 1
+        claim_path = f"/sessions/{SESSION}/claim"
+        assert client.post(PORTAL + claim_path, headers={"X-Kaiwu-Operator": "forged"}).json() == {"id": SESSION}
+        assert requests[-1] == ("owner", "POST", claim_path, None)
 
         path = PORTAL + f"/sessions/{SESSION}/import"
         first = client.post(path, json={"scope":"private"})
