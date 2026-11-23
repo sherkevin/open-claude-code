@@ -237,6 +237,8 @@ class Service:
         for event in events:
             if event["type"].startswith("context."):
                 event["data"] = self.public_context_data(event["data"], label)
+            elif event["type"] == "tool.completed" and event["data"].get("subagent_child_id"):
+                event["data"].pop("business_result", None)
             elif event["type"] in {"tool.started", "approval.required"}:
                 data = event["data"]
                 if isinstance(data, dict) and data.get("tool_name") == DELEGATE_TASKS_TOOL:

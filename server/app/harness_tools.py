@@ -66,14 +66,21 @@ def bounded_respond(client, request_id, result):
 
 
 class HarnessToolBridge:
-    def __init__(self, runtime):
+    def __init__(self, runtime, parent_bridge=None):
         self.runtime = runtime
         recovery_only = runtime.config.get("recovery_only")
         self.tools = {} if recovery_only else {tool.name: tool for tool in build_workspace_tools(runtime)}
-        self.business_tools = {} if recovery_only else build_mcp_tools(runtime)
+        if parent_bridge is None:
+            self.inherited_names = None
+            self.business_tools = {} if recovery_only else build_mcp_tools(runtime)
+        else:
+            self.inherited_names = parent_bridge.runtime.mounted_tools.keys() - {"delegate_tasks"}
+            self.business_tools = {name: tool for name, tool in parent_bridge.business_tools.items()
+                                   if name in self.inherited_names}
         self.memory = HarnessMemoryTools(self)
         self.calls = set()
         self.response_guards = {}
+        self.child_call_events = {}
 
     def definitions(self):
         if self.runtime.config.get("recovery_only"):
@@ -97,7 +104,10 @@ class HarnessToolBridge:
                     if policy.tool_allowed(tool.canonical_name)]
         memory = [item for item in self.memory.definitions()
                   if policy.tool_allowed(f"mcp__workspace__{item['name']}")]
-        return workspace + business + memory
+        definitions = workspace + business + memory
+        if self.inherited_names is not None:
+            definitions = [item for item in definitions if item["name"] in self.inherited_names]
+        return definitions
 
     def active(self, run_id):
         runtime, service = self.runtime, self.runtime.service
@@ -110,6 +120,8 @@ class HarnessToolBridge:
                 or run["user_id"] != conversation["user_id"]):
             raise AppError(409, "HARNESS_RUN_INACTIVE", "此任务不再允许执行工具")
         require_tool_execution(run)
+        if self.inherited_names is not None:
+            runtime.recheck()
 
     def arguments(self, name, arguments):
         if name in self.business_tools:
@@ -198,7 +210,9 @@ class HarnessToolBridge:
     def discard(self, run_id, call_id, tool_name, error):
         self.runtime.service.db.event(run_id, "tool.discarded", {
             "tool_call_id": call_id, "tool_name": tool_name, "success": False,
-            "error_code": error.code, "error_message": error.message})
+            "error_code": error.code,
+            **({"subagent_child_id": self.runtime.subagent_child_id}
+               if self.inherited_names is not None else {"error_message": error.message})})
         return {"is_error": True, "content": [{"type": "text", "text": error.message}]}
 
     def respond(self, client, request_id, payload, result, run_id):
@@ -208,17 +222,19 @@ class HarnessToolBridge:
         RPC write. Keep this separate from invoke's event-persistence awaits.
         """
         with self.runtime.service.db.lock:
-            guard = self.response_guards.pop((run_id, payload.get("callId")), None)
+            call_id = payload.get("callId")
+            guard = self.response_guards.pop((run_id, call_id), None)
+            event_id, tool_name = self.child_call_events.pop(call_id, (call_id, payload.get("toolName")))
             try:
                 if guard:
                     guard()
                 self.active(run_id)
             except AppError as exc:
-                result = self.discard(run_id, payload.get("callId"), payload.get("toolName"), exc)
+                result = self.discard(run_id, event_id, tool_name, exc)
             try:
                 bounded_respond(client, request_id, result)
             except AppError as exc:
-                self.discard(run_id, payload.get("callId"), payload.get("toolName"), exc)
+                self.discard(run_id, event_id, tool_name, exc)
                 raise
 
     async def invoke(self, payload):
@@ -233,20 +249,29 @@ class HarnessToolBridge:
         candidate = self.business_tools.get(name)
         policy_name = candidate.canonical_name if candidate else f"mcp__workspace__{name}"
         service.policy.require_tool(policy_name)
-        if ((name not in self.tools and name not in self.business_tools and name not in MEMORY_NAMES)
+        if ((self.inherited_names is not None and name not in self.inherited_names)
+                or (name not in self.tools and name not in self.business_tools and name not in MEMORY_NAMES)
                 or not isinstance(call_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", call_id)
                 or (name not in MEMORY_NAMES and (run_id, call_id) in self.calls)):
             raise AppError(403, "HARNESS_TOOL_DENIED", "工具未注册或调用已处理")
+        child_id = runtime.subagent_child_id if self.inherited_names is not None else None
+        host_call_id = f"{child_id}:{call_id}" if child_id else call_id
         business = self.business_tools.get(name)
         tool_name = business.canonical_name if business else f"mcp__workspace__{name}"
+        event_id = uid()
+        if child_id:
+            self.child_call_events[call_id] = (event_id, tool_name)
         if name in MEMORY_NAMES:
             try:
-                return await self.memory.invoke(name, call_id, payload["arguments"])
+                result = await self.memory.invoke(name, call_id, payload["arguments"], event_id=event_id)
+                if child_id:
+                    self.response_guards[(run_id, call_id)] = lambda: runtime.check_tool(tool_name, payload["arguments"])
+                return result
             except AppError as exc:
                 return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
         self.calls.add((run_id, call_id))
         arguments = self.arguments(name, payload["arguments"])
-        event_id, started = uid(), time.monotonic()
+        started = time.monotonic()
         success = False
         sources = []
         error = None
@@ -283,7 +308,7 @@ class HarnessToolBridge:
             receipt_id = None
             if name in CAPABILITY_TOOL_SHORT_NAMES and getattr(allowed, "approval_id", None):
                 receipt_id = record_approval_receipt(
-                    service, run_id=run_id, tool_call_id=call_id, tool_name=tool_name,
+                    service, run_id=run_id, tool_call_id=host_call_id, tool_name=tool_name,
                     arguments=arguments, receipt=allowed)
             def recheck():
                 runtime.check_tool(tool_name, arguments)
@@ -301,7 +326,11 @@ class HarnessToolBridge:
                                    "tool_call_id": event_id, "decision": "allow"})
 
             self.response_guards[(run_id, call_id)] = recheck
-            await offload_write(record_dispatch, service, run_id, event_id, tool_name)
+            if child_id:
+                await offload_write(lambda: record_dispatch(service, run_id, event_id, tool_name,
+                                                            subagent_child_id=child_id, check_active=recheck))
+            else:
+                await offload_write(record_dispatch, service, run_id, event_id, tool_name)
             recheck()
 
             if business:
@@ -310,7 +339,7 @@ class HarnessToolBridge:
                 # The real host callId is unique and auditable; never synthesize
                 # run+tool identity for capability execution.  The approval
                 # receipt names the exact row that authorized this call.
-                token = TOOL_CALL_ID.set(call_id)
+                token = TOOL_CALL_ID.set(host_call_id)
                 approval_token = APPROVAL_ID.set(receipt_id)
                 try:
                     result = await self.tools[name].handler(arguments)

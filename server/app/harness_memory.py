@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from .db import dump, uid
+from .db import dump, offload_write, uid
 from .security import AppError
 
 MEMORY_WRITE = "mcp__workspace__memory_write"
@@ -146,7 +146,7 @@ class HarnessMemoryTools:
             raise AppError(422, "MEMORY_ARGUMENTS_INVALID", "记忆版本无效")
         return value
 
-    async def invoke(self, name, call_id, arguments):
+    async def invoke(self, name, call_id, arguments, *, event_id=None):
         runtime, service = self.runtime, self.runtime.service
         name = service.policy.require_tool_name(name)
         service.policy.require_tool(f"mcp__workspace__{name}")
@@ -164,7 +164,8 @@ class HarnessMemoryTools:
                 if prior_digest != request_digest:
                     raise AppError(409, "MEMORY_OPERATION_CONFLICT", "重复操作标识不能更改记忆请求")
                 return result
-            event_id, staged, success = uid(), False, False
+            event_id = event_id or uid()
+            operation_key, success = None, False
             safe = {key: value for key, value in arguments.items() if key != "content"}
             if name == "memory_write":
                 safe = public_memory_arguments(arguments)
@@ -181,9 +182,9 @@ class HarnessMemoryTools:
                     if high and high["enabled"]:
                         raise AppError(403, "MEMORY_PRIVATE_REVIEW_UNAVAILABLE", "私有记忆尚无双人全文审阅授权，未降级为单人或自动审批")
                     policy = policy_binding(service, runtime.conversation_id, runtime.config)
-                    operation = await asyncio.to_thread(service.memory.stage_for_run, binding, run_id, uid(),
+                    operation_key = uid()
+                    operation = await offload_write(service.memory.stage_for_run, binding, run_id, operation_key,
                         arguments["path"], arguments["content"], arguments["expected_revision"])
-                    staged = True
                     review_args = {**arguments, "operation_id": operation["operation_id"],
                         "native_epoch": binding["native_epoch"], "policy_binding": policy}
                     allowed = await runtime.approve(MEMORY_WRITE, review_args, review=None, review_checked=True)
@@ -191,8 +192,8 @@ class HarnessMemoryTools:
                     runtime.check_tool(MEMORY_WRITE, arguments)
                     if not allowed:
                         raise AppError(403, "MEMORY_APPROVAL_DENIED", "记忆写入未获用户批准，不会保存")
-                    approval = service.db.one("SELECT * FROM approvals WHERE run_id=? AND tool_name=? AND arguments=? AND status='allowed' ORDER BY rowid DESC LIMIT 1",
-                        (run_id, MEMORY_WRITE, dump(review_args)))
+                    approval = service.db.one("SELECT * FROM approvals WHERE id=? AND run_id=? AND tool_name=? AND arguments=? AND status='allowed'",
+                        (getattr(allowed, "approval_id", None), run_id, MEMORY_WRITE, dump(review_args)))
                     if not approval:
                         raise AppError(403, "MEMORY_HUMAN_APPROVAL_REQUIRED", "没有可核验的完整内容人工批准记录")
                     validate_memory_approval(service, approval, service.require("users", binding["user_id"]), committed_review=True)
@@ -211,7 +212,8 @@ class HarnessMemoryTools:
                 self.results[key] = (request_digest, value)
                 return value
             except BaseException:
-                if staged:
+                operation = service.memory.pending_for_run(run_id) if operation_key else None
+                if operation and operation["operation_key"] == operation_key:
                     service.memory.discard_for_run(run_id, reason="tool_aborted")
                     await runtime.emit("memory.aborted", {"operation_id": operation["operation_id"], "path": arguments["path"],
                         "revision": binding["revision"], "native_epoch": binding["native_epoch"], "mutation_status": "aborted"})
@@ -233,4 +235,9 @@ class HarnessMemoryTools:
         arguments = {key: pending[key] for key in ("path", "content", "expected_revision")}
         runtime.check_tool(MEMORY_WRITE, arguments)
         approval = service.require("approvals", pending["approval_id"])
+        if approval.get("subagent_child_id"):
+            child = service.db.one("SELECT status FROM subagent_children WHERE child_id=? AND parent_run_id=?",
+                                   (approval["subagent_child_id"], run_id))
+            if not child or child["status"] != "succeeded":
+                raise AppError(409, "MEMORY_EXECUTOR_STILL_RUNNING", "子任务尚未成功退出，记忆未提交")
         validate_memory_approval(service, approval, service.require("users", runtime.config["memory_binding"]["user_id"]), committed_review=True)

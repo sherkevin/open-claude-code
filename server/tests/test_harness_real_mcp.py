@@ -7,6 +7,7 @@ services are used; no runtime, authorization, approval, or MCP call is mocked.
 import hashlib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ from app.config import PROVIDER_KEYS, Settings
 from app.main import create_app
 from harness_mcp_fixture import local_mcp_server, local_model_server
 from test_api import PASSWORD, login, send
-from test_harness_real_runtime import wait_run
+from test_harness_real_runtime import child_request, wait_run
 
 
 pytestmark = pytest.mark.skipif(
@@ -107,9 +108,11 @@ def mcp_app(tmp_path, monkeypatch, local_model_server, local_mcp_server, record_
     assert mcp.token not in json.dumps(model.requests, ensure_ascii=False)
     private_root = settings.data_dir / "harness"
     assert private_root.exists()
-    for path in private_root.rglob("*"):
-        if path.is_file():
-            assert mcp.token.encode() not in path.read_bytes(), f"MCP credential leaked into Node file {path.name}"
+    child_roots = (settings.data_dir / "workspaces" / cid / "subagents").glob("*/runtime")
+    for root in [private_root, *child_roots]:
+        for path in root.rglob("*"):
+            if path.is_file():
+                assert mcp.token.encode() not in path.read_bytes(), f"MCP credential leaked into Node file {path.name}"
     record_property("real_harness_processes", len(processes))
     record_property("local_synthetic_model_requests", len(model.requests))
     record_property("real_local_mcp_tool_calls", len(mcp.calls))
@@ -338,3 +341,244 @@ def test_real_mcp_cancel_and_revocation_prevent_dispatch(mcp_app):
     completed(env, revoked_grant)
     assert not env.mcp.calls
     assert tool_events(env, revoked_grant, "tool.completed")[0]["success"] is False
+
+
+@pytest.mark.parametrize("dispatch", ["automatic", "manual"])
+def test_real_harness_subagents_inherit_effective_mcp_permissions(mcp_app, dispatch):
+    from app.read_only_tools import definition_digest
+
+    env = mcp_app
+    if dispatch == "manual":
+        connection = env.service.require("connections", env.connection["id"])
+        definition = next(tool for tool in json.loads(connection["tools"]) if tool["name"] == "read_assets")
+        assistant = env.client.patch(f"/api/v1/assistants/{env.assistant['id']}", json={"connections": [{
+            "connection_id": connection["id"], "allowed_tools": GRANTED, "auto_approved_tools": [],
+            "read_only_confirmations": {"read_assets": {"connection_revision": connection["revision"],
+                "definition_digest": definition_digest(definition), "basis": "Synthetic query-only test fixture"}},
+        }]})
+        assert assistant.status_code == 200, assistant.text
+        mode = env.client.patch(f"/api/v1/conversations/{env.cid}", json={"permission_mode": "auto"})
+        assert mode.status_code == 200, mode.text
+
+    task_read, task_write, task_deny, task_hidden = (
+        "CHILD_REAL_READ", "CHILD_REAL_WRITE", "CHILD_REAL_DENIED", "CHILD_REAL_HIDDEN",
+    )
+    tasks = [task_read, task_write, task_deny, task_hidden]
+    env.model.actions.update({
+        task_read: (env.alias("read_assets"), READ_ARGUMENTS),
+        task_write: (env.alias("update_asset"), WRITE_ARGUMENTS),
+        task_deny: (env.alias("update_asset"), {**WRITE_ARGUMENTS, "record_id": "DENY-THIS-RECORD"}),
+        task_hidden: (env.alias("hidden_admin"), {"operation": "must never execute"}),
+    })
+
+    parent_marker = "PARENT_REAL_MCP_CHILDREN"
+    release = threading.Event()
+    env.model.actions[parent_marker] = ("delegate_tasks", {"tasks": tasks}) if dispatch == "automatic" else release
+    try:
+        run = send(env.client, env.cid, parent_marker, f"delegation-{dispatch}")["run_id"]
+        path = f"/api/v1/runs/{run}"
+        assert wait_run(env.client, run, {"running"})["status"] == "running"
+        if dispatch == "manual":
+            response = env.client.post(f"{path}/subagents", json={"mode": "harness", "tasks": tasks})
+            assert response.status_code == 202, response.text
+            # The model may submit its final response while the two children
+            # still need an approval. The owning run must stay alive.
+            release.set()
+
+        decisions = {}
+        deadline = time.monotonic() + 45
+        while len(decisions) < 2 and time.monotonic() < deadline:
+            info = env.client.get(path).json()
+            assert info["status"] == "running", info
+            plan = env.client.get(f"{path}/subagents").json()
+            child_ids = [item["child_id"] for item in plan["children"]]
+            for row in info["approvals"]:
+                if row["id"] in decisions:
+                    continue
+                assert row["tool_name"] == env.canonical("update_asset")
+                child_id = row["subagent_child_id"]
+                assert child_id in child_ids[1:3]
+                should_allow = child_id == child_ids[1]
+                assert row["arguments"]["record_id"] == ("R-17" if should_allow else "DENY-THIS-RECORD")
+                assert not any(call["arguments"].get("record_id") == "DENY-THIS-RECORD" for call in env.mcp.calls)
+                if should_allow:
+                    assert not any(call["tool"] == "update_asset" for call in env.mcp.calls)
+                decisions[row["id"]] = decide(env, row, "allow" if should_allow else "deny")["status"]
+            time.sleep(.05)
+        assert set(decisions.values()) == {"allowed", "denied"}
+        completed(env, run)
+    finally:
+        release.set()
+
+    assert sorted(call["tool"] for call in env.mcp.calls) == ["read_assets", "update_asset"]
+    assert {"tool": "update_asset", "arguments": WRITE_ARGUMENTS} in env.mcp.calls
+    plan = env.client.get(f"{path}/subagents").json()
+    child_ids = [item["child_id"] for item in plan["children"]]
+    assert plan["counts"]["succeeded"] == len(tasks)
+    worker_requests = [body for body in env.model.requests if child_request(body)]
+    parent_tools = {tool["name"] for tool in env.model.requests[0]["tools"]}
+    assert len(worker_requests) == 2 * len(tasks)
+    assert all({tool["name"] for tool in body["tools"]} == parent_tools - {"delegate_tasks"} for body in worker_requests)
+    assert all(parent_marker not in json.dumps(body["messages"]) for body in worker_requests)
+    trace = env.client.get(f"{path}/trace").json()
+    calls = [event["data"] for event in trace["events"] if event["type"] == "tool.completed"
+             and event["data"].get("subagent_child_id")]
+    assert {item["subagent_child_id"]: item["success"] for item in calls} == dict(zip(child_ids[:3], [True, True, False]))
+    assert all("arguments" not in item and "error_message" not in item for item in calls)
+    resolved = [event["data"] for event in trace["events"] if event["type"] == "subagent.approval.resolved"]
+    assert {(item["child_id"], item["decision"]) for item in resolved} == {(child_ids[1], "allow"), (child_ids[2], "deny")}
+    if dispatch == "manual":
+        decision = tool_events(env, run, "approval.session_decided")
+        assert [(item["subagent_child_id"], item["mode"], item["scope"]) for item in decision] == [
+            (child_ids[0], "auto", "certified_read_only_connection"),
+        ]
+
+
+def test_real_harness_subagent_full_mode_stays_in_own_conversation(mcp_app):
+    from app.file_tools import WorkspaceFiles
+
+    env = mcp_app
+    other = env.service.create_user({"username": "other-user", "display_name": "Other", "password": PASSWORD, "role": "member"})
+    foreign = env.service.create_conversation({"assistant_id": env.assistant["id"]}, other)
+    WorkspaceFiles(env.service, foreign["id"], other["id"]).write(
+        {"path": "private.txt", "content": "FOREIGN_PRIVATE_SENTINEL", "expected_revision": 0})
+    foreign_path = env.settings.data_dir / "workspaces" / foreign["id"] / "workbench" / "private.txt"
+
+    setting = env.client.patch(f"/api/v1/conversations/{env.cid}", json={"permission_mode": "full"})
+    assert setting.status_code == 200, setting.text
+    env.model.actions.update({
+        "PARENT_FULL_SCOPE": ("delegate_tasks", {"tasks": ["CHILD_FULL_WRITE", "CHILD_FOREIGN_READ", "CHILD_NESTED_CALL"]}),
+        "CHILD_FULL_WRITE": ("file_write", {"path": "child.txt", "content": "scoped result", "expected_revision": 0}),
+        "CHILD_FOREIGN_READ": ("file_read", {"path": str(foreign_path)}),
+        "CHILD_NESTED_CALL": ("delegate_tasks", {"tasks": ["nested one", "nested two"]}),
+    })
+    run = send(env.client, env.cid, "PARENT_FULL_SCOPE", "delegation-full-scope")["run_id"]
+    completed(env, run)
+    assert (env.settings.data_dir / "workspaces" / env.cid / "workbench" / "child.txt").read_text() == "scoped result"
+    assert "FOREIGN_PRIVATE_SENTINEL" not in json.dumps(env.model.requests)
+    assert not env.service.db.all("SELECT * FROM approvals WHERE run_id=?", (run,))
+    plan = env.client.get(f"/api/v1/runs/{run}/subagents").json()
+    written, foreign, _nested = [item["child_id"] for item in plan["children"]]
+    calls = {item["subagent_child_id"]: item for item in tool_events(env, run, "tool.completed")
+             if "subagent_child_id" in item}
+    assert calls[written]["success"] is True and calls[foreign]["error_code"] == "PATH_DENIED"
+    assert set(calls) == {written, foreign}
+    receipts = tool_events(env, run, "approval.session_decided")
+    assert [(item["subagent_child_id"], item["mode"]) for item in receipts] == [(written, "full")]
+    assert not env.service.db.all("SELECT child_id FROM subagent_children WHERE parent_run_id IN (?, ?, ?)",
+                                  tuple(item["child_id"] for item in plan["children"]))
+    env.client.post("/api/v1/auth/logout")
+    login(env.client, "other-user")
+    assert env.client.get(f"/api/v1/runs/{run}/subagents").status_code == 404
+    assert env.client.get(f"/api/v1/runs/{run}/trace").status_code == 404
+
+
+def test_real_harness_subagent_inherits_dual_approval(mcp_app):
+    env = mcp_app
+    approvers = [env.service.create_user({"username": name, "display_name": name, "password": PASSWORD, "role": "admin"})
+                 for name in ("childapprover1", "childapprover2")]
+    tool = env.canonical("delete_asset")
+    policy = env.client.put(f"/api/v1/assistants/{env.assistant['id']}/high-risk-approval", json={
+        "enabled": True, "allowed_tools": [tool], "admin_allowlist": [user["id"] for user in approvers],
+    })
+    assert policy.status_code == 200, policy.text
+    arguments = {"record_id": "R-17", "operation": "delete"}
+    release = threading.Event()
+    env.model.actions.update({
+        "PARENT_DUAL_CHILD": release,
+        "CHILD_DUAL_CALL": (env.alias("delete_asset"), arguments),
+    })
+    run = send(env.client, env.cid, "PARENT_DUAL_CHILD", "delegation-dual")["run_id"]
+    try:
+        assert wait_run(env.client, run, {"running"})["status"] == "running"
+        response = env.client.post(f"/api/v1/runs/{run}/subagents", json={"mode": "harness", "tasks": ["CHILD_DUAL_CALL"]})
+        assert response.status_code == 202, response.text
+    finally:
+        release.set()
+    deadline = time.monotonic() + 40
+    row = None
+    while row is None and time.monotonic() < deadline:
+        info = env.client.get(f"/api/v1/runs/{run}").json()
+        assert info["status"] in {"queued", "running"}, info
+        row = next(iter(info["approvals"]), None)
+        if not row:
+            time.sleep(.05)
+    assert row and row["approval_mode"] == "dual" and row["subagent_child_id"]
+    assert not env.mcp.calls
+    assert env.client.post(f"/api/v1/approvals/{row['id']}/decision", json={"decision": "allow"}).status_code == 403
+    env.client.post("/api/v1/auth/logout")
+    login(env.client, "childapprover1")
+    assert env.client.get(f"/api/v1/runs/{run}/trace").status_code == 404
+    assert decide(env, row, "allow")["status"] == "pending"
+    assert not env.mcp.calls
+    env.client.post("/api/v1/auth/logout")
+    login(env.client, "childapprover2")
+    assert decide(env, row, "allow")["status"] == "allowed"
+    env.client.post("/api/v1/auth/logout")
+    login(env.client)
+    completed(env, run)
+    assert env.mcp.calls == [{"tool": "delete_asset", "arguments": arguments}]
+    resolved = tool_events(env, run, "subagent.approval.resolved")
+    assert [(item["child_id"], item["decision_source"]) for item in resolved] == [(row["subagent_child_id"], "dual_admin")]
+
+
+def test_real_harness_subagent_memory_requires_full_human_review(mcp_app):
+    from app.harness_memory import MEMORY_WRITE
+
+    env = mcp_app
+    content = "CHILD_PRIVATE_MEMORY_BODY"
+    revision = env.service.memory.revision(env.owner["id"], env.cid)["revision"]
+    env.model.actions.update({
+        "PARENT_CHILD_MEMORY": ("delegate_tasks", {"tasks": ["CHILD_MEMORY_CALL", "Just return a short note"]}),
+        "CHILD_MEMORY_CALL": ("memory_write", {"path": "child.md", "content": content, "expected_revision": revision}),
+    })
+    run = send(env.client, env.cid, "PARENT_CHILD_MEMORY", "delegation-memory")["run_id"]
+    deadline = time.monotonic() + 40
+    row = None
+    while row is None and time.monotonic() < deadline:
+        info = env.client.get(f"/api/v1/runs/{run}").json()
+        assert info["status"] in {"queued", "running"}, info
+        row = next(iter(info["approvals"]), None)
+        if not row:
+            time.sleep(.05)
+    assert row and row["tool_name"] == MEMORY_WRITE and row["subagent_child_id"]
+    assert content not in json.dumps(row) + env.client.get(f"/api/v1/runs/{run}/trace").text
+    endpoint = f"/api/v1/approvals/{row['id']}"
+    assert env.client.post(f"{endpoint}/decision", json={"decision": "allow"}).status_code == 409
+    review = env.client.get(f"{endpoint}/memory-content").json()
+    assert review["content"] == content
+    response = env.client.post(f"{endpoint}/decision", json={
+        "decision": "allow", "memory_content_digest": review["content_digest"],
+    })
+    assert response.status_code == 200, response.text
+    completed(env, run)
+    assert env.service.memory.read(env.owner, env.cid, "child.md")["content"] == content
+    assert tool_events(env, run, "memory.pending")[0]["subagent_child_id"] == row["subagent_child_id"]
+    assert tool_events(env, run, "memory.updated")
+
+
+def test_real_harness_subagent_cannot_dispatch_after_grant_revocation(mcp_app):
+    env = mcp_app
+    env.model.actions.update({
+        "PARENT_REVOKE_SUBAGENT": ("delegate_tasks", {"tasks": ["CHILD_CHANGE_ASSET", "Just return the note"]}),
+        "CHILD_CHANGE_ASSET": (env.alias("update_asset"), WRITE_ARGUMENTS),
+    })
+    run = send(env.client, env.cid, "PARENT_REVOKE_SUBAGENT", "delegation-revoke")["run_id"]
+    deadline = time.monotonic() + 40
+    row = None
+    while row is None and time.monotonic() < deadline:
+        info = env.client.get(f"/api/v1/runs/{run}").json()
+        assert info["status"] in {"queued", "running"}, info
+        row = next(iter(info["approvals"]), None)
+        if not row:
+            time.sleep(.05)
+    assert row and row["subagent_child_id"]
+    revoked = env.client.patch(f"/api/v1/assistants/{env.assistant['id']}", json={"connections": [{
+        "connection_id": env.connection["id"], "allowed_tools": ["read_assets"], "auto_approved_tools": ["read_assets"],
+    }]})
+    assert revoked.status_code == 200, revoked.text
+    decide(env, row, "allow")
+    completed(env, run)
+    assert not env.mcp.calls
+    assert env.service.require("approvals", row["id"])["status"] == "denied"
+    assert not any(item.get("subagent_child_id") == row["subagent_child_id"] for item in tool_events(env, run, "tool.dispatched"))

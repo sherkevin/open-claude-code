@@ -79,6 +79,7 @@ try {
       scheduled = [];
       return void reply(request, {}, 200);
     }
+    if (atPath('/runs/latest/trace')) return void reply(request, { run: { id: 'latest', approvals: [] }, events: [] });
     if (atPath('/runs/latest/subagents')) return void reply(request, latestAvailable ? latest : {}, latestAvailable ? 200 : 503);
     if (atPath('/runs/older/subagents')) {
       if (deferredOldRead) return void reply(request, older);
@@ -107,81 +108,73 @@ try {
     document.querySelector(selector)?.textContent.includes(expected), { timeout: 5000 }, selector, expected);
   const click = label => page.locator(`button::-p-text(${label})`).setTimeout(5000).click();
   await page.goto(`${origin}/subagent-test.html`, { waitUntil: 'networkidle0' });
-  const summary = '.subagent-progress-child > summary';
-  const liveSummary = '.subagent-progress-summary';
-  await text(summary, longTitle);
-  await text(liveSummary, '部分完成');
-  const order = await page.$$eval('.conversation-tasks > section', sections => sections.map(section => section.getAttribute('aria-label')));
-  assert.deepEqual(order, ['子任务', '计划任务']);
-
-  const disclosure = await page.$(summary);
+  const headings = await page.$$eval('.task-sidebar-section h3', nodes => nodes.map(node => node.textContent));
+  assert.deepEqual(headings, ['定时任务', '子任务']);
+  const history = '.task-sidebar-history';
+  await page.click(history + ' > summary');
+  const row = history + ' .task-sidebar-child-row';
+  await text(row, longTitle);
+  const disclosure = await page.$(row);
   await disclosure.focus();
-  await page.keyboard.press('Space');
-  await page.waitForSelector('details[open] table');
-  const accessible = await page.accessibility.snapshot({ root: disclosure, interestingOnly: false });
-  assert.ok(accessible.name.includes(longTitle) && accessible.name.includes('已完成'));
-  assert.equal(accessible.expanded, true);
   await page.keyboard.press('Enter');
-  await page.waitForSelector('details[open]', { hidden: true });
-  await page.keyboard.press('Space');
-  await page.waitForSelector('details[open] table');
-  await page.keyboard.press('Tab');
-  assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), '子任务结果');
+  await page.waitForSelector('.task-sidebar-detail table');
+  const result = await page.$('.subagent-progress-result');
+  const accessible = await page.accessibility.snapshot({root: result, interestingOnly: false});
+  assert.ok(accessible.name.includes('子任务结果'));
   const narrow = await page.evaluate(() => {
     const result = document.querySelector('.subagent-progress-result');
-    const dialog = document.querySelector('.modal');
-    return { resultScrolls: result.scrollWidth > result.clientWidth, dialogFits: dialog.scrollWidth <= dialog.clientWidth,
+    return { resultScrolls: result.scrollWidth > result.clientWidth, fits: document.documentElement.scrollWidth <= innerWidth,
       visibleList: Boolean(result.querySelector('li')?.getBoundingClientRect().height),
       interactiveResources: result.querySelectorAll('a, img, .answer-sources').length };
   });
-  assert.deepEqual(narrow, { resultScrolls: true, dialogFits: true, visibleList: true, interactiveResources: 0 });
+  assert.deepEqual(narrow, { resultScrolls: true, fits: true, visibleList: true, interactiveResources: 0 });
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.activeElement?.className === 'task-sidebar-child-row');
 
   latestAvailable = false;
-  await text('.subagent-progress-stale', '显示上次读取的进度');
-  await text('details[open] summary', longTitle);
+  await page.click('[aria-label="刷新子任务"]');
+  await text('.task-sidebar-read-error', '显示上次读取的记录');
   latestAvailable = true;
-  await click('重新读取');
-  await page.waitForSelector('.subagent-progress-stale', { hidden: true });
-  await text('details[open] summary', longTitle);
+  await page.click('[aria-label="刷新子任务"]');
+  await page.waitForSelector('.task-sidebar-read-error', { hidden: true });
   await click('用结果起草汇总');
   assert.deepEqual(await page.evaluate(() => window.summaryDrafts), [`${longTitle}\n${output}`]);
 
   const olderRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/api/v1/runs/older/subagents');
   await page.select('select', 'older');
   await olderRequest;
-  await page.waitForSelector('.subagent-progress', { hidden: true });
-  await page.select('select', 'current');
-  await text('section[aria-label="子任务"]', '这一轮暂无子任务');
+  await page.select('select', 'latest');
+  await text(row, longTitle);
   await deferredOldRead();
-  assert.equal(await page.$('.subagent-progress'), null);
+  assert.ok((await page.$eval(row, node => node.textContent)).includes(longTitle));
   await page.select('select', 'older');
-  await text(summary, '上一轮的结果');
-  assert.equal(await page.$('details[open]'), null);
-  await page.select('select', 'current');
-  await page.locator('section[aria-label="子任务"] textarea').fill(' 核查订单\n\n 汇总客户 ');
-  await click('启动子任务');
-  await text(summary, '本轮订单核查');
-  await text(liveSummary, '执行中');
-  await click('取消子任务');
-  await text(liveSummary, '已取消');
-  await text(summary, '本轮订单核查');
+  await text(row, '上一轮的结果');
 
-  await page.locator('section[aria-label="计划任务"] textarea').fill('回访订单');
-  await page.$eval('input[type="datetime-local"]', input => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '2026-11-24T08:30');
+  await click('分配子任务');
+  await page.locator('.task-sidebar-section:nth-child(2) textarea').fill(' 核查订单\n\n 汇总客户 ');
+  await click('启动子任务');
+  await text('.task-sidebar-child-row', '本轮订单核查');
+  await click('取消子任务');
+  await text('.task-sidebar-child-row', '已取消');
+
+  await click('新建');
+  await page.locator('.task-sidebar-section:first-child textarea').fill('回访订单');
+  const tomorrow = new Date(Date.now()+86400_000).toISOString().slice(0,16);
+  await page.$eval('input[type="datetime-local"]', (input, when) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, when);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  }, tomorrow);
   await click('设定时间');
-  await text('section[aria-label="计划任务"] li', '回访订单');
-  await click('撤销');
-  await page.waitForSelector('section[aria-label="计划任务"] li', { hidden: true });
+  await text('.task-sidebar-schedule-row', '回访订单');
+  await page.click('[aria-label="取消定时任务 回访订单"]');
+  await page.waitForSelector('.task-sidebar-schedule-row', { hidden: true });
   assert.deepEqual(operations, [
     ['start', { mode: 'harness', tasks: ['核查订单', '汇总客户'] }], ['cancel'],
-    ['schedule', { text: '回访订单', scheduled_at: new Date('2026-11-24T08:30').toISOString() }], ['remove schedule'],
+    ['schedule', { text: '回访订单', scheduled_at: new Date(tomorrow).toISOString() }], ['remove schedule'],
   ]);
   assert.deepEqual(errors, []);
-  console.log('PASS subagent modal results, mobile layout, keyboard and accessibility, stale retry, run isolation, and existing actions');
+  console.log('PASS subagent sidebar results, mobile layout, keyboard and accessibility, stale retry, run isolation, and existing actions');
 } finally {
   await browser?.close();
   await server?.close();

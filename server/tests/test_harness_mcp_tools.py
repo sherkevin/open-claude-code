@@ -191,7 +191,7 @@ def system(tmp_path, monkeypatch, mcp_server):
     actor = SessionActor.__new__(SessionActor)
     actor.service, actor.conversation_id = service, cid
     actor.current_run_id, actor.cancelled = result["run_id"], False
-    actor.manager = SimpleNamespace(service=service, approvals={}, context_requests={})
+    actor.manager = SimpleNamespace(service=service, approvals={}, context_requests={}, maintenance_busy=lambda _: False)
     service.manager = actor.manager
     runtime = HarnessRuntime(service, cid, service.runtime_config(cid), actor.approve, actor.emit)
     runtime.current_run = service.require("runs", result["run_id"])

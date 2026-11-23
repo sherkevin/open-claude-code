@@ -64,6 +64,8 @@ def adapter(finish="completed", finish_observed=True):
         db=SimpleNamespace(lock=threading.RLock(), execute=lambda *_args: None, event=lambda *_args: None))
     runtime.conversation_id, runtime.session_id = "conversation", "owned"
     runtime.config = {"fingerprint": "synthetic-transport"}
+    runtime.mounted_tools = {}
+    runtime.tool_name = None
     runtime.client, runtime.emit, runtime.bridge = Client(), emit, SimpleNamespace(calls=set())
     return runtime, emitted, methods
 
@@ -90,6 +92,26 @@ def test_valid_approval_wait_does_not_expire_at_five_minutes(monkeypatch):
     assert [data["text"] for kind, data in emitted if kind == "message.delta"] == ["answer"]
     assert methods[0] == ("session/prompt", "owned", [{"type": "text", "text": "/permission literal"}])
     assert methods[-1][0] == "session/wait"
+
+
+def test_delegation_can_extend_an_existing_notification_wait(monkeypatch):
+    runtime, emitted, _methods = adapter()
+    runtime.mounted_tools = {"delegate_tasks": {}}
+    runtime.tool_name = "delegate_tasks"
+    runtime.service.subagents = SimpleNamespace(delegation_timeout=lambda: 1000)
+    deadlines = []
+
+    async def virtual_timeout(awaitable, timeout):
+        deadlines.append(timeout)
+        if timeout == 660:
+            awaitable.cancel()
+            raise asyncio.TimeoutError()
+        return await awaitable
+
+    monkeypatch.setattr(asyncio, "wait_for", virtual_timeout)
+    asyncio.run(execute(runtime))
+    assert set(deadlines) == {660, 350}
+    assert [data["text"] for kind, data in emitted if kind == "message.delta"] == ["answer"]
 
 
 @pytest.mark.parametrize("finish,observed,code", [("error", True, "HARNESS_TURN_FAILED"), (None, True, "HARNESS_TURN_FAILED"), ("completed", False, "HARNESS_STREAM_INCOMPLETE")])

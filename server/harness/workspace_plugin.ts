@@ -175,7 +175,8 @@ export async function apply(ctx: any, config: any): Promise<void> {
           throw new Error('Workspace tool arguments are invalid')
         }
         turnWithTool = currentTurn
-        const signal = AbortSignal.any([exec.signal, lifetime.signal, AbortSignal.timeout(config.toolTimeoutMs)])
+        const timeout = definition.name === 'delegate_tasks' ? config.delegationTimeoutMs ?? config.toolTimeoutMs : config.toolTimeoutMs
+        const signal = AbortSignal.any([exec.signal, lifetime.signal, AbortSignal.timeout(timeout)])
         const cancellation = () => transport.notify('workspace.tool_cancelled', {
           sessionId: config.sessionId, callId: exec.callId,
         })

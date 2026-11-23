@@ -1026,10 +1026,18 @@ class SessionActor:
                 self.service.db.execute("UPDATE runs SET usage=? WHERE id=?", (dump(data), run_id))
             self.service.db.event(run_id, kind, data)
 
-    async def approve(self, tool, arguments, *, review=None, review_checked=False):
+    async def _emit_tool_approval(self, run_id, child_id, kind, data):
+        if child_id:
+            await offload_write(self.service.db.event, run_id, f"subagent.approval.{kind}",
+                                {"plan_id": run_id, "child_id": child_id, **data})
+        else:
+            await self.emit(f"approval.{kind}", data)
+
+    async def approve(self, tool, arguments, *, review=None, review_checked=False,
+                      subagent_child_id=None, check_active=None):
         if self.cancelled:
             return ApprovalReceipt(False)
-        run = await offload(self.service.require, "runs", self.current_run_id)
+        run = await offload(check_active) if check_active else await offload(self.service.require, "runs", self.current_run_id)
         # Model-as-user approval is an explicit administrator policy.  The
         # policy evaluator is fail-closed and uses an injectable local
         # reviewer; it can never widen a high-risk or unknown tool grant.
@@ -1051,10 +1059,16 @@ class SessionActor:
             decided_at = audit["decided_at"]
             await offload_write(
                 self.service.db.execute,
-                "INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,decided_at,decided_by,decision_source,strategy,review_model_id,review_policy_id,review_policy_revision,review_policy_digest,review_operation,review_data_scope,review_amount,review_reason,review_result,review_decided_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (approval_id, run["id"], run["user_id"], tool, stored_arguments, "allowed" if review.decision == "allow" else "denied", now(), decided_at, decided_at, None, "model", "model", review.model_id, review.policy_id, review.policy_revision, review.policy_digest, review.operation, review.data_scope, review.amount, review.reason, dump(review.result), decided_at),
+                "INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,decided_at,decided_by,decision_source,strategy,review_model_id,review_policy_id,review_policy_revision,review_policy_digest,review_operation,review_data_scope,review_amount,review_reason,review_result,review_decided_at,subagent_child_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (approval_id, run["id"], run["user_id"], tool, stored_arguments, "allowed" if review.decision == "allow" else "denied", now(), decided_at, decided_at, None, "model", "model", review.model_id, review.policy_id, review.policy_revision, review.policy_digest, review.operation, review.data_scope, review.amount, review.reason, dump(review.result), decided_at, subagent_child_id),
             )
-            await self.emit("approval.model_decided", {"approval_id": approval_id, **self.service.model_approval.audit_payload(review), "decision": review.decision})
+            if subagent_child_id:
+                await self._emit_tool_approval(run["id"], subagent_child_id, "resolved", {
+                    "approval_id": approval_id, "approval": {"tool_name": tool},
+                    "decision": review.decision, "decision_at": decided_at, "decision_source": "model",
+                })
+            else:
+                await self.emit("approval.model_decided", {"approval_id": approval_id, **audit, "decision": review.decision})
             if review.decision != "allow" or self.cancelled:
                 return ApprovalReceipt(False)
             return ApprovalReceipt(True, approval_id, "model")
@@ -1068,17 +1082,19 @@ class SessionActor:
             # poll can never observe a half-built row that is about to be
             # denied by policy.
             with self.service.db.transaction():
+                if check_active:
+                    check_active()
                 if dual_snapshot:
                     self.service.db.execute(
-                        "INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,strategy,approval_mode,required_approvals,approver_allowlist,approver_ids,approval_policy_id,approval_policy_revision,approval_policy_digest,approval_request_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,strategy,approval_mode,required_approvals,approver_allowlist,approver_ids,approval_policy_id,approval_policy_revision,approval_policy_digest,approval_request_digest,subagent_child_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (approval_id, run["id"], run["user_id"], tool, stored_arguments, "pending", now(), expiry,
                          "dual", dual_snapshot["approval_mode"], dual_snapshot["required_approvals"], dump(dual_snapshot["approver_allowlist"]), "[]",
-                         dual_snapshot["approval_policy_id"], dual_snapshot["approval_policy_revision"], dual_snapshot["approval_policy_digest"], dual_snapshot["approval_request_digest"]),
+                         dual_snapshot["approval_policy_id"], dual_snapshot["approval_policy_revision"], dual_snapshot["approval_policy_digest"], dual_snapshot["approval_request_digest"], subagent_child_id),
                     )
                     if dual_denied:
                         self.service.db.execute("UPDATE approvals SET status='denied',decided_at=?,decision_source='policy',approval_decision_reason=? WHERE id=?", (now(), "工具不在高风险审批白名单，默认拒绝", approval_id))
                 else:
-                    self.service.db.execute("INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)", (approval_id, run["id"], run["user_id"], tool, stored_arguments, "pending", now(), expiry))
+                    self.service.db.execute("INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,subagent_child_id) VALUES(?,?,?,?,?,?,?,?,?)", (approval_id, run["id"], run["user_id"], tool, stored_arguments, "pending", now(), expiry, subagent_child_id))
 
         # Register the waiting future before the row becomes visible.  A dual
         # administrator can vote as soon as the pending row exists; without
@@ -1088,18 +1104,30 @@ class SessionActor:
         self.manager.approvals[approval_id] = future
         try:
             await offload_write(insert_approval)
+        except asyncio.CancelledError:
+            self.manager.approvals.pop(approval_id, None)
+            await offload_write(self.service.db.execute,
+                "UPDATE approvals SET status='expired',decided_at=?,decision_source='cancelled' WHERE id=? AND status='pending'",
+                (now(), approval_id))
+            raise
         except BaseException:
             self.manager.approvals.pop(approval_id, None)
             raise
         if dual_denied:
             self.manager.approvals.pop(approval_id, None)
-            await self.emit("approval.resolved", {"approval_id": approval_id, "decision": "deny", "decision_at": now(), "decided_by": None, "decision_source": "policy"})
+            await self._emit_tool_approval(run["id"], subagent_child_id, "resolved", {
+                "approval_id": approval_id, "decision": "deny", "decision_at": now(),
+                "decided_by": None, "decision_source": "policy",
+                **({"approval": {"tool_name": tool}} if subagent_child_id else {}),
+            })
             return ApprovalReceipt(False)
-        await offload_write(self.service.db.execute, "UPDATE runs SET status='awaiting_approval' WHERE id=?", (run["id"],))
-        required_view = await offload(lambda: approval_view(self.service.require("approvals", approval_id)))
-        await self.emit("approval.required", required_view)
         decision, decision_source = "deny", "timeout"
         try:
+            if not subagent_child_id:
+                await offload_write(self.service.db.execute, "UPDATE runs SET status='awaiting_approval' WHERE id=? AND status='running'", (run["id"],))
+            required_view = await offload(lambda: approval_view(self.service.require("approvals", approval_id)))
+            await self._emit_tool_approval(run["id"], subagent_child_id, "required",
+                {"approval_id": approval_id, "approval": required_view} if subagent_child_id else required_view)
             # Shield the waiter: a timeout must not cancel the future itself.
             # If it did, a decision committed by the HTTP endpoint in the same
             # instant would raise InvalidStateError (HTTP 500) while the
@@ -1115,12 +1143,15 @@ class SessionActor:
         decision = await self.resolve_waited_approval(
             approval_id, run["id"], decision, decision_source,
             dual_snapshot=dual_snapshot, run=run, tool=tool, arguments=arguments,
+            check_active=check_active, subagent_child_id=subagent_child_id,
         )
         if decision != "allow" or self.cancelled:
             return ApprovalReceipt(False)
         return ApprovalReceipt(True, approval_id, "dual" if dual_snapshot is not None else "user")
 
-    async def resolve_waited_approval(self, approval_id, run_id, decision, decision_source, *, dual_snapshot=None, run=None, tool=None, arguments=None):
+    async def resolve_waited_approval(self, approval_id, run_id, decision, decision_source, *,
+                                      dual_snapshot=None, run=None, tool=None, arguments=None,
+                                      check_active=None, subagent_child_id=None):
         """Settle an approval after this waiter stopped waiting.
 
         The conditional ``UPDATE ... WHERE status='pending'`` is the audit
@@ -1136,15 +1167,21 @@ class SessionActor:
                 "UPDATE approvals SET status=?,decided_at=COALESCE(decided_at,?),decided_by=COALESCE(decided_by,?),decision_source=COALESCE(decision_source,?) WHERE id=? AND status='pending'",
                 ("allowed" if decision == "allow" else "denied", now(), None, decision_source, approval_id),
             )
-            self.service.db.execute("UPDATE runs SET status='running' WHERE id=? AND status='awaiting_approval'", (run_id,))
+            if not subagent_child_id:
+                self.service.db.execute("UPDATE runs SET status='running' WHERE id=? AND status='awaiting_approval'", (run_id,))
             return self.service.require("approvals", approval_id)
 
         row = await offload_write(claim)
         allowed = row["status"] == "allowed"
         override = None
-        if allowed and self.cancelled:
+        if allowed and check_active:
+            try:
+                await offload(check_active)
+            except AppError:
+                override = ("cancelled", "子任务或父任务已失效，审批结果不再有效")
+        if allowed and (self.cancelled or (subagent_child_id and decision_source in {"cancelled", "interrupted"})):
             override = ("cancelled", "任务已取消，审批结果不再有效")
-        elif allowed and dual_snapshot is not None and run is not None:
+        elif allowed and not override and dual_snapshot is not None and run is not None:
             if not await offload(self.service.high_risk_approval.snapshot_current, run, tool, arguments, dual_snapshot):
                 override = ("policy", "高风险审批策略在最终投票后发生变化，已安全拒绝")
         if override:
@@ -1160,13 +1197,16 @@ class SessionActor:
             row = await offload_write(deny_approved)
             allowed = False
         source = row.get("decision_source") or decision_source
-        await self.emit("approval.resolved", {
+        data = {
             "approval_id": approval_id,
             "decision": "allow" if allowed else "deny",
             "decision_at": row.get("decided_at"),
             "decided_by": row.get("decided_by"),
             "decision_source": source,
-        })
+        }
+        if subagent_child_id:
+            data["approval"] = {"tool_name": tool}
+        await self._emit_tool_approval(run_id, subagent_child_id, "resolved", data)
         return "allow" if allowed else "deny"
 
     async def next_item(self):
@@ -1254,6 +1294,8 @@ class SessionActor:
                     artifact_baseline = await offload(self.service.artifact_snapshot, self.conversation_id)
                     await self.runtime.execute(run, message)
                     completed_runtime = self.runtime
+                    if getattr(completed_runtime, "config", {}).get("runtime_type") == "harness":
+                        await self.service.subagents.settle_harness_plan(run_id, cancel=self.cancelled)
                     if getattr(self.runtime, "close_after_run", False):
                         await self.runtime.close()
                         self.runtime = None
@@ -1291,6 +1333,8 @@ class SessionActor:
                             pass
                         self.runtime = None
                 finally:
+                    if status != "succeeded":
+                        await self.service.subagents.settle_harness_plan(run_id, cancel=True)
                     # Settle memory bookkeeping and the terminal run transaction
                     # on one worker thread: every write completes before the actor
                     # is considered finished, and an in-flight delta can never be

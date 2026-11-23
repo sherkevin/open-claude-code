@@ -148,6 +148,9 @@ def local_model_server():
                 # A cancelled tool call is restored as a synthetic error block
                 # beside the next user message. Honor that new task even when
                 # the same Messages turn contains an older tool_result.
+                if isinstance(action, threading.Event):
+                    action.wait(30)
+                    action = None
                 if action:
                     name, arguments = action
                     event("content_block_start", {"index": 0, "content_block": {"type": "tool_use", "id": f"mcp-call-{len(requests)}", "name": name, "input": {}}})

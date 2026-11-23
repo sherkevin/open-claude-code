@@ -1,0 +1,7 @@
+.conversation-sidebar {display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--surface,#fff);color:var(--ink,#203440);border-inline-start:1px solid var(--line,#e0e5e8)}
+.conversation-sidebar.docked {flex:0 0 clamp(264px,21vw,352px)}
+.conversation-sidebar-heading {display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px;gap:8px}
+.conversation-sidebar-heading h2 {margin:0;font-size:15px;font-weight:650}
+.conversation-sidebar-body {min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.conversation-sidebar-backdrop {position:fixed;inset:0;z-index:80;background:rgb(17 29 40 / 24%)}
+.conversation-sidebar.drawer {position:fixed;inset:0 0 0 auto;width:min(352px,calc(100vw - 24px));z-index:81;box-shadow:-8px 0 32px rgb(17 29 40 / 10%);padding-bottom:env(safe-area-inset-bottom)}

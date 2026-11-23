@@ -18,7 +18,6 @@ from fastapi import APIRouter, Depends
 from .db import now, uid
 from .models import ImageGenerationRequest, XlsxArtifactRequest
 from .security import AppError, safe_name
-from .service import file_view
 
 MAX_SHEETS = 10
 MAX_ROWS = 5000
@@ -196,6 +195,8 @@ def image_generation_capability(settings, catalog) -> dict:
 
 
 def create_artifact_router(svc, authenticated):
+    from .service import file_view
+
     router = APIRouter(prefix="/api/v1/artifacts", tags=["artifacts"])
 
     @router.get("/image-capability")

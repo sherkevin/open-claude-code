@@ -65,6 +65,10 @@ export function isSubagentActive(status: string) {
   return ['queued', 'running', 'awaiting_approval', 'cancelling'].includes(status);
 }
 
+export function subagentStatus(status: string) {
+  return childStates.get(status) ?? { label: '状态未确认', icon: CircleHelp, tone: undefined };
+}
+
 function planStatus(total: number, count: (status: string) => number) {
   if (count('cancelling')) return '正在取消';
   if (count('running')) return '执行中';
@@ -84,36 +88,40 @@ function planStatus(total: number, count: (status: string) => number) {
 }
 
 function childNote(child: SubagentChild, hasOutput: boolean) {
-  if (child.stop_reason && stopReasons.has(child.stop_reason)) return stopReasons.get(child.stop_reason);
+  const reason = child.stop_reason || child.result?.stop_reason;
+  if (reason && stopReasons.has(reason)) return stopReasons.get(reason);
   if (hasOutput) return null;
   if (isSubagentActive(child.status)) return '暂时没有结果。';
   return child.status === 'succeeded' ? '子任务已完成，未返回结果。' : '没有可查看的结果。';
 }
 
-function ChildDetails({ child, index }: { child: SubagentChild; index: number }) {
-  const state = childStates.get(child.status) ?? { label: '状态未确认', icon: CircleHelp };
-  const Icon = state.icon;
+export function SubagentResult({ child }: { child: SubagentChild }) {
   const output = child.result?.output;
   const hasOutput = typeof output === 'string' ? Boolean(output.trim()) : output != null;
   const note = childNote(child, hasOutput);
   const usage = child.observed_usage;
   const tokens = [usage?.input_tokens != null ? `输入 ${usage.input_tokens}` : '', usage?.output_tokens != null ? `输出 ${usage.output_tokens}` : ''].filter(Boolean);
 
+  return <div className="subagent-progress-detail">
+    {note && <p>{note}</p>}
+    {hasOutput && <div className="subagent-progress-result" role="group" aria-label="子任务结果" tabIndex={0}>
+      {typeof output === 'string' ? <AnswerMarkdown text={output} mode="subagent"/> : <pre>{JSON.stringify(output, null, 2)}</pre>}
+    </div>}
+    {!!tokens.length && <p className="subagent-progress-usage">{tokens.join(' · ')} token</p>}
+  </div>;
+}
+
+function ChildDetails({ child, index }: { child: SubagentChild; index: number }) {
+  const { icon: Icon, label, tone } = subagentStatus(child.status);
   return <li>
     <details className="subagent-progress-child">
       <summary tabIndex={0}>
-        <Icon className="subagent-progress-status-icon" data-tone={state.tone} size={16} aria-hidden="true"/>
+        <Icon className="subagent-progress-status-icon" data-tone={tone} size={16} aria-hidden="true"/>
         <span className="subagent-progress-title">{subagentTitle(child, index)}</span>
-        <span className="subagent-progress-child-status">{state.label}</span>
+        <span className="subagent-progress-child-status">{label}</span>
         <ChevronRight className="subagent-progress-chevron" size={15} aria-hidden="true"/>
       </summary>
-      <div className="subagent-progress-detail">
-        {note && <p>{note}</p>}
-        {hasOutput && <div className="subagent-progress-result" role="group" aria-label="子任务结果" tabIndex={0}>
-          {typeof output === 'string' ? <AnswerMarkdown text={output} mode="subagent"/> : <pre>{JSON.stringify(output, null, 2)}</pre>}
-        </div>}
-        {!!tokens.length && <p className="subagent-progress-usage">{tokens.join(' · ')} token</p>}
-      </div>
+      <SubagentResult child={child}/>
     </details>
   </li>;
 }

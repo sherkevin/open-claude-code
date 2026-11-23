@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, Clock3, RefreshCw, Search, Sparkles, UserRound, Wrench } from 'lucide-react';
 import { api, errorText } from './api';
 import { Button, EmptyState, ErrorNotice, Loader, Modal } from './components';
 import { appendTrajectory, durationText, filterTrajectory, metricValue, trajectoryDetails, trajectoryLabels, trajectoryPath, trajectoryPositions, trajectoryTime, type TrajectoryItem, type TrajectoryKind, type TrajectoryPage } from './sessionObservationData';
+import { ContextContent, type ContextControls } from './ContextDialog';
 import './session-observability.css';
 
 const kindIcons={input:UserRound,model:Sparkles,tool:Wrench};
@@ -34,7 +35,7 @@ export function TrajectoryContent({page,items,loading,error,onMore,onRefresh}:{p
   </div>;
 }
 
-export default function SessionTrajectory({conversationId,title,onClose}:{conversationId:string;title:string;onClose:()=>void}) {
+function TrajectoryPanel({conversationId}:{conversationId:string}) {
   const [page,setPage]=useState<TrajectoryPage|null>(null),[items,setItems]=useState<TrajectoryItem[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[revision,setRevision]=useState(0);
   const controller=useRef<AbortController|null>(null),version=useRef(0);
   useEffect(()=>{
@@ -50,5 +51,48 @@ export default function SessionTrajectory({conversationId,title,onClose}:{conver
     catch(cause){if(current===version.current&&!request.signal.aborted)setError(errorText(cause));}
     finally{if(current===version.current&&!request.signal.aborted)setLoading(false);}
   };
-  return <Modal title={`${title||'会话'} · 内容轨迹`} wide onClose={onClose}><div className="modal-body trajectory-modal-body"><TrajectoryContent key={conversationId} page={page} items={items} loading={loading} error={error} onMore={()=>void more()} onRefresh={()=>setRevision(value=>value+1)}/></div><footer className="modal-footer"><Button variant="secondary" onClick={onClose}>关闭</Button></footer></Modal>;
+  return <div className="modal-body trajectory-modal-body"><TrajectoryContent key={conversationId} page={page} items={items} loading={loading} error={error} onMore={()=>void more()} onRefresh={()=>setRevision(value=>value+1)}/></div>;
+}
+
+export type InspectionView = 'trajectory' | 'context';
+
+export default function SessionTrajectory({ conversationId, title, onClose, context, initialView = 'trajectory', onViewChange }: {
+  conversationId: string;
+  title: string;
+  onClose: () => void;
+  context?: ContextControls;
+  initialView?: InspectionView;
+  onViewChange?: (view: InspectionView) => void;
+}) {
+  const [view, setView] = useState<InspectionView>(context ? initialView : 'trajectory');
+  const [visited, setVisited] = useState(() => new Set([view]));
+  const [compacting, setCompacting] = useState(false);
+  const tabs = useRef<HTMLDivElement>(null);
+  const id = useId();
+  const select = (next: InspectionView) => {
+    if (compacting) return;
+    setView(next);
+    setVisited(previous => previous.has(next) ? previous : new Set([...previous, next]));
+    onViewChange?.(next);
+  };
+  return <Modal title={`${title || '会话'} · 轨迹`} wide onClose={() => { if (!compacting) onClose(); }}>
+    {context && <div className="inspection-tabs" ref={tabs} role="tablist" aria-label="轨迹视图">
+      {(['trajectory', 'context'] as const).map(key => <button key={key} id={`${id}-${key}`} type="button" role="tab"
+        aria-controls={`${id}-panel-${key}`} aria-selected={view === key} tabIndex={view === key ? 0 : -1}
+        disabled={compacting && view !== key} onClick={() => select(key)} onKeyDown={event => {
+          if (compacting || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const next = event.key === 'Home' ? 'trajectory' : event.key === 'End' ? 'context' : key === 'trajectory' ? 'context' : 'trajectory';
+          select(next);
+          tabs.current?.querySelector<HTMLButtonElement>(`button[data-view="${next}"]`)?.focus();
+        }} data-view={key}>{key === 'trajectory' ? '执行轨迹' : '上下文'}</button>)}
+    </div>}
+    <div className="inspection-panel" hidden={view !== 'trajectory'} id={`${id}-panel-trajectory`} role={context ? 'tabpanel' : undefined} aria-labelledby={context ? `${id}-trajectory` : undefined}>
+      {visited.has('trajectory') && <TrajectoryPanel conversationId={conversationId}/>}
+    </div>
+    {context && <div className="inspection-panel" hidden={view !== 'context'} id={`${id}-panel-context`} role="tabpanel" aria-labelledby={`${id}-context`}>
+      {visited.has('context') && <ContextContent conversationId={conversationId} {...context} onCompacting={setCompacting}/>}
+    </div>}
+    <footer className="modal-footer"><Button variant="secondary" disabled={compacting} onClick={onClose}>关闭</Button></footer>
+  </Modal>;
 }

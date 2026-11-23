@@ -17,6 +17,7 @@ from .security import AppError
 from .subagent_title import display_title, display_title_key
 
 
+HARNESS_CHILD_MAX_STEPS = 3
 CHILD_TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
 
 
@@ -68,9 +69,43 @@ class SubagentOrchestrator:
         self.max_result_chars = max(256, int(max_result_chars))
         self.child_timeout_seconds = max(0.1, float(child_timeout_seconds))
         self._plan_tasks: dict[str, dict[str, asyncio.Task]] = {}
-        self._background_tasks: set[asyncio.Task] = set()
+        self._background_tasks: dict[str, asyncio.Task] = {}
         self._cancelled_plans: set[str] = set()
         self._worker_capacity = asyncio.Semaphore(max(1, min(2, service.settings.max_active_sessions - 1)))
+
+    def harness_child_timeout(self):
+        return max(90, (self.service.settings.approval_seconds + 60) * HARNESS_CHILD_MAX_STEPS)
+
+    def delegation_timeout(self):
+        # Capacity is shared across plans. Bound the parent even if every
+        # child in this plan has to run separately.
+        return self.max_children * self.harness_child_timeout() + 60
+
+    def harness_parent(self, parent):
+        from .harness_runtime import HarnessRuntime
+
+        manager = getattr(self.service, "manager", None)
+        actor = manager.actors.get(parent["conversation_id"]) if manager else None
+        runtime = actor.runtime if actor else None
+        if (not isinstance(runtime, HarnessRuntime) or not runtime.mounted_tools
+                or actor.current_run_id != parent["id"] or actor.cancelled or runtime.interrupted):
+            raise AppError(409, "SUBAGENT_PARENT_INACTIVE", "父任务没有可继承的 Harness 运行")
+        return actor, runtime
+
+    async def settle_harness_plan(self, parent_run_id, *, cancel=False):
+        children = await offload(self.service.db.all,
+            "SELECT status FROM subagent_children WHERE parent_run_id=? AND role='harness_analysis'", (parent_run_id,))
+        if not children:
+            return
+        active = any(child["status"] not in CHILD_TERMINAL for child in children)
+        job = self._background_tasks.get(parent_run_id)
+        if cancel:
+            if active:
+                await self.cancel_plan(parent_run_id)
+            if job:
+                await asyncio.gather(asyncio.shield(job), return_exceptions=True)
+        elif active or job:
+            await asyncio.shield(self.start_plan(parent_run_id))
 
     # ------------------------------------------------------------------
     # Contract and persistence
@@ -151,6 +186,7 @@ class SubagentOrchestrator:
             raise AppError(422, "SUBAGENT_MODE_DISABLED", "不支持所请求的子任务模式")
         parent = self._parent(parent_run_id, user_id)
         harness = mode == "harness"
+        runtime = None
         if harness:
             settings = self.service.settings
             metadata = json.loads(parent.get("execution_meta") or "{}")
@@ -162,6 +198,9 @@ class SubagentOrchestrator:
                     or parent["status"] != "running" or metadata.get("recovery_mode") == "answer_only" or metadata.get("schedule_id")
                     or not settings.harness_source_dir or not settings.harness_node_path or settings.max_active_sessions < 2):
                 raise AppError(409, "SUBAGENT_PARENT_INACTIVE", "当前运行不支持创建分析子任务")
+            _, runtime = self.harness_parent(parent)
+            if not runtime.accepting_subagent_plans:
+                raise AppError(409, "SUBAGENT_PARENT_INACTIVE", "父任务已结束分派")
             if not isinstance(tasks, list) or any(not isinstance(task, str) for task in tasks):
                 raise AppError(422, "SUBAGENT_INVALID_TASK", "分析子任务仅接受文字说明")
         depth = self._parent_depth(parent_run_id) + 1
@@ -180,13 +219,25 @@ class SubagentOrchestrator:
         timestamp = now()
         capability = {
             "mode": mode,
-            "tools": [] if harness else ["Read", "Glob", "Grep"],
+            "tools": ["Read", "Glob", "Grep"],
             "writes": False,
             "network": False,
             "mcp": False,
             "parent_history": False,
             "parent_memory": False,
         }
+        if harness:
+            bridge = runtime.bridge
+            mounted = set(runtime.mounted_tools) - {"delegate_tasks"}
+            business = mounted & bridge.business_tools.keys()
+            capability.update(
+                authorization="parent_run",
+                tools=sorted(bridge.business_tools[name].canonical_name if name in business else name for name in mounted),
+                writes=bool(business or mounted & {"file_write", "generate_xlsx", "generate_image", "memory_write"}),
+                network=bool(business or mounted & {"web_search", "web_read", "ocr", "image_search"}),
+                mcp=bool(business),
+                parent_memory=bool(mounted & {"memory_list", "memory_read", "memory_write"}),
+            )
         child_root = self.service.settings.data_dir / "workspaces" / parent["conversation_id"] / "subagents"
         rows = []
         created_roots = []
@@ -264,6 +315,7 @@ class SubagentOrchestrator:
         }
 
     def child_view(self, row: dict) -> dict:
+        capability = json.loads(row["capability_snapshot"])
         result = {
             "child_id": row["child_id"],
             "parent_run_id": row["parent_run_id"],
@@ -274,10 +326,11 @@ class SubagentOrchestrator:
             "status": row["status"],
             "stop_reason": row["stop_reason"],
             "task_digest": row["task_digest"],
-            "capability_snapshot": json.loads(row["capability_snapshot"]),
+            "capability_snapshot": capability,
             "workspace_id": row["workspace_id"],
             "memory_scope_id": row["memory_scope_id"],
-            "isolation": "dedicated_workspace_and_memory",
+            "isolation": ("dedicated_harness_session" if capability.get("authorization") == "parent_run"
+                          else "dedicated_workspace_and_memory"),
             "reserved_budget": row["reserved_budget"],
             "observed_usage": json.loads(row["observed_usage"] or "{}"),
             "created_at": row["created_at"],
@@ -471,16 +524,16 @@ class SubagentOrchestrator:
             self._emit_child(parent_run_id, child_id, "subagent.progress", "running", progress=10)
             child = self.service.db.one("SELECT * FROM subagent_children WHERE child_id=?", (child_id,))
             try:
-                if not await self._await_child_approval(parent_run_id, child_id, task):
-                    self._mark_child(child_id, "failed", "approval_denied")
-                    self._emit_child(parent_run_id, child_id, "subagent.failed", "approval_denied")
-                    return
                 if child["role"] == "harness_analysis":
                     from .harness_child import execute_harness_child
 
                     async with self._worker_capacity:
-                        result = await asyncio.wait_for(execute_harness_child(self.service, child, task, self.max_result_chars - 256), timeout=90)
+                        result = await asyncio.wait_for(execute_harness_child(self.service, child, task, self.max_result_chars - 256), timeout=self.harness_child_timeout())
                 else:
+                    if not await self._await_child_approval(parent_run_id, child_id, task):
+                        self._mark_child(child_id, "failed", "approval_denied")
+                        self._emit_child(parent_run_id, child_id, "subagent.failed", "approval_denied")
+                        return
                     result = await asyncio.wait_for(self.executor(child, task), timeout=self.child_timeout_seconds)
                 if parent_run_id in self._cancelled_plans:
                     raise asyncio.CancelledError()
@@ -626,7 +679,7 @@ class SubagentOrchestrator:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*self._plan_tasks[parent_run_id].values(), return_exceptions=True)
-        pending_background = list(self._background_tasks)
+        pending_background = list(self._background_tasks.values())
         for task in pending_background:
             if not task.done():
                 task.cancel()
@@ -640,13 +693,16 @@ class SubagentOrchestrator:
 
     def start_plan(self, parent_run_id: str, user_id: str | None = None) -> asyncio.Task:
         """Schedule a plan while retaining its task until it settles."""
-        task = asyncio.create_task(self.run_plan(parent_run_id, user_id))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_done)
-        return task
+        job = self._background_tasks.get(parent_run_id)
+        if job is not None:
+            return job
+        job = asyncio.create_task(self.run_plan(parent_run_id, user_id))
+        self._background_tasks[parent_run_id] = job
+        job.add_done_callback(lambda task: self._background_done(parent_run_id, task))
+        return job
 
-    def _background_done(self, task: asyncio.Task) -> None:
-        self._background_tasks.discard(task)
+    def _background_done(self, parent_run_id: str, task: asyncio.Task) -> None:
+        self._background_tasks.pop(parent_run_id, None)
         if not task.cancelled():
             # Consume an unexpected exception so a detached HTTP task cannot
             # produce an unhandled-task warning or silently leak its state.

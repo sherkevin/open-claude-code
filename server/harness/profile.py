@@ -93,6 +93,7 @@ def write_profile(
     *, profile_root: Path, source_dir: Path, cwd: Path, session_id: str,
     system_prompt: str, provider: dict, tools: list[dict], max_steps: int = 30,
     tool_timeout_ms: int = 660_000,
+    delegation_timeout_ms: int | None = None,
 ) -> dict:
     """Write one locked profile and return dsh arguments and SDK initialize data.
 
@@ -115,6 +116,9 @@ def write_profile(
         raise ValueError("Harness max_steps must be between 1 and 1000")
     if type(tool_timeout_ms) is not int or not 1000 <= tool_timeout_ms <= 3_600_000:
         raise ValueError("Harness tool timeout is outside the supported range")
+    if delegation_timeout_ms is not None and (type(delegation_timeout_ms) is not int
+                                               or not tool_timeout_ms <= delegation_timeout_ms <= 86_400_000):
+        raise ValueError("Harness delegation timeout is outside the supported range")
     if not isinstance(provider, dict) or set(provider) - {
         "baseURL", "model", "apiKeyEnv", "reasoningEffort", "maxTokens", "contextWindow",
     }:
@@ -227,6 +231,7 @@ def write_profile(
             "usageEndpoint": endpoint.rstrip("/") + ("" if parsed.path.rstrip("/").endswith("/v1") else "/v1") + "/messages",
             "model": model, "tools": definitions, "maxSteps": max_steps,
             "toolTimeoutMs": tool_timeout_ms, "sourceCommit": PINNED_COMMIT,
+            **({"delegationTimeoutMs": delegation_timeout_ms} if delegation_timeout_ms is not None else {}),
         },
     })
     _write_private(profile_dir / "package.json", {

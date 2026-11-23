@@ -20,7 +20,7 @@ from app.config import Settings
 from app.db import dump, now, uid
 from app.harness_memory import MEMORY_WRITE, validate_memory_approval
 from app.harness_runtime import HarnessRuntime
-from app.runtime import RunManager
+from app.runtime import ApprovalReceipt, RunManager
 from app.security import AppError
 from app.service import Service, approval_view
 from app.main import create_app
@@ -54,7 +54,7 @@ def memory_runtime(tmp_path, monkeypatch):
         service.db.execute("INSERT INTO approvals(id,run_id,user_id,tool_name,arguments,status,created_at,expires_at,decided_at,decided_by,decision_source) VALUES(?,?,?,?,?,'allowed',?,?,?,?, 'user')",
             (aid, rid, user["id"], tool, dump(arguments), now(), (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(), now(), user["id"]))
         approvals.append(aid)
-        return True
+        return ApprovalReceipt(True, aid, "user")
 
     runtime = HarnessRuntime(service, cid, service.runtime_config(cid), approve, emit)
     runtime.current_run = service.require("runs", rid)

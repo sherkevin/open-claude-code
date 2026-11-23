@@ -16,7 +16,7 @@ READ_TOOLS = frozenset({
 })
 
 
-def record_dispatch(service, run_id, call_id, tool_name):
+def record_dispatch(service, run_id, call_id, tool_name, *, subagent_child_id=None, check_active=None):
     """Commit the dispatch boundary before returning a tool grant or invoking it."""
     with service.db.transaction():
         run = service.require("runs", run_id)
@@ -31,7 +31,10 @@ def record_dispatch(service, run_id, call_id, tool_name):
                 read_only = True
             except AppError:
                 pass
-        service.db.event(run_id, "tool.dispatched", {"tool_call_id": call_id, "tool_name": tool_name, "read_only": read_only})
+        if check_active:
+            check_active()
+        service.db.event(run_id, "tool.dispatched", {"tool_call_id": call_id, "tool_name": tool_name, "read_only": read_only,
+                         **({"subagent_child_id": subagent_child_id} if subagent_child_id else {})})
 
 
 def require_tool_execution(run):

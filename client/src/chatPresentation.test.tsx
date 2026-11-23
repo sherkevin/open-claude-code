@@ -8,6 +8,9 @@ describe('chat navigation and pending decisions', () => {
     const conversation = {id:'c',assistant_id:'a',title:'当前会话',model_id:'m',reasoning_level:'low',runtime_type:'harness',archived:false} as Conversation;
     const html = renderToStaticMarkup(<ChatPage conversation={conversation} config={{deployment_mode:'normal',brand_name:'开物',upload_max_bytes:1024,auth_types:[],model_label:'模型'} satisfies AppConfig} models={[]} modelsLoading={false} onChanged={()=>{}} onArchived={()=>{}}/>);
     expect(html).toContain('aria-label="内容轨迹"');
+    expect(html).toContain('aria-label="会话侧栏"');
+    expect(html).not.toContain('aria-label="计划与子任务"');
+    expect(html).not.toContain('aria-label="上下文"');
     expect(html).not.toContain('执行记录');
     expect(html).not.toContain('execution-panel');
     expect(html).not.toMatch(/DeepSeek Harness|Harness 上下文|Claude Agent SDK/i);

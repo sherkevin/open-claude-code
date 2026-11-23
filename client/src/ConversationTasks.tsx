@@ -1,197 +1,582 @@
-import { useEffect, useRef, useState } from 'react';
-import { api, errorText, post, remove, timeText } from './api';
-import { Button, ErrorNotice, Field, Modal } from './components';
-import { transientReadError } from './runReadback';
-import SubagentProgress, { isSubagentActive, subagentTitle, type SubagentPlan } from './SubagentProgress';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
+import { ArrowLeft, CalendarClock, ChevronRight, GitFork, Plus, RefreshCw } from 'lucide-react';
+import { ApiError, api, errorText, post, remove, timeText } from './api';
+import { Button, ErrorNotice, Field } from './components';
+import { toolLabel } from './display';
+import { isSubagentActive, SubagentResult, subagentStatus, subagentTitle } from './SubagentProgress';
+import type { SubagentChild, SubagentPlan } from './SubagentProgress';
+import type { StreamEvent } from './types';
+import './conversation-tasks.css';
 
-type Schedule = { id: string; text: string; scheduled_at: string; status: string; run_id: string | null; error: string | null };
+export interface ConversationTasksProps {
+  conversationId: string;
+  runId?: string;
+  canDelegate: boolean;
+  onSummarize: (results: string) => void;
+  events?: StreamEvent[];
+  canSchedule?: boolean;
+}
+
+type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null };
 type PlanRun = { id: string; created_at: string; status: string };
-const statusText: Record<string, string> = {
-  scheduled: '等待到期', pending: '待发送', queued: '排队中', running: '执行中', cancelling: '正在取消',
-  awaiting_approval: '等待审批', succeeded: '完成', failed: '失败', cancelled: '已取消', interrupted: '已中断',
+type ChildSelection = { plan: SubagentPlan; childId: string };
+type SelectChild = (selection: ChildSelection, trigger: HTMLButtonElement) => void;
+type TaskSnapshot<T> = { path: string; value?: T; error?: string; accessLost?: boolean };
+type ReadOptions<T> = {
+  enabled?: boolean;
+  refreshKey?: string;
+  read?: (path: string, signal: AbortSignal) => Promise<T>;
+  nextRead?: (value: T) => number | undefined;
 };
-const refreshInterval = 1500;
 
-interface ConversationTasksProps {
-  conversationId: string; runId?: string; canDelegate: boolean; onSummarize: (results: string) => void; onClose: () => void;
+const statusLabels = new Map([
+  ['scheduled', '等待到期'], ['pending', '待发送'], ['queued', '排队中'], ['running', '执行中'], ['cancelling', '正在取消'],
+  ['awaiting_approval', '等待审批'], ['succeeded', '已完成'], ['failed', '失败'], ['cancelled', '已取消'], ['interrupted', '已中断'],
+]);
+const statusLabel = (status: string) => statusLabels.get(status) ?? '状态未确认';
+const canCancelSchedule = (status: string) => status === 'scheduled' || status === 'pending';
+
+function fetchTask<T>(path: string, signal: AbortSignal) {
+  return api<T>(path, { signal, cache: 'no-store' });
 }
 
-export default function ConversationTasks({ onClose, ...props }: ConversationTasksProps) {
-  return <Modal title="计划与子任务" wide onClose={onClose}>
-    <ConversationTaskBody key={props.conversationId} {...props}/>
-  </Modal>;
-}
+function useTaskRead<T>(path: string | undefined, { enabled = true, refreshKey, read = fetchTask, nextRead }: ReadOptions<T> = {}) {
+  const [state, setState] = useState<TaskSnapshot<T>>();
+  const [revision, setRevision] = useState(0);
+  const stopRef = useRef<() => void>();
+  const currentPath = useRef(path);
+  currentPath.current = path;
+  const snapshot = state?.path === path ? state : undefined;
 
-function ConversationTaskBody({ conversationId, runId, canDelegate, onSummarize }: Omit<ConversationTasksProps, 'onClose'>) {
-  const [schedules, setSchedules] = useState<Schedule[] | null>(null);
-  const [text, setText] = useState('');
-  const [when, setWhen] = useState('');
-  const [planRuns, setPlanRuns] = useState<PlanRun[]>([]);
-  const [focusedRun, setFocusedRun] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const reading = useRef<AbortController | null>(null);
-  const conversationPath = `/conversations/${encodeURIComponent(conversationId)}`;
-  const schedulePath = `${conversationPath}/schedules`;
-  const teamHistoryPath = `${conversationPath}/subagent-plans`;
-  const currentIsListed = planRuns.some(item => item.id === runId);
-  const selection = focusedRun === runId || planRuns.some(item => item.id === focusedRun) ? focusedRun : '';
-  const teamRunId = selection || planRuns[0]?.id || runId;
-
-  useEffect(() => {
-    if (busy) return;
-    const controller = new AbortController();
-    reading.current = controller;
-    let timer: ReturnType<typeof setTimeout>;
-    const refresh = async () => {
-      const { signal } = controller;
-      await Promise.allSettled([
-        api<Schedule[]>(schedulePath, { signal }).then(items => { if (!signal.aborted) setSchedules(items); }),
-        api<PlanRun[]>(teamHistoryPath, { signal }).then(items => { if (!signal.aborted) setPlanRuns(items); }),
-      ]);
-      if (!signal.aborted) timer = setTimeout(refresh, refreshInterval);
-    };
-    void refresh();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [schedulePath, teamHistoryPath, busy]);
-
-  async function act(action: () => Promise<unknown>) {
-    reading.current?.abort();
-    setBusy(true);
-    setError('');
-    try { await action(); }
-    catch (failure) { setError(errorText(failure)); }
-    finally { setBusy(false); }
+  function refresh() {
+    if (currentPath.current !== path) return;
+    stopRef.current?.();
+    setRevision(value => value + 1);
   }
 
-  async function schedule() {
+  function update(change: (previous: T | undefined) => T | undefined) {
+    if (!path || currentPath.current !== path) return;
+    setState(previous => ({ path, value: change(previous?.path === path ? previous.value : undefined) }));
+  }
+
+  useEffect(() => {
+    if (!path || !enabled) return;
+    const route = path;
+    let request: AbortController | undefined;
+    let timer: number | undefined;
+
+    function stop() {
+      request?.abort();
+      window.clearTimeout(timer);
+    }
+
+    async function load() {
+      if (document.hidden) return;
+      request = new AbortController();
+      const { signal } = request;
+      try {
+        const value = await read(route, signal);
+        if (signal.aborted) return;
+        setState({ path: route, value });
+        const delay = nextRead?.(value);
+        if (delay !== undefined) timer = window.setTimeout(load, delay);
+      } catch (failure) {
+        if (signal.aborted) return;
+        const accessLost = failure instanceof ApiError && [401, 403, 404].includes(failure.status);
+        setState(previous => ({
+          path: route,
+          value: !accessLost && previous?.path === route ? previous.value : undefined,
+          error: errorText(failure),
+          accessLost,
+        }));
+      }
+    }
+
+    function visibilityChanged() {
+      stop();
+      void load();
+    }
+
+    stopRef.current = stop;
+    document.addEventListener('visibilitychange', visibilityChanged);
+    void load();
+    return () => {
+      stop();
+      stopRef.current = undefined;
+      document.removeEventListener('visibilitychange', visibilityChanged);
+    };
+  }, [path, enabled, refreshKey, revision, read, nextRead]);
+
+  return { ...snapshot, refresh, update };
+}
+
+function scheduleInterval(schedules: Schedule[]) {
+  const now = Date.now();
+  let delay = Infinity;
+  for (const task of schedules) {
+    if (task.status === 'scheduled') {
+      const due = Date.parse(task.scheduled_at);
+      if (Number.isFinite(due)) delay = Math.min(delay, due > now ? due - now + 1000 : 10_000);
+    } else if (task.status === 'pending' || isSubagentActive(task.status)) {
+      delay = Math.min(delay, 8000);
+    }
+  }
+  return Number.isFinite(delay) ? Math.min(delay, 2_147_483_647) : undefined;
+}
+
+function ReadError({ error, hasValue }: { error?: string; hasValue?: boolean }) {
+  return error ? <p className="task-sidebar-read-error" role="status">
+    {hasValue ? '刷新失败，显示上次读取的记录。' : '暂时无法读取。'} {error}
+  </p> : null;
+}
+
+function RefreshButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return <Button variant="ghost" className="task-sidebar-icon-button" aria-label={label} title={label} onClick={onClick}>
+    <RefreshCw size={14} aria-hidden="true"/>
+  </Button>;
+}
+
+function ScheduleRow({ task, busy, onCancel }: { task: Schedule; busy: boolean; onCancel: (id: string) => void }) {
+  const title = task.text.trim().split('\n', 1)[0];
+  const preview = title.length > 120 ? `${title.slice(0, 120)}…` : title;
+  return <li className="task-sidebar-schedule-row">
+    <details className="task-sidebar-schedule">
+      <summary tabIndex={0}>
+        <span>
+          <span className="task-sidebar-schedule-text">{preview}</span>
+          <small><time dateTime={task.scheduled_at}>{timeText(task.scheduled_at)}</time> · {statusLabel(task.status)}</small>
+        </span>
+        <ChevronRight size={15} aria-hidden="true"/>
+      </summary>
+      <p>{task.text}</p>
+      {task.error && <p className="task-sidebar-read-error">{task.error}</p>}
+    </details>
+    {canCancelSchedule(task.status) && <Button variant="ghost" disabled={busy} aria-label={`取消定时任务 ${preview}`} onClick={() => onCancel(task.id)}>取消</Button>}
+  </li>;
+}
+
+function ScheduledTasks({ path, visible, canSchedule }: { path: string; visible: boolean; canSchedule: boolean }) {
+  const heading = useId();
+  const formId = useId();
+  const { value: schedules, error, refresh, update } = useTaskRead<Schedule[]>(path, { enabled: visible, nextRead: scheduleInterval });
+  const [creating, setCreating] = useState(false);
+  const [text, setText] = useState('');
+  const [when, setWhen] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const createButton = useRef<HTMLButtonElement>(null);
+  const textInput = useRef<HTMLTextAreaElement>(null);
+  const returnToCreate = useRef(false);
+
+  useEffect(() => {
+    if (creating) textInput.current?.focus();
+    else if (returnToCreate.current) {
+      createButton.current?.focus();
+      returnToCreate.current = false;
+    }
+  }, [creating]);
+
+  async function act(action: () => Promise<void>) {
+    setBusy(true);
+    setActionError('');
+    try { await action(); }
+    catch (failure) { setActionError(errorText(failure)); }
+    finally { setBusy(false); refresh(); }
+  }
+
+  function schedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const content = text.trim();
     const date = new Date(when);
-    if (!Number.isFinite(date.getTime())) { setError('请选择执行时间'); return; }
-    await act(async () => {
-      await post(schedulePath, { text: text.trim(), scheduled_at: date.toISOString() });
-      setText(''); setWhen('');
-      setSchedules(await api<Schedule[]>(schedulePath));
+    if (!canSchedule || busy || !content) return;
+    if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) {
+      setActionError('请选择未来的执行时间。');
+      return;
+    }
+    void act(async () => {
+      const scheduled_at = date.toISOString();
+      const task = await post<Pick<Schedule, 'id' | 'status'>>(path, { text: content, scheduled_at });
+      update(previous => [{ ...task, text: content, scheduled_at }, ...(previous ?? []).filter(item => item.id !== task.id)]);
+      setText('');
+      setWhen('');
+      returnToCreate.current = true;
+      setCreating(false);
     });
   }
 
-  return <div className="modal-body conversation-tasks">
-    {teamRunId && <section aria-label="子任务">
-      {(planRuns.length > 1 || (planRuns.length > 0 && runId && !currentIsListed)) && <Field label="查看轮次">
-        <select value={selection} onChange={event => setFocusedRun(event.target.value)}>
-          <option value="">最近有子任务的一轮</option>
-          {runId && !currentIsListed && <option value={runId}>当前一轮</option>}
-          {planRuns.map(item => <option key={item.id} value={item.id}>{timeText(item.created_at)} · {statusText[item.status] || item.status}</option>)}
-        </select>
-      </Field>}
-      <ConversationTaskPlan key={teamRunId} runId={teamRunId} canDelegate={canDelegate && teamRunId === runId} onSummarize={onSummarize}/>
-    </section>}
-    <section aria-label="计划任务">
-      <h3>计划任务</h3>
-      <ErrorNotice message={error}/>
-      <p>按本地时间安排一次文字任务。到期后进入会话队列，执行时无法调用工具。</p>
-      <form onSubmit={event => { event.preventDefault(); void schedule(); }}>
-        <Field label="任务内容"><textarea value={text} onChange={event => setText(event.target.value)} required maxLength={50000} rows={2}/></Field>
-        <Field label="执行时间"><input value={when} onChange={event => setWhen(event.target.value)} type="datetime-local" required/></Field>
+  function cancel(id: string) {
+    if (busy) return;
+    void act(async () => {
+      await remove(`${path}/${encodeURIComponent(id)}`);
+      update(previous => previous?.map(task => task.id === id ? { ...task, status: 'cancelled' } : task));
+    });
+  }
+
+  const upcoming = schedules?.filter(task => canCancelSchedule(task.status) || isSubagentActive(task.status)) ?? [];
+  const history = schedules?.filter(task => !canCancelSchedule(task.status) && !isSubagentActive(task.status)) ?? [];
+
+  return <section className="task-sidebar-section" aria-labelledby={heading}>
+    <header className="task-sidebar-heading">
+      <h3 id={heading}><CalendarClock size={16} aria-hidden="true"/>定时任务</h3>
+      <div className="task-sidebar-actions">
+        <button type="button" className="button ghost" ref={createButton} aria-expanded={creating} aria-controls={formId}
+          disabled={busy || !canSchedule} title={canSchedule ? undefined : '当前会话无法安排新任务'} onClick={() => { setCreating(value => !value); setActionError(''); }}>
+          <Plus size={15} aria-hidden="true"/>新建
+        </button>
+        <RefreshButton label="刷新定时任务" onClick={refresh}/>
+      </div>
+    </header>
+    <ReadError error={error} hasValue={!!schedules}/>
+    <ErrorNotice message={actionError}/>
+    <div id={formId} hidden={!creating}>
+      <form className="task-sidebar-form" onSubmit={schedule}>
+        <Field label="任务内容"><textarea ref={textInput} value={text} onChange={event => setText(event.target.value)} required maxLength={50000} rows={2}/></Field>
+        <Field label="执行时间（本地时间）"><input value={when} onChange={event => setWhen(event.target.value)} type="datetime-local" required/></Field>
+        <p className="task-sidebar-muted">到期后进入会话队列，仅执行一次文字任务。</p>
         <Button type="submit" busy={busy} disabled={!text.trim() || !when}>设定时间</Button>
       </form>
-      <ul>{schedules?.map(item => <li key={item.id}>
-        <span>{item.text} <small>{timeText(item.scheduled_at)} · {statusText[item.status] || item.status}</small></span>
-        {item.error && <small>{item.error}</small>}
-        {(item.status === 'scheduled' || item.status === 'pending') && <Button variant="ghost" disabled={busy} onClick={() => void act(async () => {
-          await remove(`${schedulePath}/${encodeURIComponent(item.id)}`);
-          setSchedules(await api<Schedule[]>(schedulePath));
-        })}>撤销</Button>}
-      </li>)}</ul>
-    </section>
-  </div>;
+    </div>
+    {!schedules && !error && <p className="task-sidebar-muted" role="status">正在读取定时任务…</p>}
+    {schedules?.length === 0 && <p className="task-sidebar-empty">暂无定时任务。<br/>可安排一条消息在指定时间执行。</p>}
+    {!!upcoming.length && <ul className="task-sidebar-list">
+      {upcoming.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel}/>)}
+    </ul>}
+    {!!history.length && <details className="task-sidebar-history">
+      <summary tabIndex={0}><ChevronRight size={15} aria-hidden="true"/>历史定时任务 <small>{history.length} 条</small></summary>
+      <ul className="task-sidebar-list">
+        {history.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel}/>)}
+      </ul>
+    </details>}
+  </section>;
 }
 
-function selectedPlan(snapshot: SubagentPlan, runId: string) {
-  if (snapshot?.plan_id !== runId) throw new Error('未读到所选轮次的子任务。');
-  return snapshot;
+function checkedPlan(plan: SubagentPlan, runId: string) {
+  if (plan?.plan_id !== runId || !Array.isArray(plan.children)) throw new Error('未读到所选轮次的子任务。');
+  return plan;
 }
 
-function ConversationTaskPlan({ runId, canDelegate, onSummarize }: { runId: string; canDelegate: boolean; onSummarize: ConversationTasksProps['onSummarize'] }) {
-  const [plan, setPlan] = useState<SubagentPlan | null>(null);
-  const [stale, setStale] = useState(false);
-  const [attempt, setAttempt] = useState(0);
+const planPath = (runId: string) => `/runs/${encodeURIComponent(runId)}/subagents`;
+async function readPlan(path: string, signal: AbortSignal) {
+  const runId = decodeURIComponent(path.split('/')[2]);
+  return checkedPlan(await fetchTask<SubagentPlan>(path, signal), runId);
+}
+
+const activePlanInterval = (plan: SubagentPlan) => plan.children.some(child => isSubagentActive(child.status)) ? 3000 : undefined;
+const currentPlanInterval = (plan: SubagentPlan) => plan.children.length ? activePlanInterval(plan) : 5000;
+
+function usePlan(runId: string | undefined, canDelegate = false, enabled = true) {
+  return useTaskRead<SubagentPlan>(runId ? planPath(runId) : undefined, {
+    enabled, read: readPlan, nextRead: canDelegate ? currentPlanInterval : activePlanInterval,
+  });
+}
+
+type PlanActionsProps = {
+  runId: string;
+  plan: SubagentPlan;
+  canDelegate: boolean;
+  onSummarize: ConversationTasksProps['onSummarize'];
+  onChange: (next?: SubagentPlan) => void;
+};
+
+function PlanActions({ runId, plan, canDelegate, onSummarize, onChange }: PlanActionsProps) {
+  const formId = useId();
+  const [creating, setCreating] = useState(false);
   const [delegatedText, setDelegatedText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const reading = useRef<AbortController | null>(null);
-  const path = `/runs/${encodeURIComponent(runId)}/subagents`;
+  const input = useRef<HTMLTextAreaElement>(null);
   const tasks = delegatedText.split('\n').map(task => task.trim()).filter(Boolean);
-  const completed = plan?.children.flatMap((child, index) => child.status === 'succeeded' && typeof child.result?.output === 'string' && child.result.output.trim()
-    ? [`${subagentTitle(child, index)}\n${child.result.output}`] : []) ?? [];
+  const validTasks = tasks.length > 0 && tasks.length <= 4 && tasks.every(task => task.length <= 2000);
+  const canCancel = plan.children.some(child => isSubagentActive(child.status) && child.status !== 'cancelling');
+  const completed = plan.children.flatMap((child, index) => {
+    const output = child.result?.output;
+    return child.status === 'succeeded' && typeof output === 'string' && output.trim() ? [`${subagentTitle(child, index)}\n${output}`] : [];
+  });
 
-  useEffect(() => {
-    if (busy) return;
-    const controller = new AbortController();
-    reading.current = controller;
-    const { signal } = controller;
-    let timer: ReturnType<typeof setTimeout>;
-    async function refresh() {
-      try {
-        const snapshot = selectedPlan(await api<SubagentPlan>(path, { signal, cache: 'no-store' }), runId);
-        if (signal.aborted) return;
-        setPlan(snapshot);
-        setStale(false);
-      } catch (failure) {
-        if (signal.aborted) return;
-        if (!transientReadError(failure)) setPlan(null);
-        setStale(true);
-      } finally {
-        if (!signal.aborted) timer = setTimeout(refresh, refreshInterval);
-      }
-    }
-    void refresh();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [path, runId, attempt, busy]);
-
-  function retry() {
-    reading.current?.abort();
-    setAttempt(value => value + 1);
-  }
+  useEffect(() => { if (creating && canDelegate) input.current?.focus(); }, [creating, canDelegate]);
 
   async function changePlan(action: 'start' | 'cancel') {
-    reading.current?.abort();
+    if (busy || (action === 'start' && (!canDelegate || !validTasks)) || (action === 'cancel' && !canCancel)) return;
     setBusy(true);
     setError('');
+    let next: SubagentPlan | undefined;
     try {
-      const start = action === 'start';
-      const response = start ? await post<SubagentPlan>(path, { mode: 'harness', tasks }) : await post<SubagentPlan>(`${path}/cancel`);
-      const next = selectedPlan(response, runId);
-      // The mutation response may omit titles that are available on the GET route.
-      setPlan(previous => ({ ...next, children: next.children.map(child => ({
-        ...child, display_title: child.display_title ?? previous?.children.find(item => item.child_id === child.child_id)?.display_title,
-      })) }));
-      setStale(false);
-      if (start) setDelegatedText('');
-    } catch (failure) {
-      setError(errorText(failure));
-    } finally {
-      setBusy(false);
-    }
+      const path = planPath(runId);
+      next = checkedPlan(action === 'start'
+        ? await post<SubagentPlan>(path, { mode: 'harness', tasks })
+        : await post<SubagentPlan>(`${path}/cancel`), runId);
+      if (action === 'start') {
+        setCreating(false);
+        setDelegatedText('');
+      }
+    } catch (failure) { setError(errorText(failure)); }
+    finally { setBusy(false); onChange(next); }
   }
 
-  const hasChildren = !!plan?.children.length;
-  const canCancel = plan?.children.some(child => isSubagentActive(child.status));
+  const showCreate = canDelegate && !plan.children.length;
   return <>
-    {plan && hasChildren ? <SubagentProgress plan={plan} stale={stale} onRetry={retry}/> : <>
-      <h3>子任务</h3>
-      {stale ? <div className="conversation-task-actions">
-        <p role="status">暂未读到子任务进度。</p>
-        <Button variant="ghost" onClick={retry}>重新读取</Button>
-      </div> : <p role="status">{plan ? '这一轮暂无子任务。' : '正在读取子任务…'}</p>}
-    </>}
     <ErrorNotice message={error}/>
-    {(completed.length > 0 || canCancel) && <div className="conversation-task-actions">
+    {(completed.length > 0 || canCancel || showCreate) && <div className="task-sidebar-actions">
       {!!completed.length && <Button variant="secondary" onClick={() => onSummarize(completed.join('\n\n'))}>用结果起草汇总</Button>}
       {canCancel && <Button variant="secondary" busy={busy} onClick={() => void changePlan('cancel')}>取消子任务</Button>}
+      {showCreate && <Button variant="ghost" aria-expanded={creating} aria-controls={formId} onClick={() => setCreating(value => !value)}>
+        <Plus size={15} aria-hidden="true"/>分配子任务
+      </Button>}
     </div>}
-    {canDelegate && !hasChildren && <form onSubmit={event => { event.preventDefault(); void changePlan('start'); }}>
-      <Field label="分配文字分析"><textarea value={delegatedText} onChange={event => setDelegatedText(event.target.value)} placeholder="每行一个任务，最多四项" rows={2} maxLength={8004}/></Field>
-      <Button type="submit" variant="secondary" busy={busy} disabled={!tasks.length || tasks.length > 4 || tasks.some(task => task.length > 2000)}>启动子任务</Button>
-    </form>}
+    {showCreate && <div id={formId} hidden={!creating}>
+      <form className="task-sidebar-form" onSubmit={event => { event.preventDefault(); void changePlan('start'); }}>
+        <Field label="分配文字分析"><textarea ref={input} value={delegatedText} onChange={event => setDelegatedText(event.target.value)}
+          placeholder="每行一项，最多四项" rows={2} maxLength={8004}/></Field>
+        <Button type="submit" variant="secondary" busy={busy} disabled={!validTasks}>启动子任务</Button>
+      </form>
+    </div>}
   </>;
+}
+
+function ChildRows({ plan, onSelect }: { plan: SubagentPlan; onSelect: SelectChild }) {
+  if (!plan.children.length) return null;
+  return <ul className="task-sidebar-list">
+    {plan.children.map((child, index) => {
+      const { icon: Icon, label, tone } = subagentStatus(child.status);
+      return <li key={child.child_id}>
+        <button type="button" className="task-sidebar-child-row" onClick={event => onSelect({ plan, childId: child.child_id }, event.currentTarget)}>
+          <Icon className="subagent-progress-status-icon" data-tone={tone} size={16} aria-hidden="true"/>
+          <span>{subagentTitle(child, index)}</span>
+          <small>{label}</small><ChevronRight size={15} aria-hidden="true"/>
+        </button>
+      </li>;
+    })}
+  </ul>;
+}
+
+type SubagentTasksProps = Pick<ConversationTasksProps, 'runId' | 'canDelegate' | 'onSummarize'> & {
+  path: string;
+  visible: boolean;
+  heading: string;
+  onSelect: SelectChild;
+};
+
+function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading, onSelect }: SubagentTasksProps) {
+  const history = useTaskRead<PlanRun[]>(path, { refreshKey: runId, enabled: visible });
+  const current = usePlan(runId, canDelegate, visible);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [chosenRun, setChosenRun] = useState('');
+  const pastRuns = history.value?.filter(item => item.id !== runId) ?? [];
+  const pastRunId = pastRuns.find(item => item.id === chosenRun)?.id ?? pastRuns[0]?.id;
+  const past = usePlan(historyOpen ? pastRunId : undefined, false, visible);
+
+  function refresh() {
+    history.refresh();
+    current.refresh();
+    past.refresh();
+  }
+
+  function planChanged(target: typeof current, next?: SubagentPlan) {
+    if (next) target.update(previous => ({
+      ...next,
+      children: next.children.map(child => ({
+        ...child, display_title: child.display_title ?? previous?.children.find(item => item.child_id === child.child_id)?.display_title,
+      })),
+    }));
+    target.refresh();
+    history.refresh();
+  }
+
+  return <section className="task-sidebar-section" aria-labelledby={heading}>
+    <header className="task-sidebar-heading">
+      <h3 id={heading} tabIndex={-1}><GitFork size={16} aria-hidden="true"/>子任务</h3>
+      <RefreshButton label="刷新子任务" onClick={refresh}/>
+    </header>
+    <ReadError error={history.error} hasValue={!!history.value}/>
+    <ReadError error={current.error} hasValue={!!current.value}/>
+    {((runId && !current.value && !current.error) || (!runId && !history.value && !history.error)) &&
+      <p className="task-sidebar-muted" role="status">正在读取子任务…</p>}
+    {(current.value?.children.length === 0 || (!runId && history.value && !pastRuns.length)) &&
+      <p className="task-sidebar-empty">
+        {runId ? '当前轮次暂无子任务。' : '暂无子任务。'}
+        {!pastRuns.length && !canDelegate && <><br/>助手分派后会显示在这里。</>}
+      </p>}
+    {current.value && runId && <>
+      <ChildRows plan={current.value} onSelect={onSelect}/>
+      <PlanActions key={runId} runId={runId} plan={current.value} canDelegate={canDelegate && !current.error}
+        onSummarize={onSummarize} onChange={next => planChanged(current, next)}/>
+    </>}
+    {pastRunId && <details className="task-sidebar-history" open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}>
+      <summary tabIndex={0}><ChevronRight size={15} aria-hidden="true"/>历史子任务 <small>{pastRuns.length} 轮</small></summary>
+      {historyOpen && <>
+        {pastRuns.length > 1 ? <Field label="查看轮次">
+          <select value={pastRunId} onChange={event => setChosenRun(event.target.value)}>
+            {pastRuns.map(item => <option key={item.id} value={item.id}>{timeText(item.created_at)} · {statusLabel(item.status)}</option>)}
+          </select>
+        </Field> : <p className="task-sidebar-muted">{timeText(pastRuns[0].created_at)} · {statusLabel(pastRuns[0].status)}</p>}
+        <ReadError error={past.error} hasValue={!!past.value}/>
+        {!past.value && !past.error && <p className="task-sidebar-muted" role="status">正在读取本轮子任务…</p>}
+        {past.value && <>
+          <ChildRows plan={past.value} onSelect={onSelect}/>
+          {!past.value.children.length && <p className="task-sidebar-muted">本轮没有可查看的子任务。</p>}
+          <PlanActions key={pastRunId} runId={pastRunId} plan={past.value} canDelegate={false}
+            onSummarize={onSummarize} onChange={next => planChanged(past, next)}/>
+        </>}
+      </>}
+    </details>}
+  </section>;
+}
+
+type TraceApproval = {
+  id: string;
+  subagent_child_id?: string | null;
+  tool_name?: string;
+  status?: string;
+  created_at?: string;
+  decided_at?: string | null;
+};
+type TaskTrace = { run: { id: string; approvals?: TraceApproval[] }; events: StreamEvent[] };
+type TaskRecord = { id: string; name?: string; status: string; at?: string };
+
+const publicString = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : undefined;
+const approvalStatuses = new Map([['pending', '等待审批'], ['allowed', '已允许'], ['denied', '已拒绝'], ['expired', '已过期']]);
+const approvalDecisions = new Map([['timeout', '已过期'], ['parent_cancelled', '已取消'], ['cancelled', '已取消']]);
+
+type ChildRecords = { tools: TaskRecord[]; approvals: TaskRecord[] };
+export function childTaskRecords(trace: TaskTrace, childId: string, known?: ChildRecords): ChildRecords {
+  const tools = new Map(known?.tools.map(record => [record.id, record]));
+  const approvals = new Map(known?.approvals.map(record => [record.id, record]));
+  for (const approval of trace.run.approvals ?? []) {
+    if (approval.subagent_child_id !== childId) continue;
+    approvals.set(approval.id, {
+      id: approval.id, name: publicString(approval.tool_name), at: approval.decided_at || approval.created_at,
+      status: approvalStatuses.get(approval.status ?? '') ?? '状态未确认',
+    });
+  }
+  for (const event of trace.events) {
+    if (event.run_id !== trace.run.id || !event.data) continue;
+    const { data, type } = event;
+    if ((data.subagent_child_id ?? data.child_id) !== childId || (data.plan_id && data.plan_id !== trace.run.id)) continue;
+    if (['tool.started', 'tool.dispatched', 'tool.completed', 'tool.discarded'].includes(type)) {
+      const id = publicString(data.tool_call_id) ?? String(event.id);
+      const name = publicString(data.tool_name) ?? tools.get(id)?.name;
+      const status = type === 'tool.completed'
+        ? data.success === true ? '调用成功' : data.success === false ? '调用失败' : '结果未确认'
+        : type === 'tool.discarded' ? '结果未交付' : type === 'tool.dispatched' ? '已派发' : '已发起';
+      tools.set(id, { id, name, status, at: event.created_at });
+    }
+    if (['subagent.approval.required', 'subagent.approval.denied', 'subagent.approval.resolved'].includes(type)) {
+      const id = publicString(data.approval_id);
+      if (!id) continue;
+      const previous = approvals.get(id);
+      const request = data.approval as TraceApproval | undefined;
+      const name = previous?.name ?? publicString(request?.tool_name);
+      const ended = approvalDecisions.get(publicString(data.decision_source) ?? '');
+      const decision = data.decision === 'allow' ? '已允许' : data.decision === 'deny' || type === 'subagent.approval.denied' ? '已拒绝' : '状态未确认';
+      const status = type === 'subagent.approval.required' ? '等待审批' : ended ?? decision;
+      approvals.set(id, { id, name, status, at: publicString(data.decision_at) ?? event.created_at });
+    }
+  }
+  return { tools: [...tools.values()], approvals: [...approvals.values()] };
+}
+
+async function readTrace(path: string, signal: AbortSignal) {
+  const trace = await fetchTask<TaskTrace>(path, signal);
+  if (trace?.run?.id !== decodeURIComponent(path.split('/')[2]) || !Array.isArray(trace.events)) throw new Error('未读到本轮公开记录。');
+  return trace;
+}
+
+function RecordList({ rows, fallback }: { rows: TaskRecord[]; fallback: string }) {
+  return <ul className="task-sidebar-list">
+    {rows.map(record => <li className="task-sidebar-record" key={record.id}>
+      <span>{record.name ? toolLabel(record.name) : fallback}</span>
+      <small>{record.status}
+        {record.at && Number.isFinite(Date.parse(record.at)) && <> · <time dateTime={record.at}>{timeText(record.at)}</time></>}
+      </small>
+    </li>)}
+  </ul>;
+}
+
+function ChildTaskDetail({ selection, events, onBack }: { selection: ChildSelection; events?: StreamEvent[]; onBack: () => void }) {
+  const heading = useId();
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const { plan_id: runId } = selection.plan;
+  const plan = usePlan(runId);
+  const children = plan.value?.children ?? (plan.accessLost ? [] : selection.plan.children);
+  const index = children.findIndex(task => task.child_id === selection.childId);
+  const child: SubagentChild | undefined = children[index];
+  const readRecords = useCallback(async (path: string, signal: AbortSignal) => {
+    const trace = await readTrace(path, signal);
+    return { through: trace.events.reduce((max, event) => Math.max(max, event.id), 0), records: childTaskRecords(trace, selection.childId) };
+  }, [selection.childId]);
+  const trace = useTaskRead(`/runs/${encodeURIComponent(runId)}/trace`, {
+    enabled: Boolean(child), read: readRecords, refreshKey: child?.status,
+  });
+  const records = useMemo(() => {
+    if (!child || !trace.value) return null;
+    const { through, records: saved } = trace.value;
+    const recent = events?.filter(event => event.run_id === runId && event.id > through);
+    return recent?.length ? childTaskRecords({ run: { id: runId }, events: recent }, child.child_id, saved) : saved;
+  }, [child, events, runId, trace.value]);
+  const status = child && subagentStatus(child.status);
+  const Icon = status?.icon;
+
+  useEffect(() => { titleRef.current?.focus(); }, []);
+
+  return <section className="task-sidebar-detail" aria-labelledby={heading} onKeyDown={event => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onBack();
+  }}>
+    <header className="task-sidebar-heading">
+      <Button variant="ghost" onClick={onBack}><ArrowLeft size={16} aria-hidden="true"/>返回任务列表</Button>
+      <RefreshButton label="刷新子任务详情" onClick={() => { plan.refresh(); trace.refresh(); }}/>
+    </header>
+    <h3 id={heading} ref={titleRef} tabIndex={-1}>{child ? subagentTitle(child, index) : '子任务详情'}</h3>
+    {status && Icon && <p className="task-sidebar-detail-status" role="status">
+      <Icon className="subagent-progress-status-icon" data-tone={status.tone} size={16} aria-hidden="true"/>{status.label}
+    </p>}
+    <ReadError error={plan.error} hasValue={!!child}/>
+    {child ? <div className="task-sidebar-detail-block">
+      <h4>结果</h4>
+      <SubagentResult child={child}/>
+    </div> : <p className="task-sidebar-muted">找不到这项子任务。</p>}
+    {child && <ReadError error={trace.error} hasValue={!!records}/>}
+    {child && !records && !trace.error && <p className="task-sidebar-muted" role="status">正在读取工具与审批记录…</p>}
+    {records && <>
+      <div className="task-sidebar-detail-block">
+        <h4>工具调用</h4>
+        {records.tools.length ? <RecordList rows={records.tools} fallback="工具调用"/> : <p className="task-sidebar-muted">没有公开的工具调用记录。</p>}
+      </div>
+      <div className="task-sidebar-detail-block">
+        <h4>审批记录</h4>
+        {records.approvals.length ? <RecordList rows={records.approvals} fallback="子任务审批"/> : <p className="task-sidebar-muted">没有公开的审批记录。</p>}
+      </div>
+    </>}
+  </section>;
+}
+
+function ConversationTaskBody({ conversationId, runId, canDelegate, canSchedule = true, events, onSummarize }: ConversationTasksProps) {
+  const heading = useId();
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const [selection, setSelection] = useState<ChildSelection | null>(null);
+  const path = `/conversations/${encodeURIComponent(conversationId)}`;
+
+  useEffect(() => {
+    if (selection || !trigger.current) return;
+    const fallback = root.current?.querySelector<HTMLElement>('.task-sidebar-section h3[tabindex="-1"]');
+    (trigger.current.isConnected ? trigger.current : fallback)?.focus();
+    trigger.current = null;
+  }, [selection]);
+
+  return <div className="conversation-task-sidebar" ref={root}>
+    <div hidden={!!selection}>
+      <ScheduledTasks canSchedule={canSchedule} path={`${path}/schedules`} visible={!selection}/>
+      <SubagentTasks path={`${path}/subagent-plans`} runId={runId} canDelegate={canDelegate} onSummarize={onSummarize}
+        heading={heading} visible={!selection} onSelect={(child, button) => { trigger.current = button; setSelection(child); }}/>
+    </div>
+    {selection && <ChildTaskDetail events={events} selection={selection} onBack={() => setSelection(null)}/>}
+  </div>;
+}
+
+export default function ConversationTasks(props: ConversationTasksProps) {
+  return <ConversationTaskBody key={props.conversationId} {...props}/>;
 }

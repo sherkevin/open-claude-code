@@ -159,20 +159,12 @@ ul.subagent-progress-children > li {
 .subagent-progress-result .markdown { color: inherit; font-size: 14px; }
 .subagent-progress-result .markdown table { display: table; width: 100%; }
 .subagent-progress-result .markdown :is(th, td) { min-width: 80px; }
-.conversation-tasks .subagent-progress-result .markdown li { display: list-item; }
 
 .subagent-progress-result > pre {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 13px;
-}
-
-.conversation-task-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
 }
 
 @media (max-width: 480px) {

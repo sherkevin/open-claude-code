@@ -73,18 +73,29 @@ def test_parent_cancel_cascades_and_recovery_does_not_replay(tmp_path):
     app = create_app(Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",)), runtime_factory=FakeRuntime)
     with TestClient(app):
         service, user, run = make_parent(app)
-        service.subagents.child_timeout_seconds = 1
-        service.subagents.create_plan(run["run_id"], user["id"], [{"task": "slow", "behavior": "delay"}, "fast"])
+        service.subagents.child_timeout_seconds = 30
+        service.subagents.create_plan(run["run_id"], user["id"], ["slow", "fast"])
+        execute = service.subagents.executor
 
         async def cancel_during_run():
+            started = asyncio.Event()
+
+            async def paused_executor(child, task):
+                if task["task"] == "slow":
+                    started.set()
+                    await asyncio.Future()
+                return await execute(child, task)
+
+            service.subagents.executor = paused_executor
             running = asyncio.create_task(service.subagents.run_plan(run["run_id"], user["id"]))
-            await asyncio.sleep(0.03)
+            await asyncio.wait_for(started.wait(), 10)
             await service.subagents.cancel_plan(run["run_id"], user["id"])
             await running
 
         asyncio.run(cancel_during_run())
         rows = service.db.all("SELECT status FROM subagent_children WHERE parent_run_id=?", (run["run_id"],))
         assert all(row["status"] in {"cancelled", "succeeded"} for row in rows)
+        assert any(row["status"] == "cancelled" for row in rows)
         before = service.db.all("SELECT child_id,status FROM subagent_children WHERE parent_run_id=?", (run["run_id"],))
         event_count = len(service.db.events(run["run_id"], 0))
         asyncio.run(service.subagents.cancel_plan(run["run_id"], user["id"]))

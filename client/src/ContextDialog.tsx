@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Gauge, Minimize2, RefreshCw } from 'lucide-react';
 import { api, ApiError, clientRequestId, errorText, post, timeText } from './api';
-import { Button, ErrorNotice, Field, Loader, Modal } from './components';
+import { Button, ErrorNotice, Field, Loader } from './components';
 import type { Message, ModelOption, NativeContext, Run } from './types';
 import { compactionStatusLabel } from './display';
 import { publicModelLabel } from './models';
@@ -68,7 +68,17 @@ export function ContextSummary({ context, models }: { context: NativeContext | n
   </>;
 }
 
-export default function ContextDialog({ conversationId, models, busy, run, onClose, onCompact }: { conversationId: string; models: ModelOption[]; busy: boolean; run: Run | null; onClose: () => void; onCompact: (result: { message: Message; run_id: string }) => void }) {
+export interface ContextControls {
+  models: ModelOption[];
+  busy: boolean;
+  run: Run | null;
+  onCompact: (result: { message: Message; run_id: string }) => void;
+}
+
+export function ContextContent({ conversationId, models, busy, run, onCompact, onCompacting }: ContextControls & {
+  conversationId: string;
+  onCompacting: (value: boolean) => void;
+}) {
   const [context, setContext] = useState<NativeContext | null>(null); const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false); const [compacting, setCompacting] = useState(false); const [instructions, setInstructions] = useState(''); const [error, setError] = useState('');
   const mounted = useRef(true); const request = useRef<{ instructions: string; id: string } | null>(null);
@@ -108,15 +118,15 @@ export default function ContextDialog({ conversationId, models, busy, run, onClo
     if (busy || compacting || refreshing || !contextCanCompact(context)) return;
     const trimmed = instructions.trim();
     if (!request.current || request.current.instructions !== trimmed) request.current = { instructions: trimmed, id: clientRequestId() };
-    setError(''); setCompacting(true);
+    setError(''); setCompacting(true); onCompacting(true);
     try { const result = await post<{ message: Message; run_id: string }>(`${endpoint}/compact`, { client_request_id: request.current.id, ...(trimmed ? { instructions: trimmed } : {}) }); if (mounted.current) onCompact(result); }
-    catch (e) { if (mounted.current) handleError(e); } finally { if (mounted.current) setCompacting(false); }
+    catch (e) { if (mounted.current) handleError(e); } finally { if (mounted.current) { setCompacting(false); onCompacting(false); } }
   };
   const number = contextNumber;
   const locked = busy || refreshing || compacting;
   const harness = context?.source === 'harness_token_meter';
   const canCompact = contextCanCompact(context);
-  return <Modal title="上下文" description="查看此对话的上下文记录，区分原生统计、估算和未知值。" onClose={() => { if (!compacting) onClose(); }} wide><div className="modal-body"><ErrorNotice message={error}/>
+  return <div className="modal-body"><ErrorNotice message={error}/>
     {loading ? <Loader text="正在读取上下文状态…"/> : <>
       <ContextSummary context={context} models={models}/>
       <div className="context-refresh"><p>{!context ? '尚未读到上下文状态，可以重新读取。' : harness ? '只读取本地官方统计，不发送新提示、不调用模型。短时间重复刷新复用缓存；读取时间不是供应商样本时间。' : '未知统计不会推算成占用百分比。手动刷新可能向模型服务发起计数请求；短时间重复刷新会复用缓存。'}</p><Button variant="secondary" busy={refreshing} disabled={busy || compacting} onClick={() => void refresh()}><RefreshCw size={15}/>{!context ? '重新读取状态' : harness ? '刷新上下文估算' : '刷新原生统计'}</Button></div>
@@ -124,5 +134,5 @@ export default function ContextDialog({ conversationId, models, busy, run, onClo
       <section className="context-compaction"><h3>手动原生压缩</h3>{canCompact ? <><p>交给运行时整理当前会话上下文。此操作可能产生模型用量，历史聊天记录和附件仍会保留。</p><Field label="保留重点（可选）" hint="例如需要继续追踪的目标、已确认结论或待办事项。"><textarea rows={3} value={instructions} onChange={event => setInstructions(event.target.value)} disabled={locked} maxLength={2000} placeholder="希望压缩后继续保留哪些重要信息？"/></Field>{busy && <p className="context-busy-note">对话正在执行或等待审批，结束后才能刷新或压缩。</p>}<Button busy={compacting} disabled={busy || refreshing} onClick={() => void compact()}><Minimize2 size={15}/>开始原生压缩</Button></> : <p>{harness ? '此会话还没有完成授权核验的原生历史，或当前任务仍在执行；完成一轮对话并空闲后再压缩。' : '尚未确认此会话的压缩能力，请刷新状态；当前不会启动整理或生成摘要。'}</p>}</section>
       <section className="context-recent"><h3>最近压缩记录</h3>{context?.last_compaction ? <><p>{compactionStatusLabel(context.last_compaction.status, context.last_compaction.followup_status)}{context.last_compaction.trigger === 'pressure' ? ' · 接近上限时自动整理' : context.last_compaction.trigger === 'context-overflow' ? ' · 超出上限后自动整理' : ''}</p><small>{timeText(context.last_compaction.created_at)}{context.last_compaction.pre_tokens != null ? ` · 压缩前 Token ${number(context.last_compaction.pre_tokens)}` : ''}{context.last_compaction.post_tokens != null ? ` · 压缩后 Token ${number(context.last_compaction.post_tokens)}` : ''}</small>{context.last_compaction.shadowed_items != null && <p>已将早期的 {context.last_compaction.shadowed_items} 项上下文整理成摘要。</p>}{context.last_compaction.error && <p>{context.last_compaction.error}</p>}</> : run?.kind === 'compact' ? <p>{compactionLabel(run)}</p> : <p>没有已记录的原生压缩结果。</p>}</section>
     </>}
-  </div><footer className="modal-footer"><Button variant="secondary" disabled={compacting} onClick={onClose}>关闭</Button></footer></Modal>;
+  </div>;
 }

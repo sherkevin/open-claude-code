@@ -1,13 +1,13 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BookOpen, Archive, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Circle, Clock3, Download, FileText, Gauge, ListTree, LoaderCircle, Minimize2, Paperclip, Pencil, Radio, ShieldCheck, Sparkles, Square, X, XCircle } from 'lucide-react';
+import { BookOpen, Archive, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronDown, Circle, Clock3, Download, FileText, PanelRightClose, PanelRightOpen, ListTree, LoaderCircle, Minimize2, Paperclip, Pencil, Radio, ShieldCheck, Sparkles, Square, X, XCircle } from 'lucide-react';
 import { api, API_BASE, ApiError, chatMessagePayload, clientRequestId, errorText, fileURL, patch, post, remove, sendChatMessage, timeText } from './api';
 import { configAllows, type AppConfig, type Approval, type Assistant, type Conversation, type Message, type ModelOption, type ModelRecommendation, type ModelSelection, type Run, type RunStatus, type Skill, type StoredFile, type StreamEvent } from './types';
 import { isActive, statusLabels } from './types';
 import { appendEvent, eventTypes, pendingApprovalIds, streamText } from './stream';
 import { Attachment, Button, ErrorNotice, Field, FileChip, FilePreview, Loader, Modal } from './components';
 import { compactionStatus, compactionStatusLabel, toolLabel } from './display';
-import ContextDialog, { compactionLabel } from './ContextDialog';
-import SessionTrajectory from './SessionTrajectory';
+import { compactionLabel } from './ContextDialog';
+import SessionTrajectory, { type InspectionView } from './SessionTrajectory';
 import ConversationExport from './ConversationExport';
 import ModelSelector from './ModelSelector';
 import { ModelRoutingControl, ModelSettingsDisclosure, RunModelIdentity } from './ModelRouting';
@@ -31,6 +31,7 @@ import { pendingRun, retryRead, transientReadError } from './runReadback';
 import RunOutcome from './RunOutcome';
 import RunInteractions from './RunInteractions';
 import ConversationTasks from './ConversationTasks';
+import ConversationSidebar, { useConversationSidebar } from './ConversationSidebar';
 import InlineSubagentRun from './InlineSubagentRun';
 import ComposerReferences from './ComposerReferences';
 import { readChatHistory, useChatHistory } from './chatHistory';
@@ -91,9 +92,9 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const { messages } = history.page;
   const [run, setRun] = useState<Run | null>(null); const [events, setEvents] = useState<StreamEvent[]>([]);
   const [archived,setArchived]=useState(conversation.archived);const [restoring,setRestoring]=useState(false);
-  const [showContext, setShowContext] = useState(false);
-  const [showTrajectory,setShowTrajectory]=useState(false);
-  const [showTasks,setShowTasks]=useState(false);
+  const [inspectionView, setInspectionView] = useState<InspectionView | null>(null);
+  const showContext = inspectionView === 'context';
+  const sidebar = useConversationSidebar();
   const [forkBoundary, setForkBoundary] = useState<string>();
   const [showReferences,setShowReferences]=useState(false);
   const [skills, setSkills] = useState<Skill[]>([]); const [skillQuery, setSkillQuery] = useState<string|null>(null);const [skillHighlight,setSkillHighlight]=useState(0); const mention = useRef<ReturnType<typeof mentionQuery>>(null); const [runStage,setRunStage]=useState('');
@@ -385,9 +386,9 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     insertReference(`「${file.name}」 `);
   };
   const commands = [
-    ...(canUseContext ? [{ name: '/上下文', alias: '/context', open: () => setShowContext(true) }] : []),
+    ...(canUseContext ? [{ name: '/上下文', alias: '/context', open: () => setInspectionView('context') }] : []),
     { name: '/引用', alias: '/reference', open: openReferences },
-    { name: '/计划任务', alias: '/schedule', open: () => setShowTasks(true) },
+    ...(!trial ? [{ name: '/计划任务', alias: '/schedule', open: () => sidebar.setOpen(true) }] : []),
   ];
   const slash = !trial && /^\/[^\s/]*$/.test(input) && !sending && !archived
     ? commands.filter(command => command.name.startsWith(input) || command.alias.startsWith(input.toLowerCase())) : [];
@@ -647,7 +648,26 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     finally { if (mounted.current) setSavingModel(false); }
   };
   const openRecommendation = () => { const summary = fitnessTaskSummary(input,messages,assistant?.description||''); setRecommendSummary(summary); setRecommendation(null); setRecommendOpen(true); void recommend(summary); };
-  return <div className="chat-page"><header className="chat-header"><div className="chat-heading"><AiIdentity active={aiWorking}/><div><h1>{title || '新会话'}</h1><span>{assistant?.name || '业务助手'}{active && <><i/> {statusLabels[run.status]}</>}</span></div></div><div className="chat-actions">{!trial&&<button type="button" className="icon-button" title="计划与子任务" aria-label="计划与子任务" onClick={()=>setShowTasks(true)}><Clock3 size={17}/></button>}{!trial&&<ConversationExport conversationId={conversation.id}/>}{!trial&&<button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={()=>setShowTrajectory(true)}><ListTree size={17}/></button>}{!trial&&<button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={()=>setShowMemory(true)}><BookOpen size={17}/></button>}<button className="icon-button" title="重命名会话" aria-label="重命名会话" onClick={() => { setTitleDraft(title); setRename(true); }}><Pencil size={16}/></button>{canUseContext&&<button type="button" className="icon-button" title="上下文" aria-label="上下文" disabled={savingModel || loading} onClick={() => setShowContext(true)}><Gauge size={17}/></button>}<button className="icon-button" title="归档会话" aria-label="归档会话" disabled={active} onClick={() => setArchive(true)}><Archive size={17}/></button></div></header>
+  return <div className="chat-page">
+    <header className="chat-header">
+      <div className="chat-heading"><AiIdentity active={aiWorking}/><div>
+        <h1>{title || '新会话'}</h1><span>{assistant?.name || '业务助手'}{active && <><i/> {statusLabels[run.status]}</>}</span>
+      </div></div>
+      <div className="chat-actions">
+        {!trial && <>
+          <ConversationExport conversationId={conversation.id}/>
+          <button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={() => setInspectionView('trajectory')}><ListTree size={17}/></button>
+          <button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={() => setShowMemory(true)}><BookOpen size={17}/></button>
+        </>}
+        <button className="icon-button" title="重命名会话" aria-label="重命名会话" onClick={() => { setTitleDraft(title); setRename(true); }}><Pencil size={16}/></button>
+        <button className="icon-button" title="归档会话" aria-label="归档会话" disabled={active} onClick={() => setArchive(true)}><Archive size={17}/></button>
+        {!trial && <button type="button" className="icon-button" aria-label="会话侧栏"
+          title={sidebar.open ? '收起会话侧栏' : '展开会话侧栏'} aria-expanded={sidebar.open}
+          aria-controls={sidebar.open ? 'conversation-sidebar' : undefined} onClick={() => sidebar.setOpen(!sidebar.open)}>
+          {sidebar.open ? <PanelRightClose size={17}/> : <PanelRightOpen size={17}/>}
+        </button>}
+      </div>
+    </header>
     <div className="chat-proof-bar" aria-label="会话能力状态"><span><FileText size={14}/>业务会话</span><span>{assistant?.connections.length||0} 个已配置 MCP</span><span className="run-status-pill" data-state={run?.status || 'idle'}>{run?.status === 'succeeded' ? <CheckCircle2 size={14}/> : run?.status === 'failed' ? <XCircle size={14}/> : run?.status === 'awaiting_approval' ? <ShieldCheck size={14}/> : <Clock3 size={14}/>} {run?statusLabels[run.status]:'等待开始'}</span>{run&&<RunModelIdentity run={run} models={models}/>}{connectionState === 'reconnecting' && <strong>连接恢复中</strong>}</div>
     <div className="chat-layout"><section className="conversation-column"><div className="message-scroll" ref={scroll} onScroll={() => { const el = scroll.current; if (!el) return; shouldFollow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; setShowScroll(!shouldFollow.current); }}>
       {loading ? <Loader text="正在恢复会话…"/> : messages.length === 0 && !liveText && !showThinking ? <div className="chat-intro"><AiIdentity size="large"/><h2>向{assistant?.name || '业务助手'}提问</h2><p>{assistant?.description || '描述你的问题或目标，也可以上传相关资料。'}</p><div className="chat-intro-note"><ShieldCheck size={16}/>调用需审批的业务工具时，你会先看到操作内容。</div></div> : <div className="messages">{history.page.before && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('older')}>加载更早消息</Button></div>}{messages.filter(m => !(active && m.role === 'assistant' && m.run_id === run?.id) && (m.role !== 'assistant' || !!m.text || m.file_ids.length > 0 || historyResultIds.has(m.id))).map(message => {
@@ -678,7 +698,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       })}{history.page.after && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('newer')}>加载更新消息</Button></div>}{!history.page.after && showThinking && <div className="assistant-working" role="status">
         <AiIdentity size="inline"/><span>{assistant?.name || '助手'}正在处理</span>
         <span className="assistant-working-dots" aria-hidden="true"><i/><i/><i/></span>
-      </div>}{!history.page.after && showStream && <article className="message assistant"><div className="message-label"><AiIdentity size="inline"/>{assistant?.name || '助手'}{active && <span className="typing-indicator"><i/><i/><i/></span>}</div><div className="message-content"><AnswerMarkdown text={liveText} citations={liveCitations}/></div></article>}{!history.page.after&&run&&<BusinessResults events={events} runId={run.id} status={run.status} question={questionForRun(messages,run.id)}/>}{!history.page.after && active && <LiveActivity run={run} events={events} stage={runStage} connectionState={connectionState} inlineSubagents={!!liveSubagentQuestion}/>}<div className="compaction-message-container">{!history.page.after && run?.kind === 'compact' && <div className="compaction-message"><Minimize2 size={17}/><div><strong>{compactionLabel(run)}</strong><p>历史消息与附件仍保留，可在“上下文”中查看原生统计。</p></div></div>}</div>{!history.page.after && run && !active && ['failed', 'interrupted', 'cancelled'].includes(run.status) && <RunOutcome run={run} busy={retrying} disabled={retrying || sending || refreshingRun || !modelReady} onRetry={() => void retryLastMessage()} onAdjust={() => textInput.current?.focus()} onContext={() => setShowContext(true)}/>}{!history.page.after && !trial && artifacts.length > 0 && <div className="artifact-section"><span className="eyebrow">生成的文件</span><div className="attachment-row">{artifacts.map(file => <FileChip key={file.id} file={file} onPreview={() => setPreview(file)}/>)}</div></div>}</div>}
+      </div>}{!history.page.after && showStream && <article className="message assistant"><div className="message-label"><AiIdentity size="inline"/>{assistant?.name || '助手'}{active && <span className="typing-indicator"><i/><i/><i/></span>}</div><div className="message-content"><AnswerMarkdown text={liveText} citations={liveCitations}/></div></article>}{!history.page.after&&run&&<BusinessResults events={events} runId={run.id} status={run.status} question={questionForRun(messages,run.id)}/>}{!history.page.after && active && <LiveActivity run={run} events={events} stage={runStage} connectionState={connectionState} inlineSubagents={!!liveSubagentQuestion}/>}<div className="compaction-message-container">{!history.page.after && run?.kind === 'compact' && <div className="compaction-message"><Minimize2 size={17}/><div><strong>{compactionLabel(run)}</strong><p>历史消息与附件仍保留，可在“上下文”中查看原生统计。</p></div></div>}</div>{!history.page.after && run && !active && ['failed', 'interrupted', 'cancelled'].includes(run.status) && <RunOutcome run={run} busy={retrying} disabled={retrying || sending || refreshingRun || !modelReady} onRetry={() => void retryLastMessage()} onAdjust={() => textInput.current?.focus()} onContext={() => setInspectionView('context')}/>}{!history.page.after && !trial && artifacts.length > 0 && <div className="artifact-section"><span className="eyebrow">生成的文件</span><div className="attachment-row">{artifacts.map(file => <FileChip key={file.id} file={file} onPreview={() => setPreview(file)}/>)}</div></div>}</div>}
     </div>{(showScroll || history.page.after) && <button type="button" className="scroll-latest" disabled={history.reading} onClick={returnToLatest}><ArrowDown size={15}/>回到最新消息</button>}
     <div className="composer-area composer-refined">{archived&&<div className="archive-banner"><span>此会话已归档，恢复后可以继续工作。</span><Button variant="secondary" busy={restoring} onClick={async()=>{setRestoring(true);try{await patch(`/conversations/${conversation.id}`,{archived:false});setArchived(false);onChangedRef.current();}catch(e){setError(errorText(e));}finally{setRestoring(false);}}}>恢复会话</Button></div>}<ErrorNotice message={error} onDismiss={() => setError('')}/><ErrorNotice message={history.error}/>{readbackIssue && <div role="status" className="run-outcome"><p>{readbackIssue}</p><Button variant="secondary" busy={refreshingRun} onClick={() => retryReadback.current?.()}>重新读取任务结果</Button></div>}{modelReconnectRequired && <ModelRecovery currentAvailable={modelReady} busy={active || loading || sending || savingModel || uploading || showContext || refreshingRun} pending={savingModel} onReconnect={() => void changeModel(selection, true)}/>}{!trial && active && run && <RunInteractions key={run.id} runId={run.id}/>}<PendingApprovals conversationId={conversation.id} approvals={approvals} busyId={decisionBusy} onDecision={(approval,decision,digest)=>decide(approval,decision,digest)}/>
       <MessageQueue queue={queue}/>
@@ -771,19 +791,26 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     {showReferences && <ComposerReferences messages={messages} fileIds={canUseAttachments ? [...new Set(messages.flatMap(message => message.file_ids))] : []}
       onMessage={message => insertReference(`> ${message.text.trim().slice(0, 4000).replaceAll('\n', '\n> ')}\n\n`)}
       onFile={referenceFile} onClose={() => setShowReferences(false)}/>}
-    {showTasks&&<ConversationTasks conversationId={conversation.id} runId={run?.id} canDelegate={!!config.harness_subagents && canSteer} onSummarize={results => {
-      const summary = `请汇总以下子任务结果，并注明尚未验证的结论。\n\n${results}`;
-      const next = input.trim() ? `${input.trimEnd()}\n\n${summary}` : summary;
-      if (next.length > 50000) { setError('子任务结果无法加入当前草稿，输入会超过 50000 字。'); }
-      else fillDraft(next);
-      setShowTasks(false);
-      requestAnimationFrame(() => textInput.current?.focus());
-    }} onClose={()=>setShowTasks(false)}/>}
-    {showTrajectory&&<SessionTrajectory conversationId={conversation.id} title={title} onClose={()=>setShowTrajectory(false)}/>}
+    {!trial && sidebar.open && <ConversationSidebar docked={sidebar.docked} onClose={() => sidebar.setOpen(false)}>
+      <ConversationTasks conversationId={conversation.id} runId={active ? run?.id : undefined}
+        canDelegate={!!config.harness_subagents && canSteer} canSchedule={canSend && !archived} events={events}
+        onSummarize={results => {
+          const summary = `请汇总以下子任务结果，并注明尚未验证的结论。\n\n${results}`;
+          const next = input.trim() ? `${input.trimEnd()}\n\n${summary}` : summary;
+          if (next.length > 50000) setError('子任务结果无法加入当前草稿，输入会超过 50000 字。');
+          else fillDraft(next);
+          if (!sidebar.docked) sidebar.setOpen(false);
+          requestAnimationFrame(() => textInput.current?.focus());
+        }}/>
+    </ConversationSidebar>}
+
     {showMemory && <Modal title="会话记忆" wide onClose={closeMemory}><div className="modal-body conversation-memory-panel"><MemoryWorkspace conversation={conversation} onDirtyChange={memoryDirtyChanged} onSavingChange={memorySavingChanged}/></div></Modal>}
     {confirmCloseMemory && <Modal title="放弃未保存的记忆修改" onClose={()=>setConfirmCloseMemory(false)}><div className="modal-body"><p>未保存的草稿将丢失。已经发送的修改仍会继续处理。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={()=>setConfirmCloseMemory(false)}>继续编辑</Button><Button variant="danger" disabled={memorySaving} onClick={()=>{setConfirmCloseMemory(false);setShowMemory(false);}}>放弃修改并关闭</Button></footer></Modal>}
 
-    </div>{!trial && showContext && <ContextDialog conversationId={conversation.id} models={models} busy={active || sending || uploading || savingModel || loading} run={run} onClose={() => setShowContext(false)} onCompact={result => { setShowContext(false); history.addAccepted(result.message); setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', kind: 'compact', compaction: null, assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null }); void api<Run>(`/runs/${result.run_id}`).then(applyRunReadback).catch(e => { if (mounted.current) setError(errorText(e)); }); onChangedRef.current(); }}/>} {preview && <FilePreview key={preview.id} file={preview} onClose={() => setPreview(null)}/>}{rename && <Modal title="重命名会话" onClose={() => { if (!savingTitle) setRename(false); }}><form onSubmit={e => { e.preventDefault(); void saveTitle(); }}><div className="modal-body"><Field label="会话名称"><input value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={savingTitle} maxLength={200} required autoFocus/></Field></div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={savingTitle} onClick={() => setRename(false)}>取消</Button><Button busy={savingTitle} disabled={!titleDraft.trim()} type="submit">保存名称</Button></footer></form></Modal>}{archive && <Modal title="归档此会话" onClose={() => setArchive(false)}><div className="modal-body"><p>归档后，会话会从最近列表中移除。会话和附件仍保存在服务端。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={() => setArchive(false)}>取消</Button><Button onClick={async () => { try { await patch(`/conversations/${conversation.id}`, { archived: true }); onChangedRef.current(); onArchived(); } catch (e) { setError(errorText(e)); setArchive(false); } }}>归档会话</Button></footer></Modal>}{recommendOpen && <Modal title="为当前任务推荐模型" onClose={() => { if (!recommendBusy) setRecommendOpen(false); }}><div className="modal-body"><p>根据当前问题、最近消息和助手职责推荐模型，只使用任务摘要。推荐生效后将固定使用该模型，可随时改回自动选择。</p><div className="fitness-context" role="status"><span className="eyebrow">当前会话上下文</span><p>{recommendSummary}</p></div>{recommendation && <div className="recommendation-result"><strong>推荐模型：{recommendation.model_label} · {recommendation.reasoning_level}</strong><p>{recommendation.reason}</p><small>路由器：{recommendation.router.model_id} · 输入 {recommendation.router.input_chars} 字符 · {recommendation.router.mode === 'provider' || recommendation.router.mode === 'provider_fallback' ? '已使用授权模型路由' : recommendation.router.target_status === 'unavailable' ? `目标线路不可用（${recommendation.router.target_model_id}）` : '本地备用规则'}</small></div>}</div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={recommendBusy} onClick={() => setRecommendOpen(false)}>{recommendation ? '完成' : '关闭'}</Button></footer></Modal>}</div>;
+    </div>{!trial && inspectionView && <SessionTrajectory conversationId={conversation.id} title={title}
+      initialView={inspectionView} onViewChange={setInspectionView} onClose={() => setInspectionView(null)}
+      context={{ models, busy: active || sending || uploading || savingModel || loading, run,
+        onCompact: result => { setInspectionView(null); history.addAccepted(result.message); setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', kind: 'compact', compaction: null, assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null }); void api<Run>(`/runs/${result.run_id}`).then(applyRunReadback).catch(e => { if (mounted.current) setError(errorText(e)); }); onChangedRef.current(); } }}/>} {preview && <FilePreview key={preview.id} file={preview} onClose={() => setPreview(null)}/>}{rename && <Modal title="重命名会话" onClose={() => { if (!savingTitle) setRename(false); }}><form onSubmit={e => { e.preventDefault(); void saveTitle(); }}><div className="modal-body"><Field label="会话名称"><input value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={savingTitle} maxLength={200} required autoFocus/></Field></div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={savingTitle} onClick={() => setRename(false)}>取消</Button><Button busy={savingTitle} disabled={!titleDraft.trim()} type="submit">保存名称</Button></footer></form></Modal>}{archive && <Modal title="归档此会话" onClose={() => setArchive(false)}><div className="modal-body"><p>归档后，会话会从最近列表中移除。会话和附件仍保存在服务端。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={() => setArchive(false)}>取消</Button><Button onClick={async () => { try { await patch(`/conversations/${conversation.id}`, { archived: true }); onChangedRef.current(); onArchived(); } catch (e) { setError(errorText(e)); setArchive(false); } }}>归档会话</Button></footer></Modal>}{recommendOpen && <Modal title="为当前任务推荐模型" onClose={() => { if (!recommendBusy) setRecommendOpen(false); }}><div className="modal-body"><p>根据当前问题、最近消息和助手职责推荐模型，只使用任务摘要。推荐生效后将固定使用该模型，可随时改回自动选择。</p><div className="fitness-context" role="status"><span className="eyebrow">当前会话上下文</span><p>{recommendSummary}</p></div>{recommendation && <div className="recommendation-result"><strong>推荐模型：{recommendation.model_label} · {recommendation.reasoning_level}</strong><p>{recommendation.reason}</p><small>路由器：{recommendation.router.model_id} · 输入 {recommendation.router.input_chars} 字符 · {recommendation.router.mode === 'provider' || recommendation.router.mode === 'provider_fallback' ? '已使用授权模型路由' : recommendation.router.target_status === 'unavailable' ? `目标线路不可用（${recommendation.router.target_model_id}）` : '本地备用规则'}</small></div>}</div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={recommendBusy} onClick={() => setRecommendOpen(false)}>{recommendation ? '完成' : '关闭'}</Button></footer></Modal>}</div>;
 }
 
 export function LiveActivity({ run, events, stage, connectionState, inlineSubagents = false }: { run: Run; events: StreamEvent[]; stage: string; connectionState: 'connected' | 'reconnecting'; inlineSubagents?: boolean }) {

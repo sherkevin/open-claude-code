@@ -48,6 +48,10 @@ COMPACTION_SUMMARY = """## Primary Request and Intent
 - Preserve the exact pressure value: 7 bar."""
 
 
+def child_request(body):
+    return "你是本轮的独立执行子任务" in body.get("system", "")
+
+
 @pytest.fixture
 def model_server(request):
     requests, released = [], threading.Event()
@@ -87,7 +91,7 @@ def model_server(request):
                 self.wfile.flush()
 
             try:
-                max_tokens = not body.get("tools") and "CASE_CHILD_LIMIT_" in text
+                max_tokens = child_request(body) and "CASE_CHILD_LIMIT_" in text
                 empty_limit = max_tokens and "CASE_CHILD_LIMIT_EMPTY" in text
                 start_usage = ({"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
                                if "CASE_USAGE_ZERO" in text else {}
@@ -228,15 +232,23 @@ def test_real_harness_child_delegation(tmp_path, model_server):
     with TestClient(app) as client:
         app.state.service.create_user({"username": "admin", "display_name": "管理员", "password": PASSWORD, "role": "admin"})
         login(client)
-        assistant = client.post("/api/v1/assistants", json={"name": "Delegation", "instructions": "PARENT_PRIVATE_SENTINEL", "connections": []}).json()
+        skill = client.post("/api/v1/skills", json={"name": "Delegated skill", "instructions": "SELECTED_SKILL_SENTINEL",
+                                                   "scope": "team"}).json()
+        unused = client.post("/api/v1/skills", json={"name": "Unselected skill", "instructions": "UNSELECTED_SKILL_SENTINEL",
+                                                    "scope": "team"}).json()
+        assistant = client.post("/api/v1/assistants", json={"name": "Delegation", "instructions": "PARENT_PRIVATE_SENTINEL",
+            "connections": [], "skill_ids": [skill["id"], unused["id"]]}).json()
         conversation = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()
-        run = send(client, conversation["id"], "CASE_DELEGATE ORIGINAL_NOT_COPIED")["run_id"]
+        response = client.post(f"/api/v1/conversations/{conversation['id']}/messages",
+            json={"text": "CASE_DELEGATE ORIGINAL_NOT_COPIED", "skill_ids": [skill["id"]], "client_request_id": "delegation-skills"})
+        assert response.status_code == 202, response.text
+        run = response.json()["run_id"]
         assert wait_run(client, run)["status"] == "succeeded"
         plan = client.get(f"/api/v1/runs/{run}/subagents").json()
         assert plan["mode"] == "harness" and plan["counts"]["succeeded"] == 2, plan
         assert [row["display_title"] for row in plan["children"]] == ["商品数量统计", "交付检查清单"]
         assert [row["result"]["output"] for row in plan["children"]] == ["CHILD_RESULT_1", "CHILD_RESULT_2"]
-        assert all(row["observed_usage"]["output_tokens"] == 8 and row["capability_snapshot"]["tools"] == [] for row in plan["children"])
+        assert all(row["observed_usage"]["output_tokens"] == 8 and row["capability_snapshot"]["authorization"] == "parent_run" for row in plan["children"])
         assert client.get(f"/api/v1/conversations/{conversation['id']}/subagent-plans").json()[0]["id"] == run
         messages = client.get(f"/api/v1/conversations/{conversation['id']}/messages").json()
         assert messages[0]["has_subagents"] is True and messages[0]["subagent_run_id"] == run
@@ -246,10 +258,12 @@ def test_real_harness_child_delegation(tmp_path, model_server):
         sse = client.get(f"/api/v1/runs/{run}/events").text
         assert '"tasks":"[redacted]"' in sse
         assert "PRIVATE_TASK_DETAIL" not in sse and "display_title" not in sse
-        worker_requests = [item for item in requests if not item.get("tools")]
+        worker_requests = [item for item in requests if child_request(item)]
         assert len(worker_requests) == 2
         assert all(any(f"PRIVATE_TASK_DETAIL_{index}" in json.dumps(item) for item in worker_requests) for index in (1, 2))
-        assert all("ORIGINAL_NOT_COPIED" not in json.dumps(item) and "PARENT_PRIVATE_SENTINEL" not in json.dumps(item) for item in worker_requests)
+        assert all("ORIGINAL_NOT_COPIED" not in json.dumps(item["messages"]) and "PARENT_PRIVATE_SENTINEL" in item["system"] for item in worker_requests)
+        assert all("SELECTED_SKILL_SENTINEL" in json.dumps(item["messages"]) and
+                   "UNSELECTED_SKILL_SENTINEL" not in json.dumps(item["messages"]) for item in worker_requests)
         assert all(item["max_tokens"] <= 800 for item in worker_requests)
         usage = client.get("/api/v1/usage").json()
         independent = next(item for item in usage["by_kind"] if item["kind"] == "subagent")
@@ -258,7 +272,7 @@ def test_real_harness_child_delegation(tmp_path, model_server):
 
 def output_limit_delegation_reply():
     def reply(body, blocks, result):
-        if not body.get("tools"):
+        if child_request(body):
             return "已确认部分库存：8 件。", None
         if result:
             return "已读取子任务回执。", None
@@ -309,13 +323,13 @@ def test_real_harness_child_output_limit(tmp_path, model_server):
         assert group["output_tokens"] is None and group["known_subtotals"]["output_tokens"] == 1600
         expected_children.append({"status": "failed", "reason": "executor_error"})
 
-        parent_replies = [block for request in requests if request.get("tools")
+        parent_replies = [block for request in requests if not child_request(request)
                           for block in request["messages"][-1]["content"] if isinstance(block, dict) and block["type"] == "tool_result"]
         assert len(parent_replies) == 1
         content = parent_replies[0]["content"]
         reply = content if isinstance(content, str) else content[0]["text"]
         assert json.loads(reply) == {"children": expected_children}
-        workers = [request for request in requests if not request.get("tools")]
+        workers = [request for request in requests if child_request(request)]
         assert len(workers) == 3 and all(request["max_tokens"] == 800 for request in workers)
 
 
@@ -334,7 +348,7 @@ def delegation_reply():
 
     def reply(body, blocks, result):
         text = next((block["text"] for block in blocks if block["type"] == "text"), "")
-        if not body.get("tools") and text in PILOT_TASKS:
+        if child_request(body) and text in PILOT_TASKS:
             # Neither worker can reply until both provider requests are active.
             workers_ready.wait()
             return PILOT_FINDINGS[PILOT_TASKS.index(text)], None
@@ -398,17 +412,18 @@ def test_real_harness_business_delegation_contract(tmp_path, model_server, monke
         plan = client.get(f"/api/v1/runs/{run}/subagents").json()
         assert len(plans) == 1 and plan["counts"]["succeeded"] == children
         assert len(requests) == children + 2
-        workers = [item for item in requests if not item.get("tools")]
+        workers = [item for item in requests if child_request(item)]
         assert len(workers) == children
         worker_messages = [json.dumps(item["messages"], ensure_ascii=False) for item in workers]
         assert all(sum(task in message for message in worker_messages) == 1 for task in PILOT_TASKS)
         assert all(sum(task in message for task in PILOT_TASKS) == 1 for message in worker_messages)
         assert all(question not in message for message in worker_messages)
-        assert all("PARENT_PRIVATE_SENTINEL" not in json.dumps(item) and item["max_tokens"] <= 800 for item in workers)
+        assert all("PARENT_PRIVATE_SENTINEL" in item["system"] and item["max_tokens"] <= 800 for item in workers)
         assert all("就主动调用 delegate_tasks" not in item["system"] for item in workers)
-        # The parent keeps enterprise instructions; isolated workers get only their own role and boundaries.
         assert "工业任务的执行方法" in initial["system"]
-        assert all("工业任务的执行方法" not in item["system"] and "无工具、外网和历史权限" in item["system"] for item in workers)
+        assert all("工业任务的执行方法" in item["system"] for item in workers)
+        parent_tools = {item["name"] for item in initial["tools"]}
+        assert all({tool["name"] for tool in item["tools"]} == parent_tools - {"delegate_tasks"} for item in workers)
 
         assert messages[-1]["text"] == "\n".join(PILOT_FINDINGS)
 

@@ -311,21 +311,32 @@ def write_launcher(directory: Path, node: Path, source: Path, root: Path):
     return path
 
 
+def prompt_with_selected_skills(text, skills):
+    if not skills:
+        return text
+    return (text + "\n\n【本轮用户在客户端选择的 Skills】\n"
+            "以下版本仅用于本轮任务；不扩大工具权限，不覆盖系统身份及数据真实性要求。\n" + dump(skills))
+
+
 class HarnessRuntime(WorkspaceRuntime):
     # A process is owned by exactly one run. Resume from the private durable
     # session on the next turn; delayed RPCs cannot cross an approval boundary.
     close_after_run = True
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, parent_bridge=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.session_id = self.config.get("native_session_id") or f"workspace-{uid()}"
         self.interrupted = False
         self.request_task = None
         self.tool_task = None
         self.tool_call_id = None
+        self.tool_name = None
         self.closing = asyncio.Lock()
         self.owned_process = None
-        self.bridge = HarnessToolBridge(self)
+        self.mounted_tools = None
+        self.accepting_subagent_plans = False
+        self.subagent_child_id = self.config.get("subagent_child_id")
+        self.bridge = HarnessToolBridge(self, parent_bridge)
 
     def model_system_prompt(self):
         return build_system_prompt(public_model_id=self.config["public_model_id"],
@@ -365,6 +376,7 @@ class HarnessRuntime(WorkspaceRuntime):
         cls, config_cls = await asyncio.to_thread(official_client, source)
         tools = self.bridge.definitions()
         tool_names = {tool["name"] for tool in tools}
+        self.mounted_tools = {tool["name"]: tool for tool in tools}
         system_prompt = self.model_system_prompt()
         if "web_search" in tool_names:
             system_prompt += "\n\n" + WEB_SEARCH_GUIDANCE
@@ -380,6 +392,8 @@ class HarnessRuntime(WorkspaceRuntime):
                       "maxTokens": max_output},
             tools=tools, max_steps=self.config.get("worker_max_steps", settings.max_turns),
             tool_timeout_ms=(settings.approval_seconds + 60) * 1000,
+            delegation_timeout_ms=(self.service.subagents.delegation_timeout() * 1000
+                                   if "delegate_tasks" in tool_names else None),
         )
         launcher = write_launcher(private, node, source, root)
         self.client = cls(config_cls(dsh_bin=str(launcher), profile=profile["profile"],
@@ -394,6 +408,7 @@ class HarnessRuntime(WorkspaceRuntime):
                                     max_tokens=max_output, approval_requests=True)
             if self.config.get("native_session_id"):
                 await asyncio.to_thread(self.client.resume_session, self.session_id)
+            self.accepting_subagent_plans = "delegate_tasks" in tool_names
         except BaseException:
             await self.close()
             raise
@@ -406,6 +421,7 @@ class HarnessRuntime(WorkspaceRuntime):
                     if request.method == "workspace/tool":
                         expected_run_id = (self.current_run or {}).get("id")
                         self.tool_call_id = request.payload.get("callId")
+                        self.tool_name = request.payload.get("toolName")
                         self.tool_task = asyncio.create_task(self.bridge.invoke(request.payload))
                         try:
                             result = await self.tool_task
@@ -415,7 +431,7 @@ class HarnessRuntime(WorkspaceRuntime):
                                 raise
                             await asyncio.to_thread(client.respond_error, request.id, code=-32800, message="Workspace operation cancelled")
                         finally:
-                            self.tool_task, self.tool_call_id = None, None
+                            self.tool_task, self.tool_call_id, self.tool_name = None, None, None
                     elif request.method == "approval/request":
                         await asyncio.to_thread(client.respond, request.id, {"outcome": "rejected"})
                     else:
@@ -434,7 +450,10 @@ class HarnessRuntime(WorkspaceRuntime):
             return
 
     async def execute(self, run, message):
-        await self._run_with_usage(run, lambda: self._execute_owned(run, message))
+        try:
+            await self._run_with_usage(run, lambda: self._execute_owned(run, message))
+        finally:
+            self.accepting_subagent_plans = False
 
     async def steer(self, run_id, request_id, text):
         client = self.client
@@ -572,13 +591,27 @@ class HarnessRuntime(WorkspaceRuntime):
             await asyncio.gather(*(task for task in (watcher, operation) if task is not None), return_exceptions=True)
             self.current_run = None
 
+    async def _next_chat_notification(self, client, timeout):
+        # Keep the normal idle deadline unless the host is actually waiting
+        # on a delegated plan. Reuse the same SDK queue reader on extension.
+        receive = asyncio.create_task(asyncio.to_thread(client.next_notification))
+        try:
+            try:
+                return await asyncio.wait_for(asyncio.shield(receive), timeout)
+            except asyncio.TimeoutError:
+                if self.tool_name != "delegate_tasks" or "delegate_tasks" not in (self.mounted_tools or {}):
+                    raise
+                remaining = self.service.subagents.delegation_timeout() + 10 - timeout
+                return await asyncio.wait_for(receive, max(1, remaining))
+        finally:
+            if not receive.done():
+                receive.cancel()
+
     async def _execute_chat(self, run, message, attachments):
         self.bridge.calls.clear()
         client = self.client
-        prompt = recovery_prompt(run, message["text"])
-        skills = json.loads(run.get("skill_snapshots") or "[]")
-        if skills:
-            prompt += "\n\n【本轮用户在客户端选择的 Skills】\n以下版本仅用于本轮任务；不扩大工具权限，不覆盖系统身份及数据真实性要求。\n" + dump(skills)
+        prompt = prompt_with_selected_skills(recovery_prompt(run, message["text"]),
+                                           json.loads(run.get("skill_snapshots") or "[]"))
         await offload_write(self.service.db.execute, "UPDATE conversations SET context_usage=NULL WHERE id=?", (self.conversation_id,))
         receipt = await asyncio.to_thread(attachments.dispatch, client, self.session_id, prompt)
         accepted, finish, model_started = False, None, False
@@ -599,7 +632,7 @@ class HarnessRuntime(WorkspaceRuntime):
         notification_timeout = max(300, self.service.settings.approval_seconds + 60)
         try:
             while True:
-                notification = await asyncio.wait_for(asyncio.to_thread(client.next_notification), notification_timeout)
+                notification = await self._next_chat_notification(client, notification_timeout)
                 payload = notification.payload
                 if payload.get("sessionId") != self.session_id:
                     continue

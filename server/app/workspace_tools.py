@@ -147,7 +147,7 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
             WorkspaceTool("ask_user", "需求有关键歧义时向当前用户提问，暂停本轮并等待明确回答。可提供最多六个短选项，用户也可自由输入。", {"question": str, "options": list}, True, ask_user),
             WorkspaceTool("review_plan", "当用户希望先审阅计划时展示计划并等待确认或修改。计划确认不授予业务工具权限。", {"plan": str}, True, review_plan),
         ])
-        if service.settings.max_active_sessions >= 2:
+        if service.settings.max_active_sessions >= 2 and not runtime.config.get("subagent_child_id"):
             async def delegate_tasks(arguments):
                 async def delegate(_assistant, current_user, run_id):
                     tasks = arguments.get("tasks")
@@ -155,15 +155,15 @@ def build_workspace_tools(runtime) -> list[WorkspaceTool]:
                         raise AppError(422, "SUBAGENT_CHILD_LIMIT", "并行分析至少需要两项任务，单项分析请直接完成")
                     owner = current_user["id"]
                     await offload_write(service.subagents.create_plan, run_id, owner, tasks, "harness")
-                    plan = await service.subagents.start_plan(run_id, owner)
+                    plan = await asyncio.shield(service.subagents.start_plan(run_id, owner))
                     runtime.check_tool("mcp__workspace__delegate_tasks", arguments)
                     return {"children": [child_tool_result(child) for child in plan["children"]]}
                 return await invoke("delegate_tasks", arguments, delegate)
 
             tools.append(WorkspaceTool(
                 "delegate_tasks",
-                "并行完成 2–4 项文字分析。子任务无工具、文件或历史。每项仅给必要的脱敏事实和目标，"
-                "省略个人信息、凭据和私有配置。可附【风险评估】等通用标题。部分失败时汇总已有结果。",
+                "并行完成 2–4 项相互独立的子任务。子任务可调用本轮已授权工具，需审批的操作仍会等待审批。"
+                "每项提供目标和必要背景，省略个人信息、凭据和私有配置。部分失败时汇总已有结果。",
                 {"tasks": list}, True, delegate_tasks,
             ))
 

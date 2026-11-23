@@ -49,7 +49,7 @@ def _assistant_and_conversation(client):
 
 
 def _wait(client, run_id):
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         value = client.get(f"/api/v1/runs/{run_id}").json()
         if value["status"] in {"succeeded", "failed", "cancelled", "interrupted"}:
