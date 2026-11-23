@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
+	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
+	"github.com/sherkevin/open-claude-code/connector/internal/mcp"
 )
 
 const (
@@ -236,5 +239,108 @@ func TestAssistRejectsUnapprovedToolSelectionAndAmbiguousTargets(t *testing.T) {
 		if got := validAssistOffer(offer, now); got != tc.valid {
 			t.Errorf("offer validation for %q = %t, want %t", tc.url, got, tc.valid)
 		}
+	}
+}
+
+func TestAssistDynamicSigningStaysWithTheApprovedSource(t *testing.T) {
+	const key = "synthetic-signing-secret"
+	var calls atomic.Int32
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path != "/mcp/sales" || r.Header.Get("Authorization") != "Bearer "+testAssistToken {
+			t.Error("request sent outside the approved service or without the service Bearer")
+		}
+		if req.Method != "tools/call" && r.Header.Get("sign") != "" {
+			t.Error("discovery or session setup received a business-call signature")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "initialize":
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"synthetic"}}}`, req.ID)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[{"name":"read_contracts"}]}}`, req.ID)
+		case "tools/call":
+			calls.Add(1)
+			if r.Header.Get("appid") != "MCP" || r.Header.Get("channel") != "sales" ||
+				r.Header.Get("userid") != "reader" || r.Header.Get("requestId") == "" ||
+				r.Header.Get("timestamp") == "" || len(r.Header.Get("sign")) != 64 {
+				t.Error("business call did not receive the locally generated signature headers")
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"ok"}]}}`, req.ID)
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(service.Close)
+	a, err := New(Options{DataDir: t.TempDir(), NativeRelay: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	ctx := context.Background()
+	offer := cloud.AssistOffer{ID: testAssistID, Name: "销售合同", URL: service.URL + "/mcp/sales"}
+	var draft *SourceInput
+	var tools []string
+	profile := &huaweiauth.Profile{Channel: " sales ", UserID: " reader ", HMACKey: key}
+	result := a.runAssistJob(ctx, offer, cloud.AssistJob{
+		ID: testAssistJobID, Action: "discover", BearerToken: testAssistToken, DynamicAuth: profile,
+	}, &draft, &tools)
+	if result.Code != "tools_loaded" || draft == nil || !draft.DynamicAuth || draft.AppID != "MCP" ||
+		draft.Channel != "sales" || draft.UserID != "reader" || draft.HMACKey != key {
+		t.Fatal("validated dynamic authentication was not kept with the discovery draft")
+	}
+	wire, err := json.Marshal(result)
+	if err != nil || strings.Contains(string(wire), key) || strings.Contains(string(wire), testAssistToken) {
+		t.Fatal("diagnostic response contained authentication material")
+	}
+	badConnect := a.runAssistJob(ctx, offer, cloud.AssistJob{
+		ID: testAssistJobID, Action: "connect", Tools: tools, DynamicAuth: profile,
+	}, &draft, &tools)
+	if badConnect.Code != "connect_failed" || draft == nil || len(a.Status().Sources) != 0 {
+		t.Fatal("connect unexpectedly allowed new signing credentials")
+	}
+
+	// Save the verified draft through the same source writer used by assisted
+	// connect, then use that source's real signing proxy in a loopback test.
+	draft.Tools = tools
+	source, err := a.SaveSource(*draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profiles map[string]huaweiauth.Profile
+	if err := a.store.ReadProtectedJSON(fileAuth, &profiles); err != nil {
+		t.Fatal(err)
+	}
+	stored, found := profiles[source.Source.SourceID]
+	if !found || stored.HMACKey != key {
+		t.Fatal("the approved source's signing key was not stored with its protected local profile")
+	}
+	a.mu.RLock()
+	headers := cloneHeaders(a.secrets[source.Source.SourceID])
+	a.mu.RUnlock()
+	signingProxy, err := newSourceAuthProxy(source.Source, headers, stored, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(signingProxy)
+	t.Cleanup(proxy.Close)
+	client := &mcp.Client{Endpoint: proxy.URL + "/mcp"}
+	if _, err := client.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CallTool(ctx, "read_contracts", map[string]any{}); err != nil || calls.Load() != 1 {
+		t.Fatalf("approved signed tool call failed: %v", err)
 	}
 }

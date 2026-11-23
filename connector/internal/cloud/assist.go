@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 )
 
 // AssistOffer binds a customer's approval to one specific MCP service.
@@ -20,10 +22,11 @@ type AssistOffer struct {
 }
 
 type AssistJob struct {
-	ID          string   `json:"id"`
-	Action      string   `json:"action"`
-	BearerToken string   `json:"bearer_token,omitempty"`
-	Tools       []string `json:"tools,omitempty"`
+	ID          string              `json:"id"`
+	Action      string              `json:"action"`
+	BearerToken string              `json:"bearer_token,omitempty"`
+	DynamicAuth *huaweiauth.Profile `json:"dynamic_auth,omitempty"`
+	Tools       []string            `json:"tools,omitempty"`
 }
 
 type AssistPoll struct {

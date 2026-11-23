@@ -168,6 +168,40 @@ def test_import_uses_discovered_selection_and_same_native_revision(env):
         assert db.one("SELECT count(*) AS n FROM connections")["n"] == 1
 
 
+def test_dynamic_signing_configuration_is_sealed_and_delivered_with_discovery(env):
+    _, client, db, device, *_ = env
+    local, route = request_assist(env)
+    key = " synthetic-HMAC-key "
+    identity = {"channel": " synthetic-channel ", "user_id": "synthetic-reader", "hmac_key": key}
+    invalid = client.post(route + "/jobs", json={
+        "action": "discover", "dynamic_auth": {**identity, "channel": "bad&channel"},
+    })
+    assert invalid.status_code == 422 and key not in invalid.text and "bad&channel" not in invalid.text
+    submitted = client.post(
+        route + "/jobs", json={"action": "discover", "bearer_token": TOKEN, "dynamic_auth": identity},
+    )
+    assert submitted.status_code == 200 and key not in submitted.text and TOKEN not in submitted.text
+    job = submitted.json()["latest_job"]
+    assert key not in client.get(route).text and key not in device("offer").text
+    stored = db.one("SELECT sealed_bearer FROM kaiwu_assist_jobs WHERE id=?", (job["id"],))["sealed_bearer"]
+    assert stored and key not in stored and TOKEN not in stored
+    assert device("poll", local).json() == {
+        "active": True,
+        "job": {"id": job["id"], "action": "discover", "bearer_token": TOKEN, "dynamic_auth": {
+            "app_id": "MCP", "channel": "synthetic-channel", "user_id": "synthetic-reader", "hmac_key": key,
+        }},
+    }
+    assert device("poll", local).json() == {"active": True, "job": None}
+    assert db.one("SELECT sealed_bearer FROM kaiwu_assist_jobs WHERE id=?", (job["id"],))["sealed_bearer"] is None
+    audits = db.all("SELECT detail FROM kaiwu_control_audit WHERE action LIKE 'assist.%'")
+    assert key not in str(audits) and TOKEN not in str(audits)
+    assert device("result", {**local, "job_id": job["id"], "status": "succeeded", "code": "tools_loaded",
+                            "tools": ["lookup_order"]}).status_code == 200
+    assert client.post(route + "/jobs", json={
+        "action": "connect", "dynamic_auth": identity, "tools": ["lookup_order"],
+    }).status_code == 422
+
+
 def test_restart_with_assistance_disabled_cancels_and_erases_pending_credentials(env):
     app, client, db, device, *_ = env
     local, route = request_assist(env)

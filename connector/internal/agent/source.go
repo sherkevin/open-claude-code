@@ -402,7 +402,8 @@ func (a *Agent) discoverSourceTools(ctx context.Context, input SourceInput, stag
 	}
 	for _, tool := range tools {
 		name := strings.TrimSpace(tool.Name)
-		if assistCredential != "" && strings.Contains(name, assistCredential) {
+		if input.assistRevision != nil && ((assistCredential != "" && strings.Contains(name, assistCredential)) ||
+			(prepared.profile.HMACKey != "" && strings.Contains(name, prepared.profile.HMACKey))) {
 			return nil, errors.New("工具名称不能包含访问凭据")
 		}
 		if name == "" || strings.ContainsAny(name, "\r\n,* \t") {

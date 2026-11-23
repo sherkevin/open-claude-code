@@ -50,6 +50,20 @@
 .kaiwu-assist-action {
   display: grid;
   justify-items: start;
+  gap: 8px;
+}
+
+.kaiwu-assist-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kaiwu-assist-signature {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 0 12px;
+  width: 100%;
 }
 
 .kaiwu-assist-action .field {

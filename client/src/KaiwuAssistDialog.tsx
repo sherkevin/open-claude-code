@@ -27,6 +27,8 @@ type Job = {
   finished_at?: string;
 };
 
+type DynamicAuth = { app_id: string; channel: string; user_id: string; hmac_key: string };
+
 type Session = {
   id: string;
   name: string;
@@ -103,6 +105,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   const [name, setName] = useState('');
   const [url, setURL] = useState('');
   const [bearer, setBearer] = useState('');
+  const [signature, setSignature] = useState<DynamicAuth | null>(null);
   const [tools, setTools] = useState<string[]>([]);
   const [scope, setScope] = useState<ResourceScope>('private');
   const [busy, setBusy] = useState(false);
@@ -120,6 +123,8 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   const connected = job?.action === 'connect' && job.status === 'succeeded';
   const importedID = imported?.id || session?.imported_connection_id;
   const selected = tools.filter(tool => session?.discovered_tools.includes(tool));
+  const signatureReady = !signature || !!(signature.app_id.trim() && signature.channel.trim() &&
+    signature.user_id.trim() && signature.hmac_key.trim());
 
   useEffect(() => {
     if (!canPoll) return;
@@ -133,7 +138,10 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
         if (!controller.signal.aborted && requestEpoch === epoch.current) {
           setSession(next);
           setPollError('');
-          if (next.status !== 'active') setBearer('');
+          if (next.status !== 'active') {
+            setBearer('');
+            setSignature(null);
+          }
         }
       } catch (cause) {
         if (!controller.signal.aborted && requestEpoch === epoch.current) setPollError(errorText(cause));
@@ -164,6 +172,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
     setName('');
     setURL('');
     setBearer('');
+    setSignature(null);
     setTools([]);
     setError('');
     setPollError('');
@@ -185,10 +194,20 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
   }
 
   async function submitJob(action: Job['action']) {
-    if (!session || !active || jobBusy) return;
+    if (!session || !active || jobBusy || (action === 'discover' && !signatureReady)) return;
     await run(async () => {
-      const payload = action === 'discover' ? { action, ...(bearer.trim() && { bearer_token: bearer.trim() }) } : { action, tools: selected };
-      if (action === 'discover') setBearer('');
+      const payload = action === 'discover' ? {
+        action,
+        ...(bearer.trim() && { bearer_token: bearer.trim() }),
+        ...(signature && { dynamic_auth: {
+          app_id: signature.app_id.trim(), channel: signature.channel.trim(),
+          user_id: signature.user_id.trim(), hmac_key: signature.hmac_key,
+        } }),
+      } : { action, tools: selected };
+      if (action === 'discover') {
+        setBearer('');
+        setSignature(previous => previous && { ...previous, hmac_key: '' });
+      }
       update(await post<Session>(path + '/sessions/' + encodeURIComponent(session.id) + '/jobs', payload));
       if (action === 'discover') setTools([]);
     });
@@ -199,6 +218,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
     await run(async () => {
       update(await post<Session>(path + '/sessions/' + encodeURIComponent(session.id) + '/stop'));
       setBearer('');
+      setSignature(null);
     });
   }
 
@@ -259,7 +279,27 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
           <Field label="Bearer 访问令牌" hint="留空可使用同一地址在客户设备上已保存的令牌。">
             <input type="password" value={bearer} autoComplete="new-password" spellCheck={false} maxLength={8192} disabled={busy || jobBusy} onChange={event => setBearer(event.target.value)} />
           </Field>
-          <Button variant="secondary" busy={jobBusy && job?.action === 'discover'} disabled={busy || jobBusy || !!pollError} onClick={() => void submitJob('discover')}>读取工具</Button>
+          <label className="kaiwu-assist-toggle">
+            <input type="checkbox" checked={!!signature} disabled={busy || jobBusy} onChange={event =>
+              setSignature(event.target.checked ? { app_id: 'MCP', channel: '', user_id: '', hmac_key: '' } : null)
+            }/>
+            使用华微动态签名
+          </label>
+          {signature && <div className="kaiwu-assist-signature">
+            <Field label="应用标识（appid）" required>
+              <input value={signature.app_id} maxLength={256} disabled={busy || jobBusy} onChange={event => setSignature({ ...signature, app_id: event.target.value })}/>
+            </Field>
+            <Field label="渠道编号（channel）" required>
+              <input value={signature.channel} maxLength={256} disabled={busy || jobBusy} onChange={event => setSignature({ ...signature, channel: event.target.value })}/>
+            </Field>
+            <Field label="访问身份（userid）" required>
+              <input value={signature.user_id} maxLength={256} disabled={busy || jobBusy} onChange={event => setSignature({ ...signature, user_id: event.target.value })}/>
+            </Field>
+            <Field label="签名密钥" required>
+              <input type="password" value={signature.hmac_key} autoComplete="new-password" spellCheck={false} maxLength={4096} disabled={busy || jobBusy} onChange={event => setSignature({ ...signature, hmac_key: event.target.value })}/>
+            </Field>
+          </div>}
+          <Button variant="secondary" busy={jobBusy && job?.action === 'discover'} disabled={busy || jobBusy || !!pollError || !signatureReady} onClick={() => void submitJob('discover')}>读取工具</Button>
         </div>}
         {active && !connected && !importedID && !!session.discovered_tools.length && <fieldset className="kaiwu-assist-tools" disabled={busy || jobBusy}>
           <legend>允许开物调用的工具</legend>
@@ -282,7 +322,7 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
         <Button type="submit" form={formID} busy={busy} disabled={!device || !name.trim() || !url.trim()}>发送协助请求</Button>
       </>}
       {session && !live && !importedID && <Button onClick={() => {
-        setSessionID(''); setSession(null); setError(''); setPollError(''); setTools([]); setBearer(''); onRefresh();
+        setSessionID(''); setSession(null); setError(''); setPollError(''); setTools([]); setBearer(''); setSignature(null); onRefresh();
       }}>新建请求</Button>}
       {live && <Button variant="secondary" disabled={busy} onClick={() => void stop()}>{session?.status === 'pending' ? '撤回请求' : '结束协助'}</Button>}
       {active && !connected && !importedID && !!session.discovered_tools.length && <Button busy={jobBusy && job?.action === 'connect'} disabled={busy || jobBusy || !selected.length || !!pollError} onClick={() => void submitJob('connect')}>保存并连接</Button>}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 	"github.com/sherkevin/open-claude-code/connector/internal/state"
 )
 
@@ -221,7 +222,7 @@ func (a *Agent) runAssistJob(ctx context.Context, offer cloud.AssistOffer, job c
 		*verifiedTools = nil
 		result.Code = "upstream_failed"
 		result.Stage = "initialize"
-		input, err := a.assistSourceInput(offer, job.BearerToken)
+		input, err := a.assistSourceInput(offer, job.BearerToken, job.DynamicAuth)
 		if err != nil || len(job.Tools) != 0 {
 			return result
 		}
@@ -256,7 +257,7 @@ func (a *Agent) runAssistJob(ctx context.Context, offer cloud.AssistOffer, job c
 		result.Code, result.Status, result.Tools = "tools_loaded", "succeeded", tools
 	case "connect":
 		result.Code, result.Stage = "connect_failed", "connect"
-		if *draft == nil || job.BearerToken != "" || !validAssistSelection(job.Tools, *verifiedTools) ||
+		if *draft == nil || job.BearerToken != "" || job.DynamicAuth != nil || !validAssistSelection(job.Tools, *verifiedTools) ||
 			a.state.Current() == state.Paused {
 			return result
 		}
@@ -273,7 +274,7 @@ func (a *Agent) runAssistJob(ctx context.Context, offer cloud.AssistOffer, job c
 	return result
 }
 
-func (a *Agent) assistSourceInput(offer cloud.AssistOffer, bearer string) (SourceInput, error) {
+func (a *Agent) assistSourceInput(offer cloud.AssistOffer, bearer string, dynamic *huaweiauth.Profile) (SourceInput, error) {
 	if len(bearer) > 8192 || (bearer != "" && !assistBearer.MatchString(bearer)) {
 		return SourceInput{}, errors.New("访问令牌格式无效")
 	}
@@ -301,6 +302,23 @@ func (a *Agent) assistSourceInput(offer cloud.AssistOffer, bearer string) (Sourc
 		}
 		input.SourceID = source.SourceID
 		_, input.DynamicAuth = a.profiles[source.SourceID]
+	}
+	if dynamic != nil {
+		profile := *dynamic
+		profile.AppID = strings.TrimSpace(profile.AppID)
+		if profile.AppID == "" {
+			profile.AppID = "MCP"
+		}
+		profile.Channel = strings.TrimSpace(profile.Channel)
+		profile.UserID = strings.TrimSpace(profile.UserID)
+		if err := huaweiauth.Validate(profile); err != nil {
+			return SourceInput{}, err
+		}
+		input.DynamicAuth = true
+		input.AppID = profile.AppID
+		input.Channel = profile.Channel
+		input.UserID = profile.UserID
+		input.HMACKey = profile.HMACKey
 	}
 	return input, nil
 }

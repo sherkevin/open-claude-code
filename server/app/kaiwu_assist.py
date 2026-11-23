@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import Field, StrictBool, field_validator
+from pydantic import Field, StrictBool, ValidationInfo, field_validator
 
 from .db import dump, now, uid
 from .kaiwu_control import (
@@ -103,9 +103,36 @@ class SessionInput(StrictModel):
     session_id: str = Field(pattern=SESSION_ID_RE)
 
 
+class DynamicAuth(StrictModel):
+    app_id: str = Field(default="MCP", max_length=256)
+    channel: str = Field(min_length=1, max_length=256)
+    user_id: str = Field(min_length=1, max_length=256)
+    hmac_key: str = Field(min_length=1, max_length=4096, repr=False)
+
+    @field_validator("app_id", "channel", "user_id")
+    @classmethod
+    def valid_header(cls, value, info: ValidationInfo):
+        if len(value.encode("utf-8")) > 256 or any(char in value for char in "\r\n&"):
+            raise ValueError("invalid signing identity")
+        cleaned = value.strip()
+        if cleaned:
+            return cleaned
+        if info.field_name == "app_id":
+            return "MCP"
+        raise ValueError("invalid signing identity")
+
+    @field_validator("hmac_key")
+    @classmethod
+    def valid_key(cls, value):
+        if not value.strip() or len(value.encode("utf-8")) > 4096 or any(char in value for char in "\r\n"):
+            raise ValueError("invalid signing key")
+        return value
+
+
 class JobInput(StrictModel):
     action: Literal["discover", "connect"]
     bearer_token: str | None = Field(default=None, max_length=8192, repr=False)
+    dynamic_auth: DynamicAuth | None = Field(default=None, repr=False)
     tools: list[ToolName] = Field(default_factory=list, max_length=MAX_TOOL_COUNT)
 
     @field_validator("bearer_token")
@@ -368,7 +395,13 @@ def add_device_assist(router, service_dependency, device):
             if job["action"] == "connect":
                 response["tools"] = json.loads(job["selected_tools"])
             if job["sealed_bearer"]:
-                response["bearer_token"] = service.secrets.decrypt(job["sealed_bearer"])
+                plaintext = service.secrets.decrypt(job["sealed_bearer"])
+                # Older jobs queued before this release stored the compact
+                # Bearer token by itself. It cannot start with a JSON brace.
+                credentials = json.loads(plaintext) if plaintext.startswith("{") else {"bearer_token": plaintext}
+                for field in ("bearer_token", "dynamic_auth"):
+                    if field in credentials:
+                        response[field] = credentials[field]
             service.db.execute(
                 "UPDATE kaiwu_assist_jobs SET status='running', sealed_bearer=NULL, expires_at=? WHERE id=?",
                 (_future(RUN_TTL), job["id"]),
@@ -474,11 +507,12 @@ def create_kaiwu_assist_router(service_dependency, admin):
             if latest and (latest["status"] in {"queued", "running"} or latest["source_revision"] is not None):
                 raise AppError(409, "ASSIST_JOB_BUSY", "当前协助已有任务，请查看该任务的结果")
             discovered = json.loads(row["discovered_tools"])
+            credentials = data.model_dump(include={"bearer_token", "dynamic_auth"}, exclude_none=True)
             if data.action == "discover":
                 if data.tools:
                     raise AppError(422, "ASSIST_JOB_INVALID", "读取工具时无需选择工具")
                 service.db.execute("UPDATE kaiwu_assist_sessions SET discovered_tools='[]' WHERE id=?", (row["id"],))
-            elif data.bearer_token or not data.tools or len(set(data.tools)) != len(data.tools) or not set(data.tools) <= set(discovered):
+            elif credentials or not data.tools or len(set(data.tools)) != len(data.tools) or not set(data.tools) <= set(discovered):
                 raise AppError(422, "ASSIST_JOB_INVALID", "请选择本次读取到的工具")
             job_id = "asjob_" + uid()
             service.db.execute(
@@ -486,7 +520,7 @@ def create_kaiwu_assist_router(service_dependency, admin):
                 "VALUES(?,?,?,'queued',?,?,?)",
                 (
                     job_id, row["id"], data.action, dump(data.tools),
-                    service.secrets.encrypt(data.bearer_token) if data.bearer_token else None, _future(QUEUE_TTL),
+                    service.secrets.encrypt(dump(credentials)) if credentials else None, _future(QUEUE_TTL),
                 ),
             )
             _event(service, row, f"{data.action}_queued", owner=user["id"], job_id=job_id)
