@@ -183,3 +183,21 @@ root 独立只读核对生产 events 表，确认上述工具、唯一 nonce、s
 该次使用只限真实 ERP 来源的 300 秒临时集成，经官方 MCP SDK 初始化、读取 query 定义后调用一次 count(*)，rows=1。收到真实工具 isError=true，返回 code=QUERY_EXECUTION_FAILED，message=“明细页面执行失败或超时，请检查服务器日志。”，request_id=8000041b-0000-e200-b63f-84710c7967bb；临时集成 int_72cb016b91b8480cafed77e409a00fdf 已立即撤销。
 
 没有把这次候选检查标为业务查询成功，也没有根据错误码断言 sales_contract 已是有效数据集。用户本轮的实时往返验证采用上面已成功的内置 ping，不依赖该 ERP 候选。
+
+
+## 自然语言调用体验核查：说明已传递，业务目录未补齐
+
+2026-11-24 针对“正常 MCP 应由模型根据 description 自行调用，为什么还要求业务用户提供技术参数”的问题，完成以下只读核查：
+
+1. 实际 query 的 description 为 302 字符，包含“字段未知时先调用 describe，参数只传数据集编码”的说明，没有触及工作台 4,000 字符的描述上限。
+2. 当前原始 inputSchema 中，dataset 只有 string 类型和格式正则；明细字段 field 也只有类型及格式约束。没有实际数据集目录、字段含义、可用值枚举、默认值或成功示例。
+3. 生产代码保留 description 和完整 inputSchema，并将其注册为模型工具；当前 argument_constraints 为空，没有附加规则裁剪。因此不能把现状归因于平台丢掉了这份工具描述。
+4. query 的说明要求使用 describe 获取字段，但当前授权的 ERP 工具只有 query，独立内置 ping 不提供 ERP 目录。不能仅因说明引用 describe 就自动扩大用户的工具授权；即使补充 describe，仍需核实数据集编码目录的来源。
+5. 通过限时且仅作用于真实 ERP 来源的集成，重新读取 initialize 结果：serverInfo=HwMcp 1.4.0，protocolVersion=2025-11-25，instructions 字段未提供。临时集成 int_d73fda5083604ecc86c7fdd6dec4170c 已撤销。
+6. 代码还存在一个通用接入缺口：工作台未保存/使用 initialize 返回的 instructions。它应纳入后续改进，但这次华微没有返回该字段，因此不能将它当成此次缺目录的根因。
+
+当前判断：模型知道参数格式，但缺少把业务含义对应到实际数据集和字段的信息；这项接入工作应由我方与对方技术人员完成。业务用户应自然表达查询目的，模型自动选择已授权工具并准备参数。只在业务含义不清时询问业务问题，不把数据集编码、字段名、JSON 或测试 nonce 作为日常用户必填内容。
+
+工具可以由用户自由选择。若只使用 query，可以通过已授权的业务目录、连接说明或助手上下文补齐必要信息；不能把强制勾选 describe 当作连接器验收条件。补齐后仍应验证一条真实业务查询，不能用内置 ping 代替 ERP 查询正确性。
+
+参考：MCP 2025-11-25 Tools 规范 https://modelcontextprotocol.io/specification/2025-11-25/server/tools；生产 c3fc75b 的 service.py、read_only_tools.py、mcp_tools.py、tool_constraint_context.py、harness_tools.py 与 workspace_plugin.ts。规范描述工具可由模型依据上下文和用户请求自动选择调用；工具参数定义不应由终端业务用户手工拼装。
