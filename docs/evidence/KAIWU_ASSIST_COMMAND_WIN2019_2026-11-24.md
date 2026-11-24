@@ -118,9 +118,20 @@ KAIWU_ASSIST_CMD_PROBE_EXIT 0
 
 交付记录：2026-11-24 11:01（东八区）以邓凯文的飞书身份私聊发送给赵鹏（`ou_d0c47fb5f4a601c16286033f78c81005`，会话 `oc_38af83bdc03aba63b782135b7924ad6d`），文字消息 `om_x100b7f7b91e44880c30560116eb3f5b`，安装包 `om_x100b7f7b917204b8dfba97191c77972`。交付目录：`/media/data3/dengkw/acceptance/kaiwu-150-delivery-20261124/`。
 
+## 客户实机（赵鹏，Windows 11）
+
+赵鹏安装 1.5.0 后在本机配置页点击「开始协助」，生产控制面随即出现会话 `asst_00e30dceade74dce8c5808612a5f6e67`（设备 `conn_7b7eb2d128243d8a3ec59eada396500`，租户 `tenant-huawi-win11-pilot`）。工程师认领后下发只读命令：
+
+| 项 | 结果 |
+| --- | --- |
+| 命令 | `hostname & ver` |
+| 状态 | `succeeded` / `command_completed`，退出码 0，耗时 179 ms |
+| 回传输出 | `LAPTOP-S5UA26C7`；`Microsoft Windows [版本 10.0.26200.9974]` |
+
+即客户电脑上的连接器自动拉取命令、在 `cmd.exe` 执行并把输出回传，工程师无需连入客户内网。会话由客户侧控制，验证后保持开启，未代为停止。
+
 ## 未覆盖
 
-- 尚未在赵鹏的 Windows 11 / Windows Server 2019 实机验证（Windows Server 2019 已在 QEMU 中验证，见上）。
 - 安装包未做代码签名，Windows 会显示未知发布者提示。
 - 飞书私聊发送使用用户身份（`im:message:send_as_user`）；应用 `cli_aa5e2ae5a638dd0d` 仍缺 `im:chat:readonly` 等群聊权限，机器人身份只能进群后发消息。
 
