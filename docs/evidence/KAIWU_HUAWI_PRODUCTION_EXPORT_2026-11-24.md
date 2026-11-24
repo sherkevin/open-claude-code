@@ -143,3 +143,43 @@ https://flintw.com/project/kaiwu/?conversation=297c65da24084224aa6009c361fe9585
 本次成功读取的是客户 MCP 的真实工具定义，不是 ERP 订单或合同明细。以后验证具体业务查询时，再提供有效的数据集与字段参数即可；该业务用例不再列为本次连通性验收的前置条件。
 
 本轮同步通过 huawei 正常账号仅修改“华微业务助手”的 instructions，回读 revision=2；说明明确区分连通性测试与具体业务查询，并注明本次平台实测时间。逐字段核对，私有归属、唯一 query 绑定、人工审批及其他设置均保持不变，没有修改客户对话。验证后正常退出登录并清理会话。
+
+
+## 让客户在助手对话中亲自验证（同日 23:04）
+
+用户要求提供可直接发给“华微业务助手”的提示词，并亲眼看到本次实际调用结果。检查确认：工作台的 connection test 是 HTTP API，不是模型可调用工具；只有 query 的助手不能通过提示词凭空执行 tools/list。因此复用客户连接器已安装的内置 MCP 测试服务，为该账号提供独立且明确标注的测试工具。
+
+### 配置变更
+
+- 仅为真实客户设备的内置测试来源 src_4435c2550f7722d198835ad736cf4cf2 创建独立集成 int_4a4ff098830c42458646e263f3627993。
+- 新建 huawei 私有连接“华微内网连通性测试”：b39b43973c6a4202ba918fabc8dde04d，连接测试成功。
+- 在既有“华微业务助手”中只追加 kaiwu_demo_ping；原 ERP 连接及 query 绑定逐字段保留。
+- 助手 revision=3，两个绑定的 auto_approved_tools 均为空，正常人工审批继续生效。
+- 指令明确：本轮真实调用测试工具，展示新 nonce、server_time_utc、instance_id 和 demo 标记；不能用历史记录冒充本次测试，不能把内置测试结果称为 ERP 数据。
+- 新集成沿用默认 30 天有效期，到期时间为 2026-12-24 23:02:20（北京时间）；未实现自动续期。临时凭据中转文件已删除。
+
+### 完整对话调用验收
+
+通过 huawei 正常登录会话创建独立诊断对话，正常模型发起调用后，逐字段核对唯一工具及 nonce 参数，仅批准一次。
+
+| 项目 | 实际记录 |
+| --- | --- |
+| 诊断会话 | aee57e57e1ce418baffd7287dc6ab24c |
+| Run | 942a23d8d55b445a9a705f934321c994 |
+| 审批 | 3f38c03ac093497caf0e7477d9347c7e |
+| 实际工具 | mcp__cb39b43973c6a4202ba918fabc8dde04d__kaiwu_demo_ping |
+| 输入 nonce | HUAWI-PREFLIGHT-20261124-ROOT-01 |
+| 结果 | tool.completed.success=true；一次启动、一次下发、一次完成；无其他调用或重试 |
+| 后台完成时间 | 2026-11-24T15:04:31.546025+00:00 |
+
+root 独立只读核对生产 events 表，确认上述工具、唯一 nonce、success=true 和调用次数，且回读助手确认原业务绑定不变。对话回显包含匹配的 nonce、server_time_utc=2026-11-24T15:04:31.4934782Z、instance_id=demo_2e9f4e5850d23401a8b89ab434e823b2、demo=true、marker=KAIWU_BUILTIN_DEMO_V1。具体回显值来自该 run 的助手答复；公开 trace 不保存完整原始工具 JSON。诊断对话已归档，用户原有对话未改动，登录会话已正常退出。
+
+用户可在同一助手的新会话中调用 kaiwu_demo_ping，只提供自己的新 nonce，并查看实际返回。该测试证明助手到客户侧连接器内置 MCP 服务的本次真实往返；真实 ERP 工具发现的成功证明见 22:48 专项复验，两项证据不混用。
+
+### 一次有来源的 ERP 计数候选检查
+
+另行仅尝试一次 sales_contract 计数候选。其来源是 T3 原线程用户于 2026-11-24 09:42:38 提供的 /SysDevCore/mcp/sales_contract 地址末段（消息 6cdec6b5-bf9a-43bf-b5fe-a12e6f15dd4d），原文是 tools/list 示例，未提供 dataset 样例，故没有预先认定该候选有效。
+
+该次使用只限真实 ERP 来源的 300 秒临时集成，经官方 MCP SDK 初始化、读取 query 定义后调用一次 count(*)，rows=1。收到真实工具 isError=true，返回 code=QUERY_EXECUTION_FAILED，message=“明细页面执行失败或超时，请检查服务器日志。”，request_id=8000041b-0000-e200-b63f-84710c7967bb；临时集成 int_72cb016b91b8480cafed77e409a00fdf 已立即撤销。
+
+没有把这次候选检查标为业务查询成功，也没有根据错误码断言 sales_contract 已是有效数据集。用户本轮的实时往返验证采用上面已成功的内置 ping，不依赖该 ERP 候选。
