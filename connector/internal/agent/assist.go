@@ -19,7 +19,14 @@ import (
 )
 
 const (
-	assistLifetime       = 30 * time.Minute
+	// assistLifetime is the server's sliding lease: every poll renews it on
+	// both sides, so an open session stays usable for as long as the customer
+	// leaves it open. A session that stops polling still ends this long after
+	// the last poll.
+	assistLifetime = 30 * time.Minute
+	// assistMaxLifetime is a local safety cap only. It keeps a session that the
+	// server never reports inactive from polling forever.
+	assistMaxLifetime    = 24 * time.Hour
 	assistPollInterval   = 3 * time.Second
 	assistControlTimeout = 3 * time.Second
 	// A control-plane or network blip must not end a session the customer
@@ -199,11 +206,10 @@ func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget) (*cl
 		go a.notifyAssistStop(session)
 		return nil, errors.New("开始协助时本机连接状态已变化，请刷新后重试")
 	}
-	deadline := offer.ExpiresAt
-	if localDeadline := time.Now().Add(assistLifetime); localDeadline.Before(deadline) {
-		deadline = localDeadline
-	}
-	sessionCtx, cancel := context.WithDeadline(a.runtimeCtx, deadline)
+	// The server's sliding lease decides when the session ends; the local
+	// deadline is only a safety cap. The offer's own expiry is still checked
+	// when the offer is validated above.
+	sessionCtx, cancel := context.WithDeadline(a.runtimeCtx, time.Now().Add(assistMaxLifetime))
 	session.cancel = cancel
 	a.assistSeen = nil
 	a.assistActive = session
@@ -259,8 +265,10 @@ func (a *Agent) SetAssistTarget(ctx context.Context, sessionID string, target cl
 	if err != nil || ctx.Err() != nil {
 		return nil, errors.New("开物未确认此 MCP，请检查连接后用同一地址重试")
 	}
+	// Compare identity, not expiry: the sliding lease moves the server's
+	// expires_at forward on every poll.
 	if offer.ID != sessionID || offer.Status != "active" || offer.Name != target.Name || offer.URL != target.URL ||
-		!offer.ExpiresAt.Equal(session.offer.ExpiresAt) || !validAssistOffer(offer, time.Now()) {
+		!validAssistOffer(offer, time.Now()) {
 		return nil, errors.New("开物返回的服务与本机所选 MCP 不一致，请核对地址后重试")
 	}
 	session.targetConfirmed = true
@@ -293,8 +301,12 @@ func (a *Agent) StartAssist(ctx context.Context, sessionID string) error {
 		a.mu.Unlock()
 		return errors.New("这项协助请求已更新或无法开始，请刷新后重试")
 	}
-	sessionCtx, cancel := context.WithTimeout(a.runtimeCtx, assistLifetime)
+	// The server's sliding lease decides when the session ends; the local
+	// deadline is only a safety cap.
+	sessionCtx, cancel := context.WithTimeout(a.runtimeCtx, assistMaxLifetime)
 	session := &assistSession{offer: *offer, client: a.cloud, connectorID: a.identity.ConnectorID, cancel: cancel}
+	// Displayed and re-checked locally; every successful poll slides it
+	// forward with the server's lease.
 	session.offer.ExpiresAt = time.Now().Add(assistLifetime)
 	a.assistActive = session
 	a.mu.Unlock()
@@ -405,6 +417,13 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 		if !poll.Active {
 			return
 		}
+		// The server renewed the sliding lease on this poll; keep the local
+		// view in step so target confirmations and the status page agree.
+		a.mu.Lock()
+		if a.assistActive == session {
+			session.offer.ExpiresAt = time.Now().Add(assistLifetime)
+		}
+		a.mu.Unlock()
 		if job := poll.Job; job != nil {
 			if busy || !assistJobID.MatchString(job.ID) {
 				return

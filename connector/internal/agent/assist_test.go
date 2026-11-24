@@ -543,3 +543,65 @@ func TestAssistDynamicSigningStaysWithTheApprovedSource(t *testing.T) {
 		t.Fatalf("approved signed tool call failed: %v", err)
 	}
 }
+
+func TestAssistOutlivesTransientPollFailure(t *testing.T) {
+	offer := cloud.AssistOffer{ID: testAssistID, Name: openAssistName, Status: "active", ExpiresAt: time.Now().Add(time.Minute)}
+	var polls, stops atomic.Int32
+	recovered := make(chan struct{}, 1)
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		respond := json.NewEncoder(w).Encode
+		switch r.URL.Path {
+		case "/v1/connectors/conn_assist/assist/start":
+			_ = respond(offer)
+		case "/v1/connectors/conn_assist/assist/poll":
+			if polls.Add(1) == 1 {
+				// A control-plane blip: the first poll after opening fails.
+				http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+				return
+			}
+			select {
+			case recovered <- struct{}{}:
+			default:
+			}
+			_ = respond(cloud.AssistPoll{Active: true})
+		case "/v1/connectors/conn_assist/assist/stop":
+			stops.Add(1)
+			_ = respond(struct{}{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(control.Close)
+	f := &assistanceFixture{results: make(chan cloud.AssistResult, 1), cloudURL: control.URL}
+	a := newAssistTestAgent(t, f)
+	ctx := context.Background()
+	started, err := a.OpenAssist(ctx)
+	if err != nil || started == nil || !started.LocalActive {
+		t.Fatalf("could not open assistance: %+v %v", started, err)
+	}
+	select {
+	case <-recovered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("device ended the session after a transient poll failure")
+	}
+	// Every successful poll renews the local lease alongside the server's,
+	// so the status page and target confirmation do not see a stale expiry.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		status, err := a.AssistStatus(ctx)
+		if err == nil && status.Offer != nil && status.Offer.ExpiresAt.After(offer.ExpiresAt) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("local lease did not follow the server's renewal: %+v %v", status, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if stops.Load() != 0 {
+		t.Fatal("device stopped the session after a transient failure")
+	}
+	if err := a.StopAssist(ctx, offer.ID); err != nil {
+		t.Fatal(err)
+	}
+}
