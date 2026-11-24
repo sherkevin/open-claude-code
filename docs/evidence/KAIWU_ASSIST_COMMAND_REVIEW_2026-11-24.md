@@ -69,6 +69,23 @@
 
 ## 功能审查（真实链路）
 
+### 客户实机文件读写（2026-11-24 14:20 东八区）
+
+赵鹏在 Windows 11 本机重新点击「开始协助」后，生产控制面出现会话 `asst_89f5e5cd8819499bb804ce3c12e47618`（设备 `conn_7b7eb2d128e243d8a3ec59eada396500`）。工程师依次下发：
+
+| 步骤 | 命令 | 结果 | 耗时 |
+| --- | --- | --- | --- |
+| 写 | `echo kaiwu-file-rw-ok> "%TEMP%\kaiwu-rw-proof.txt"` | `command_completed`，退出码 0 | 96 ms |
+| 读回 | `type "%TEMP%\kaiwu-rw-proof.txt"` | 输出 `kaiwu-file-rw-ok` | 78 ms |
+| 列目录 | `dir /b "%TEMP%\kaiwu-rw-proof.txt"` | 输出 `kaiwu-rw-proof.txt` | 80 ms |
+| 删除 | `del "%TEMP%\kaiwu-rw-proof.txt"` | `deleted` | 82 ms |
+| 确认 | `if exist ... (echo STILL_THERE) else (echo GONE)` | `GONE` | 87 ms |
+| 读系统文件 | `type C:\Windows\win.ini` | 返回 `[fonts] [extensions] [mci extensions] [files] [Mail] MAPI=1` | 77 ms |
+
+命令以 SYSTEM 身份在 `cmd.exe` 执行，`%TEMP%` 解析为 `C:\windows\TEMP`。验证结束后会话已 `stop`，临时文件已删除。
+
+驱动脚本：`/media/data3/dengkw/acceptance/kaiwu-prod-e2e/file_rw_proof.py`（经 `ubuntu@43.161.249.13` 调回环 bridge API）。
+
 | 场景 | 结果 |
 | --- | --- |
 | 回环 E2E（`scripts/kaiwu_assist_command_e2e.py`） | PASS：`kaiwu-assist-e2e-ok` 4 ms；`sleep 30` 5,002 ms 超时终止 |
