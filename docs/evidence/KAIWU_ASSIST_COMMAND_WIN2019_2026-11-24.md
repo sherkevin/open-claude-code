@@ -172,4 +172,6 @@ KAIWU_ASSIST_CMD_PROBE_EXIT 0
 
 交付目录：`/media/data3/dengkw/acceptance/kaiwu-keepalive-20261124/delivery/`（含 `交付说明.md`）。
 
+交付记录：2026-11-24 15:51（东八区）以邓凯文的飞书身份私聊发送给赵鹏（`ou_d0c47fb5f4a601c16286033f78c81005`）：文字说明 `om_x100b7f6051e4b880dc0be3432be05b6`，安装包 `om_x100b7f606d93acacde0042c1cb1fc43`。
+
 未覆盖：1.5.1 尚未在客户 Windows 11 实机覆盖安装；30 分钟以上长会话需客户升级后实测。
