@@ -31,6 +31,8 @@ from .kaiwu_diagnostics import SOURCE_ID_RE
 from .security import AppError
 
 SESSION_TTL = 30 * 60
+# Device polling proves liveness, not unlimited authorization.
+SESSION_MAX_AGE = 24 * 60 * 60
 DEVICE_LEASE = 15
 QUEUE_TTL = 45
 RUN_TTL = 120
@@ -47,6 +49,11 @@ ToolName = Annotated[str, Field(pattern=TOOL_NAME_RE.pattern)]
 
 def _future(seconds: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _renewed_session_expiry(row) -> str:
+    hard_deadline = datetime.fromisoformat(row['created_at']) + timedelta(seconds=SESSION_MAX_AGE)
+    return min(datetime.fromisoformat(_future(SESSION_TTL)), hard_deadline).isoformat()
 
 
 def _target_url(value: str) -> str:
@@ -264,7 +271,7 @@ def _expire(service):
     timestamp = now()
     db.execute(
         "UPDATE kaiwu_assist_sessions SET status='expired' "
-        "WHERE status IN ('pending','active') AND (expires_at<=? OR connector_id IN "
+        "WHERE status IN ('pending','active') AND (expires_at<=? OR created_at<=? OR connector_id IN "
         "(SELECT id FROM kaiwu_connectors WHERE revoked=1 OR draining=1) "
         "OR (instr(created_by, ?) = 1 AND ? = 0) "
         "OR (instr(created_by, ?) != 1 AND created_by != ? || connector_id AND NOT EXISTS "
@@ -272,7 +279,7 @@ def _expire(service):
         "OR (tenant_id NOT IN (SELECT value FROM json_each(?)) "
         "AND connector_id NOT IN (SELECT value FROM json_each(?))))",
         (
-            timestamp, BRIDGE_OPERATOR_PREFIX, bool(settings.kaiwu_assist_bridge_secret()),
+            timestamp, _future(-SESSION_MAX_AGE), BRIDGE_OPERATOR_PREFIX, bool(settings.kaiwu_assist_bridge_secret()),
             BRIDGE_OPERATOR_PREFIX, DEVICE_OWNER_PREFIX, dump(tenants), dump(devices),
         ),
     )
@@ -291,7 +298,10 @@ def expire_assist_on_startup(service):
 
 
 def _active(row):
-    return row["status"] == "active" and not row["revoked"] and not row["draining"] and row["expires_at"] > now()
+    return (
+        row["status"] == "active" and not row["revoked"] and not row["draining"]
+        and row["expires_at"] > now() and row["created_at"] > _future(-SESSION_MAX_AGE)
+    )
 
 
 def _require_recent_consent(row):
@@ -471,7 +481,7 @@ def add_device_assist(router, service_dependency, device):
             timestamp = now()
             service.db.execute(
                 "UPDATE kaiwu_assist_sessions SET status='active', expires_at=?, last_poll_at=? WHERE id=?",
-                (_future(SESSION_TTL), timestamp, row["id"]),
+                (_renewed_session_expiry(row), timestamp, row["id"]),
             )
             _event(service, row, "approved")
             return {}
@@ -519,7 +529,7 @@ def add_device_assist(router, service_dependency, device):
             timestamp = now()
             service.db.execute(
                 "UPDATE kaiwu_assist_sessions SET last_poll_at=?, expires_at=? WHERE id=?",
-                (timestamp, _future(SESSION_TTL), row["id"]),
+                (timestamp, _renewed_session_expiry(row), row["id"]),
             )
             job = _job(service, row["id"])
             if not job or job["status"] != "queued" or not data.accept_jobs:

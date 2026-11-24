@@ -154,3 +154,34 @@ def test_expiration_and_rotation_do_not_modify_existing_integration(native):
         assert rotated.status_code == 200 and rotated.json()["mcp_config"] != second.json()["mcp_config"]
         assert device_post(client, sign, path, {"source_id": SOURCE_ID}).json()["error"]["code"] == "DEVICE_EXPORT_TOKEN_CHANGED"
         assert db.one("SELECT count(*) AS n FROM kaiwu_integrations")["n"] == 2
+
+
+def test_export_status_explains_rejection_without_granting_or_leaking(native):
+    client, app, enroll = native
+    settings = app.state.service.settings
+    settings.kaiwu_device_export_tenants = ()
+    settings.kaiwu_edge_public_base = EDGE
+    connector, _, sign = enroll("tenant-a")
+    other, _, other_sign = enroll("tenant-b")
+    status_path = export_path(connector) + "-status"
+    assert client.get(status_path).status_code == 401
+    assert client.get(status_path, headers=sign("GET", status_path)).status_code == 403
+    assert client.get(status_path, headers=other_sign("GET", status_path)).status_code == 403
+    before = client.get(status_path, headers=ADMIN)
+    assert before.status_code == 200
+    assert before.json()["tenant_export_allowed"] is False
+    assert before.json()["last_rejection"] is None
+    assert device_post(client, sign, export_path(connector), {"source_id": SOURCE_ID}).status_code == 403
+    after = client.get(status_path, headers=ADMIN)
+    assert after.headers["cache-control"] == "no-store"
+    result = after.json()
+    assert result["tenant_id"] == "tenant-a"
+    assert result["last_rejection"]["reason_code"] == "DEVICE_EXPORT_DENIED"
+    assert result["last_rejection"]["http_status"] == 403
+    assert set(result["last_rejection"]) == {"reason_code", "http_status", "trace_id", "occurred_at"}
+    assert SOURCE_ID not in after.text and "mcp_config" not in after.text
+    assert client.get(export_path(other) + "-status", headers=ADMIN).json()["last_rejection"] is None
+    assert not app.state.service.db.all("SELECT * FROM kaiwu_integrations")
+    settings.kaiwu_device_export_tenants = ("tenant-a",)
+    assert client.get(status_path, headers=ADMIN).json()["tenant_export_allowed"] is True
+    assert client.get(status_path, headers=ADMIN).json()["last_rejection"]["reason_code"] == "DEVICE_EXPORT_DENIED"

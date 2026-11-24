@@ -445,3 +445,25 @@ def test_polling_renews_the_session_lease(env):
     db.execute("UPDATE kaiwu_assist_sessions SET expires_at=? WHERE id=?", (past, local["session_id"]))
     assert device("poll", {**local, "accept_jobs": False}).json() == {"active": False, "job": None}
     assert client.get(route).json()["status"] == "expired"
+
+
+def test_polling_cannot_extend_authorization_beyond_hard_cap(env):
+    _, client, db, device, _, _, _ = env
+    local, route = request_assist(env)
+    from app.kaiwu_assist import SESSION_MAX_AGE
+    created = datetime.now(timezone.utc) - timedelta(seconds=SESSION_MAX_AGE - 60)
+    deadline = created + timedelta(seconds=SESSION_MAX_AGE)
+    db.execute(
+        "UPDATE kaiwu_assist_sessions SET created_at=? WHERE id=?",
+        (created.isoformat(), local["session_id"]),
+    )
+    assert device("poll", {**local, "accept_jobs": False}).json() == {"active": True, "job": None}
+    assert datetime.fromisoformat(client.get(route).json()["expires_at"]) == deadline
+    # Even a stale or incorrectly renewed persisted lease cannot override consent.
+    db.execute(
+        "UPDATE kaiwu_assist_sessions SET created_at=?,expires_at=? WHERE id=?",
+        ((created - timedelta(minutes=2)).isoformat(),
+         (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(), local["session_id"]),
+    )
+    assert device("poll", local).json() == {"active": False, "job": None}
+    assert client.get(route).json()["status"] == "expired"

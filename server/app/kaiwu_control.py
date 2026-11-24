@@ -1553,6 +1553,47 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             ]
         }
 
+    @router.get("/v1/connectors/{connector_id}/mcp-export-status")
+    def device_mcp_export_status(
+        connector_id: str,
+        request: Request,
+        response: Response,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        """Read-only control-plane diagnosis; this never grants export."""
+        db = service_obj.db
+        settings = admin_ctx["settings"]
+        row = db.one("SELECT id,tenant_id,revoked,draining FROM kaiwu_connectors WHERE id=?", (connector_id,))
+        if not row:
+            raise AppError(404, "CONNECTOR_NOT_FOUND", "连接器不存在")
+        last = db.one(
+            "SELECT detail,trace_id,created_at FROM kaiwu_control_audit "
+            "WHERE connector_id=? AND tenant_id=? AND action='device.mcp_export.rejected' "
+            "ORDER BY id DESC LIMIT 1",
+            (connector_id, row["tenant_id"]),
+        )
+        last_rejection = None
+        if last:
+            detail = _json_object(last["detail"])
+            last_rejection = {
+                "reason_code": detail.get("reason_code"), "http_status": detail.get("http_status"),
+                "trace_id": last["trace_id"], "occurred_at": last["created_at"],
+            }
+        relay = getattr(request.app.state, "kaiwu_native_relay", None)
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "connector_id": connector_id,
+            "tenant_id": row["tenant_id"],
+            "tenant_export_allowed": row["tenant_id"] in settings.kaiwu_device_export_tenants,
+            "revoked": bool(row["revoked"]),
+            "draining": bool(row["draining"]),
+            "native_relay_enabled": settings.kaiwu_native_relay_enabled,
+            "native_relay_online": bool(relay and relay.is_online(connector_id)),
+            "public_https_configured": urlsplit(_edge_public_base(settings)).scheme == "https",
+            "last_rejection": last_rejection,
+        }
+
     @router.post("/v1/integrations", status_code=201)
     def create_integration(
         data: IntegrationCreateRequest,
@@ -2060,53 +2101,70 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             raise AppError(403, "DEVICE_SCOPE_DENIED", "设备无权访问该连接器")
         settings: Settings = device_ctx["settings"]
         db = service_obj.db
-        with db.transaction():
-            # Device authentication happened before this transaction. Check the
-            # current record again to serialize issuance with revocation.
-            connector = db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
-            if not connector or connector["revoked"]:
-                raise AppError(403, "DEVICE_REVOKED", "设备身份已失效")
-            tenant_id = connector["tenant_id"]
-            if tenant_id not in settings.kaiwu_device_export_tenants:
-                raise AppError(403, "DEVICE_EXPORT_DENIED", "该企业尚未开通复制 MCP 配置，请联系开物管理员")
-            if (
-                not settings.kaiwu_native_relay_enabled or connector["draining"]
-                or not is_native_connector(db, connector_id)
-                or not request.app.state.kaiwu_native_relay.is_online(connector_id)
-            ):
-                raise AppError(409, "NATIVE_RELAY_OFFLINE", "请先连接开物，再复制 MCP 配置")
-            if data.source_id == _builtin_demo_source_id(connector_id):
-                raise AppError(403, "DEVICE_EXPORT_SOURCE_DENIED", "请选择已登记的业务 MCP 服务")
-            source, = _integration_rows(db, connector_id, [data.source_id])
-            if source["tenant_id"] != tenant_id or source["transport"] != "streamable_http":
-                raise AppError(403, "DEVICE_EXPORT_SOURCE_DENIED", "请选择本企业的 Streamable HTTP 业务 MCP")
-            if urlsplit(_edge_public_base(settings)).scheme != "https":
-                raise AppError(503, "EDGE_NOT_CONFIGURED", "复制 MCP 配置需要配置 HTTPS 公网地址")
+        try:
+            with db.transaction():
+                # Device authentication happened before this transaction. Check the
+                # current record again to serialize issuance with revocation.
+                connector = db.one("SELECT * FROM kaiwu_connectors WHERE id=?", (connector_id,))
+                if not connector or connector["revoked"]:
+                    raise AppError(403, "DEVICE_REVOKED", "设备身份已失效")
+                tenant_id = connector["tenant_id"]
+                if tenant_id not in settings.kaiwu_device_export_tenants:
+                    raise AppError(403, "DEVICE_EXPORT_DENIED", "该企业尚未开通复制 MCP 配置，请联系开物管理员")
+                if (
+                    not settings.kaiwu_native_relay_enabled or connector["draining"]
+                    or not is_native_connector(db, connector_id)
+                    or not request.app.state.kaiwu_native_relay.is_online(connector_id)
+                ):
+                    raise AppError(409, "NATIVE_RELAY_OFFLINE", "请先连接开物，再复制 MCP 配置")
+                if data.source_id == _builtin_demo_source_id(connector_id):
+                    raise AppError(403, "DEVICE_EXPORT_SOURCE_DENIED", "请选择已登记的业务 MCP 服务")
+                source, = _integration_rows(db, connector_id, [data.source_id])
+                if source["tenant_id"] != tenant_id or source["transport"] != "streamable_http":
+                    raise AppError(403, "DEVICE_EXPORT_SOURCE_DENIED", "请选择本企业的 Streamable HTTP 业务 MCP")
+                if urlsplit(_edge_public_base(settings)).scheme != "https":
+                    raise AppError(503, "EDGE_NOT_CONFIGURED", "复制 MCP 配置需要配置 HTTPS 公网地址")
 
-            # This namespace is used only by the signed-device endpoint. Never
-            # return or rotate an administrator-issued integration token.
-            latest = db.one(
-                "SELECT i.* FROM kaiwu_integrations i JOIN kaiwu_integration_sources m ON m.integration_id=i.id "
-                "WHERE i.connector_id=? AND i.tenant_id=? AND i.created_by=? AND m.source_id=? "
-                "ORDER BY i.created_at DESC,i.id DESC LIMIT 1",
-                (connector_id, tenant_id, DEVICE_EXPORT_ACTOR_PREFIX + connector_id, data.source_id),
-            )
-            if latest and latest["revoked_at"]:
-                raise AppError(403, "DEVICE_EXPORT_REVOKED", "这个 MCP 配置已被管理员停用，请联系开物管理员")
-            if latest and latest["expires_at"] > now():
-                token = _device_export_token(settings, connector_id, latest["id"])
-                if not hmac.compare_digest(_hash_secret(token), latest["token_hash"]):
-                    raise AppError(409, "DEVICE_EXPORT_TOKEN_CHANGED", "该 MCP 凭据已更新，请联系开物管理员")
-                config = _platform_config(settings, [source], token, latest["display_name"])
-            else:
-                integration = IntegrationCreateRequest(
-                    tenant_id=tenant_id, connector_id=connector_id, display_name=source["display_name"][:100],
-                    source_ids=[data.source_id],
+                # This namespace is used only by the signed-device endpoint. Never
+                # return or rotate an administrator-issued integration token.
+                latest = db.one(
+                    "SELECT i.* FROM kaiwu_integrations i JOIN kaiwu_integration_sources m ON m.integration_id=i.id "
+                    "WHERE i.connector_id=? AND i.tenant_id=? AND i.created_by=? AND m.source_id=? "
+                    "ORDER BY i.created_at DESC,i.id DESC LIMIT 1",
+                    (connector_id, tenant_id, DEVICE_EXPORT_ACTOR_PREFIX + connector_id, data.source_id),
                 )
-                created = _issue_platform_integration(
-                    service_obj, integration, [source], connector["device_key_id"], device_export=True,
+                if latest and latest["revoked_at"]:
+                    raise AppError(403, "DEVICE_EXPORT_REVOKED", "这个 MCP 配置已被管理员停用，请联系开物管理员")
+                if latest and latest["expires_at"] > now():
+                    token = _device_export_token(settings, connector_id, latest["id"])
+                    if not hmac.compare_digest(_hash_secret(token), latest["token_hash"]):
+                        raise AppError(409, "DEVICE_EXPORT_TOKEN_CHANGED", "该 MCP 凭据已更新，请联系开物管理员")
+                    config = _platform_config(settings, [source], token, latest["display_name"])
+                else:
+                    integration = IntegrationCreateRequest(
+                        tenant_id=tenant_id, connector_id=connector_id, display_name=source["display_name"][:100],
+                        source_ids=[data.source_id],
+                    )
+                    created = _issue_platform_integration(
+                        service_obj, integration, [source], connector["device_key_id"], device_export=True,
+                    )
+                    config = created["mcp_config"]
+        except AppError as exc:
+            # Record after rollback. Only the authenticated device identity and
+            # stable error code are recorded, never source input or credentials.
+            try:
+                _audit(
+                    db, tenant_id=device_ctx["connector"]["tenant_id"],
+                    connector_id=connector_id, source_id=None, actor_type="device",
+                    actor_id=connector_id, action="device.mcp_export.rejected",
+                    outcome="deny", trace_id=new_trace_id(),
+                    detail={"reason_code": exc.code, "http_status": exc.status},
                 )
-                config = created["mcp_config"]
+            except Exception as audit_error:
+                logging.getLogger(__name__).warning(
+                    "device MCP export rejection audit failed (%s)", type(audit_error).__name__
+                )
+            raise
         response.headers["Cache-Control"] = "no-store"
         return {"mcp_config": config}
 
