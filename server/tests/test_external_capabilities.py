@@ -95,6 +95,10 @@ def system(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL", "local-lexical-v1")
     service = Service(Settings(data_dir=tmp_path, runtime_type="harness", model="test",
                                provider_settings="", model_catalog="", knowledge_vision_enabled=False))
+    # prepare_run gates image attachments on the model's vision capability, so a
+    # text-only default model would reject the upload before the OCR /
+    # reverse-image capability code under test runs.
+    service.catalog.models[service.catalog.default_model_id]["capabilities"] = ["multimodal"]
     user = service.create_user({"username": "capability", "display_name": "Test",
                                 "password": "safe-test-password-123", "role": "admin"})
     assistant = service.save_assistant({"name": "Capability test", "connections": []}, user=user)

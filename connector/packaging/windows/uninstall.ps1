@@ -142,7 +142,7 @@ try {
   Assert-KaiwuQuiescent $null
   Remove-KaiwuStaleWorkspaces
   if ($Purge) {
-    foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE", "KAIWU_CONNECTOR_DATA")) {
+    foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE", "KAIWU_SUPPORT_PORTAL_URL", "KAIWU_CONNECTOR_DATA")) {
       Clear-KaiwuMachineEnvironmentVariable $name
       Remove-Item -Path ("Env:" + $name) -ErrorAction SilentlyContinue
     }

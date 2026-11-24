@@ -239,6 +239,7 @@ func TestDeviceOpensAssistBeforeConfirmingMCP(t *testing.T) {
 	presence := make(chan struct{}, 2)
 	f := &assistanceFixture{results: make(chan cloud.AssistResult, 1)}
 	var confirmations atomic.Int32
+	var targetReady atomic.Bool
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		respond := json.NewEncoder(w).Encode
@@ -278,15 +279,16 @@ func TestDeviceOpensAssistBeforeConfirmingMCP(t *testing.T) {
 			}
 			view := cloud.AssistPoll{Active: true}
 			if body.AcceptJobs != nil && !*body.AcceptJobs {
+				t.Error("device must accept command jobs without an MCP target")
+			}
+			switch {
+			case targetReady.Load() && f.jobSent.CompareAndSwap(false, true):
+				view.Job = &cloud.AssistJob{ID: testAssistJobID, Action: "discover", BearerToken: testAssistToken}
+			case !targetReady.Load():
 				select {
 				case presence <- struct{}{}:
 				default:
 				}
-			} else if f.jobSent.CompareAndSwap(false, true) {
-				if confirmations.Load() != 2 {
-					t.Error("device accepted jobs before exact local target confirmation")
-				}
-				view.Job = &cloud.AssistJob{ID: testAssistJobID, Action: "discover", BearerToken: testAssistToken}
 			}
 			_ = respond(view)
 		case "/v1/connectors/conn_assist/assist/result":
@@ -336,6 +338,7 @@ func TestDeviceOpensAssistBeforeConfirmingMCP(t *testing.T) {
 	if err != nil || confirmed == nil || confirmed.URL != target.URL || !confirmed.LocalActive {
 		t.Fatalf("could not confirm the original target: %+v %v", confirmed, err)
 	}
+	targetReady.Store(true)
 	select {
 	case result := <-f.results:
 		if result.HTTPStatus != http.StatusUnauthorized || result.SessionID != offer.ID || upstreamCalls.Load() != 1 {

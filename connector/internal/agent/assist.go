@@ -384,6 +384,13 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 			if busy || !assistJobID.MatchString(job.ID) {
 				return
 			}
+			// Commands never touch an MCP target, so they may run as soon as
+			// assistance is open. Every other action needs the exact target the
+			// customer confirmed on this machine; the server withholds those
+			// jobs until then, so receiving one is a protocol violation.
+			if job.Action != "command" && offer.URL == "" {
+				return
+			}
 			busy = true
 			go func() {
 				completed <- a.runAssistJob(ctx, session, *job, &draft, &verifiedTools)
@@ -406,7 +413,11 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 }
 
 func (a *Agent) runAssistJob(ctx context.Context, session *assistSession, job cloud.AssistJob, draft **SourceInput, verifiedTools *[]string) cloud.AssistResult {
-	offer := session.offer
+	// Use the offer merged with the target this machine confirmed; the raw
+	// offer still carries the empty address the session started with.
+	a.mu.RLock()
+	offer := session.localOffer()
+	a.mu.RUnlock()
 	result := cloud.AssistResult{SessionID: offer.ID, JobID: job.ID, Status: "failed", Code: "canceled"}
 	if ctx.Err() != nil {
 		return result

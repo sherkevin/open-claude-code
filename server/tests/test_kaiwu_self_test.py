@@ -650,10 +650,10 @@ def test_independent_demo_slot_keeps_the_business_cap_and_legacy_route(tmp_path)
                 **signed_headers(key, key_id, "POST", path, body),
             })
 
-        def register(source_id, tools, binding="3" * 64):
+        def register(source_id, tools, binding="3" * 64, name="合成来源"):
             return device_post("/v1/sources", {
                 "source_id": source_id,
-                "display_name": "合成来源",
+                "display_name": name,
                 "allowed_tools": tools,
                 "tool_schema_sha256": "2" * 64,
                 "target_binding_sha256": binding,
@@ -663,9 +663,9 @@ def test_independent_demo_slot_keeps_the_business_cap_and_legacy_route(tmp_path)
         business = [f"src_{index:032x}" for index in range(1, 17)]
         for source_id in business:
             assert register(source_id, ["lookup_order"]).status_code == 200
-        assert register(demo_id, ["lookup_order"]).status_code == 409
+        assert register(demo_id, ["lookup_order"], name=DEMO_NAME).status_code == 409
         assert register("src_" + "a" * 32, [PING, ORDER, INVENTORY]).status_code == 409
-        legacy = register(demo_id, [PING, ORDER, INVENTORY])
+        legacy = register(demo_id, [PING, ORDER, INVENTORY], name=DEMO_NAME)
         assert legacy.status_code == 200, legacy.text
         db = app.state.service.db
 
@@ -677,7 +677,7 @@ def test_independent_demo_slot_keeps_the_business_cap_and_legacy_route(tmp_path)
 
         original_route = route()
         stable = hashlib.sha256(f"kaiwu_builtin_demo_v1:{demo_id}".encode()).hexdigest()
-        migrated = register(demo_id, [PING, ORDER, INVENTORY], stable)
+        migrated = register(demo_id, [PING, ORDER, INVENTORY], stable, name=DEMO_NAME)
         assert migrated.status_code == 200, migrated.text
         assert migrated.json()["source"]["target_binding_sha256"] == stable
         assert migrated.json()["source"]["revision"] == legacy.json()["source"]["revision"]

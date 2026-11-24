@@ -149,7 +149,7 @@ def test_image_capability_is_rechecked_after_admin_revocation():
 def test_historical_image_cannot_cross_dispatch_after_revocation(monkeypatch):
     import threading
     from app.harness_attachments import AttachmentPrompt
-    service=SimpleNamespace(catalog=SimpleNamespace(models={'selected':{'capabilities':[]}}),db=SimpleNamespace(lock=threading.RLock()))
+    service=SimpleNamespace(catalog=SimpleNamespace(models={'selected':{'capabilities':[]}}),db=SimpleNamespace(lock=threading.RLock()),settings=SimpleNamespace(deployment_mode='normal'))
     prompt=AttachmentPrompt.__new__(AttachmentPrompt)
     prompt.service=service;prompt.runtime=SimpleNamespace(conversation_id='owned')
     prompt.run={'model_id':'selected'};prompt.history=[{'id':'old-image','binding':{}}];prompt.snapshots=[]

@@ -17,7 +17,7 @@ $StateBackupRoot = Join-Path $env:ProgramData "Kaiwu\ConnectorSmokeBackups"
 $UninstallKey = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\KaiwuConnector"
 $StateBackup = $null
 $ExpectedVersion = $null
-$SupportedEnvironmentNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")
+$SupportedEnvironmentNames = @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE", "KAIWU_SUPPORT_PORTAL_URL")
 
 $PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
 $Installer = Join-Path $PackageRoot "install.ps1"
@@ -603,7 +603,7 @@ function Get-ConfigurationFingerprint {
         }
     }
     $environment = @()
-    foreach ($name in @("KAIWU_CLOUD_BASE", "KAIWU_EDGE_BASE")) {
+    foreach ($name in $SupportedEnvironmentNames) {
         $value = [Environment]::GetEnvironmentVariable($name, "Machine")
         $environment += [ordered]@{
             name = $name

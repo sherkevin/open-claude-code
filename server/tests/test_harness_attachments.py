@@ -379,6 +379,12 @@ def test_active_stream_revocation_closes_owned_runtime(system):
     runtime.service, runtime.conversation_id = system.service, system.runtime.conversation_id
     closed = []
 
+    async def emit(_kind, _data):
+        # WorkspaceRuntime.__init__ normally injects this; object.__new__ skips it.
+        return None
+
+    runtime.emit = emit
+
     async def operation(_run, _message, _attachments):
         mutate(system, row, "owner")
         await asyncio.sleep(10)

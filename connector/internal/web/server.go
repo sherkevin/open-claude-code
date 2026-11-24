@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -37,7 +39,8 @@ type Server struct {
 	Token string
 	Addr  string
 
-	httpServer *http.Server
+	httpServer       *http.Server
+	supportPortalURL string
 }
 
 // New 创建服务并生成一次性会话令牌。
@@ -49,7 +52,22 @@ func New(a *agent.Agent, addr string) (*Server, error) {
 	if _, err := rand.Read(raw); err != nil {
 		return nil, err
 	}
-	return &Server{Agent: a, Token: hex.EncodeToString(raw), Addr: addr}, nil
+	return &Server{
+		Agent: a, Token: hex.EncodeToString(raw), Addr: addr,
+		supportPortalURL: supportPortalURL(machineSupportPortalSetting()),
+	}, nil
+}
+
+// The machine administrator supplies a stable landing page, without session credentials.
+func supportPortalURL(value string) string {
+	if strings.ContainsAny(value, "\\?#") {
+		return ""
+	}
+	portal, err := url.ParseRequestURI(value)
+	if err != nil || portal.Scheme != "https" || portal.Hostname() == "" || portal.User != nil {
+		return ""
+	}
+	return portal.String()
 }
 
 // ListenAndServe 启动本机界面。
@@ -268,7 +286,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	setSecurityHeaders(w)
-	io.WriteString(w, strings.Replace(template, "__CONNECTOR_TOKEN__", s.Token, 1))
+	template = strings.Replace(template, "__CONNECTOR_TOKEN__", s.Token, 1)
+	if r.URL.Path == "/" {
+		content := `<p class="muted">开物尚未配置远程协助入口。</p>`
+		if s.supportPortalURL != "" {
+			content = `<p class="muted">在远程支持工具中允许工程师操作命令行，需要停止时，在同一工具中结束会话。</p>
+    <a class="button-link" target="_blank" rel="noopener noreferrer" href="` + html.EscapeString(s.supportPortalURL) + `">打开远程协助</a>`
+		}
+		template = strings.Replace(template, "__ATTENDED_SUPPORT_ENTRY__", content, 1)
+	}
+	io.WriteString(w, template)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
