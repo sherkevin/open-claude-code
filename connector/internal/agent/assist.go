@@ -22,6 +22,13 @@ const (
 	assistLifetime       = 30 * time.Minute
 	assistPollInterval   = 3 * time.Second
 	assistControlTimeout = 3 * time.Second
+	// A control-plane or network blip must not end a session the customer
+	// opened. Retry with a bounded backoff and let the server decide when the
+	// sliding lease has run out.
+	assistRetryMin = 3 * time.Second
+	assistRetryMax = 30 * time.Second
+	// A result the server keeps rejecting must not spin forever.
+	assistReportAttempts = 5
 	openAssistName       = "内网接入协助"
 )
 
@@ -370,6 +377,7 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 	var verifiedTools []string
 	completed := make(chan cloud.AssistResult, 1)
 	busy := false
+	backoff := assistRetryMin
 	for ctx.Err() == nil {
 		a.mu.RLock()
 		offer := session.localOffer()
@@ -377,7 +385,24 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 		request, done := context.WithTimeout(ctx, assistControlTimeout)
 		poll, err := session.client.PollAssist(request, session.connectorID, offer.ID, true)
 		done()
-		if err != nil || !poll.Active || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			// Keep the local session and retry: the server expires it on its
+			// own once the sliding lease runs out, which then reads as inactive.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > assistRetryMax {
+				backoff = assistRetryMax
+			}
+			continue
+		}
+		backoff = assistRetryMin
+		if !poll.Active {
 			return
 		}
 		if job := poll.Job; job != nil {
@@ -401,13 +426,31 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 			return
 		case result := <-completed:
 			busy = false
-			request, done := context.WithTimeout(ctx, assistControlTimeout)
-			err := session.client.ReportAssist(request, session.connectorID, result)
-			done()
-			if err != nil {
-				return
-			}
+			a.reportAssistResult(ctx, session, result)
 		case <-ticker.C:
+		}
+	}
+}
+
+// reportAssistResult retries a result upload so a brief outage does not leave
+// the job running until its lease runs out. A result the server keeps
+// rejecting is dropped after assistReportAttempts; the job then times out.
+func (a *Agent) reportAssistResult(ctx context.Context, session *assistSession, result cloud.AssistResult) {
+	backoff := assistRetryMin
+	for attempt := 0; attempt < assistReportAttempts; attempt++ {
+		request, done := context.WithTimeout(ctx, assistControlTimeout)
+		err := session.client.ReportAssist(request, session.connectorID, result)
+		done()
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > assistRetryMax {
+			backoff = assistRetryMax
 		}
 	}
 }

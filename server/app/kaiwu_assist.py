@@ -512,7 +512,15 @@ def add_device_assist(router, service_dependency, device):
             row = _session(service, data.session_id, connector_id=connector_id)
             if not _active(row):
                 return {"active": False, "job": None}
-            service.db.execute("UPDATE kaiwu_assist_sessions SET last_poll_at=? WHERE id=?", (now(), row["id"]))
+            # Sliding lease: as long as the customer's connector keeps polling,
+            # the session stays open. It still expires SESSION_TTL after the
+            # last poll, so a machine that goes away or stops the connector
+            # releases remote control on its own.
+            timestamp = now()
+            service.db.execute(
+                "UPDATE kaiwu_assist_sessions SET last_poll_at=?, expires_at=? WHERE id=?",
+                (timestamp, _future(SESSION_TTL), row["id"]),
+            )
             job = _job(service, row["id"])
             if not job or job["status"] != "queued" or not data.accept_jobs:
                 return {"active": True, "job": None}

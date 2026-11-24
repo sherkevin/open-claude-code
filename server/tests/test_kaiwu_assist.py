@@ -1,6 +1,7 @@
 """A signed synthetic device exercises the assisted MCP onboarding routes."""
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -423,3 +424,24 @@ def test_old_assist_job_table_rebuild_adds_command_action(tmp_path):
     ).fetchone()["sql"]
     assert "'command'" in definition
     db.conn.close()
+
+
+def test_polling_renews_the_session_lease(env):
+    _, client, db, device, _, _, _ = env
+    local, route = request_assist(env)
+    # A session that was about to expire must survive while the connector polls,
+    # and the poll must push the lease forward again.
+    soon = datetime.now(timezone.utc) + timedelta(seconds=2)
+    db.execute(
+        "UPDATE kaiwu_assist_sessions SET expires_at=? WHERE id=?",
+        (soon.isoformat(), local["session_id"]),
+    )
+    assert device("poll", {**local, "accept_jobs": False}).json() == {"active": True, "job": None}
+    renewed = db.one("SELECT expires_at FROM kaiwu_assist_sessions WHERE id=?", (local["session_id"],))
+    assert datetime.fromisoformat(renewed["expires_at"].replace("Z", "+00:00")) > soon
+    assert client.get(route).json()["status"] == "active"
+    # Without a poll the lease runs out, so an abandoned machine releases control.
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    db.execute("UPDATE kaiwu_assist_sessions SET expires_at=? WHERE id=?", (past, local["session_id"]))
+    assert device("poll", {**local, "accept_jobs": False}).json() == {"active": False, "job": None}
+    assert client.get(route).json()["status"] == "expired"
