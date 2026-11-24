@@ -55,21 +55,22 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
   <a href="/support">连接测试与诊断</a>
 </div></header>
 <main>
-  <h1>接入本机 MCP</h1>
-  <p class="lead">把这台电脑上的 MCP 服务添加到开物。</p>
+  <h1>连接业务系统</h1>
+  <p class="lead">将已经授权的业务服务接入开物。</p>
   <div class="identity"><span id="connectionDot" class="dot" aria-hidden="true"></span><span id="connectionState" role="status">正在读取连接状态…</span><button id="reloadStatusBtn" type="button" hidden>重试</button><button id="resumeBtn" type="button" hidden>恢复连接</button></div>
   <section class="panel terminal-help" aria-labelledby="terminalHelpTitle">
     <h2 id="terminalHelpTitle">远程 CMD 协助</h2>
     __ATTENDED_SUPPORT_ENTRY__
   </section>
   <section id="assistPanel" class="panel assistance" aria-labelledby="assistTitle" hidden>
-    <h2 id="assistTitle">MCP 接入协助</h2>
+    <h2 id="assistTitle">开物技术协助</h2>
     <strong id="assistService"></strong>
     <code id="assistAddress"></code>
     <p id="assistState" class="muted" role="status"></p>
+    <p class="muted">仅在企业管理员批准后开启。协助期间，工程师可以在本机执行诊断及维护命令（包括读取或修改文件）；你可以随时停止。</p>
     <div class="actions">
       <button id="assistStart" class="primary" type="button" hidden>开始协助</button>
-      <button id="assistTarget" class="primary" type="button" hidden>确认这个 MCP</button>
+      <button id="assistTarget" class="primary" type="button" hidden>确认这个业务服务</button>
       <button id="assistStop" type="button" hidden>停止协助</button>
     </div>
     <section id="assistCommandPanel" class="assist-command" aria-label="开物工程师下发的命令" hidden>
@@ -134,6 +135,10 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
       </section>
     </div>
     <p id="notice" class="notice" role="status" aria-live="polite"></p>
+    <section id="exportHelp" class="notice" aria-label="开物接入协助" hidden>
+      <p>不用重新填写地址或访问凭据。请联系开物技术支持处理权限，处理后可直接重试。</p>
+      <div class="actions"><button id="exportHelpBtn" type="button" hidden>查看协助方式</button><a href="/support">连接测试与诊断</a></div>
+    </section>
   </section>
   <details class="saved" id="savedSources" hidden><summary>已保存的 MCP 服务</summary><ul id="savedSourcesList"></ul></details>
 </main>
@@ -146,6 +151,7 @@ let busy = false;
 let sourceID = "";
 let draft;
 let pendingExport = "";
+let exportNeedsSupport = false;
 let assistOffer;
 let assistEnabled = false;
 let assistTargetAfterStart = false;
@@ -192,10 +198,10 @@ function renderAssist(){
   $("assistService").textContent = target?.name || "";
   $("assistAddress").textContent = target?.url || "";
   $("assistAddress").hidden = !target;
-  $("assistState").textContent = awaitingTarget ? "已开始协助。开物可以下发命令；需要读取工具时，在下方填写地址并确认此 MCP。" :
+  $("assistState").textContent = awaitingTarget ? "已开始协助。开物可以下发命令；需要读取工具时，在下方填写地址并确认此业务服务。" :
     local ? "已开始协助。开物工程师下发的命令会由连接器自动执行，并把输出回传开物。你随时可以停止。" :
     active ? "本机协助已停止。请点「停止协助」通知开物。" :
-    assistTargetAfterStart ? "点击「开始协助」，让开物工程师看到这台设备。" :
+    assistTargetAfterStart ? "点击「开始协助」后，开物工程师可在授权期间排查本机问题。" :
     target ? "点击「开始协助」，允许开物工程师读取并协助接入这个 MCP 服务。" :
     "先在下方填写 MCP 地址，再点击「开始协助」。";
   $("assistStart").hidden = active || (!eligible && !pending);
@@ -204,6 +210,7 @@ function renderAssist(){
   $("assistStart").disabled = !!assistAction;
   $("assistTarget").disabled = !!assistAction;
   $("assistStop").disabled = !!assistAction && assistAction !== "target";
+  $("exportHelpBtn").hidden = !eligible && !local;
   const command = local ? assistCommand : undefined;
   $("assistCommandPanel").hidden = !command;
   if(command){
@@ -328,6 +335,7 @@ function render(){
   $("generateBtn").disabled = busy || !selectedTools().length;
   $("retryExportBtn").hidden = !pendingExport;
   $("retryExportBtn").disabled = busy;
+  $("exportHelp").hidden = !exportNeedsSupport;
   $("editAddressBtn").disabled = busy;
   $("authFields").hidden = !$("dynamicAuth").checked;
   for(const input of $("toolsList").querySelectorAll("input")){ input.disabled = busy || !!pendingExport; }
@@ -365,6 +373,7 @@ function editSource(source){
   $("jsonDetails").open = false;
   draft = undefined;
   pendingExport = "";
+  exportNeedsSupport = false;
   phase = "address";
   render();
   notice(source?.disabled ? "这个服务已停用。请在连接测试与诊断中启用它，再生成配置。" : "");
@@ -412,6 +421,7 @@ async function operate(text, work){
   notice(text);
   try{ await work(); }catch(error){
     notice(error.message, "error");
+    if(error.code === "DEVICE_EXPORT_DENIED" && pendingExport){ exportNeedsSupport = true; }
     if(error.code === "UPSTREAM_UNAUTHORIZED"){
       $("sourceOptions").open = true;
       $("bearerToken").focus();
@@ -477,6 +487,7 @@ async function readTools(event){
     }));
     draft = input;
     pendingExport = "";
+    exportNeedsSupport = false;
     $("foundName").textContent = input.display_name;
     phase = "tools";
     notice("");
@@ -485,6 +496,7 @@ async function readTools(event){
 }
 
 async function exportJSON(){
+  exportNeedsSupport = false;
   const result = await api("/api/mcp-export", {source_id:pendingExport});
   if(!result.mcp_config?.mcpServers){ throw new Error("开物未返回完整的 MCP JSON，请重试。"); }
   $("mcpJSON").value = JSON.stringify(result.mcp_config, null, 2);
@@ -552,12 +564,20 @@ $("retryExportBtn").onclick = async()=>{
 $("copyJSONBtn").onclick = copyJSON;
 $("editAddressBtn").onclick = ()=>{
   pendingExport = "";
+  exportNeedsSupport = false;
   phase = "address";
   render();
   notice("");
   $("upstreamAddress").focus();
 };
 $("addAnotherBtn").onclick = ()=>editSource();
+$("exportHelpBtn").onclick = ()=>{
+  // Navigation only: the customer must still explicitly start assistance.
+  if($("assistPanel").hidden){ return; }
+  $("assistPanel").scrollIntoView?.({behavior:"smooth",block:"start"});
+  if(!$("assistStart").hidden){ $("assistStart").focus(); }
+  else if(!$("assistStop").hidden){ $("assistStop").focus(); }
+};
 $("assistStart").onclick = ()=>changeAssist("start");
 $("assistTarget").onclick = ()=>changeAssist("target");
 $("assistStop").onclick = ()=>changeAssist("stop");

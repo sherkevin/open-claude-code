@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sherkevin/open-claude-code/connector/internal/agent"
+	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 )
 
 const loopbackHost = "127.0.0.1:17872"
@@ -821,5 +822,42 @@ func TestBuiltinDemoToggleIsIndependent(t *testing.T) {
 	status := server.Agent.Status()
 	if status.BuiltinDemo.Enabled || status.BuiltinDemo.Running {
 		t.Fatalf("built-in demo did not stop independently: %+v", status.BuiltinDemo)
+	}
+}
+
+func TestMCPExportPermissionFailureIsActionableAndDoesNotReflectUpstreamMessage(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeMCPExportError(recorder, fmt.Errorf("export: %w", &cloud.APIError{
+		Status: http.StatusForbidden, Code: "DEVICE_EXPORT_DENIED",
+		Message: "private-canary", TraceID: "private-trace",
+	}))
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected HTTP 403, got %d", recorder.Code)
+	}
+	var envelope struct {
+		Error struct{ Code, Message string }
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "DEVICE_EXPORT_DENIED" || !strings.Contains(envelope.Error.Message, "无需修改地址或重新安装") {
+		t.Fatalf("unexpected response: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "private-") || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("export permission error leaked private upstream data or is cacheable")
+	}
+}
+
+func TestMCPExportUnexpectedFailureDoesNotReflectPrivateDetails(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeMCPExportError(recorder, &cloud.APIError{
+		Status: http.StatusServiceUnavailable, Code: "UPSTREAM_ERROR",
+		Message: "private-upstream-body", TraceID: "private-trace",
+	})
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "OPERATION_FAILED") {
+		t.Fatalf("unexpected response: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "private-") {
+		t.Fatal("unexpected export error leaked upstream data")
 	}
 }

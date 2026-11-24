@@ -115,7 +115,7 @@ const fetch = async (path, options) => {
     assert.deepEqual(body, {source_id:"source-test"});
     exportAttempts++;
     if(exportAttempts === 1){
-      return {ok:false,status:503,json:async()=>({ok:false,error:{message:"生成超时"}})};
+      return {ok:false,status:403,json:async()=>({ok:false,error:{code:"DEVICE_EXPORT_DENIED",message:"业务服务已保存，开物平台尚未开通配置权限。"}})};
     }
     data = {mcp_config:mcpConfig,platform_url:"https://flintw.com/project/kaiwu/"};
   }else{
@@ -218,10 +218,19 @@ async function verifyWorkflow(){
   assert.notEqual(saved[0].body.dynamic_auth, true);
   assert.equal(ui("mcpJSON").value, "", "failed export must not expose a partial JSON");
   assert.equal(exportAttempts, 1);
+  assert.equal(ui("exportHelp").hidden, false);
+  assert.equal(ui("exportHelpBtn").hidden, false);
+  assert.match(ui("notice").textContent, /开物平台尚未开通配置权限/);
+  const startsBeforeHelp = calls.filter(call=>call.path === "/api/assist/start").length;
+  ui("exportHelpBtn").onclick();
+  assert.equal(document.activeElement, ui("assistStart"));
+  assert.equal(calls.filter(call=>call.path === "/api/assist/start").length, startsBeforeHelp,
+    "help navigation must not start remote assistance without an explicit user action");
   await ui("retryExportBtn").onclick();
   assert.equal(calls.filter(call=>call.path === "/api/source/save-and-connect").length, 1,
     "export retry must not create or reconnect another source");
   assert.equal(exportAttempts, 2);
+  assert.equal(ui("exportHelp").hidden, true);
   assert.deepEqual(JSON.parse(ui("mcpJSON").value), mcpConfig);
   await copyJSON();
   assert.deepEqual(copiedJSON.map(value=>JSON.parse(value)), [mcpConfig]);

@@ -570,7 +570,7 @@ func (s *Server) handleMCPExport(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	result, err := s.Agent.ExportPlatformMCP(ctx, body.SourceID)
 	if err != nil {
-		writeAPIError(w, err)
+		writeMCPExportError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": result})
@@ -808,6 +808,19 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{"ok": false, "error": map[string]string{"code": code, "message": message}})
+}
+
+// Only forward a known, fixed export error. Upstream messages can contain
+// private data and must not become customer-facing instructions.
+func writeMCPExportError(w http.ResponseWriter, err error) {
+	var cloudErr *cloud.APIError
+	if errors.As(err, &cloudErr) && cloudErr.Code == "DEVICE_EXPORT_DENIED" && cloudErr.Status == http.StatusForbidden {
+		writeError(w, http.StatusForbidden, "DEVICE_EXPORT_DENIED", "业务服务已保存，开物平台尚未开通配置权限。请联系开物技术支持，无需修改地址或重新安装。")
+		return
+	}
+	// The detailed outcome is recorded by ExportPlatformMCP. Do not echo
+	// upstream response bodies, URLs or arbitrary error text into this page.
+	writeError(w, http.StatusBadRequest, "OPERATION_FAILED", "未能生成配置，请检查连接状态或联系开物技术支持。")
 }
 
 func writeAPIError(w http.ResponseWriter, err error) {
