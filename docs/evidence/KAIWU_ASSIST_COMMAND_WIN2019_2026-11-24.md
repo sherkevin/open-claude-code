@@ -176,4 +176,12 @@ KAIWU_ASSIST_CMD_PROBE_EXIT 0
 
 客户实机复核（赵鹏 Windows 11，2026-11-24）：17:00 前完成 1.5.1 覆盖安装，心跳显示 `1.5.1 (commit a7ec767, built 2026-11-24T07:33:45Z)`、状态 `READY`；16:34:35（东八区）点击「开始协助」，会话 `asst_4b1cc125f4d54caba3b2089912270021` 建立。17:07:00 / 17:07:10 / 17:07:20 三次取样（已越过旧版 30 分钟截止点 17:04:35）：状态均为 `active`，`last_poll_at` 始终在取样前 1 秒内，`expires_at` 每次顺延到 `last_poll_at + 30 分钟`（17:36:59 → 17:37:08 → 17:37:20）。保活已在客户实机成立。
 
+保活会话上的远程命令复核（同一会话，17:15，已运行 40 分钟）：
+
+| 步骤 | 结果 |
+| --- | --- |
+| `POST /sessions/{id}/claim` | 通过（客户侧发起的会话需先认领，才能走 bridge 接口下发作业） |
+| 命令 `echo kaiwu-keepalive-ok & hostname & ver` | `succeeded` / `command_completed`，退出码 0，128 ms |
+| 回传输出 | `kaiwu-keepalive-ok`；`LAPTOP-S5UA26C7`；`Microsoft Windows [版本 10.0.26200.9974]` |
+
 未覆盖：更长时间（小时级）仍靠同一机制，未再单独实测；安装包未签名。
