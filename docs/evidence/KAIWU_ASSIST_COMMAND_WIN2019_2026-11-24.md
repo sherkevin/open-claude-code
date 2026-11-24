@@ -135,3 +135,41 @@ KAIWU_ASSIST_CMD_PROBE_EXIT 0
 - 安装包未做代码签名，Windows 会显示未知发布者提示。
 - 飞书私聊发送使用用户身份（`im:message:send_as_user`）；应用 `cli_aa5e2ae5a638dd0d` 仍缺 `im:chat:readonly` 等群聊权限，机器人身份只能进群后发消息。
 
+
+## 会话保活（2026-11-24 晚）
+
+问题：客户每次点击「开始协助」后约 30 分钟会话即失效，必须重新点击，来回反复。
+
+原因有两层：
+
+1. 服务端会话有效期在创建时固定，轮询只更新 `last_poll_at`，不延长 `expires_at`。
+2. 连接器自身用 `assistLifetime`（30 分钟）作为会话 context 的截止时间，到点主动停轮询。
+
+修复：
+
+| 侧 | 提交 | 内容 |
+| --- | --- | --- |
+| 服务端 | `c3fc75b` | `/assist/poll` 每次轮询把 `expires_at` 顺延 `SESSION_TTL`（30 分钟，滑动租约）；停止轮询 30 分钟后自然过期 |
+| 连接器 | `a7ec767` | 会话 context 改为 24 小时本地安全上限；轮询失败按 3 秒→30 秒指数退避重试；结果上报最多 5 次重试；成功轮询同步顺延本地 `ExpiresAt`；确认 MCP 时比较身份（会话/状态/名称/地址）而不是会滑动的有效期 |
+
+生产发布（均校验运行目录内 `kaiwu_assist.py` 含滑动续期语句）：
+
+| 服务 | 目录 |
+| --- | --- |
+| `kaiwu-control.service`（连接器 `/api/kaiwu/` 入口，:18093） | `/data/dengkw/workspace/kaiwu-enterprise-bridge-20261119/releases/assist-keepalive-c3fc75b.EcUcwp70/server` |
+| `kaiwu.service`（工作台，:18092） | `/data/dengkw/workspace/huawi-preview-20261115/.releases/20261125-hk-assist-keepalive-c3fc75b.PteiCHdb` |
+
+健康检查 `https://flintw.com/api/kaiwu/v1/health` 返回 `{"status":"enabled","version":"control-plane-1"}`。
+
+测试：`server/tests/test_kaiwu_assist.py::test_polling_renews_the_session_lease`（服务端续期与无轮询过期）、`connector/internal/agent/assist_test.go::TestAssistOutlivesTransientPollFailure`（首次轮询 502 后会话仍存续并顺延）；Go 全量测试通过，`govulncheck` 0 个可调用漏洞。
+
+连接器 1.5.1 交付包（提交 `a7ec767`，`native-wss`）：
+
+| 文件 | 大小 | SHA256 |
+| --- | --- | --- |
+| `kaiwu-connector-1.5.1-native-windows-amd64-setup.exe` | 3,966,436 | `2195d0a178e4e378cdf494748821d2d3ec313e661bbef219a4ce3a8749907794` |
+| `kaiwu-connector-1.5.1-native-windows-amd64.zip` | 4,693,777 | `760dd3ba2ed85bfae7043327ebc35ccb88ee2f7fcf46be2b59a05cb5ff2c0fe5` |
+
+交付目录：`/media/data3/dengkw/acceptance/kaiwu-keepalive-20261124/delivery/`（含 `交付说明.md`）。
+
+未覆盖：1.5.1 尚未在客户 Windows 11 实机覆盖安装；30 分钟以上长会话需客户升级后实测。
