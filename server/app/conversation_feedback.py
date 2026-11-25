@@ -37,6 +37,10 @@ class FeedbackStatus(InputModel):
     expected_updated_at: str | None = Field(default=None, max_length=64)
 
 
+class FeedbackNotificationRead(InputModel):
+    expected_version: int = Field(ge=1, le=2**63-1, strict=True)
+
+
 def normalize_image(raw, mime):
     # The existing attachment validator enforces decoded dimensions and pixels.
     from .harness_attachments import _image
@@ -158,6 +162,37 @@ def create_feedback_router(svc, authenticated, admin):
             FROM conversation_feedback WHERE conversation_id=? AND user_id=?
             ORDER BY created_at DESC,id DESC LIMIT 100""", (cid, user["id"]))
 
+    @router.get("/feedback/notifications")
+    def feedback_notifications(response: Response, service=Depends(svc), user=Depends(authenticated)):
+        # Only current owners see their own reporter-visible notices. No admin
+        # diagnostics, screenshot data, conversation body or external push.
+        response.headers["Cache-Control"] = "no-store"
+        scope = """ FROM conversation_feedback f JOIN conversations c ON c.id=f.conversation_id
+            WHERE f.user_id=? AND c.user_id=? AND f.notification_version>f.reporter_seen_version"""
+        args = (user["id"], user["id"])
+        with service.db.lock:
+            count = service.db.one("SELECT count(*) n" + scope, args)["n"]
+            items = service.db.all("""SELECT f.id,f.conversation_id,f.message_id,f.status,f.description,
+                f.resolution_note,f.updated_at,f.notification_version AS version""" + scope +
+                " ORDER BY f.updated_at DESC,f.id DESC LIMIT 100", args)
+        return {"unread_count": count, "items": items}
+
+    @router.patch("/feedback/notifications/{fid}")
+    def mark_feedback_notification_read(fid: str, body: FeedbackNotificationRead, response: Response,
+                                        service=Depends(svc), user=Depends(authenticated)):
+        response.headers["Cache-Control"] = "no-store"
+        with service.db.transaction():
+            row = service.db.one("""SELECT f.notification_version FROM conversation_feedback f
+                JOIN conversations c ON c.id=f.conversation_id
+                WHERE f.id=? AND f.user_id=? AND c.user_id=?""", (fid,user["id"],user["id"]))
+            if not row:
+                raise AppError(404,"NOT_FOUND","反馈通知不存在")
+            if row["notification_version"] != body.expected_version:
+                raise AppError(409,"FEEDBACK_NOTIFICATION_CHANGED","处理结果已更新，请刷新通知后查看")
+            service.db.execute("UPDATE conversation_feedback SET reporter_seen_version=? WHERE id=?",
+                               (body.expected_version,fid))
+        return {"id":fid,"version":body.expected_version,"unread":False}
+
     @router.get("/admin/feedback")
     def list_feedback(service=Depends(svc), user=Depends(admin)):
         return service.db.all("""SELECT f.id,f.user_id,f.conversation_id,f.run_id,f.message_id,
@@ -190,9 +225,11 @@ def create_feedback_router(svc, authenticated, admin):
             # Older clients may update the status alone. Preserve an already
             # published note unless the administrator explicitly replaces it.
             note=row["resolution_note"] if body.resolution_note is None else body.resolution_note.strip()
-            stamp=now()
-            service.db.execute("UPDATE conversation_feedback SET status=?,resolution_note=?,updated_at=? WHERE id=?",
-                               (body.status,note,stamp,fid))
+            changed = body.status != row["status"] or note != row["resolution_note"]
+            stamp=now() if changed else row["updated_at"]
+            service.db.execute("""UPDATE conversation_feedback SET status=?,resolution_note=?,updated_at=?,
+                               notification_version=notification_version+? WHERE id=?""",
+                               (body.status,note,stamp,int(changed),fid))
         return {"id":fid,"status":body.status,"resolution_note":note,"updated_at":stamp}
 
     return router

@@ -630,6 +630,10 @@ class Database:
         feedback_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(conversation_feedback)")}
         if "resolution_note" not in feedback_columns:
             self.conn.execute("ALTER TABLE conversation_feedback ADD COLUMN resolution_note TEXT NOT NULL DEFAULT ''")
+        for column in ("notification_version", "reporter_seen_version"):
+            if column not in feedback_columns:
+                self.conn.execute(f"ALTER TABLE conversation_feedback ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS conversation_feedback_owner_recent ON conversation_feedback(user_id,updated_at,id)")
 
         diagnostic_columns = {
             row["name"]

@@ -149,3 +149,50 @@ def test_published_resolution_note_is_scoped_versioned_and_legacy_compatible(cli
     login(client,"reporter")
     assert client.get(route).json()[0]["resolution_note"]==""
     assert service.db.all("SELECT id FROM runs WHERE conversation_id=?",(cid,))==[]
+
+def test_feedback_notifications_are_owned_versioned_and_not_model_input(client):
+    service=client.app.state.service
+    for name in ("reporter", "other"):
+        service.create_user({"username":name,"display_name":name,"password":PASSWORD,"role":"member"})
+    inbox="/api/v1/feedback/notifications"
+    login(client,"reporter")
+    cid=conversation(client)["id"]
+    fid=client.post(f"/api/v1/conversations/{cid}/feedback",data={"description":"own fixture","request_id":"notice-1"}).json()["id"]
+    assert client.get(inbox).json()=={"unread_count":0,"items":[]}
+    login(client,"other")
+    other_cid=conversation(client)["id"]
+    other_id=client.post(f"/api/v1/conversations/{other_cid}/feedback",data={"description":"foreign fixture","request_id":"notice-2"}).json()["id"]
+    login(client)
+    for identity in (fid,other_id):
+        assert client.patch(f"/api/v1/admin/feedback/{identity}",json={"status":"in_progress","resolution_note":"reviewing"}).status_code==200
+    assert client.get(inbox).json()=={"unread_count":0,"items":[]}
+    assert client.patch(inbox+"/"+fid,json={"expected_version":1}).status_code==404
+    login(client,"reporter")
+    result=client.get(inbox)
+    assert result.headers["cache-control"]=="no-store"
+    item,=result.json()["items"]
+    assert result.json()["unread_count"]==1 and item["id"]==fid and item["version"]==1
+    assert item["conversation_id"]==cid and item["status"]=="in_progress"
+    assert set(item)=={"id","conversation_id","message_id","status","description","resolution_note","updated_at","version"}
+    assert other_id not in result.text and "foreign fixture" not in result.text
+    assert client.patch(inbox+"/"+other_id,json={"expected_version":1}).status_code==404
+    assert client.patch(inbox+"/"+fid,json={"expected_version":0}).status_code==422
+    assert client.patch(inbox+"/"+fid,json={"expected_version":"1"}).status_code==422
+    assert client.patch(inbox+"/"+fid,json={"expected_version":1}).json()["unread"] is False
+    assert client.patch(inbox+"/"+fid,json={"expected_version":1}).status_code==200
+    assert client.get(inbox).json()=={"unread_count":0,"items":[]}
+    login(client)
+    target=f"/api/v1/admin/feedback/{fid}"
+    assert client.patch(target,json={"status":"in_progress","resolution_note":"reviewing"}).status_code==200
+    login(client,"reporter")
+    assert client.get(inbox).json()=={"unread_count":0,"items":[]}
+    login(client)
+    assert client.patch(target,json={"status":"resolved","resolution_note":"fixed"}).status_code==200
+    login(client,"reporter")
+    item,=client.get(inbox).json()["items"]
+    assert item["version"]==2 and item["resolution_note"]=="fixed"
+    assert client.patch(inbox+"/"+fid,json={"expected_version":1}).status_code==409
+    assert client.get(inbox).json()["unread_count"]==1
+    assert client.patch(inbox+"/"+fid,json={"expected_version":2}).status_code==200
+    assert client.get(inbox).json()["unread_count"]==0
+    assert service.db.all("SELECT id FROM runs")==[]
