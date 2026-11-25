@@ -1,5 +1,5 @@
 /** Read-only host seam for the pinned native Team root projection.
- * Not mounted by the product profile. Python must establish ownership and an
+ * Mounted only by the default-off state-only product profile. Python must establish ownership and an
  * exclusive idle-session reservation before invoking this seam in a private
  * native process. It never enables Team, mutates a board, or wakes an Agent.
  */

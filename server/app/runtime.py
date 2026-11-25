@@ -919,24 +919,28 @@ class SessionActor:
             if not future.done():
                 future.set_result(value)
 
-    async def goal_command(self, request, user, session_id, future, authorization=None):
+    async def goal_command(self, request, user, session_id, future, authorization=None, *, team=False):
         from .conversation_goal import require_goal_session
+        from .conversation_team import require_team_session
+        require_session = require_team_session if team else require_goal_session
+        method = "team_state" if team else "goal_state"
+        label = "任务板" if team else "原生目标"
         value=None
         failure=None
         try:
-            await offload(require_goal_session,self.service,self.conversation_id,user,session_id)
+            await offload(require_session,self.service,self.conversation_id,user,session_id)
             await self.ensure_runtime()
-            await offload(require_goal_session,self.service,self.conversation_id,user,session_id)
-            if getattr(self.runtime,"session_id",None)!=session_id or not callable(getattr(self.runtime,"goal_state",None)):
-                raise AppError(503,"GOAL_RUNTIME_UNAVAILABLE","原生目标运行器不可用")
-            if request["action"] != "get" and self.service.settings.harness_goal_execution_enabled:
+            await offload(require_session,self.service,self.conversation_id,user,session_id)
+            if getattr(self.runtime,"session_id",None)!=session_id or not callable(getattr(self.runtime,method,None)):
+                raise AppError(503,"TEAM_RUNTIME_UNAVAILABLE" if team else "GOAL_RUNTIME_UNAVAILABLE",label+"运行器不可用")
+            if not team and request["action"] != "get" and self.service.settings.harness_goal_execution_enabled:
                 from .goal_execution import stop_goal_execution
                 await offload_write(stop_goal_execution,self.service,self.conversation_id,"goal_"+request["action"])
-            value=await self.runtime.goal_state(request)
+            value=await self.runtime.team_state() if team else await self.runtime.goal_state(request)
         except AppError as error:
             failure=error
         except Exception:
-            failure=AppError(503,"GOAL_STATE_UNCERTAIN","原生目标状态暂不可核验，请刷新后确认，不要重复提交")
+            failure=AppError(503,"TEAM_STATE_UNCERTAIN" if team else "GOAL_STATE_UNCERTAIN",label+"状态暂不可核验，请刷新后确认，不要重复提交")
         finally:
             try:
                 if self.runtime:
@@ -947,8 +951,8 @@ class SessionActor:
                     finally:
                         self.runtime=None
                 if failure is None:
-                    await offload(require_goal_session,self.service,self.conversation_id,user,session_id)
-                    if authorization is not None:
+                    await offload(require_session,self.service,self.conversation_id,user,session_id)
+                    if not team and authorization is not None:
                         from .goal_execution import authorize_goal_execution
                         goal=value.get("goal") if isinstance(value,dict) else None
                         if not isinstance(goal,dict):
@@ -959,7 +963,7 @@ class SessionActor:
             except AppError as error:
                 failure=error
             except Exception:
-                failure=AppError(503,"GOAL_STATE_UNCERTAIN","原生目标状态暂不可核验，请刷新后确认，不要重复提交")
+                failure=AppError(503,"TEAM_STATE_UNCERTAIN" if team else "GOAL_STATE_UNCERTAIN",label+"状态暂不可核验，请刷新后确认，不要重复提交")
             finally:
                 # Never resolve the HTTP waiter before releasing the maintenance
                 # reservation, including rejected or stale native mutations.
@@ -970,7 +974,7 @@ class SessionActor:
                     elif value is not None:
                         future.set_result(value)
                     else:
-                        future.set_exception(AppError(503,"EXECUTION_STOPPED","执行服务已停止，请刷新目标状态"))
+                        future.set_exception(AppError(503,"EXECUTION_STOPPED","执行服务已停止，请刷新会话状态"))
 
     async def fork_command(self, child_id, boundary, body, user, future):
         from .conversation_fork import clear_fork_home, fork_boundary, save_fork
@@ -1292,6 +1296,8 @@ class SessionActor:
                         await self.fork_command(*run_id[1:])
                     elif run_id[0] == "goal":
                         await self.goal_command(*run_id[1:])
+                    elif run_id[0] == "team":
+                        await self.goal_command(*run_id[1:],team=True)
                     else:
                         await self.context_command(run_id[1])
                     continue
@@ -1649,6 +1655,19 @@ class RunManager:
         future=asyncio.get_running_loop().create_future()
         self.goal_requests[conversation_id]=future
         actor.enqueue(("goal",request,user,row["harness_session_id"],future,authorization))
+        return await asyncio.shield(future)
+
+    async def team_state(self,conversation_id,user):
+        from .conversation_team import require_team_session
+        row=await offload(require_team_session,self.service,conversation_id,user)
+        if self.maintenance_busy(conversation_id):
+            raise AppError(409,"TEAM_SESSION_BUSY","会话正在处理其他操作，请稍后刷新")
+        actor=self.actor_for(conversation_id)
+        future=asyncio.get_running_loop().create_future()
+        # Share the existing native-state reservation, including the archive,
+        # memory mutation and run/Goal authorization exclusion checks.
+        self.goal_requests[conversation_id]=future
+        actor.enqueue(("team",{"action":"get"},user,row["harness_session_id"],future))
         return await asyncio.shield(future)
 
     async def fork(self, conversation_id, child_id, boundary, body, user):

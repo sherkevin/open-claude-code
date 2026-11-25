@@ -118,6 +118,10 @@ Goal 官方 driver 工人仍有实际开发时，总控在独立工作树实现�
 
 工人真实交付并退出 0；总控修正固定源码路径、取消跳过 pin 选项与重挂 driver 后的 pre-step middleware 注册顺序。实际官方 driver + 合成宿主许可/模型，5/5 场景、pytest 1/1 通过。确认无许可零模型、仅一轮、revision 失效、未知费用拒绝续行、同进程重挂及 session-start 边沿不重放。详见 [Goal 原生接线验收](../evidence/KAIWU_GOAL_NATIVE_DRIVER_SEAM_2026-11-26.md)。不是生产集成或真实进程重启。B2.4 下一步将实际 run/lease/FIFO 与原生 driver 准入对齐，权威费用及单轮硬预算仍未解决，禁止实际无人值守执行。生产闸门不变。
 
+## C2.2a 原生 Team 只读产品 API（2026-11-26）
+
+基于 f91de0e，独立工作树 kaiwu-team-product-read-20261126。总控直接完成默认关闭的官方只读服务装配、严格 RPC 回执、本人空闲会话 GET API 与既有 Goal 维护 reservation 复用。真实 Harness/API 与 Goal/profile 组合 74/74 通过；修复 Cordis 依赖注入错误，未改变上游或权限。见 [产品 API 验收](../evidence/KAIWU_TEAM_PRODUCT_READ_2026-11-26.md)。同一工作树前端候选 4/4、TypeScript、构建通过；浏览器脚本创建请求被安全检查阻止，尚未浏览器验收，保留独立候选，不绕过、不视为已合入 UI。下一项 C2.2b：正常可用授权工具下完成真实 Chromium 验收后合并 UI；B2.4 权威费用与硬预算未解决，禁止实际无人值守 Goal，继续其他独立事项。生产闸门不变。
+
 ### 发布前关键条件
 
 1. A2 优先补齐暂停后恢复，以及明确重启/编辑/立即运行的去重语义。恢复须从未来规则时间计算，保留历史执行回执，不能自动重放上次可能产生副作用的动作。

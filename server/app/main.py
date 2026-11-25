@@ -270,6 +270,9 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         app.include_router(create_interaction_router(svc, authenticated))
         app.include_router(create_schedule_router(svc, authenticated))
         app.include_router(create_feedback_router(svc, authenticated, admin))
+        if settings.harness_team_state_enabled:
+            from .conversation_team import create_team_router
+            app.include_router(create_team_router(svc, authenticated))
         if settings.harness_goal_state_enabled:
             app.include_router(create_goal_router(svc, authenticated))
             if settings.harness_goal_execution_enabled:
@@ -307,6 +310,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             "auth_types": ["none", "bearer"],
             **({"harness_subagents": bool(settings.harness_source_dir and settings.harness_node_path and settings.max_active_sessions >= 2)}
                if not policy.is_trial else {}),
+            **({"harness_team_state": True} if settings.harness_team_state_enabled and not policy.is_trial else {}),
             **({"harness_goal_state": True} if settings.harness_goal_state_enabled and not policy.is_trial else {}),
             **({"harness_goal_execution": True} if settings.harness_goal_state_enabled
                and settings.harness_goal_execution_enabled and not policy.is_trial else {}),

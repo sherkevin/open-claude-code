@@ -95,6 +95,7 @@ def write_profile(
     system_prompt: str, provider: dict, tools: list[dict], max_steps: int = 30,
     tool_timeout_ms: int = 660_000,
     delegation_timeout_ms: int | None = None,
+    team_state: bool = False,
 ) -> dict:
     """Write one locked profile and return dsh arguments and SDK initialize data.
 
@@ -178,7 +179,13 @@ def write_profile(
             raise ValueError("Harness private launch directories contain ambient configuration")
 
     entries = []
-    for identifier, package in KERNEL_MODULES:
+    if type(team_state) is not bool:
+        raise ValueError("Team state switch must be boolean")
+    modules = KERNEL_MODULES + ((
+        ("team-subagent-service", "subagent/subagent"),
+        ("team-state-service", "team/agent-team"),
+    ) if team_state else ())
+    for identifier, package in modules:
         module = source / "packages" / package / "src" / "index.ts"
         if not module.is_file():
             raise ValueError(f"Pinned Harness module is missing: {package}")
@@ -192,6 +199,8 @@ def write_profile(
         elif identifier == "goals":
             # State only: no model tools, command-goal or round driver.
             entry["config"] = {"defaultMaxGoalRounds": 8}
+        elif identifier == "team-state-service":
+            entry["config"] = {"defaultEnabled": False, "maxTasks": 256}
         elif identifier == "attachments":
             entry["config"] = {
                 "dshHome": str(root), "maxImageBytes": 5 * 1024 * 1024,
@@ -235,6 +244,7 @@ def write_profile(
             "usageEndpoint": endpoint.rstrip("/") + ("" if parsed.path.rstrip("/").endswith("/v1") else "/v1") + "/messages",
             "model": model, "tools": definitions, "maxSteps": max_steps,
             "toolTimeoutMs": tool_timeout_ms, "sourceCommit": PINNED_COMMIT,
+            **({"teamState": True} if team_state else {}),
             **({"delegationTimeoutMs": delegation_timeout_ms} if delegation_timeout_ms is not None else {}),
         },
     })

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { installUsageObserver } from './usage_observer.ts'
 import { forkWorkspaceSession } from './fork_session.ts'
 import { goalStateRequest } from './goal_state.ts'
+import { teamStateRequest } from './team_state.ts'
 
 export const name = 'zhixing-workspace-host'
 export const inject = ['tools', 'agents', 'workingDirectory', 'loader', 'sdkAppStartup', 'tokenMeter', 'sessionProjections', 'commands', 'sessions', 'attachments', 'goals']
@@ -121,6 +122,12 @@ export async function apply(ctx: any, config: any): Promise<void> {
   let currentTurn: number | undefined
   let turnWithTool: number | undefined
   let turnWithVisibleText: number | undefined
+  // Optional Cordis dependency binding only for the reviewed read-only profile.
+  let teamContext: any
+  if (config.teamState === true) ctx.inject(['subagents', 'agentTeams', 'agents', 'sessionProjections'], (childCtx: any) => {
+    teamContext = childCtx
+    childCtx.effect(() => () => { if (teamContext === childCtx) teamContext = undefined }, 'workspace.teamStateBinding')
+  })
   let initialized = false
   let acceptingSteer = false
   const steerMessages = new Map<string, string>()
@@ -306,6 +313,10 @@ export async function apply(ctx: any, config: any): Promise<void> {
     }
     if (method === 'workspace/context') return readWorkspaceContext(ctx, config, params, initialized)
     if (method === 'workspace/goal-state') return goalStateRequest(ctx, config, params, initialized)
+    if (method === 'workspace/team-state') {
+      if (config.teamState !== true || !teamContext) throw new Error('Team state disabled')
+      return teamStateRequest(teamContext, config, params, initialized)
+    }
     if (method === 'workspace/fork' && initialized) return forkWorkspaceSession(ctx, config, params)
     if (method === 'workspace/steer') {
       if (!initialized || !isRecord(params) || Object.keys(params).sort().join(',') !== 'requestId,sessionId,text'

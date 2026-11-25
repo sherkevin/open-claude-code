@@ -448,3 +448,20 @@ process.stdout.write('PASS\\n')
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout == "PASS\n"
+
+
+def test_team_profile_mounts_only_read_only_services(arguments):
+    source=arguments["source_dir"]
+    for package in ("subagent/subagent","team/agent-team"):
+        path=source/"packages"/package/"src"/"index.ts"
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text("// test fixture")
+    result=write_profile(**arguments,team_state=True)
+    entries=json.loads((Path(result["profile_dir"])/"cordis.patch.yml").read_text())[0]["insert"]
+    assert [entry["id"] for entry in entries]==[name for name,_ in KERNEL_MODULES]+[
+        "team-subagent-service","team-state-service","workspace-compaction","workspace-host"]
+    assert next(e for e in entries if e["id"]=="team-state-service")["config"]=={"defaultEnabled":False,"maxTasks":256}
+    host=next(e for e in entries if e["id"]=="workspace-host")["config"]
+    assert host["teamState"] is True
+    assert host["tools"]==arguments["tools"]
+    assert all("tool-subagent" not in e["name"] and "tool-agent-team" not in e["name"] and "spawn-in-process" not in e["name"] for e in entries)

@@ -49,6 +49,8 @@ class Settings:
     harness_source_dir: str = field(default_factory=lambda: os.getenv("AGENT_HARNESS_SOURCE_DIR", "").strip())
     # State-only native Goal pilot. The autonomous driver is not mounted.
     harness_goal_state_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_GOAL_STATE_ENABLED", "false").lower() == "true")
+    # Owner-only native Team projection; no providers or model tools mounted.
+    harness_team_state_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_TEAM_STATE_ENABLED", "false").lower() == "true")
     # Separate, default-off execution admission. Even when both switches are
     # on, this host only records an owner's explicit budget approval and a
     # durable round lease; it never starts a model round by itself.

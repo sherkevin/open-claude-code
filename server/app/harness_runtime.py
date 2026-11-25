@@ -67,6 +67,42 @@ class _GoalReceipt(BaseModel):
     continuationDriver: Literal[False]
 
 
+class _TeamTask(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str
+    revision: int = Field(ge=1)
+    subject: str
+    description: str
+    status: Literal["pending", "in_progress", "completed"]
+    blockedBy: list[str]
+    writeScopes: list[str]
+    ownerId: str | None = None
+    ownerName: str | None = None
+    ready: bool
+    writeScopeWarnings: list[str]
+
+
+class _TeamBoard(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    enabled: bool
+    tasks: list[_TeamTask] = Field(max_length=256)
+
+    @model_validator(mode="after")
+    def unique_tasks(self):
+        if len({task.id for task in self.tasks}) != len(self.tasks):
+            raise ValueError("duplicate Team task")
+        return self
+
+
+class _TeamReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schema_: Literal["workspace-team-state/v1"] = Field(alias="schema")
+    sourceCommit: Literal["fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"]
+    sessionId: str
+    board: _TeamBoard
+    executionEnabled: Literal[False]
+
+
 class _EmptyResult(BaseModel):
     pass
 
@@ -422,6 +458,7 @@ class HarnessRuntime(WorkspaceRuntime):
                       "model": self.config["upstream_model"], "apiKeyEnv": "WORKSPACE_MODEL_API_KEY", "reasoningEffort": effort,
                       "maxTokens": max_output},
             tools=tools, max_steps=self.config.get("worker_max_steps", settings.max_turns),
+            team_state=settings.harness_team_state_enabled and not self.subagent_child_id and not self.service.policy.is_trial,
             tool_timeout_ms=(settings.approval_seconds + 60) * 1000,
             delegation_timeout_ms=(self.service.subagents.delegation_timeout() * 1000
                                    if "delegate_tasks" in tool_names else None),
@@ -933,6 +970,15 @@ class HarnessRuntime(WorkspaceRuntime):
                 await self._settle_compaction_request(operation)
             else:
                 operation.add_done_callback(self._consume_task_result)
+
+    async def team_state(self):
+        if self.subagent_child_id or self.current_run or not self.service.settings.harness_team_state_enabled or self.service.policy.is_trial:
+            raise AppError(409,"TEAM_SESSION_BUSY","任务板仅支持空闲主会话")
+        receipt=await asyncio.to_thread(self.client.request,"workspace/team-state",
+            {"action":"get","sessionId":self.session_id},response_model=_TeamReceipt,timeout_seconds=30)
+        if receipt.sessionId!=self.session_id:
+            raise AppError(502,"TEAM_RECEIPT_INVALID","任务板回执与会话不匹配")
+        return {"board":receipt.board.model_dump(exclude_none=True),"execution_enabled":False}
 
     async def goal_state(self, request):
         if self.subagent_child_id or self.current_run or not self.service.settings.harness_goal_state_enabled:
