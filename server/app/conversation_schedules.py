@@ -120,6 +120,41 @@ def _require_editable(db,row,is_series,previous,at):
         raise AppError(409,"SCHEDULE_DUE","计划已到期，请刷新任务状态")
 
 
+class ScheduleRunNow(InputModel):
+    request_id: str = Field(min_length=1,max_length=128,pattern=r"^[A-Za-z0-9_-]+$")
+    expected_token: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+# Keep deliberate extra runs away from an imminent recurring occurrence.
+RUN_NOW_GUARD_SECONDS = 60
+
+
+def _queue_occurrence(db,row,timestamp):
+    """Same durable queue path for timer and explicit user-triggered runs.
+
+    Caller holds the write transaction and checks availability/capacity.
+    """
+    payload=SendMessage(client_request_id=row["id"],text=row["text"],auto_route=False).model_dump()
+    db.execute("INSERT INTO message_queue(id,conversation_id,payload,created_at,updated_at) VALUES(?,?,?,?,?)",
+               (row["id"],row["conversation_id"],dump(payload),timestamp,timestamp))
+    db.execute("UPDATE conversation_schedules SET status='queued' WHERE id=?",(row["id"],))
+
+
+def _manual_receipt(db,cid,request_id,identity,expected_token):
+    prior=db.one("""SELECT p.plan_id,p.expected_token,p.occurrence_id,p.created_at,
+        COALESCE(r.status,q.status,s.status) AS status,r.id AS run_id,r.message_id
+        FROM conversation_schedule_run_requests p JOIN conversation_schedules s
+        ON s.id=p.occurrence_id AND s.conversation_id=p.conversation_id
+        LEFT JOIN message_queue q ON q.conversation_id=s.conversation_id AND q.id=s.id
+        LEFT JOIN runs r ON r.id=q.run_id AND r.conversation_id=s.conversation_id
+        WHERE p.conversation_id=? AND p.request_id=?""",(cid,request_id))
+    if prior is None:
+        return None
+    if prior["plan_id"]!=identity or prior["expected_token"]!=expected_token:
+        raise AppError(409,"SCHEDULE_REQUEST_CONFLICT","此立即执行请求已绑定其他计划或版本")
+    return {k:prior[k] for k in ("plan_id","occurrence_id","created_at","status","run_id","message_id")}
+
+
 class ScheduleResume(InputModel):
     acknowledge_failure: bool = False
 
@@ -234,11 +269,7 @@ def enqueue_due_schedules(service):
             if db.one("SELECT COUNT(*) AS n FROM message_queue WHERE conversation_id=? AND status='pending'",(conversation_id,))["n"]>=20:
                 db.execute("UPDATE conversation_schedules SET status='failed',error=? WHERE id=?",("到期时会话待发队列已满",row["id"]))
                 continue
-            timestamp=now()
-            payload=SendMessage(client_request_id=row["id"],text=row["text"],auto_route=False).model_dump()
-            db.execute("INSERT INTO message_queue(id,conversation_id,payload,created_at,updated_at) VALUES(?,?,?,?,?)",
-                       (row["id"],conversation_id,dump(payload),timestamp,timestamp))
-            db.execute("UPDATE conversation_schedules SET status='queued' WHERE id=?",(row["id"],))
+            _queue_occurrence(db,row,now())
 
 
 # Global management uses the same authoritative rows and existing scoped
@@ -265,17 +296,18 @@ def schedule_catalog(service, user, scope, limit, before):
         SELECT s.id,s.conversation_id,c.title AS conversation_title,c.archived AS conversation_archived,
             s.text,s.next_at AS scheduled_at,s.status,s.error,s.execution_mode,s.recurrence,
             s.timezone,s.rule_expression,s.skipped_count,s.coalesced_batches,NULL AS series_id,
-            NULL AS run_id,NULL AS message_id,s.created_at,'series' AS kind
+            NULL AS run_id,NULL AS message_id,s.created_at,'series' AS kind,NULL AS manual_at
         FROM conversation_schedule_series s JOIN conversations c ON c.id=s.conversation_id
         WHERE c.user_id=?
         UNION ALL
         SELECT s.id,s.conversation_id,c.title,c.archived,s.text,s.scheduled_at,
             COALESCE(r.status,q.status,s.status),COALESCE(r.error,q.error,s.error),
             s.execution_mode,'once',NULL,NULL,0,0,s.series_id,r.id,r.message_id,s.created_at,
-            CASE WHEN s.series_id IS NULL THEN 'once' ELSE 'occurrence' END
+            CASE WHEN s.series_id IS NULL THEN 'once' ELSE 'occurrence' END,p.created_at
         FROM conversation_schedules s JOIN conversations c ON c.id=s.conversation_id
         LEFT JOIN message_queue q ON q.conversation_id=s.conversation_id AND q.id=s.id
         LEFT JOIN runs r ON r.id=q.run_id AND r.conversation_id=c.id AND r.user_id=c.user_id
+        LEFT JOIN conversation_schedule_run_requests p ON p.occurrence_id=s.id AND p.conversation_id=c.id
         WHERE c.user_id=?
     ) SELECT * FROM catalog WHERE """+" AND ".join(clauses)+
         " ORDER BY created_at DESC,id DESC LIMIT ?",tuple(args))
@@ -291,9 +323,9 @@ def create_schedule_router(svc,authenticated):
     def list_schedules(conversation_id:str,service=Depends(svc),user=Depends(authenticated)):
         service.require("conversations",conversation_id,user)
         occurrences=service.db.all("""SELECT s.id,s.text,s.scheduled_at,COALESCE(r.status,q.status,s.status) AS status,
-            COALESCE(r.error,q.error,s.error) AS error,r.id AS run_id,s.execution_mode,s.series_id,'once' AS recurrence
+            COALESCE(r.error,q.error,s.error) AS error,r.id AS run_id,s.execution_mode,s.series_id,'once' AS recurrence,p.created_at AS manual_at
             FROM conversation_schedules s LEFT JOIN message_queue q ON q.conversation_id=s.conversation_id AND q.id=s.id
-            LEFT JOIN runs r ON r.id=q.run_id WHERE s.conversation_id=? ORDER BY s.created_at DESC,s.id DESC LIMIT 100""",(conversation_id,))
+            LEFT JOIN runs r ON r.id=q.run_id LEFT JOIN conversation_schedule_run_requests p ON p.occurrence_id=s.id AND p.conversation_id=s.conversation_id WHERE s.conversation_id=? ORDER BY s.created_at DESC,s.id DESC LIMIT 100""",(conversation_id,))
         series=service.db.all("""SELECT id,text,next_at AS scheduled_at,status,error,execution_mode,recurrence,timezone,skipped_count,rule_expression,coalesced_batches
             FROM conversation_schedule_series WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 100""",(conversation_id,))
         return with_edit_tokens(series+occurrences)
@@ -350,6 +382,67 @@ def create_schedule_router(svc,authenticated):
                     VALUES(?,?,?,?,?,?,?,?,?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),body.recurrence,effective_zone,
                                                  stamp.astimezone(zone).time().isoformat(),body.execution_mode,now(),expression))
         return {"id":identity,"status":"scheduled","execution_mode":body.execution_mode,"recurrence":body.recurrence,"scheduled_at":stamp.isoformat()}
+
+    @router.post("/{identity}/run-now",status_code=202)
+    def run_schedule_now(conversation_id:str,identity:str,body:ScheduleRunNow,service=Depends(svc),user=Depends(authenticated)):
+        db=service.db
+        service.require("conversations",conversation_id,user)
+        if not service.require("users",user["id"])["enabled"]:
+            raise AppError(403,"USER_DISABLED","账号已停用")
+        prior=_manual_receipt(db,conversation_id,body.request_id,identity,body.expected_token)
+        if prior:
+            return prior
+        snapshot,is_series=_edit_target(db,conversation_id,identity)
+        if body.expected_token!=edit_token(snapshot):
+            raise AppError(409,"SCHEDULE_CHANGED","计划已发生变化，请刷新后重试")
+        # Preserve the existing full-build admission check. Dispatch rechecks
+        # current assistant authorization, safety and normal tool approvals.
+        _available(service,conversation_id,snapshot["execution_mode"])
+        prompt_safety=getattr(service,"prompt_safety",None)
+        if prompt_safety is not None and prompt_safety.enabled:
+            prompt_safety.require_allowed(snapshot["text"],user["id"])
+        with db.transaction():
+            service.require("conversations",conversation_id,user)
+            if not service.require("users",user["id"])["enabled"]:
+                raise AppError(403,"USER_DISABLED","账号已停用")
+            prior=_manual_receipt(db,conversation_id,body.request_id,identity,body.expected_token)
+            if prior:
+                return prior
+            row,current_series=_edit_target(db,conversation_id,identity)
+            if row!=snapshot or current_series!=is_series:
+                raise AppError(409,"SCHEDULE_CHANGED","计划已发生变化，请刷新后重试")
+            _available(service,conversation_id,row["execution_mode"])
+            if row["status"]!="scheduled" or row.get("series_id"):
+                raise AppError(409,"SCHEDULE_NOT_RUNNABLE","仅可立即执行尚未启动且未暂停的计划")
+            reference=datetime.now(timezone.utc)
+            previous=_previous(db,identity) if is_series else None
+            _require_editable(db,row,is_series,previous,reference)
+            if is_series:
+                if datetime.fromisoformat(row["next_at"])<=reference+timedelta(seconds=RUN_NOW_GUARD_SECONDS):
+                    raise AppError(409,"SCHEDULE_DUE_SOON","下一次周期即将到期，请等待原定执行")
+                recent=db.one("""SELECT id FROM conversation_schedules
+                    WHERE conversation_id=? AND series_id=? AND created_at>=? LIMIT 1""",
+                    (conversation_id,identity,(reference-timedelta(seconds=RUN_NOW_GUARD_SECONDS)).isoformat()))
+                if recent:
+                    raise AppError(409,"SCHEDULE_RUN_TOO_SOON","刚刚安排过该计划的执行，请检查原任务")
+            if db.one("SELECT COUNT(*) AS n FROM message_queue WHERE conversation_id=? AND status='pending'",(conversation_id,))["n"]>=20:
+                raise AppError(409,"QUEUE_FULL","会话待发队列已满，请先处理队列")
+            timestamp=reference.isoformat()
+            occurrence_id=identity
+            if is_series:
+                occurrence_id="schedule-"+uid()
+                db.execute("""INSERT INTO conversation_schedules(id,conversation_id,text,scheduled_at,status,created_at,execution_mode,series_id)
+                    VALUES(?,?,?,?,'scheduled',?,?,?)""",
+                    (occurrence_id,conversation_id,row["text"],timestamp,timestamp,row["execution_mode"],identity))
+                occurrence=db.one("SELECT * FROM conversation_schedules WHERE id=?",(occurrence_id,))
+            else:
+                # The same one-shot id runs early. Keep original scheduled_at
+                # for audit; status prevents its later scheduled dispatch.
+                occurrence=row
+            _queue_occurrence(db,occurrence,timestamp)
+            db.execute("""INSERT INTO conversation_schedule_run_requests(conversation_id,request_id,plan_id,expected_token,occurrence_id,created_at)
+                VALUES(?,?,?,?,?,?)""",(conversation_id,body.request_id,identity,body.expected_token,occurrence_id,timestamp))
+            return _manual_receipt(db,conversation_id,body.request_id,identity,body.expected_token)
 
     @router.patch("/{identity}")
     def edit_schedule(conversation_id:str,identity:str,body:ScheduleEdit,service=Depends(svc),user=Depends(authenticated)):

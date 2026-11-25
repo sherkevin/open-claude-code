@@ -590,8 +590,9 @@ def test_real_harness_subagent_cannot_dispatch_after_grant_revocation(mcp_app):
     assert not any(item.get("subagent_child_id") == row["subagent_child_id"] for item in tool_events(env, run, "tool.dispatched"))
 
 
+@pytest.mark.parametrize("trigger",["timer","manual"])
 @pytest.mark.parametrize("kind",["direct","child","write"])
-def test_real_scheduled_agent_executes_with_existing_approval_boundary(mcp_app,kind):
+def test_real_scheduled_agent_executes_with_existing_approval_boundary(mcp_app,kind,trigger):
     from datetime import datetime,timedelta,timezone
     env=mcp_app
     marker="SCHEDULED_AGENT_"+kind.upper()
@@ -603,11 +604,18 @@ def test_real_scheduled_agent_executes_with_existing_approval_boundary(mcp_app,k
         env.model.actions[marker]=(env.alias("update_asset"),WRITE_ARGUMENTS)
     else:
         env.model.actions[marker]=(env.alias("read_assets"),READ_ARGUMENTS)
-    stamp=(datetime.now(timezone.utc)+timedelta(seconds=2)).isoformat()
+    stamp=(datetime.now(timezone.utc)+timedelta(seconds=7200 if trigger=="manual" else 2)).isoformat()
     route=f"/api/v1/conversations/{env.cid}/schedules"
     response=env.client.post(route,json={"text":marker,"scheduled_at":stamp,"execution_mode":"agent"})
     assert response.status_code==201,response.text
     identity=response.json()["id"]
+    if trigger=="manual":
+        row=next(x for x in env.client.get(route).json() if x["id"]==identity)
+        body={"request_id":"manual-agent-fixture","expected_token":row["edit_token"]}
+        accepted=env.client.post(route+"/"+identity+"/run-now",json=body)
+        assert accepted.status_code==202,accepted.text
+        assert accepted.json()["occurrence_id"]==identity
+        assert env.client.post(route+"/"+identity+"/run-now",json=body).status_code==202
     deadline=time.monotonic()+30
     run=None
     while time.monotonic()<deadline:

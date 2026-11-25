@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--dist", type=Path, required=True)
     parser.add_argument("--node", required=True)
-    parser.add_argument("--browser-script", choices=("feedback_tracking_browser.mjs","schedule_catalog_browser.mjs","schedule_editor_browser.mjs"), default="feedback_tracking_browser.mjs")
+    parser.add_argument("--browser-script", choices=("feedback_tracking_browser.mjs","schedule_catalog_browser.mjs","schedule_editor_browser.mjs","schedule_run_now_browser.mjs"), default="feedback_tracking_browser.mjs")
     args = parser.parse_args()
     assert not args.data.exists(), "Refuse existing data directory"
     args.data.mkdir(mode=0o700, parents=True)

@@ -142,6 +142,16 @@ CREATE TABLE IF NOT EXISTS conversation_schedule_series(
     skipped_count INTEGER NOT NULL DEFAULT 0, error TEXT
 );
 CREATE INDEX IF NOT EXISTS conversation_schedule_series_due ON conversation_schedule_series(status,next_at);
+CREATE TABLE IF NOT EXISTS conversation_schedule_run_requests(
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    request_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+    expected_token TEXT NOT NULL,
+    occurrence_id TEXT NOT NULL UNIQUE REFERENCES conversation_schedules(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(conversation_id,request_id)
+);
+CREATE INDEX IF NOT EXISTS conversation_schedule_run_requests_plan ON conversation_schedule_run_requests(conversation_id,plan_id,created_at);
+
 CREATE TABLE IF NOT EXISTS conversation_feedback(
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
     conversation_id TEXT NOT NULL REFERENCES conversations(id), run_id TEXT REFERENCES runs(id),
