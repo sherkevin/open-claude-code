@@ -72,8 +72,8 @@ export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = 
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
     <div className="connection-capability-preview">{functions.length ? <ul>{functions.map(description => <li key={description}>{description}</li>)}</ul> : <p className="section-help">{discovery.detail}</p>}</div>
     {currentTestPassed && <p className="section-help">连接测试仅验证工具发现，业务执行需另行验证。</p>}
-    {currentTestPassed && item.read_only_review_revision !== undefined && <p className="section-help">当前只读核验记录：{reviewed.length}/{item.tools.length}。自动审批还会复核实际权限及工具定义。</p>}
-    {currentTestPassed && onReadOnlyReview && editable && <Button variant="secondary" disabled={actionsBusy} onClick={onReadOnlyReview}>核验只读工具</Button>}
+    {currentTestPassed && item.read_only_review_revision !== undefined && <p className="section-help">在会话中选择自动审批即可使用平台已识别的只读工具；写入及未识别的操作仍需确认。</p>}
+    {currentTestPassed && onReadOnlyReview && editable && <details className="resource-advanced"><summary>高级审批设置</summary><p className="section-help">已有人工核验：{reviewed.length} 个。一般业务用户无需配置；人工核验会覆盖平台默认识别。</p><Button variant="secondary" disabled={actionsBusy} onClick={onReadOnlyReview}>核验只读工具</Button></details>}
     {currentTestPassed && onBusinessTrial && <Button variant="secondary" disabled={actionsBusy} onClick={onBusinessTrial}>验证业务结果</Button>}
     {(testError || item.last_error) && <p className="inline-error">{testError || item.last_error}</p>}
     <button type="button" className="mcp-tool-list-button button ghost" onClick={onTools}>工具列表 · {item.tools.length}<ChevronDown size={15}/></button>
@@ -150,7 +150,7 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
   const test = async (item: Connection) => {
     setTesting(item.id); setSuccess(''); setError('');
     setTestErrors(previous => { const next = { ...previous }; delete next[item.id]; return next; });
-    try { const next = await testConnectionDiscovery(item); setItems(previous => previous.map(existing => existing.id === next.id ? next : existing)); if (next.status === 'connected') setSuccess(`已发现 ${next.tools.length} 个工具。请核验只读工具并验证真实业务结果。`); }
+    try { const next = await testConnectionDiscovery(item); setItems(previous => previous.map(existing => existing.id === next.id ? next : existing)); if (next.status === 'connected') setSuccess(`已发现 ${next.tools.length} 个工具。请验证真实业务结果；自动审批由平台判断。`); }
     catch (cause) { setTestErrors(previous => ({ ...previous, [item.id]: connectionTestError(cause) })); }
     finally { setTesting(''); }
   };

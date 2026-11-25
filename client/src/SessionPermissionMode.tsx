@@ -8,7 +8,7 @@ import './session-permission-mode.css';
 
 const modes = {
   manual: { label: '手动审批', short: '手动', icon: MousePointerClick, description: '业务 MCP 调用逐次确认。平台内置安全读取不受影响。' },
-  auto: { label: '自动审批', short: '自动', icon: ListChecks, description: '已核验的只读业务查询直接执行，写入和未核验工具逐次确认。' },
+  auto: { label: '自动审批', short: '自动', icon: ListChecks, description: '平台自动识别可信只读查询并直接执行，写入及不确定操作逐次确认。' },
   full: { label: '完全权限', short: '完全权限', icon: KeyRound, description: '可直接写入工作区和生成文件；业务写入与未核验工具仍逐次确认。' },
 } as const;
 

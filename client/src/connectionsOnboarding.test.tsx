@@ -15,6 +15,12 @@ describe('MCP resource catalog', () => {
     for (const text of ['订单服务', '汇总订单', '工具列表 · 1', '已发现 1 个工具', '测试连接']) expect(html).toContain(text);
     for (const text of ['配置助手', '绑定助手', '开始查询', '服务端如何连接', connection.url]) expect(html).not.toContain(text);
   });
+  it('keeps read-only configuration in advanced settings, not a mandatory onboarding step', () => {
+    const html = card({...connection, read_only_review_revision: 0}, {onReadOnlyReview: noop, onBusinessTrial: noop});
+    expect(html).toContain('高级审批设置');
+    expect(html).toContain('平台已识别的只读工具');
+    expect(html).toContain('验证业务结果');
+  });
   it('offers a real business trial separately from discovery, only after connection testing', () => {
     const html = card(connection, { onBusinessTrial: noop });
     expect(html).toContain('验证业务结果');

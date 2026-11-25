@@ -96,6 +96,10 @@ def automatic_decision(service, run, tool_name):
     # or stale review must not silently reactivate an older binding certificate.
     if connection.get("read_only_review_revision", 0):
         return None
+    from .trusted_mcp_read import trusted_read_decision
+    contract = trusted_read_decision(service, connection, name, run["created_at"])
+    if contract:
+        return {**decision, **contract}
     try:
         digest = require_snapshot_confirmation(binding, previous, connection, name)
     except AppError:

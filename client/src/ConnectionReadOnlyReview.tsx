@@ -42,7 +42,8 @@ export default function ConnectionReadOnlyReview({ connection, onClose, onSaved 
   const changed = names.length !== current.size || names.some(name => !current.has(name))
     || Object.keys(connection.read_only_certifications || {}).length !== current.size;
   const newTools = names.some(name => !current.has(name));
-  const ready = changed && (!newTools || !!basis.trim() && attested);
+  const [overrideDefault, setOverrideDefault] = useState(false);
+  const ready = (changed || overrideDefault) && (!newTools || !!basis.trim() && attested);
   const save = async () => {
     if (!ready || pending.current) return;
     pending.current = true; setBusy(true); setError('');
@@ -74,7 +75,8 @@ export default function ConnectionReadOnlyReview({ connection, onClose, onSaved 
           <label className="checkbox-row"><input type="checkbox" checked={attested} onChange={event => setAttested(event.target.checked)}/><span>我已核实所选工具只读且不会改变业务数据，确认用于自动审批。</span></label>
         </>}
       </fieldset>
-      <p className="form-note">个人连接仅由其所有者核验，团队连接仅由管理员核验。移除勾选即撤销该工具的核验；连接或工具定义变化后必须重新核验。不会扩大助手的授权范围。</p>
+      <label className="checkbox-row"><input type="checkbox" checked={overrideDefault} disabled={busy} onChange={event => setOverrideDefault(event.target.checked)}/><span>使用本次人工配置覆盖平台默认识别（不勾选任何工具即全部逐次审批）。</span></label>
+      <p className="form-note">个人连接仅由其所有者核验，团队连接仅由管理员核验。保存人工配置后，以人工选择为准；连接或工具定义变化后需重新核验。不会扩大助手的授权范围。</p>
     </div>
     <footer className="modal-footer">
       <Button variant="secondary" disabled={busy} onClick={onClose}>取消</Button>
