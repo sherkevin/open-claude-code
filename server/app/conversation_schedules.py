@@ -196,14 +196,28 @@ def enqueue_due_series(service):
               AND (s.status IN ('failed','cancelled') OR q.status='cancelled' OR q.error IS NOT NULL
                 OR r.status IN ('failed','cancelled','interrupted'))
             )""")
-    # Keep legacy schedules ahead of the optional Node rule engine; cap the
-    # expensive advanced evaluation to one task per scheduler scan.
+    # Never treat an unknown recurrence as weekly. The older calendar
+    # helper supports exactly daily and weekly, not future rule kinds.
+    with db.transaction():
+        db.execute("""UPDATE conversation_schedule_series SET status='paused',error=?
+            WHERE status='scheduled' AND recurrence NOT IN ('daily','weekly','cron','rrule')""",
+            ("无法识别的周期规则，已暂停；请更新后核对计划",))
+    # Reserve one advanced slot independent of the legacy backlog. Do not
+    # allow a stream of 20+ legacy due plans to starve every advanced plan.
+    # The Node calendar engine remains bounded to one evaluation per scan.
+    cutoff=now()
+    due_rows=db.all("""SELECT id FROM conversation_schedule_series
+        WHERE status='scheduled' AND next_at<=? AND recurrence IN ('daily','weekly')
+        ORDER BY next_at,id LIMIT 20""",(cutoff,))
+    due_rows+=db.all("""SELECT id FROM conversation_schedule_series
+        WHERE status='scheduled' AND next_at<=? AND recurrence IN ('cron','rrule')
+        ORDER BY next_at,id LIMIT 1""",(cutoff,))
     advanced_evaluated=False
-    for due in db.all("SELECT id FROM conversation_schedule_series WHERE status='scheduled' AND next_at<=? ORDER BY CASE WHEN recurrence IN ('cron','rrule') THEN 1 ELSE 0 END,next_at,id LIMIT 20",(now(),)):
+    for due in due_rows:
         # Rule calculation may spawn the pinned pure Node module. Do it outside
         # the SQLite write transaction, then compare the authoritative snapshot.
         snapshot=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND status='scheduled' AND next_at<=?",(due["id"],now()))
-        if not snapshot:
+        if not snapshot or snapshot["recurrence"] not in {"daily","weekly","cron","rrule"}:
             continue
         decision=datetime.now(timezone.utc)
         advanced=snapshot["recurrence"] in ("cron","rrule")
