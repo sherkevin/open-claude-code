@@ -7,7 +7,9 @@ conversation, native epoch, revision, digest or provider filter from a model.
 The model-facing input is a query string; all scope is derived from a
 ``TrustedScope`` that the host builds from a verified memory binding. The host
 must only call this adapter for an active snapshot it has approved and
-committed; the adapter does not reinterpret approvals or legacy imports.
+committed. The native source reader additionally requires a published record,
+an empty initial migration, and current host authorization. It never approves
+legacy imports or initializes memory on behalf of an index request.
 
 Importing this module does not import or install Mem0. The SDK is loaded only
 by :func:`load_mem0_backend`, which requires an explicit self-hosted config,
@@ -846,11 +848,73 @@ class NativeMemorySourceReader:
         self.memory = native_memory
         self.run_id = run_id
 
+    def _admitted_scope(self, user_id: str, conversation_id: str) -> TrustedScope:
+        """Read only existing, published native snapshots; never migrate or approve.
+
+        Conservatively refuse legacy imports (including nonempty first
+        migrations with origin=empty) until a separate explicit review policy
+        exists. A later edit of one file does not approve inherited siblings.
+        """
+        service = self.memory.service
+        with service.db.lock:
+            try:
+                user = service.require("users", user_id)
+                conversation = service.require("conversations", conversation_id, user)
+                if not user["enabled"] or conversation["archived"] or conversation.get("runtime_type") != "harness":
+                    raise Mem0IndexScopeInvalid("当前会话不允许使用派生记忆索引")
+                service.usable_assistant(conversation["assistant_id"], user)
+                row = service.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (conversation_id,))
+                if not row or row["storage_version"] != 1 or not row["active_snapshot_id"]:
+                    raise Mem0IndexSourceUnavailable("尚无已发布的原生记忆快照")
+                if row["mutation_id"] or (self.run_id is None and self.memory.busy(user_id, conversation_id)):
+                    raise Mem0IndexSourceChanged("记忆或会话正在变化")
+                if row["origin"] != "empty":
+                    raise Mem0IndexScopeInvalid("旧版迁移记忆尚未获得派生索引授权")
+                initial = service.db.all("""SELECT o.user_id AS owner,s.user_id AS snapshot_owner,
+                    s.conversation_id AS snapshot_conversation,s.state,s.digest
+                    FROM memory_operations o JOIN memory_snapshot_records s ON s.id=o.snapshot_id
+                    WHERE o.conversation_id=? AND o.kind='migration' AND o.status='committed'""", (conversation_id,))
+                if (len(initial) != 1 or initial[0]["owner"] != user_id
+                        or initial[0]["snapshot_owner"] != user_id
+                        or initial[0]["snapshot_conversation"] != conversation_id
+                        or initial[0]["state"] != "published"
+                        or initial[0]["digest"] != hashlib.sha256(b"").hexdigest()):
+                    raise Mem0IndexScopeInvalid("无法证明初始记忆为空；不自动索引旧内容")
+                record = service.db.one("SELECT * FROM memory_snapshot_records WHERE id=?", (row["active_snapshot_id"],))
+                if (not record or record["state"] != "published" or record["user_id"] != user_id
+                        or record["conversation_id"] != conversation_id or record["digest"] != row["digest"]
+                        or record["manifest_digest"] != row["manifest_digest"]):
+                    raise Mem0IndexSourceUnavailable("当前记忆快照未通过发布记录核验")
+                binding = {"user_id": user_id, "conversation_id": conversation_id,
+                           "native_epoch": conversation["native_epoch"], "revision": row["revision"],
+                           "digest": row["digest"], "snapshot_id": row["active_snapshot_id"],
+                           "manifest_digest": row["manifest_digest"]}
+                if self.run_id is not None:
+                    run = service.require("runs", self.run_id, user)
+                    meta = json.loads(run.get("execution_meta") or "{}")
+                    if (conversation["active_run_id"] != self.run_id or run["conversation_id"] != conversation_id
+                            or run["status"] not in {"running", "awaiting_approval"}
+                            or not isinstance(meta, dict) or meta.get("memory_binding") != binding):
+                        raise Mem0IndexSourceChanged("当前任务未绑定此已发布记忆版本")
+                return TrustedScope.from_binding(binding)
+            except Mem0IndexError:
+                raise
+            except Exception:
+                raise Mem0IndexScopeInvalid("无法核验当前记忆索引授权") from None
+
+    def current_scope(self, user_id: str, conversation_id: str) -> TrustedScope:
+        """Host-only scope derivation. No creation, migration or backend calls."""
+        scope = self._admitted_scope(user_id, conversation_id)
+        self.load(scope)
+        return scope
+
     def load(self, scope: TrustedScope) -> SourceSnapshot:
         if type(scope) is not TrustedScope:
             raise Mem0IndexScopeInvalid("索引作用域必须由宿主生成")
         binding = scope.as_binding()
         try:
+            if self._admitted_scope(scope.user_id, scope.conversation_id) != scope:
+                raise Mem0IndexSourceChanged("权威记忆快照已变化，派生索引不得继续使用")
             self.memory.snapshots.assert_binding(binding, self.run_id)
             with self.memory.snapshots.fs.verify(binding) as tree:
                 self.memory.snapshots.assert_binding(binding, self.run_id)
@@ -865,6 +929,8 @@ class NativeMemorySourceReader:
                 )
                 tree.assert_unchanged()
             self.memory.snapshots.assert_binding(binding, self.run_id)
+            if self._admitted_scope(scope.user_id, scope.conversation_id) != scope:
+                raise Mem0IndexSourceChanged("权威记忆快照已变化，派生索引不得继续使用")
         except Mem0IndexError:
             raise
         except Exception as exc:

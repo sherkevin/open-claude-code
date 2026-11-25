@@ -15,6 +15,7 @@ from app.mem0_index import (
     Mem0DerivedIndex,
     Mem0IndexConfig,
     Mem0IndexDisabled,
+    Mem0IndexError,
     Mem0IndexQueryInvalid,
     Mem0IndexScopeInvalid,
     Mem0IndexSourceChanged,
@@ -588,3 +589,127 @@ def test_duplicate_list_entry_does_not_delete_kept_row():
     assert result.unchanged==1 and result.added==0 and result.deleted==0
     assert len(backend.rows)==1
     assert len(adapter.search("fact",scope=scope).hits)==1
+
+
+def test_host_scope_never_initializes_memory(native_store):
+    service, user, cid = native_store
+    reader = NativeMemorySourceReader(service.memory)
+    before = service.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (cid,))
+    with pytest.raises(Mem0IndexError):
+        reader.current_scope(user["id"], cid)
+    assert service.db.one("SELECT * FROM conversation_memory_scopes WHERE conversation_id=?", (cid,)) == before
+    assert service.db.all("SELECT id FROM memory_operations WHERE conversation_id=?", (cid,)) == []
+
+
+@pytest.mark.parametrize("origin", ["empty", "legacy_pending"])
+def test_host_rejects_nonempty_migration_even_after_partial_edit(native_store, origin):
+    service, user, cid = native_store
+    old = service.settings.data_dir / "conversation-memory" / user["id"] / cid
+    old.mkdir(parents=True, mode=0o700)
+    path = old / "unreviewed.md"
+    path.write_text("synthetic inherited content")
+    path.chmod(0o600)
+    service.db.execute("UPDATE conversation_memory_scopes SET origin=? WHERE conversation_id=?", (origin,cid))
+    initial = service.memory.snapshot_for_run(user["id"], cid)
+    service.memory.edit(user, cid, initial["revision"], "reviewed.md", "synthetic reviewed content", "native-edit")
+    binding = service.memory.snapshot_for_run(user["id"], cid)
+    backend = FakeMem0()
+    reader = NativeMemorySourceReader(service.memory)
+    with pytest.raises(Mem0IndexScopeInvalid):
+        enabled_index(backend, reader).sync(TrustedScope.from_binding(binding))
+    assert backend.calls == []
+
+
+@pytest.mark.parametrize("change", ["owner", "disabled", "archived", "assistant", "unpublished", "record-owner", "manifest"])
+def test_host_scope_revalidates_owner_permission_and_published_record(native_store, change):
+    service, user, cid = native_store
+    service.memory.edit(user, cid, 0, "MEMORY.md", "synthetic approved fact", "native-op")
+    reader = NativeMemorySourceReader(service.memory)
+    scope = reader.current_scope(user["id"], cid)
+    backend = FakeMem0()
+    adapter = enabled_index(backend, reader)
+    assert adapter.sync(scope).added == 1
+    count = len(backend.calls)
+    if change == "owner":
+        other = service.create_user({"username":"other","display_name":"Other","password":"synthetic-password-123","role":"admin"})
+        scope = TrustedScope.from_binding({**scope.as_binding(), "user_id":other["id"]})
+    elif change == "disabled":
+        service.db.execute("UPDATE users SET enabled=0 WHERE id=?", (user["id"],))
+    elif change == "archived":
+        service.db.execute("UPDATE conversations SET archived=1 WHERE id=?", (cid,))
+    elif change == "assistant":
+        service.db.execute("UPDATE assistants SET enabled=0 WHERE id=?", (service.require("conversations", cid)["assistant_id"],))
+    elif change == "unpublished":
+        service.db.execute("UPDATE memory_snapshot_records SET state='prepared' WHERE id=?", (scope.snapshot_id,))
+    elif change == "record-owner":
+        service.db.execute("UPDATE memory_snapshot_records SET user_id=? WHERE id=?", ("a"*32,scope.snapshot_id))
+    else:
+        service.db.execute("UPDATE memory_snapshot_records SET manifest_digest=? WHERE id=?", ("a"*64,scope.snapshot_id))
+    with pytest.raises(Mem0IndexError):
+        adapter.search("synthetic", scope=scope)
+    assert len(backend.calls) == count
+
+
+def test_host_scope_run_binding_and_uncommitted_proposal(native_store):
+    from test_harness_memory_storage import make_run
+    from app.db import dump
+    service, user, cid = native_store
+    service.memory.edit(user, cid, 0, "MEMORY.md", "synthetic approved fact", "native-op")
+    rid, binding = make_run(native_store)
+    reader = NativeMemorySourceReader(service.memory, run_id=rid)
+    scope = reader.current_scope(user["id"], cid)
+    backend = FakeMem0()
+    adapter = enabled_index(backend, reader)
+    assert adapter.sync(scope).added == 1
+    with pytest.raises(Mem0IndexSourceChanged):
+        NativeMemorySourceReader(service.memory).current_scope(user["id"], cid)
+    service.db.execute("UPDATE runs SET execution_meta='{}' WHERE id=?", (rid,))
+    with pytest.raises(Mem0IndexSourceChanged):
+        adapter.search("synthetic", scope=scope)
+    service.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump({"memory_binding":binding}),rid))
+    service.memory.stage_for_run(binding,rid,"proposal","MEMORY.md","unapproved replacement",binding["revision"])
+    assert [h.text for h in adapter.search("synthetic",scope=scope).hits] == ["synthetic approved fact"]
+    service.db.execute("UPDATE runs SET status='interrupted' WHERE id=?", (rid,))
+    with pytest.raises(Mem0IndexSourceChanged):
+        adapter.search("synthetic",scope=scope)
+    assert all("unapproved replacement" not in str(call) for call in backend.calls)
+
+
+def test_host_scope_accepts_only_after_approved_model_commit(native_store):
+    from test_harness_memory_storage import make_run, approve, finish
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic original","native-op")
+    rid,binding = make_run(native_store)
+    reader = NativeMemorySourceReader(service.memory,run_id=rid)
+    backend = FakeMem0()
+    adapter = enabled_index(backend,reader)
+    scope = reader.current_scope(user["id"],cid)
+    assert adapter.sync(scope).added == 1
+    op = service.memory.stage_for_run(binding,rid,"proposal","MEMORY.md","synthetic approved replacement",binding["revision"])
+    approve(native_store,op)
+    assert [h.text for h in adapter.search("synthetic",scope=scope).hits] == ["synthetic original"]
+    service.memory.snapshots.commit(rid,authorize=lambda: True,finalize=finish(service,cid,rid))
+    with pytest.raises(Mem0IndexError):
+        adapter.search("synthetic",scope=scope)
+    reader = NativeMemorySourceReader(service.memory)
+    adapter = enabled_index(backend,reader)
+    current = reader.current_scope(user["id"],cid)
+    assert current.revision == scope.revision+1
+    assert adapter.sync(current).added == 1
+    assert [h.text for h in adapter.search("synthetic",scope=current).hits] == ["synthetic approved replacement"]
+
+
+def test_host_scope_denies_hits_when_authorization_changes_during_backend_search(native_store):
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic approved fact","native-op")
+    reader = NativeMemorySourceReader(service.memory)
+    scope = reader.current_scope(user["id"],cid)
+    class RevokingBackend(FakeMem0):
+        def search(self, query, *, filters, top_k, threshold):
+            result = super().search(query,filters=filters,top_k=top_k,threshold=threshold)
+            service.db.execute("UPDATE users SET enabled=0 WHERE id=?", (user["id"],))
+            return result
+    adapter = enabled_index(RevokingBackend(),reader)
+    assert adapter.sync(scope).added == 1
+    with pytest.raises(Mem0IndexScopeInvalid):
+        adapter.search("synthetic",scope=scope)
