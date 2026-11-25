@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone, time
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import AwareDatetime, Field
 
 from .db import dump, now, uid
@@ -187,6 +187,49 @@ def enqueue_due_schedules(service):
             db.execute("UPDATE conversation_schedules SET status='queued' WHERE id=?",(row["id"],))
 
 
+# Global management uses the same authoritative rows and existing scoped
+# mutation routes. This projection does not enqueue or wake agents.
+def schedule_catalog(service, user, scope, limit, before):
+    if not service.require("users",user["id"])["enabled"]:
+        raise AppError(403,"USER_DISABLED","账号已停用")
+    args=[user["id"],user["id"]]
+    terminal="('succeeded','failed','cancelled','interrupted','exhausted')"
+    clauses=["status NOT IN "+terminal if scope=="active" else "status IN "+terminal]
+    if before:
+        try:
+            stamp,identity=before.split("|",1)
+            if not identity or len(identity)>128 or datetime.fromisoformat(stamp).tzinfo is None:
+                raise ValueError()
+        except (ValueError,TypeError):
+            raise AppError(422,"SCHEDULE_CURSOR_INVALID","任务列表游标无效，请刷新") from None
+        clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
+        args.extend((stamp,stamp,identity))
+    args.append(limit+1)
+    # Only return task content and execution status that the owner can see in
+    # their own conversation. No admin bypass, other owners or raw logs.
+    rows=service.db.all("""WITH catalog AS (
+        SELECT s.id,s.conversation_id,c.title AS conversation_title,c.archived AS conversation_archived,
+            s.text,s.next_at AS scheduled_at,s.status,s.error,s.execution_mode,s.recurrence,
+            s.timezone,s.rule_expression,s.skipped_count,s.coalesced_batches,NULL AS series_id,
+            NULL AS run_id,NULL AS message_id,s.created_at,'series' AS kind
+        FROM conversation_schedule_series s JOIN conversations c ON c.id=s.conversation_id
+        WHERE c.user_id=?
+        UNION ALL
+        SELECT s.id,s.conversation_id,c.title,c.archived,s.text,s.scheduled_at,
+            COALESCE(r.status,q.status,s.status),COALESCE(r.error,q.error,s.error),
+            s.execution_mode,'once',NULL,NULL,0,0,s.series_id,r.id,r.message_id,s.created_at,
+            CASE WHEN s.series_id IS NULL THEN 'once' ELSE 'occurrence' END
+        FROM conversation_schedules s JOIN conversations c ON c.id=s.conversation_id
+        LEFT JOIN message_queue q ON q.conversation_id=s.conversation_id AND q.id=s.id
+        LEFT JOIN runs r ON r.id=q.run_id AND r.conversation_id=c.id AND r.user_id=c.user_id
+        WHERE c.user_id=?
+    ) SELECT * FROM catalog WHERE """+" AND ".join(clauses)+
+        " ORDER BY created_at DESC,id DESC LIMIT ?",tuple(args))
+    more=len(rows)>limit
+    items=rows[:limit]
+    return {"items":items,"next_cursor":items[-1]["created_at"]+"|"+items[-1]["id"] if more else None}
+
+
 def create_schedule_router(svc,authenticated):
     router=APIRouter(prefix="/api/v1/conversations/{conversation_id}/schedules")
 
@@ -332,4 +375,14 @@ def create_schedule_router(svc,authenticated):
             elif row["status"]!="scheduled":
                 raise AppError(409,"SCHEDULE_INACTIVE","该计划任务已结束")
             service.db.execute("UPDATE conversation_schedules SET status='cancelled' WHERE id=?",(identity,))
-    return router
+    root=APIRouter()
+    root.include_router(router)
+
+    @root.get("/api/v1/schedules")
+    def global_schedules(response:Response,scope:Literal["active","history"]="active",
+                         limit:int=Query(30,ge=1,le=50),before:str|None=Query(None,max_length=250),
+                         service=Depends(svc),user=Depends(authenticated)):
+        response.headers["Cache-Control"]="no-store"
+        return schedule_catalog(service,user,scope,limit,before)
+
+    return root

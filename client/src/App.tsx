@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, MessageSquareWarning } from 'lucide-react';
+import { RefreshCw, MessageSquareWarning, CalendarClock } from 'lucide-react';
 import { api, ApiError, chatMessagePayload, clientRequestId, errorText, post, sendChatMessage, timeText } from './api';
 import { configAllows, type AppConfig, type Assistant, type Conversation, type ModelOption, type ModelSelection, type User } from './types';
 import { Button, ErrorNotice, Loader, Modal } from './components';
@@ -34,8 +34,9 @@ const BenchmarkPage = deferredPage(() => import('./BenchmarkPage'));
 const AssistantDetailPage = deferredPage(() => import('./AssistantDetailPage'));
 const CapabilitySettingsPage = deferredPage(() => import('./CapabilitySettingsPage'));
 const FeedbackPage = deferredPage(() => import('./FeedbackPage'));
+const SchedulesPage = deferredPage(() => import('./SchedulesPage'));
 
-type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'assistants' | 'knowledge' | 'business-data' | 'skills' | 'usage' | 'memory' | 'benchmark' | 'approvals' | 'capability-settings' | 'feedback';
+type View = 'workspace' | 'sessions' | 'assistant-detail' | 'connections' | 'assistants' | 'knowledge' | 'business-data' | 'skills' | 'usage' | 'memory' | 'benchmark' | 'approvals' | 'capability-settings' | 'feedback' | 'schedules';
 const fallbackConfig: AppConfig = { brand_name: 'Flint 开物', upload_max_bytes: 20 * 1024 * 1024, auth_types: ['none', 'bearer'], model_label: '', feishu_h5: { enabled: false, app_id: '', path: '/feishu' } };
 
 
@@ -223,6 +224,7 @@ export default function App() {
   const navigation:Array<{id:View;label:string;icon:JSX.Element}>= [
     {id:'workspace',label:'首页',icon:<SidebarIcon name="home"/>},
     ...(configAllows(config,'conversations.read')?[{id:'sessions' as View,label:'业务会话',icon:<SidebarIcon name="sessions"/>}]:[]),
+    ...(config.deployment_mode!=='trial'&&configAllows(config,'conversations.read')?[{id:'schedules' as View,label:'定时任务',icon:<CalendarClock size={19}/>}]:[]),
     ...(canManageAssistants?[{id:'assistants' as View,label:'助手设置',icon:<SidebarIcon name="assistants"/>}]:[]),
     ...(configAllows(config,'business_data.read')?[{id:'business-data' as View,label:'业务数据',icon:<SidebarIcon name="businessData"/>}]:[]),
     ...(configAllows(config,'knowledge.read')?[{id:'knowledge' as View,label:'知识库',icon:<SidebarIcon name="knowledge"/>}]:[]),
@@ -248,7 +250,7 @@ export default function App() {
     {view==='capability-settings'&&canManageCapabilities(admin,config)&&<CapabilitySettingsPage admin={admin} config={config}/>}
     {view==='assistants'&&<AssistantsPage admin={admin} connectionSetup={connectionSetup} onReturnToConnection={()=>navigate('connections')} onStartAssistant={canCreateConversation?startConfiguredAssistant:undefined} onChanged={refresh} onOpen={openAssistant} onDirtyChange={setAssistantDirty} onSavingChange={changeAssistantSaving} requestNavigation={protectMemory} draftEpoch={draftEpoch}/>}
     {view==='knowledge'&&<KnowledgePage admin={admin} maxUploadBytes={config.upload_max_bytes} readOnly={!configAllows(config,'knowledge.write')} allowedRetrievalModes={config.allowed_retrieval_modes}/>}{view==='skills'&&canManageAssistants&&<SkillsPage admin={admin}/>} {view==='benchmark'&&admin&&configAllows(config,'benchmark.read')&&<BenchmarkPage admin={admin}/>}
-    {view==='approvals'&&admin&&configAllows(config,'approvals.read')&&<ApprovalsPage/>} {view==='feedback'&&admin&&config.deployment_mode!=='trial'&&<FeedbackPage/>} {view==='memory'&&configAllows(config,'memory.write')&&<MemoryPage key={memoryEpoch} assistants={assistants} onDirtyChange={setMemoryDirty} onSavingChange={changeMemorySaving}/>} {view==='usage'&&configAllows(config,'usage.read')&&<UsagePage admin={false}/>}
+    {view==='approvals'&&admin&&configAllows(config,'approvals.read')&&<ApprovalsPage/>} {view==='feedback'&&admin&&config.deployment_mode!=='trial'&&<FeedbackPage/>} {view==='schedules'&&config.deployment_mode!=='trial'&&configAllows(config,'conversations.read')&&<SchedulesPage onOpen={openConversation}/>} {view==='memory'&&configAllows(config,'memory.write')&&<MemoryPage key={memoryEpoch} assistants={assistants} onDirtyChange={setMemoryDirty} onSavingChange={changeMemorySaving}/>} {view==='usage'&&configAllows(config,'usage.read')&&<UsagePage admin={false}/>}
     </main>
     {newSession&&<NewSession assistants={assistants} initialAssistant={newSession.assistant} initialSelection={newSession.selection} initialQuestion={newSession.question} initialProject={newSession.project} projects={[...new Set(conversations.map(item=>item.category).filter((value):value is string=>!!value))]} connectionSetup={newSession.connectionSetup} config={config} models={models} modelsLoading={modelsLoading} modelsError={modelsError} onReloadModels={refreshModels} onClose={()=>setNewSession(null)} onCreated={conversation=>{setInitialDraft(newSession.question?{conversationId:conversation.id,text:newSession.question}:null);setNewSession(null);setSelected(conversation);navigateConversation(conversation.id);showView('workspace');void refresh();}}/>}
     {pendingNavigation&&<Modal title={pendingKind==='assistant'?'放弃未保存的助手配置':'放弃未保存的记忆修改'} onClose={()=>setPendingNavigation(null)}><div className="modal-body"><p>{pendingKind==='assistant'?'当前助手配置有未保存的修改。请先保存，或明确选择放弃草稿。':'当前记忆有未保存的修改。离开页面会丢弃这些草稿，请先保存或明确选择放弃。'}</p></div><footer className="modal-footer"><Button variant="secondary" onClick={()=>setPendingNavigation(null)}>继续编辑</Button><Button variant="danger" onClick={()=>{const action=pendingNavigation;if(assistantSaving||memorySavingRef.current)return;setPendingNavigation(null);if(pendingKind==='assistant'){setAssistantDirty(false);setDraftEpoch(value=>value+1);}else{setMemoryDirty(false);setMemoryEpoch(value=>value+1);}action();}}>放弃修改并离开</Button></footer></Modal>}

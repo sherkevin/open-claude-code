@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--dist", type=Path, required=True)
     parser.add_argument("--node", required=True)
+    parser.add_argument("--browser-script", choices=("feedback_tracking_browser.mjs","schedule_catalog_browser.mjs"), default="feedback_tracking_browser.mjs")
     args = parser.parse_args()
     assert not args.data.exists(), "Refuse existing data directory"
     args.data.mkdir(mode=0o700, parents=True)
@@ -62,7 +63,7 @@ def main():
                 raise RuntimeError("isolated server did not start")
             time.sleep(.05)
         env = dict(os.environ, FEEDBACK_TEST_URL=origin)
-        subprocess.run([args.node,str(ROOT/"scripts/feedback_tracking_browser.mjs")], env=env, check=True, timeout=100)
+        subprocess.run([args.node,str(ROOT/"scripts"/args.browser_script)], env=env, check=True, timeout=100)
     finally:
         server.should_exit=True
         thread.join(15)

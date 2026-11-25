@@ -19,7 +19,7 @@ export interface ConversationTasksProps {
   canScheduleAgent?: boolean;
 }
 
-type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null; recurrence?: string; execution_mode?: string; series_id?: string; skipped_count?: number; rule_expression?: string; coalesced_batches?: number; timezone?: string };
+export type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null; recurrence?: string; execution_mode?: string; series_id?: string; skipped_count?: number; rule_expression?: string; coalesced_batches?: number; timezone?: string };
 type PlanRun = { id: string; created_at: string; status: string };
 type ChildSelection = { plan: SubagentPlan; childId: string };
 type SelectChild = (selection: ChildSelection, trigger: HTMLButtonElement) => void;
@@ -36,7 +36,7 @@ const statusLabels = new Map([
   ['awaiting_approval', '等待审批'], ['succeeded', '已完成'], ['failed', '失败'], ['cancelled', '已取消'], ['interrupted', '已中断'],
 ]);
 const statusLabel = (status: string) => statusLabels.get(status) ?? '状态未确认';
-const canCancelSchedule = (status: string) => status === 'scheduled' || status === 'pending' || status === 'paused';
+export const canCancelSchedule = (status: string) => status === 'scheduled' || status === 'pending' || status === 'paused';
 
 function fetchTask<T>(path: string, signal: AbortSignal) {
   return api<T>(path, { signal, cache: 'no-store' });
@@ -112,7 +112,7 @@ function useTaskRead<T>(path: string | undefined, { enabled = true, refreshKey, 
   return { ...snapshot, refresh, update };
 }
 
-function scheduleInterval(schedules: Schedule[]) {
+export function scheduleInterval(schedules: Schedule[]) {
   const now = Date.now();
   let delay = Infinity;
   for (const task of schedules) {
@@ -136,6 +136,13 @@ function RefreshButton({ label, onClick }: { label: string; onClick: () => void 
   return <Button variant="ghost" className="task-sidebar-icon-button" aria-label={label} title={label} onClick={onClick}>
     <RefreshCw size={14} aria-hidden="true"/>
   </Button>;
+}
+
+export function scheduleLifecycleConfirmation(action: "pause"|"resume") {
+  return action==="pause"?"暂停未来周期，已经进入队列或启动的任务不受影响。":"恢复后只安排未来周期，不补跑、不重试上次任务。若上次失败，请先确认可能产生的影响。确认恢复？";
+}
+export function changeScheduleLifecycle(path:string,id:string,action:"pause"|"resume") {
+  return post<Pick<Schedule,"id"|"status"|"scheduled_at">>(path+"/"+encodeURIComponent(id)+"/"+action,action==="resume"?{acknowledge_failure:true}:{});
 }
 
 export function ScheduleRow({ task, busy, onCancel, onLifecycle }: { task: Schedule; busy: boolean; onCancel: (id: string) => void; onLifecycle: (task: Schedule, action: "pause"|"resume") => void }) {
@@ -224,11 +231,9 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
   }
 
   function lifecycle(task: Schedule, action: "pause"|"resume") {
-    if (busy) return;
-    const message=action==="pause"?"暂停未来周期，已经进入队列或启动的任务不受影响。":"恢复后只安排未来周期，不补跑、不重试上次任务。若上次失败，请先确认可能产生的影响。确认恢复？";
-    if (!window.confirm(message)) return;
+    if (busy || !window.confirm(scheduleLifecycleConfirmation(action))) return;
     void act(async () => {
-      const result=await post<Pick<Schedule,"id"|"status"|"scheduled_at">>(`${path}/${encodeURIComponent(task.id)}/${action}`,action==="resume"?{acknowledge_failure:true}:{});
+      const result=await changeScheduleLifecycle(path,task.id,action);
       update(previous=>previous?.map(item=>item.id===task.id?{...item,...result,error:action==="resume"?null:item.error}:item));
     });
   }

@@ -594,6 +594,8 @@ class Database:
         if "series_id" not in schedule_columns:
             self.conn.execute("ALTER TABLE conversation_schedules ADD COLUMN series_id TEXT")
         self.conn.execute("CREATE INDEX IF NOT EXISTS conversation_schedules_series ON conversation_schedules(series_id,created_at)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS conversation_schedules_catalog ON conversation_schedules(conversation_id,created_at DESC,id DESC)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS conversation_schedule_series_catalog ON conversation_schedule_series(conversation_id,created_at DESC,id DESC)")
         series_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(conversation_schedule_series)")}
         if "rule_expression" not in series_columns:
             self.conn.execute("ALTER TABLE conversation_schedule_series ADD COLUMN rule_expression TEXT")
