@@ -19,7 +19,7 @@ export interface ConversationTasksProps {
   canScheduleAgent?: boolean;
 }
 
-type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null; recurrence?: string; execution_mode?: string; series_id?: string; skipped_count?: number };
+type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null; recurrence?: string; execution_mode?: string; series_id?: string; skipped_count?: number; rule_expression?: string; coalesced_batches?: number; timezone?: string };
 type PlanRun = { id: string; created_at: string; status: string };
 type ChildSelection = { plan: SubagentPlan; childId: string };
 type SelectChild = (selection: ChildSelection, trigger: HTMLButtonElement) => void;
@@ -32,7 +32,7 @@ type ReadOptions<T> = {
 };
 
 const statusLabels = new Map([
-  ['scheduled', '等待到期'], ['paused','已暂停'], ['pending', '待发送'], ['queued', '排队中'], ['running', '执行中'], ['cancelling', '正在取消'],
+  ['scheduled', '等待到期'], ['paused','已暂停'], ['exhausted','周期规则已结束'], ['pending', '待发送'], ['queued', '排队中'], ['running', '执行中'], ['cancelling', '正在取消'],
   ['awaiting_approval', '等待审批'], ['succeeded', '已完成'], ['failed', '失败'], ['cancelled', '已取消'], ['interrupted', '已中断'],
 ]);
 const statusLabel = (status: string) => statusLabels.get(status) ?? '状态未确认';
@@ -146,11 +146,12 @@ function ScheduleRow({ task, busy, onCancel }: { task: Schedule; busy: boolean; 
       <summary tabIndex={0}>
         <span>
           <span className="task-sidebar-schedule-text">{preview}</span>
-          <small><time dateTime={task.scheduled_at}>{timeText(task.scheduled_at)}</time> · {statusLabel(task.status)}{task.recurrence==='daily'?' · 每天':task.recurrence==='weekly'?' · 每周':''}{task.execution_mode==='agent'?' · 智能体':''}</small>
+          <small><time dateTime={task.scheduled_at}>{timeText(task.scheduled_at)}</time> · {statusLabel(task.status)}{task.recurrence==='daily'?' · 每天':task.recurrence==='weekly'?' · 每周':task.recurrence==='cron'?' · Cron':task.recurrence==='rrule'?' · RRULE':''}{task.execution_mode==='agent'?' · 智能体':''}</small>
         </span>
         <ChevronRight size={15} aria-hidden="true"/>
       </summary>
       <p>{task.text}</p>{!!task.skipped_count&&<p className="section-help">已跳过 {task.skipped_count} 个错过或重叠的周期。</p>}
+      {task.rule_expression&&<pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{task.rule_expression}</pre>}{!!task.coalesced_batches&&<p className="section-help">已合并 {task.coalesced_batches} 批错过的周期（仅补最近一次）。</p>}
       {task.error && <p className="task-sidebar-read-error">{task.error}</p>}
     </details>
     {canCancelSchedule(task.status) && <Button variant="ghost" disabled={busy} aria-label={`取消定时任务 ${preview}`} onClick={() => onCancel(task.id)}>取消</Button>}
@@ -164,7 +165,10 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
   const [creating, setCreating] = useState(false);
   const [text, setText] = useState('');
   const [when, setWhen] = useState('');
-  const [recurrence,setRecurrence]=useState<'once'|'daily'|'weekly'>('once');
+  const [recurrence,setRecurrence]=useState<'once'|'daily'|'weekly'|'cron'|'rrule'>('once');
+  const [ruleExpression,setRuleExpression]=useState('');
+  const advanced=recurrence==='cron'||recurrence==='rrule';
+  const [zone,setZone]=useState(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC');
   const [executionMode,setExecutionMode]=useState<'text'|'agent'>(canScheduleAgent?'agent':'text');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -193,14 +197,15 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
     const content = text.trim();
     const date = new Date(when);
     if (!canSchedule || busy || !content) return;
-    if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) {
+    if (!advanced && (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now())) {
       setActionError('请选择未来的执行时间。');
       return;
     }
     void act(async () => {
-      const scheduled_at = date.toISOString();
-      const task = await post<Pick<Schedule, 'id' | 'status'>>(path, { text: content, scheduled_at, recurrence, execution_mode: canScheduleAgent?executionMode:'text', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC' });
-      update(previous => [{ ...task, text: content, scheduled_at }, ...(previous ?? []).filter(item => item.id !== task.id)]);
+      const timing=advanced?{rule_expression:ruleExpression.trim()}:{scheduled_at:date.toISOString()};
+      const task = await post<Pick<Schedule, 'id' | 'status' | 'scheduled_at' | 'recurrence' | 'execution_mode'>>(path, {text:content,...timing,recurrence,execution_mode:canScheduleAgent?executionMode:'text',timezone:advanced?zone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'});
+      update(previous => [{ ...task, text:content, scheduled_at:task.scheduled_at??(!advanced?date.toISOString():''), ...(advanced?{rule_expression:ruleExpression.trim(),timezone:zone}:{}) }, ...(previous ?? []).filter(item => item.id !== task.id)]);
+      setRuleExpression('');
       setText('');
       setWhen('');
       returnToCreate.current = true;
@@ -235,11 +240,15 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
     <div id={formId} hidden={!creating}>
       <form className="task-sidebar-form" onSubmit={schedule}>
         <Field label="任务内容"><textarea ref={textInput} value={text} onChange={event => setText(event.target.value)} required maxLength={50000} rows={2}/></Field>
-        <Field label="执行时间（本地时间）"><input value={when} onChange={event => setWhen(event.target.value)} type="datetime-local" required/></Field>
-        <Field label="执行频率"><select value={recurrence} onChange={e=>setRecurrence(e.target.value as 'once'|'daily'|'weekly')}><option value="once">仅一次</option><option value="daily">每天</option><option value="weekly">每周</option></select></Field>
+        <Field label="执行频率"><select value={recurrence} onChange={e=>setRecurrence(e.target.value as typeof recurrence)}><option value="once">仅一次</option><option value="daily">每天</option><option value="weekly">每周</option>{canScheduleAgent&&<><option value="cron">高级 · Cron</option><option value="rrule">高级 · RRULE</option></>}</select></Field>
+        {!advanced?<Field label="执行时间（本地时间）"><input value={when} onChange={event => setWhen(event.target.value)} type="datetime-local" required/></Field>:<>
+          <Field label="时区"><input value={zone} onChange={e=>setZone(e.target.value)} maxLength={100} required placeholder="Asia/Shanghai"/></Field>
+          <Field label={recurrence==='cron'?'Cron 规则':'RRULE 规则'} hint={recurrence==='cron'?'五段表达式，如 0 9 * * 1-5（工作日 9 点）。':'两行 DTSTART 与 RRULE；实际时区由 DTSTART 指定。'}><textarea rows={3} value={ruleExpression} onChange={e=>setRuleExpression(e.target.value)} maxLength={2048} required placeholder={recurrence==='cron'?'0 9 * * 1-5':'DTSTART;TZID=Asia/Shanghai:20261201T090000\nRRULE:FREQ=MONTHLY;BYMONTHDAY=1'}/></Field>
+          <p className="task-sidebar-muted">由官方 Harness 规则计算首次执行时间，创建后查看实际时间。</p>
+        </>}
         {canScheduleAgent&&<Field label="执行方式"><select value={executionMode} onChange={e=>setExecutionMode(e.target.value as 'text'|'agent')}><option value="agent">智能体任务（工具、子任务）</option><option value="text">仅文字回答</option></select></Field>}
         <p className="task-sidebar-muted">到期进入会话队列，沿用当前助手的权限和审批策略。周期任务不会堆积重复执行，失败后暂停。取消周期不影响已经启动的执行。</p>
-        <Button type="submit" busy={busy} disabled={!text.trim() || !when}>设定时间</Button>
+        <Button type="submit" busy={busy} disabled={!text.trim() || (advanced?!ruleExpression.trim()||!zone.trim():!when)}>设定时间</Button>
       </form>
     </div>
     {!schedules && !error && <p className="task-sidebar-muted" role="status">正在读取定时任务…</p>}

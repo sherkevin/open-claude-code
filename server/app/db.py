@@ -594,6 +594,12 @@ class Database:
         if "series_id" not in schedule_columns:
             self.conn.execute("ALTER TABLE conversation_schedules ADD COLUMN series_id TEXT")
         self.conn.execute("CREATE INDEX IF NOT EXISTS conversation_schedules_series ON conversation_schedules(series_id,created_at)")
+        series_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(conversation_schedule_series)")}
+        if "rule_expression" not in series_columns:
+            self.conn.execute("ALTER TABLE conversation_schedule_series ADD COLUMN rule_expression TEXT")
+        if "coalesced_batches" not in series_columns:
+            self.conn.execute("ALTER TABLE conversation_schedule_series ADD COLUMN coalesced_batches INTEGER NOT NULL DEFAULT 0")
+
         diagnostic_columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(kaiwu_diagnostic_events)")

@@ -36,7 +36,7 @@ zhixing-server = "app.cli:main"
 include = ["app*", "harness*"]
 
 [tool.setuptools.package-data]
-harness = ["*.ts", "package.json", "README.md"]
+harness = ["*.ts", "*.mts", "package.json", "README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -62,7 +62,7 @@ DeepSeek Harness 采用插件组合架构，固定源码中已经包含下面的
 
 | 功能 | 首选及复用方式 | 当前采用状态 | 开物需要保留/适配的边界 |
 |---|---|---|---|
-| 调度规则 | 官方 packages/schedule/schedule/src/domain.ts 与 packages/util/time，直接调用其 cron / RFC 5545 RRULE 规则计算 | **原始源码直接调用已验证**，见 §4 | 现有 SQLite/FIFO 负责持久任务、用户隔离、运行回执、防重复；不得把单次 inbox 投递成功当业务执行成功 |
+| 调度规则 | 官方 packages/schedule/schedule/src/domain.ts 与 packages/util/time，直接调用其 cron / RFC 5545 RRULE 规则计算 | **原始源码直接调用已验证；高级规则已完成候选集成**，见 §4 | 现有 SQLite/FIFO 负责持久任务、用户隔离、运行回执、防重复；不得把单次 inbox 投递成功当业务执行成功 |
 | 全局定时任务、自然语言自动化 | 官方 dsh-schedule、dsh-tool-schedule、packages/client/ui-schedule 的协议与交互；优先兼容接口与实现复用 | 待工作台接入 | 原生 Host 任务管理跨整个 Host，不能向多租户模型直接暴露；用户绑定由宿主推导，创建/改周期需明确授权 |
 | 持久 Goal | dsh-goal、dsh-goal-round-driver、dsh-tool-goal、command-goal | 已选定，待隔离验收 | 一目标一会话；目标完成条件、轮次/成本上限、人工暂停、审批与恢复。官方持久目标不等于进程重启后自动获准继续 |
 | 持久子智能体与通信 | dsh-subagent、subagent-spawn-in-process、subagent-fork-in-process、tool-subagent、tool-subagent-control | 已选定，待接入 | 本地 spawn/fork 才是当前上游可继续会话；外部 ACP/DSH SDK/Codex/Claude Code provider 在该固定版本是一次性执行。保留现有子任务能力直到迁移通过 |
@@ -101,7 +101,7 @@ TSX_TSCONFIG_PATH="$SOURCE/tsconfig.json" "$NODE" \\
   scripts/oss/harness_schedule_probe.mts "$SOURCE"
 ```
 
-本阶段选定的集成方式：**复用官方规则计算 + 现有企业调度执行边界**，而不是并行开启一个官方 Host scheduler。原因：上游公开说明 inbox delivery 回执并非执行历史，也不承诺严格 exactly-once；目前开物已经有带唯一运行键的持久消息队列和实际业务运行回执。引入两套派发器会造成重复任务和权限分裂。下一步将规则适配器、全局管理 API 和自然语言管理工具接到现有队列，维护原有一次、每日、每周计划的兼容性。当前只有源码复用验证，尚未向正式工作台启用 Cron/RRULE。
+本阶段选定的集成方式：**复用官方规则计算 + 现有企业调度执行边界**，而不是并行开启一个官方 Host scheduler。原因：上游公开说明 inbox delivery 回执并非执行历史，也不承诺严格 exactly-once；目前开物已经有带唯一运行键的持久消息队列和实际业务运行回执。引入两套派发器会造成重复任务和权限分裂。下一步将规则适配器、全局管理 API 和自然语言管理工具接到现有队列，维护原有一次、每日、每周计划的兼容性。本轮高级规则已在独立候选版本通过 API、持久队列及前端验证；尚未生产启用。恢复、回退与管理接入以 docs/plans/KAIWU_PARITY_EXECUTION.md 为准。
 
 ## 5. Mem0 接入设计与验证
 

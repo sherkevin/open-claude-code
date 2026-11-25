@@ -24,6 +24,8 @@ describe('conversation task sidebar', () => {
     expect(html).toContain('每天');
     expect(html).toContain('每周');
     expect(html).toContain('智能体任务（工具、子任务）');
+    expect(html).toContain('高级 · Cron');
+    expect(html).toContain('高级 · RRULE');
     expect(html).toContain('沿用当前助手的权限和审批策略');
   });
 

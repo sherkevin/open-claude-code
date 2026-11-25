@@ -13,9 +13,10 @@ from .security import AppError
 
 class ScheduleCreate(InputModel):
     text: str = Field(min_length=1, max_length=50000)
-    scheduled_at: AwareDatetime
+    scheduled_at: AwareDatetime | None = None
     execution_mode: Literal["text", "agent"] = "text"
-    recurrence: Literal["once", "daily", "weekly"] = "once"
+    recurrence: Literal["once", "daily", "weekly", "cron", "rrule"] = "once"
+    rule_expression: str | None = Field(default=None, max_length=2048)
     timezone: str = Field(default="UTC", min_length=1, max_length=100)
 
 
@@ -80,10 +81,38 @@ def enqueue_due_series(service):
               AND (s.status IN ('failed','cancelled') OR q.status='cancelled' OR q.error IS NOT NULL
                 OR r.status IN ('failed','cancelled','interrupted'))
             )""")
-    for due in db.all("SELECT id FROM conversation_schedule_series WHERE status='scheduled' AND next_at<=? ORDER BY next_at,id LIMIT 20",(now(),)):
+    # Keep legacy schedules ahead of the optional Node rule engine; cap the
+    # expensive advanced evaluation to one task per scheduler scan.
+    advanced_evaluated=False
+    for due in db.all("SELECT id FROM conversation_schedule_series WHERE status='scheduled' AND next_at<=? ORDER BY CASE WHEN recurrence IN ('cron','rrule') THEN 1 ELSE 0 END,next_at,id LIMIT 20",(now(),)):
+        # Rule calculation may spawn the pinned pure Node module. Do it outside
+        # the SQLite write transaction, then compare the authoritative snapshot.
+        snapshot=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND status='scheduled' AND next_at<=?",(due["id"],now()))
+        if not snapshot:
+            continue
+        decision=datetime.now(timezone.utc)
+        advanced=snapshot["recurrence"] in ("cron","rrule")
+        calculation_error=None
+        if advanced:
+            if advanced_evaluated:
+                continue
+            advanced_evaluated=True
+            from .official_schedule_rules import resolve_rule
+            try:
+                next_at,latest_due=resolve_rule(service.settings,snapshot["recurrence"],snapshot["rule_expression"],snapshot["timezone"],snapshot["next_at"],decision)
+                missed=0
+                coalesced=int(datetime.fromisoformat(latest_due)>datetime.fromisoformat(snapshot["next_at"]))
+            except AppError as exc:
+                calculation_error=exc.message
+        else:
+            next_at,latest_due,missed=series_slots(snapshot,decision)
+            coalesced=0
         with db.transaction():
             series=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND status='scheduled' AND next_at<=?",(due["id"],now()))
-            if not series:
+            if not series or series != snapshot:
+                continue
+            if calculation_error:
+                db.execute("UPDATE conversation_schedule_series SET status='paused',error=? WHERE id=?",(calculation_error,series["id"]))
                 continue
             try:
                 _available(service,series["conversation_id"],series["execution_mode"])
@@ -99,14 +128,15 @@ def enqueue_due_series(service):
                 db.execute("UPDATE conversation_schedule_series SET status='paused',error=? WHERE id=?",
                            ("上一次执行未成功，已暂停后续周期；请检查会话任务",series["id"]))
                 continue
-            next_at,latest_due,missed=series_slots(series,datetime.now(timezone.utc))
             pending=bool(previous and previous["run_status"]!="succeeded")
             if not pending:
                 identity="schedule-"+uid()
                 db.execute("""INSERT INTO conversation_schedules(id,conversation_id,text,scheduled_at,status,created_at,execution_mode,series_id)
                     VALUES(?,?,?,?,'scheduled',?,?,?)""",(identity,series["conversation_id"],series["text"],latest_due,now(),series["execution_mode"],series["id"]))
-            db.execute("UPDATE conversation_schedule_series SET next_at=?,skipped_count=skipped_count+? WHERE id=?",
-                       (next_at,missed+int(pending),series["id"]))
+            # A finite upstream rule can exhaust. The final occurrence has
+            # its own independent execution status; exhausted is not success.
+            db.execute("UPDATE conversation_schedule_series SET next_at=?,status=?,skipped_count=skipped_count+?,coalesced_batches=coalesced_batches+? WHERE id=?",
+                       (next_at or latest_due,"scheduled" if next_at else "exhausted",missed+int(pending),coalesced,series["id"]))
 
 
 def enqueue_due_schedules(service):
@@ -143,18 +173,34 @@ def create_schedule_router(svc,authenticated):
             COALESCE(r.error,q.error,s.error) AS error,r.id AS run_id,s.execution_mode,s.series_id,'once' AS recurrence
             FROM conversation_schedules s LEFT JOIN message_queue q ON q.conversation_id=s.conversation_id AND q.id=s.id
             LEFT JOIN runs r ON r.id=q.run_id WHERE s.conversation_id=? ORDER BY s.created_at DESC,s.id DESC LIMIT 100""",(conversation_id,))
-        series=service.db.all("""SELECT id,text,next_at AS scheduled_at,status,error,execution_mode,recurrence,timezone,skipped_count
+        series=service.db.all("""SELECT id,text,next_at AS scheduled_at,status,error,execution_mode,recurrence,timezone,skipped_count,rule_expression,coalesced_batches
             FROM conversation_schedule_series WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 100""",(conversation_id,))
         return series+occurrences
 
     @router.post("",status_code=201)
     def create_schedule(conversation_id:str,body:ScheduleCreate,service=Depends(svc),user=Depends(authenticated)):
-        stamp=body.scheduled_at.astimezone(timezone.utc)
+        service.require("conversations",conversation_id,user)
         current=datetime.now(timezone.utc)
-        if not body.text.strip() or not current<stamp<=current+timedelta(days=365):
-            raise AppError(422,"SCHEDULE_INVALID","请输入任务内容，并选择未来一年内的执行时间")
+        if not body.text.strip():
+            raise AppError(422,"SCHEDULE_INVALID","请输入任务内容")
+        advanced=body.recurrence in ("cron","rrule")
+        expression=None
+        effective_zone=body.timezone
+        if advanced:
+            if body.scheduled_at is not None:
+                raise AppError(422,"SCHEDULE_INVALID","高级规则由官方模块计算首次执行时间")
+            _available(service,conversation_id,body.execution_mode)
+            from .official_schedule_rules import create_rule
+            next_at,expression,effective_zone=create_rule(service.settings,body.recurrence,body.rule_expression,effective_zone,current)
+            stamp=datetime.fromisoformat(next_at)
+        else:
+            if body.rule_expression is not None or body.scheduled_at is None:
+                raise AppError(422,"SCHEDULE_INVALID","普通计划需要明确执行时间")
+            stamp=body.scheduled_at.astimezone(timezone.utc)
+            if not current<stamp<=current+timedelta(days=365):
+                raise AppError(422,"SCHEDULE_INVALID","请选择未来一年内的执行时间")
         try:
-            zone=ZoneInfo(body.timezone)
+            zone=ZoneInfo(effective_zone)
         except (ZoneInfoNotFoundError,ValueError):
             raise AppError(422,"SCHEDULE_TIMEZONE_INVALID","请选择有效的时区") from None
         # This setting is present in full builds. Keep the existing review
@@ -179,10 +225,10 @@ def create_schedule_router(svc,authenticated):
                     VALUES(?,?,?,?,'scheduled',?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),now(),body.execution_mode))
             else:
                 identity="series-"+uid()
-                service.db.execute("""INSERT INTO conversation_schedule_series(id,conversation_id,text,next_at,recurrence,timezone,local_time,execution_mode,created_at)
-                    VALUES(?,?,?,?,?,?,?,?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),body.recurrence,body.timezone,
-                                                 stamp.astimezone(zone).time().isoformat(),body.execution_mode,now()))
-        return {"id":identity,"status":"scheduled","execution_mode":body.execution_mode,"recurrence":body.recurrence}
+                service.db.execute("""INSERT INTO conversation_schedule_series(id,conversation_id,text,next_at,recurrence,timezone,local_time,execution_mode,created_at,rule_expression)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),body.recurrence,effective_zone,
+                                                 stamp.astimezone(zone).time().isoformat(),body.execution_mode,now(),expression))
+        return {"id":identity,"status":"scheduled","execution_mode":body.execution_mode,"recurrence":body.recurrence,"scheduled_at":stamp.isoformat()}
 
     @router.delete("/{identity}",status_code=204)
     def cancel_schedule(conversation_id:str,identity:str,service=Depends(svc),user=Depends(authenticated)):
