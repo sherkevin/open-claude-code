@@ -713,3 +713,115 @@ def test_host_scope_denies_hits_when_authorization_changes_during_backend_search
     assert adapter.sync(scope).added == 1
     with pytest.raises(Mem0IndexScopeInvalid):
         adapter.search("synthetic",scope=scope)
+
+
+def test_mem0_host_default_disabled_and_explicit_backend(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    backend = FakeMem0()
+    host = Mem0Host(service, backend=backend)
+    assert host.lookup(user["id"], cid, "fact").status == "fallback"
+    with pytest.raises(Mem0IndexDisabled):
+        host.sync(user["id"], cid)
+    assert backend.calls == []
+    assert not (service.settings.data_dir / ".mem0-index.lock").exists()
+    with pytest.raises(ValueError):
+        Mem0Host(service, Mem0IndexConfig(enabled=True))
+
+
+def test_mem0_host_explicit_sync_and_lookup_no_implicit_writes(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic fact","host-op")
+    backend = FakeMem0()
+    host = Mem0Host(service, Mem0IndexConfig(enabled=True), backend=backend)
+    assert host.lookup(user["id"],cid,"fact").status == "verified"
+    assert [call[0] for call in backend.calls] == ["search"]
+    assert host.sync(user["id"],cid).added == 1
+    backend.calls.clear()
+    result = host.lookup(user["id"],cid,"fact")
+    assert result.status == "verified"
+    assert [hit.text for hit in result.hits] == ["synthetic fact"]
+    assert [call[0] for call in backend.calls] == ["search"]
+
+
+def test_mem0_host_provider_failure_and_byte_budget_fall_back(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","合成内容","host-op")
+    backend = FakeMem0()
+    host = Mem0Host(service, Mem0IndexConfig(enabled=True), backend=backend,max_context_bytes=11)
+    assert host.sync(user["id"],cid).added == 1
+    result = host.lookup(user["id"],cid,"fact")
+    assert result.status == "fallback" and result.reason == "context_byte_budget" and not result.hits
+    backend.failures.add("search")
+    result = host.lookup(user["id"],cid,"fact")
+    assert result.status == "fallback" and result.reason == "Mem0IndexUnavailable" and not result.hits
+    backend.failures.clear()
+    host = Mem0Host(service, Mem0IndexConfig(enabled=True), backend=backend,max_context_bytes=12)
+    assert host.lookup(user["id"],cid,"fact").hits[0].text == "合成内容"
+
+
+def test_mem0_host_single_slot_across_instances_and_release(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic fact","host-op")
+    backend = FakeMem0()
+    one = Mem0Host(service, Mem0IndexConfig(enabled=True),backend=backend)
+    two = Mem0Host(service, Mem0IndexConfig(enabled=True),backend=backend)
+    with one._slot():
+        assert two.lookup(user["id"],cid,"fact").status == "fallback"
+        with pytest.raises(Mem0IndexUnavailable):
+            two.sync(user["id"],cid)
+        assert backend.calls == []
+    assert two.sync(user["id"],cid).added == 1
+    assert one.lookup(user["id"],cid,"fact").hits[0].text == "synthetic fact"
+
+
+def test_mem0_host_rejects_unsafe_lock_path(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    backend = FakeMem0()
+    target = service.settings.data_dir / "synthetic-target"
+    target.write_text("unchanged")
+    (service.settings.data_dir / ".mem0-index.lock").symlink_to(target)
+    host = Mem0Host(service, Mem0IndexConfig(enabled=True),backend=backend)
+    assert host.lookup(user["id"],cid,"fact").status == "fallback"
+    assert target.read_text() == "unchanged" and backend.calls == []
+
+
+def test_mem0_host_rejects_revoked_scope_without_backend_access(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic fact","host-op")
+    backend = FakeMem0()
+    host = Mem0Host(service, Mem0IndexConfig(enabled=True),backend=backend)
+    assert host.sync(user["id"],cid).added == 1
+    backend.calls.clear()
+    service.db.execute("UPDATE users SET enabled=0 WHERE id=?", (user["id"],))
+    assert host.lookup(user["id"],cid,"fact").status == "fallback"
+    with pytest.raises(Mem0IndexError):
+        host.sync(user["id"],cid)
+    assert backend.calls == []
+
+
+def test_mem0_host_real_process_lock_exclusion(native_store):
+    import subprocess
+    import sys
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    host = Mem0Host(service, Mem0IndexConfig(enabled=True), backend=FakeMem0())
+    path = service.settings.data_dir / ".mem0-index.lock"
+    child = (
+        "import fcntl, os, sys\n"
+        "fd=os.open(sys.argv[1], os.O_RDWR | os.O_NOFOLLOW)\n"
+        "try:\n"
+        "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "except BlockingIOError:\n"
+        "    sys.exit(23)\n"
+        "finally:\n"
+        "    os.close(fd)\n"
+    )
+    with host._slot():
+        assert subprocess.run([sys.executable,"-c",child,str(path)],timeout=5).returncode == 23
+    assert subprocess.run([sys.executable,"-c",child,str(path)],timeout=5).returncode == 0
