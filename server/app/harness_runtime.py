@@ -36,6 +36,37 @@ MODEL_FAILURES = {
 }
 
 
+class _GoalView(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(pattern=r"^goal-[a-f0-9-]{36}$")
+    revision: int = Field(ge=1)
+    objective: str = Field(min_length=1,max_length=8000)
+    phase: Literal["active","paused","blocked","complete"]
+    maxGoalRounds: int = Field(ge=1,le=32)
+    roundsStarted: int = Field(ge=0,le=32)
+    createdAt: int = Field(ge=0)
+    updatedAt: int = Field(ge=0)
+    activation: Literal["disarmed"]
+    blockedReason: dict[str,str] | None = None
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if self.roundsStarted>self.maxGoalRounds or self.updatedAt<self.createdAt or (
+                (self.phase=="blocked") != (self.blockedReason is not None)):
+            raise ValueError("incoherent goal receipt")
+        return self
+
+
+class _GoalReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid",strict=True)
+    schema_: Literal["workspace-goal-state/v1"] = Field(alias="schema")
+    sourceCommit: Literal["fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"]
+    sessionId: str
+    goal: _GoalView | None
+    error: str | None
+    continuationDriver: Literal[False]
+
+
 class _EmptyResult(BaseModel):
     pass
 
@@ -902,6 +933,25 @@ class HarnessRuntime(WorkspaceRuntime):
                 await self._settle_compaction_request(operation)
             else:
                 operation.add_done_callback(self._consume_task_result)
+
+    async def goal_state(self, request):
+        if self.subagent_child_id or self.current_run or not self.service.settings.harness_goal_state_enabled:
+            raise AppError(409,"GOAL_SESSION_BUSY","目标管理仅支持空闲主会话")
+        receipt=await asyncio.to_thread(self.client.request,"workspace/goal-state",
+            {**request,"sessionId":self.session_id},response_model=_GoalReceipt,timeout_seconds=30)
+        if receipt.sessionId!=self.session_id:
+            raise AppError(502,"GOAL_RECEIPT_INVALID","目标回执与会话不匹配")
+        if receipt.error is not None:
+            errors={"GOAL_ALREADY_EXISTS":"已有未完成目标","GOAL_NOT_FOUND":"没有当前目标",
+                    "GOAL_STALE_REVISION":"目标已变化，请刷新后重试",
+                    "GOAL_INVALID_TRANSITION":"当前目标状态不允许此操作",
+                    "GOAL_INVALID_EDIT":"目标修改无效","GOAL_INVALID_OBJECTIVE":"目标内容无效",
+                    "GOAL_INVALID_MAX_ROUNDS":"轮次限制无效"}
+            if receipt.error not in errors or receipt.goal is not None:
+                raise AppError(502,"GOAL_RECEIPT_INVALID","原生目标回执无法核验")
+            raise AppError(409,receipt.error,errors[receipt.error])
+        return {"goal":receipt.goal.model_dump(exclude_none=True) if receipt.goal else None,
+                "continuation_driver":False}
 
     async def context_usage(self):
         binding = context_binding(self.config, self.session_id)

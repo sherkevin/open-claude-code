@@ -6,9 +6,10 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { installUsageObserver } from './usage_observer.ts'
 import { forkWorkspaceSession } from './fork_session.ts'
+import { goalStateRequest } from './goal_state.ts'
 
 export const name = 'zhixing-workspace-host'
-export const inject = ['tools', 'agents', 'workingDirectory', 'loader', 'sdkAppStartup', 'tokenMeter', 'sessionProjections', 'commands', 'sessions', 'attachments']
+export const inject = ['tools', 'agents', 'workingDirectory', 'loader', 'sdkAppStartup', 'tokenMeter', 'sessionProjections', 'commands', 'sessions', 'attachments', 'goals']
 
 const ALLOWED_TOOLS = new Set([
   'knowledge_search', 'knowledge_read', 'web_search', 'web_read', 'generate_xlsx', 'generate_image',
@@ -304,6 +305,7 @@ export async function apply(ctx: any, config: any): Promise<void> {
       return result
     }
     if (method === 'workspace/context') return readWorkspaceContext(ctx, config, params, initialized)
+    if (method === 'workspace/goal-state') return goalStateRequest(ctx, config, params, initialized)
     if (method === 'workspace/fork' && initialized) return forkWorkspaceSession(ctx, config, params)
     if (method === 'workspace/steer') {
       if (!initialized || !isRecord(params) || Object.keys(params).sort().join(',') !== 'requestId,sessionId,text'

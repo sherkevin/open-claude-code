@@ -70,6 +70,7 @@ KERNEL_MODULES = (
     ("agent", "core/agent"),
     ("agent-loop", "core/agent-loop"),
     ("sessions", "session/session-persistence-jsonl"),
+    ("goals", "goal/goal"),
     ("llm-deepseek", "llm/llm-deepseek-api-key"),
     ("llm-retry", "llm/llm-retry"),
     ("sdk-app-startup", "bundle/sdk-app"),
@@ -188,6 +189,9 @@ def write_profile(
             entry["config"] = {"agents": []}
         elif identifier == "sessions":
             entry["config"] = {"root": str(root / "sessions"), "compression": "none"}
+        elif identifier == "goals":
+            # State only: no model tools, command-goal or round driver.
+            entry["config"] = {"defaultMaxGoalRounds": 8}
         elif identifier == "attachments":
             entry["config"] = {
                 "dshHome": str(root), "maxImageBytes": 5 * 1024 * 1024,

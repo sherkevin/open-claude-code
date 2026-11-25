@@ -11,9 +11,9 @@
 | A1 | 官方 Cron/RRULE 规则引擎通过薄适配器接入原持久队列及前端高级规则入口 | c42d040 已合入主线，隔离验收通过，未上线 |
 | A2 | 全局定时任务中心、编辑、暂停/恢复、立即运行、自然语言创建 | 周期暂停/安全恢复、全局任务中心、编辑、立即运行、自然语言创建/查询/修改及隔离回退闸门通过验收；自然语言创建/修改及拒绝审批真实浏览器 3/3 通过；生产变更文件基线已对账，覆盖版本隔离 34/34 通过；实时发布闸门受阻，未上线 |
 | A3 | 反馈回执、我的反馈、状态/解决说明与逐消息入口 | 本人回执/历史/处理状态、管理员处理说明、逐回答快捷入口和站内处理结果通知已隔离验收；未上线 |
-| B | 官方 Goal 状态、round driver 与预算/检查点恢复 | 官方固定源码 149/149 通过；独立产品接入待做 |
-| C | 官方持久子智能体、子智能体通信、Team 任务板及多层协作 | 待做 |
-| D | Mem0 派生索引适配、中文记忆质量和隔离评测 | 已完成 pilot，待产品接入 |
+| B | 官方 Goal 状态、round driver 与预算/检查点恢复 | 官方固定源码 149/149、原生 Goal 状态服务/工作台隔离接入通过；自动 driver、执行预算及恢复待做 |
+| C | 官方持久子智能体、子智能体通信、Team 任务板及多层协作 | 固定官方 12 套件 389/389 通过，产品接入待做 |
+| D | Mem0 派生索引适配、中文记忆质量和隔离评测 | SDK pilot 通过；VIP Claude Code 独立候选开发中 |
 | E | 终端/Jobs/工作区/Codex App Server 与受控浏览器环境 | 待做 |
 
 ## A1 实现和验收
@@ -81,6 +81,14 @@ A1 工作树仍有开发活动时，独立工作树 kaiwu-feedback-tracking-2026
 ## B1 官方 Goal 基线（2026-11-25）
 
 固定源码五个官方测试套件 149/149、退出码 0。恢复后 activation 不自动授权，round cap 不是资源预算；下一步在独立工作树 kaiwu-goal-pilot-20261125 接入状态服务并验证恢复/权限，自动 driver 后置。详见 [官方 Goal 基线](../evidence/KAIWU_GOAL_UPSTREAM_2026-11-25.md)。未完成开物产品集成，生产闸门仍保持。
+
+## B2.1 原生 Goal 状态服务及工作台（2026-11-25）
+
+直接使用固定官方 dsh-goal / session projection / JSONL 持久状态，增加 feature-gated 本人空闲会话 Goal 管理及工作台入口，默认关闭自动 driver。69 项 Goal/profile、24 项前端、真实浏览器 5 项检查通过，生产路径构建通过；扩展 85 项通过及旧记忆夹具 16 项修复复验通过。见 [Goal 状态验收](../evidence/KAIWU_GOAL_STATE_2026-11-25.md)。还未完成自主执行：下一项将官方 driver 与真实 run/FIFO/审批/用量及安全恢复对齐，未上线。
+
+## C1 与 D1 并行推进（2026-11-25）
+
+官方固定持久子智能体/Team 12 套件 389/389 通过，见 [官方多智能体验收](../evidence/KAIWU_SUBAGENT_TEAM_UPSTREAM_2026-11-25.md)，产品接入仍待做。已验证 VIP 专用 Claude Code 启动入口 /media/data3/dengkw/.private-dev/bin/claude 正常模型响应；默认 CLI/额外 restricted 模式未登录。已派 Mem0 独立候选开发，工人 PID 3284543 / 会话 883778cb-25d1-4a97-a4f2-c1823979e04d，工作树 kaiwu-mem0-index-adapter-20261125，日志 /media/data3/dengkw/acceptance/kaiwu-mem0-index-adapter-20261125/worker.jsonl；已实际写入 server/app/mem0_index.py，仍需验收。不读取/重配密钥，不启动重复 worker，不合入未测试的候选。自动任务已更新为核对实际工人和继续独立任务。
 
 ### 发布前关键条件
 

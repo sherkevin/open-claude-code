@@ -919,6 +919,46 @@ class SessionActor:
             if not future.done():
                 future.set_result(value)
 
+    async def goal_command(self, request, user, session_id, future):
+        from .conversation_goal import require_goal_session
+        value=None
+        failure=None
+        try:
+            await offload(require_goal_session,self.service,self.conversation_id,user,session_id)
+            await self.ensure_runtime()
+            await offload(require_goal_session,self.service,self.conversation_id,user,session_id)
+            if getattr(self.runtime,"session_id",None)!=session_id or not callable(getattr(self.runtime,"goal_state",None)):
+                raise AppError(503,"GOAL_RUNTIME_UNAVAILABLE","原生目标运行器不可用")
+            value=await self.runtime.goal_state(request)
+        except AppError as error:
+            failure=error
+        except Exception:
+            failure=AppError(503,"GOAL_STATE_UNCERTAIN","原生目标状态暂不可核验，请刷新后确认，不要重复提交")
+        finally:
+            try:
+                if self.runtime:
+                    try:
+                        await self.runtime.close()
+                        if callable(getattr(self.runtime,"require_process_reaped",None)):
+                            self.runtime.require_process_reaped()
+                    finally:
+                        self.runtime=None
+                if failure is None:
+                    await offload(require_goal_session,self.service,self.conversation_id,user,session_id)
+            except Exception:
+                failure=AppError(503,"GOAL_STATE_UNCERTAIN","原生目标状态暂不可核验，请刷新后确认，不要重复提交")
+            finally:
+                # Never resolve the HTTP waiter before releasing the maintenance
+                # reservation, including rejected or stale native mutations.
+                self.manager.goal_requests.pop(self.conversation_id,None)
+                if not future.done():
+                    if failure:
+                        future.set_exception(failure)
+                    elif value is not None:
+                        future.set_result(value)
+                    else:
+                        future.set_exception(AppError(503,"EXECUTION_STOPPED","执行服务已停止，请刷新目标状态"))
+
     async def fork_command(self, child_id, boundary, body, user, future):
         from .conversation_fork import clear_fork_home, fork_boundary, save_fork
 
@@ -1237,6 +1277,8 @@ class SessionActor:
                 if isinstance(run_id, tuple):
                     if run_id[0] == "fork":
                         await self.fork_command(*run_id[1:])
+                    elif run_id[0] == "goal":
+                        await self.goal_command(*run_id[1:])
                     else:
                         await self.context_command(run_id[1])
                     continue
@@ -1351,6 +1393,9 @@ class SessionActor:
             if future and not future.done():
                 kind = (await offload(self.service.require, "conversations", self.conversation_id)).get("runtime_type")
                 future.set_result(context_snapshot(error="执行服务已停止，稍后可重新刷新", runtime_type=kind))
+            goal = self.manager.goal_requests.pop(self.conversation_id,None)
+            if goal and not goal.done():
+                goal.set_exception(AppError(503,"EXECUTION_STOPPED","执行服务已停止，请刷新目标状态"))
             fork = self.manager.fork_requests.pop(self.conversation_id, None)
             if fork and not fork.done():
                 fork.set_exception(AppError(503, "EXECUTION_STOPPED", "执行服务停止，稍后可重新创建分支"))
@@ -1416,6 +1461,7 @@ class RunManager:
         self.actors, self.approvals = {}, {}
         self.context_requests = {}
         self.fork_requests = {}
+        self.goal_requests = {}
         self.queue_worker = None
         # Actors removed from ``actors`` may still be closing a native runtime
         # in their ``finally`` block.  They must stay tracked: shutdown has to
@@ -1572,7 +1618,18 @@ class RunManager:
         actor.enqueue(run_id)
 
     def maintenance_busy(self, conversation_id):
-        return conversation_id in self.context_requests or conversation_id in self.fork_requests
+        return conversation_id in self.context_requests or conversation_id in self.fork_requests or conversation_id in self.goal_requests
+
+    async def goal_state(self,conversation_id,request,user):
+        from .conversation_goal import require_goal_session
+        row=await offload(require_goal_session,self.service,conversation_id,user)
+        if self.maintenance_busy(conversation_id):
+            raise AppError(409,"GOAL_SESSION_BUSY","会话正在处理其他操作，请稍后刷新")
+        actor=self.actor_for(conversation_id)
+        future=asyncio.get_running_loop().create_future()
+        self.goal_requests[conversation_id]=future
+        actor.enqueue(("goal",request,user,row["harness_session_id"],future))
+        return await asyncio.shield(future)
 
     async def fork(self, conversation_id, child_id, boundary, body, user):
         if self.maintenance_busy(conversation_id):
@@ -1585,8 +1642,8 @@ class RunManager:
 
     async def context(self, conversation_id):
         conversation = await offload(self.service.require, "conversations", conversation_id)
-        if conversation_id in self.fork_requests:
-            raise AppError(409, "CONTEXT_BUSY", "会话正在创建分支，请稍后刷新")
+        if conversation_id in self.fork_requests or conversation_id in self.goal_requests:
+            raise AppError(409, "CONTEXT_BUSY", "会话正在处理其他操作，请稍后刷新")
         if conversation["active_run_id"]:
             raise AppError(409, "CONTEXT_BUSY", "此会话仍有任务执行中，请完成或停止任务后刷新")
         cached = await offload(cached_context, self.service, conversation_id)

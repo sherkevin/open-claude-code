@@ -14,6 +14,7 @@ export interface AppConfig {
   legacy_chat_image_max_bytes?: number;
   chat_attachment_discard?: boolean;
   harness_subagents?: boolean;
+  harness_goal_state?: boolean;
   default_model_id?: string; default_reasoning_level?: string;
   deployment_mode?: 'normal' | 'trial'; capabilities?: string[]; allowed_retrieval_modes?: KnowledgeRetrievalMode[];
   feishu_h5?: { enabled: boolean; app_id: string; path: string };

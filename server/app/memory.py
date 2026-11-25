@@ -194,7 +194,7 @@ class NativeMemory:
         if self.service.db.one("SELECT id FROM conversations WHERE user_id=? AND id=? AND active_run_id IS NOT NULL", (user_id, conversation_id)):
             return True
         manager = self.service.manager
-        return bool((manager and conversation_id in manager.context_requests) or self.service.db.one("SELECT conversation_id FROM conversation_memory_scopes WHERE conversation_id=? AND mutation_id IS NOT NULL", (conversation_id,)))
+        return bool((manager and (conversation_id in manager.context_requests or conversation_id in getattr(manager,"goal_requests",{}))) or self.service.db.one("SELECT conversation_id FROM conversation_memory_scopes WHERE conversation_id=? AND mutation_id IS NOT NULL", (conversation_id,)))
 
     def view(self, user, conversation_id):
         if self.is_harness(conversation_id):

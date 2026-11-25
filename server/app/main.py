@@ -265,10 +265,13 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         from .conversation_interactions import create_interaction_router
         from .conversation_schedules import create_schedule_router
         from .conversation_feedback import create_feedback_router
+        from .conversation_goal import create_goal_router
         app.include_router(create_conversation_fork_router(svc, authenticated))
         app.include_router(create_interaction_router(svc, authenticated))
         app.include_router(create_schedule_router(svc, authenticated))
         app.include_router(create_feedback_router(svc, authenticated, admin))
+        if settings.harness_goal_state_enabled:
+            app.include_router(create_goal_router(svc, authenticated))
     from .workflows import create_workflow_router
     app.include_router(create_workflow_router(svc, authenticated, enabled=settings.workflows_enabled))
     from .kaiwu_control import create_kaiwu_control_router
@@ -301,6 +304,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             "auth_types": ["none", "bearer"],
             **({"harness_subagents": bool(settings.harness_source_dir and settings.harness_node_path and settings.max_active_sessions >= 2)}
                if not policy.is_trial else {}),
+            **({"harness_goal_state": True} if settings.harness_goal_state_enabled and not policy.is_trial else {}),
             "feishu_h5": {
                 "enabled": feishu_ready,
                 "app_id": settings.feishu_h5_app_id if feishu_ready else "",

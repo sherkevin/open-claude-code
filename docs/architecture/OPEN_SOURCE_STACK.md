@@ -151,6 +151,12 @@ flowchart LR
 - 真实模型对照：现有 NativeMemory vs NativeMemory+Mem0，用经授权的中文任务测试集、公开长期记忆 benchmark（如 LoCoMo、LongMemEval）和业务记忆中的时间变化、冲突、遗忘任务；明确 SDK 与托管平台区别。衡量召回、事实准确率、过期事实误用、延时、token 与成本，结果决定是否默认开启。
 - 生产：版本及传递依赖审计、独立存储和出站控制、备份/清理、限流、开关、回退；先测试账号再客户授权，不在本次 pilot 直接迁移生产记忆。
 
+### 2026-11-25 后续实际采用记录
+
+- 官方 dsh-goal 状态服务已在隔离工作台实现真实持久状态及生命周期管理；不挂载自动 driver 或模型 Goal 工具。默认关闭功能，见 [Goal 接入](../evidence/KAIWU_GOAL_STATE_2026-11-25.md)。
+- 固定官方 subagent/Team 的 12 套件 389/389 通过，见 [官方基线](../evidence/KAIWU_SUBAGENT_TEAM_UPSTREAM_2026-11-25.md)，仍需产品集成，不代表已上线。
+- Mem0 派生索引适配由 VIP 独立 Claude Code 工人开发，真实 SDK 产品集成尚待验收。
+
 ## 6. 实施顺序与工作量控制
 
 1. **任务管理**：优先以官方 Schedule/时间规则、自动化工具协议及 ui-schedule 的交互为基础，完善现有队列的管理生命周期；反馈处理回执/状态查询优先借鉴 message-feedback，保留已有企业工单。

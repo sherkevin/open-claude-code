@@ -674,6 +674,8 @@ class Service:
             row = self.require("conversations", item_id, user)
             from .session_permissions import change as change_permission_mode
             change_permission_mode(self, row, user, data.get("permission_mode"))
+            if data.get("archived") is not None and self.manager and item_id in getattr(self.manager,"goal_requests",{}):
+                raise AppError(409,"GOAL_SESSION_BUSY","目标正在更新，请稍后归档")
             if row["active_run_id"] and data.get("archived"):
                 raise AppError(409, "CONVERSATION_BUSY", "请先停止当前任务再归档")
             if data.get("model_id") is not None or data.get("reasoning_level") is not None:

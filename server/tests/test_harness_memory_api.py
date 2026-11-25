@@ -16,6 +16,9 @@ from app.service import approval_view
 @pytest.fixture
 def memory_review(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL", "local-lexical-v1")
+    # Explicit local-only synthetic provider; no real request is made by these storage tests.
+    monkeypatch.setenv("ANTHROPIC_API_KEY","synthetic-memory-fixture")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL","http://127.0.0.1:9/v1")
     app = create_app(Settings(data_dir=tmp_path, provider_settings="", model="fixture", runtime_type="harness"))
     with TestClient(app) as client:
         service = app.state.service

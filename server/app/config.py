@@ -47,6 +47,8 @@ class Settings:
     # Server-owned launch configuration; never accepted from conversation input.
     harness_node_path: str = field(default_factory=lambda: os.getenv("AGENT_HARNESS_NODE_PATH", "").strip())
     harness_source_dir: str = field(default_factory=lambda: os.getenv("AGENT_HARNESS_SOURCE_DIR", "").strip())
+    # State-only native Goal pilot. The autonomous driver is not mounted.
+    harness_goal_state_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_GOAL_STATE_ENABLED", "false").lower() == "true")
     # Per model response limit; independent of goal budgets and turn limits.
     harness_max_output_tokens: int = field(default_factory=lambda: int(os.getenv("AGENT_HARNESS_MAX_OUTPUT_TOKENS", "8192")))
     # One owned Node process executes a manual compaction, including its
