@@ -16,7 +16,7 @@ from mem0_probe import LocalProvider, calls
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]/"server"))
 from app.mem0_index import (TrustedScope, SourceDocument, SourceSnapshot,
-    Mem0DerivedIndex, Mem0IndexConfig, Mem0IndexUnavailable,
+    Mem0DerivedIndex, Mem0IndexConfig, Mem0IndexUnavailable, Mem0IndexScopeInvalid,
     load_mem0_backend, text_digest, MAX_ENUMERATION_ROWS)
 
 
@@ -91,6 +91,38 @@ def main():
                 assert not backend.get_all(filters=filters)["results"]
                 assert len(other_adapter.search("fixture",scope=other).hits)==2
                 checks.append("scoped empty snapshot cleanup preserves other owner")
+                # Actual SDK write succeeds; the source is revoked before the
+                # next document can be submitted. Roll back the acknowledged
+                # new row without touching another owner's rows.
+                class RevocableReader(Reader):
+                    revoked=False
+                    def load(self, scope):
+                        if self.revoked:
+                            raise Mem0IndexScopeInvalid("synthetic revocation")
+                        return super().load(scope)
+                revoked_reader=RevocableReader(docs(4)[:2])
+                class RevokeOnAdd:
+                    count=0
+                    def __getattr__(self, name):
+                        return getattr(backend,name)
+                    def add(self,*args,**kwargs):
+                        response=backend.add(*args,**kwargs)
+                        self.count+=1
+                        revoked_reader.revoked=True
+                        return response
+                revoking=RevokeOnAdd()
+                revoked=scope(4)
+                fenced=Mem0DerivedIndex(Mem0IndexConfig(enabled=True),revoking,revoked_reader)
+                try:
+                    fenced.sync(revoked)
+                except Mem0IndexScopeInvalid:
+                    pass
+                else:
+                    raise AssertionError("revoked sync must fail")
+                assert revoking.count==1
+                assert not backend.get_all(filters=filters)["results"]
+                assert len(other_adapter.search("fixture",scope=other).hits)==2
+                checks.append("revocation stops next SDK write and rolls back acknowledged row")
                 assert calls["extraction"]==0
                 print(json.dumps({"sdk":version("mem0ai"),"passed":len(checks),"checks":checks,"loopback_requests":calls,"enumeration_sentinel":MAX_ENUMERATION_ROWS,"quality_evaluation":False}))
             finally:

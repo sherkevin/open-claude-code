@@ -371,15 +371,13 @@ def test_source_change_during_sync_removes_rows_written_for_the_old_snapshot():
 
 def test_source_change_during_search_returns_no_candidates():
     backend = FakeMem0()
-    reader = SequenceReader(
-        [make_document(text="stable")],
-        [make_document(text="stable")],
-        [make_document(text="stable")],
-        [make_document(text="changed")],
-    )
+    reader = FakeReader([make_document(text="stable")])
     adapter = enabled_index(backend, reader)
     scope = make_scope()
     adapter.sync(scope)
+    adapter = enabled_index(backend, SequenceReader(
+        [make_document(text="stable")], [make_document(text="changed")],
+    ))
     with pytest.raises(Mem0IndexSourceChanged):
         adapter.search("stable", scope=scope)
 
@@ -825,3 +823,52 @@ def test_mem0_host_real_process_lock_exclusion(native_store):
     with host._slot():
         assert subprocess.run([sys.executable,"-c",child,str(path)],timeout=5).returncode == 23
     assert subprocess.run([sys.executable,"-c",child,str(path)],timeout=5).returncode == 0
+
+def test_mem0_host_sync_revocation_stops_later_submissions(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic first","host-op1")
+    service.memory.edit(user,cid,1,"notes.md","synthetic second","host-op2")
+    class RevokingBackend(FakeMem0):
+        def add(self, *args, **kwargs):
+            result = super().add(*args, **kwargs)
+            service.db.execute("UPDATE users SET enabled=0 WHERE id=?", (user["id"],))
+            return result
+    backend = RevokingBackend()
+    host = Mem0Host(service, Mem0IndexConfig(enabled=True), backend=backend)
+    with pytest.raises(Mem0IndexScopeInvalid):
+        host.sync(user["id"],cid)
+    assert len(add_calls(backend)) == 1
+    assert not backend.rows
+    assert host.lookup(user["id"],cid,"fact").status == "fallback"
+
+
+def test_mem0_host_sync_revocation_after_enumeration_sends_no_text(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic fact","host-op")
+    class RevokingBackend(FakeMem0):
+        def get_all(self, **kwargs):
+            result = super().get_all(**kwargs)
+            service.db.execute("UPDATE conversations SET archived=1 WHERE id=?", (cid,))
+            return result
+    backend = RevokingBackend()
+    host = Mem0Host(service, Mem0IndexConfig(enabled=True), backend=backend)
+    with pytest.raises(Mem0IndexScopeInvalid):
+        host.sync(user["id"],cid)
+    assert len(add_calls(backend)) == 0
+    assert not backend.rows
+
+
+def test_sync_failed_response_rolls_back_prior_acknowledged_writes():
+    class MalformedBackend(FakeMem0):
+        def add(self, *args, **kwargs):
+            if add_calls(self):
+                return {"invalid": True}
+            return super().add(*args, **kwargs)
+    backend = MalformedBackend()
+    reader = FakeReader([make_document("a.md"), make_document("b.md")])
+    adapter = enabled_index(backend,reader)
+    with pytest.raises(Mem0IndexUnavailable):
+        adapter.sync(make_scope())
+    assert not backend.rows

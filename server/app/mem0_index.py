@@ -625,59 +625,75 @@ class Mem0DerivedIndex:
                         mark_stale(row)
 
             added_ids: list[str] = []
+            # Never roll back an ID that was present before this operation.
+            # The backend is dedicated to this host; unknown outcomes need
+            # explicit reconciliation. Stale/revoked rows cannot pass search.
+            existing_ids = {self._row_id(row) for row in rows}
+            acknowledged_ids: set[str] = set()
             added = 0
             errors: list[str] = []
-            for source_id, document in sorted(documents.items()):
-                if source_id in kept:
-                    continue
-                try:
-                    response = self.backend.add(  # type: ignore[union-attr]
-                        document.text,
-                        user_id=scope.user_id,
-                        agent_id=self.config.agent_id,
-                        run_id=scope.conversation_id,
-                        metadata=self._metadata(scope, document),
-                        infer=False,
-                    )
-                except Mem0IndexError:
-                    raise
-                except Exception as exc:
-                    errors.append(f"add:{type(exc).__name__}")
-                    continue
-                added_rows = self._rows(response, "add")
-                accepted = [row for row in added_rows if isinstance(row, Mapping) and self._row_id(row)]
-                if not accepted:
-                    # Do not claim success when the provider did not confirm a
-                    # stored row. A later sync will reconcile if it did write.
-                    errors.append("add:no_result")
-                    continue
-                added += 1
-                for row in accepted:
-                    memory_id = self._row_id(row)
-                    if memory_id:
-                        added_ids.append(memory_id)
 
-            deleted = 0
-            kept_ids = {self._row_id(row) for row in kept.values()}
-            for memory_id in sorted(set(stale_ids) - set(added_ids) - kept_ids):
-                try:
-                    self.backend.delete(memory_id)  # type: ignore[union-attr]
-                except Mem0IndexError:
-                    raise
-                except Exception as exc:
-                    errors.append(f"delete:{type(exc).__name__}")
-                    cleanup_pending += 1
-                else:
-                    deleted += 1
+            def require_current() -> None:
+                current = self._load(scope)
+                if current.documents_digest != before.documents_digest:
+                    raise Mem0IndexSourceChanged("权威记忆在索引期间发生变化，未完成本轮派生索引")
 
             try:
-                after = self._load(scope)
+                for source_id, document in sorted(documents.items()):
+                    if source_id in kept:
+                        continue
+                    # Provider calls are not atomic with host authorization.
+                    # Revalidate before each submission, not just the batch.
+                    require_current()
+                    try:
+                        response = self.backend.add(  # type: ignore[union-attr]
+                            document.text,
+                            user_id=scope.user_id,
+                            agent_id=self.config.agent_id,
+                            run_id=scope.conversation_id,
+                            metadata=self._metadata(scope, document),
+                            infer=False,
+                        )
+                    except Mem0IndexError:
+                        raise
+                    except Exception as exc:
+                        errors.append(f"add:{type(exc).__name__}")
+                        require_current()
+                        continue
+                    added_rows = self._rows(response, "add")
+                    accepted = [row for row in added_rows if isinstance(row, Mapping) and self._row_id(row)]
+                    if not accepted:
+                        errors.append("add:no_result")
+                    else:
+                        added += 1
+                        for row in accepted:
+                            memory_id = self._row_id(row)
+                            if memory_id:
+                                acknowledged_ids.add(memory_id)
+                                if memory_id not in existing_ids:
+                                    added_ids.append(memory_id)
+                    require_current()
+
+                deleted = 0
+                kept_ids = {self._row_id(row) for row in kept.values()}
+                for memory_id in sorted(set(stale_ids) - acknowledged_ids - kept_ids):
+                    require_current()
+                    try:
+                        self.backend.delete(memory_id)  # type: ignore[union-attr]
+                    except Mem0IndexError:
+                        raise
+                    except Exception as exc:
+                        errors.append(f"delete:{type(exc).__name__}")
+                        cleanup_pending += 1
+                    else:
+                        deleted += 1
+
+                require_current()
             except Mem0IndexError:
+                # Best effort rollback of acknowledged new rows even if the
+                # current source is no longer readable. Never replay the add.
                 self._best_effort_delete(added_ids)
                 raise
-            if after.documents_digest != before.documents_digest:
-                self._best_effort_delete(added_ids)
-                raise Mem0IndexSourceChanged("权威记忆在索引期间发生变化，未完成本轮派生索引")
 
             status = "partial" if errors or cleanup_pending or rejected else ("indexed" if added or deleted else "unchanged")
             return SyncResult(
