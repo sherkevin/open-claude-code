@@ -16,7 +16,7 @@ const ALLOWED_TOOLS = new Set([
   'ocr', 'image_search',
   'memory_list', 'memory_read', 'memory_write',
   'ask_user', 'review_plan',
-  'delegate_tasks',
+  'delegate_tasks', 'schedule_create',
 ])
 const EXTERNAL_TOOL_NAME = /^external_[0-9a-f]{32}$/
 const SOURCE_COMMIT = 'fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159'

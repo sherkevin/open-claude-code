@@ -316,6 +316,66 @@ def schedule_catalog(service, user, scope, limit, before):
     return {"items":items,"next_cursor":items[-1]["created_at"]+"|"+items[-1]["id"] if more else None}
 
 
+def prepare_schedule(service,user,conversation_id,body):
+    service.require("conversations",conversation_id,user)
+    current=datetime.now(timezone.utc)
+    if not body.text.strip():
+        raise AppError(422,"SCHEDULE_INVALID","请输入任务内容")
+    advanced=body.recurrence in ("cron","rrule")
+    expression=None
+    effective_zone=body.timezone
+    if advanced:
+        if body.scheduled_at is not None:
+            raise AppError(422,"SCHEDULE_INVALID","高级规则由官方模块计算首次执行时间")
+        _available(service,conversation_id,body.execution_mode)
+        from .official_schedule_rules import create_rule
+        next_at,expression,effective_zone=create_rule(service.settings,body.recurrence,body.rule_expression,effective_zone,current)
+        stamp=datetime.fromisoformat(next_at)
+    else:
+        if body.rule_expression is not None or body.scheduled_at is None:
+            raise AppError(422,"SCHEDULE_INVALID","普通计划需要明确执行时间")
+        stamp=body.scheduled_at.astimezone(timezone.utc)
+        if not current<stamp<=current+timedelta(days=365):
+            raise AppError(422,"SCHEDULE_INVALID","请选择未来一年内的执行时间")
+    try:
+        zone=ZoneInfo(effective_zone)
+    except (ZoneInfoNotFoundError,ValueError):
+        raise AppError(422,"SCHEDULE_TIMEZONE_INVALID","请选择有效的时区") from None
+    # This setting is present in full builds. Keep the existing review
+    # when enabled, and re-review at queue dispatch through MessageQueue.
+    prompt_safety=getattr(service,"prompt_safety",None)
+    if prompt_safety is not None and prompt_safety.enabled:
+        service.require("conversations",conversation_id,user)
+        prompt_safety.require_allowed(body.text,user["id"])
+    return stamp,expression,effective_zone,zone
+
+
+def persist_schedule(service,user,conversation_id,body,prepared):
+    """Caller holds the host transaction; no model authority is implied."""
+    stamp,expression,effective_zone,zone=prepared
+    if stamp<=datetime.now(timezone.utc):
+        raise AppError(409,"SCHEDULE_CHANGED","计划首个时间已到期，请重新确认")
+    service.require("conversations",conversation_id,user)
+    _available(service,conversation_id,body.execution_mode)
+    count=service.db.one("""SELECT COUNT(*) AS n FROM conversation_schedules s JOIN conversations c ON c.id=s.conversation_id
+        LEFT JOIN message_queue q ON q.conversation_id=s.conversation_id AND q.id=s.id
+        WHERE c.user_id=? AND s.series_id IS NULL AND (s.status='scheduled' OR q.status='pending')""",(user["id"],))["n"]
+    count+=service.db.one("""SELECT COUNT(*) AS n FROM conversation_schedule_series s JOIN conversations c ON c.id=s.conversation_id
+        WHERE c.user_id=? AND s.status IN ('scheduled','paused')""",(user["id"],))["n"]
+    if count>=20:
+        raise AppError(409,"SCHEDULE_LIMIT","最多保留 20 项未执行或周期计划")
+    if body.recurrence=="once":
+        identity="schedule-"+uid()
+        service.db.execute("""INSERT INTO conversation_schedules(id,conversation_id,text,scheduled_at,status,created_at,execution_mode)
+            VALUES(?,?,?,?,'scheduled',?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),now(),body.execution_mode))
+    else:
+        identity="series-"+uid()
+        service.db.execute("""INSERT INTO conversation_schedule_series(id,conversation_id,text,next_at,recurrence,timezone,local_time,execution_mode,created_at,rule_expression)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),body.recurrence,effective_zone,
+                                         stamp.astimezone(zone).time().isoformat(),body.execution_mode,now(),expression))
+    return {"id":identity,"status":"scheduled","execution_mode":body.execution_mode,"recurrence":body.recurrence,"scheduled_at":stamp.isoformat()}
+
+
 def create_schedule_router(svc,authenticated):
     router=APIRouter(prefix="/api/v1/conversations/{conversation_id}/schedules")
 
@@ -332,56 +392,9 @@ def create_schedule_router(svc,authenticated):
 
     @router.post("",status_code=201)
     def create_schedule(conversation_id:str,body:ScheduleCreate,service=Depends(svc),user=Depends(authenticated)):
-        service.require("conversations",conversation_id,user)
-        current=datetime.now(timezone.utc)
-        if not body.text.strip():
-            raise AppError(422,"SCHEDULE_INVALID","请输入任务内容")
-        advanced=body.recurrence in ("cron","rrule")
-        expression=None
-        effective_zone=body.timezone
-        if advanced:
-            if body.scheduled_at is not None:
-                raise AppError(422,"SCHEDULE_INVALID","高级规则由官方模块计算首次执行时间")
-            _available(service,conversation_id,body.execution_mode)
-            from .official_schedule_rules import create_rule
-            next_at,expression,effective_zone=create_rule(service.settings,body.recurrence,body.rule_expression,effective_zone,current)
-            stamp=datetime.fromisoformat(next_at)
-        else:
-            if body.rule_expression is not None or body.scheduled_at is None:
-                raise AppError(422,"SCHEDULE_INVALID","普通计划需要明确执行时间")
-            stamp=body.scheduled_at.astimezone(timezone.utc)
-            if not current<stamp<=current+timedelta(days=365):
-                raise AppError(422,"SCHEDULE_INVALID","请选择未来一年内的执行时间")
-        try:
-            zone=ZoneInfo(effective_zone)
-        except (ZoneInfoNotFoundError,ValueError):
-            raise AppError(422,"SCHEDULE_TIMEZONE_INVALID","请选择有效的时区") from None
-        # This setting is present in full builds. Keep the existing review
-        # when enabled, and re-review at queue dispatch through MessageQueue.
-        prompt_safety=getattr(service,"prompt_safety",None)
-        if prompt_safety is not None and prompt_safety.enabled:
-            service.require("conversations",conversation_id,user)
-            prompt_safety.require_allowed(body.text,user["id"])
+        prepared=prepare_schedule(service,user,conversation_id,body)
         with service.db.transaction():
-            service.require("conversations",conversation_id,user)
-            _available(service,conversation_id,body.execution_mode)
-            count=service.db.one("""SELECT COUNT(*) AS n FROM conversation_schedules s JOIN conversations c ON c.id=s.conversation_id
-                LEFT JOIN message_queue q ON q.conversation_id=s.conversation_id AND q.id=s.id
-                WHERE c.user_id=? AND s.series_id IS NULL AND (s.status='scheduled' OR q.status='pending')""",(user["id"],))["n"]
-            count+=service.db.one("""SELECT COUNT(*) AS n FROM conversation_schedule_series s JOIN conversations c ON c.id=s.conversation_id
-                WHERE c.user_id=? AND s.status IN ('scheduled','paused')""",(user["id"],))["n"]
-            if count>=20:
-                raise AppError(409,"SCHEDULE_LIMIT","最多保留 20 项未执行或周期计划")
-            if body.recurrence=="once":
-                identity="schedule-"+uid()
-                service.db.execute("""INSERT INTO conversation_schedules(id,conversation_id,text,scheduled_at,status,created_at,execution_mode)
-                    VALUES(?,?,?,?,'scheduled',?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),now(),body.execution_mode))
-            else:
-                identity="series-"+uid()
-                service.db.execute("""INSERT INTO conversation_schedule_series(id,conversation_id,text,next_at,recurrence,timezone,local_time,execution_mode,created_at,rule_expression)
-                    VALUES(?,?,?,?,?,?,?,?,?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),body.recurrence,effective_zone,
-                                                 stamp.astimezone(zone).time().isoformat(),body.execution_mode,now(),expression))
-        return {"id":identity,"status":"scheduled","execution_mode":body.execution_mode,"recurrence":body.recurrence,"scheduled_at":stamp.isoformat()}
+            return persist_schedule(service,user,conversation_id,body,prepared)
 
     @router.post("/{identity}/run-now",status_code=202)
     def run_schedule_now(conversation_id:str,identity:str,body:ScheduleRunNow,service=Depends(svc),user=Depends(authenticated)):

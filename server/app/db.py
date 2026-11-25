@@ -151,6 +151,12 @@ CREATE TABLE IF NOT EXISTS conversation_schedule_run_requests(
     PRIMARY KEY(conversation_id,request_id)
 );
 CREATE INDEX IF NOT EXISTS conversation_schedule_run_requests_plan ON conversation_schedule_run_requests(conversation_id,plan_id,created_at);
+CREATE TABLE IF NOT EXISTS conversation_schedule_create_requests(
+    run_id TEXT PRIMARY KEY REFERENCES runs(id),
+    approval_id TEXT NOT NULL UNIQUE REFERENCES approvals(id),
+    series_id TEXT NOT NULL UNIQUE REFERENCES conversation_schedule_series(id),
+    created_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS conversation_feedback(
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),

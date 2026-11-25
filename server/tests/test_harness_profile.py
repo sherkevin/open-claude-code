@@ -214,6 +214,9 @@ export class HarnessSdkJsonRpcServer {
   async shutdown() { return {} }
 }
 """,
+        "packages/llm/llm/src/message.ts": """
+export function createUserMessage(input) { return {id:'fixture-message', ...input} }
+""",
         "packages/core/tools/src/json-schema.ts": """
 export function assertObjectJsonSchema(schema) {
   if (schema.type !== 'object') throw new Error('invalid schema')
@@ -352,7 +355,8 @@ for (const block of [
   {...image,data:'YR=='}, {...image,data:'YWJj\\n'}, {...image,name:'../secret'},
   {...image,name:'bad\\\\name'}, {...image,data:''},
 ]) await assert.rejects(transport.handle('session/prompt',{sessionId:'only-session',contentBlocks:[block]}), /encoded raster/)
-await assert.rejects(transport.handle('session/prompt',{sessionId:'only-session',contentBlocks:Array(11).fill(image)}), /encoded raster/)
+assert.equal((await transport.handle('session/prompt',{sessionId:'only-session',contentBlocks:Array(20).fill(image)})).method,'session/prompt')
+await assert.rejects(transport.handle('session/prompt',{sessionId:'only-session',contentBlocks:Array(21).fill(image)}), /encoded raster/)
 """)
 
 

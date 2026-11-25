@@ -90,6 +90,9 @@ def tool_risk_profile(tool_name: str) -> dict[str, object]:
             "approval_policy": "user_confirmation",
             "impact": "修改当前会话工作区或记忆，执行前需要用户明确确认",
         }
+    if tool_name == "mcp__workspace__schedule_create":
+        return {"risk_level":"medium","approval_policy":"user_confirmation",
+                "impact":"为当前会话创建持续运行计划，须本人确认完整指令、规则和首次执行时间；每次执行仍沿用业务审批"}
     if tool_name == "mcp__workspace__memory_write":
         return {"risk_level": "medium", "approval_policy": "user_confirmation",
                 "impact": "完整内容须所属用户人工审阅；本轮成功并关闭执行器后才提交记忆并隔离旧上下文"}

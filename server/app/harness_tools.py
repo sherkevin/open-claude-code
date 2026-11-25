@@ -17,6 +17,7 @@ from .business_results import presentation_receipt
 from .external_capabilities import CAPABILITY_TOOL_SHORT_NAMES, record_approval_receipt
 from .harness_bridge import _arguments as knowledge_arguments
 from .harness_memory import HarnessMemoryTools, MEMORY_NAMES
+from . import harness_schedule
 from .mcp_tools import build_mcp_tools, enforce_model_result_budget
 from .runtime import result_fact_metadata
 from .run_recovery import record_dispatch, require_tool_execution
@@ -78,6 +79,7 @@ class HarnessToolBridge:
             self.business_tools = {name: tool for name, tool in parent_bridge.business_tools.items()
                                    if name in self.inherited_names}
         self.memory = HarnessMemoryTools(self)
+        self.schedule_enabled = not recovery_only and parent_bridge is None and not runtime.config.get("subagent_child_id") and runtime.config.get("runtime_type")=="harness"
         self.calls = set()
         self.response_guards = {}
         self.child_call_events = {}
@@ -105,6 +107,8 @@ class HarnessToolBridge:
         memory = [item for item in self.memory.definitions()
                   if policy.tool_allowed(f"mcp__workspace__{item['name']}")]
         definitions = workspace + business + memory
+        if self.schedule_enabled and policy.tool_allowed(harness_schedule.CANONICAL):
+            definitions.append(harness_schedule.DEFINITION)
         if self.inherited_names is not None:
             definitions = [item for item in definitions if item["name"] in self.inherited_names]
         return definitions
@@ -250,7 +254,8 @@ class HarnessToolBridge:
         policy_name = candidate.canonical_name if candidate else f"mcp__workspace__{name}"
         service.policy.require_tool(policy_name)
         if ((self.inherited_names is not None and name not in self.inherited_names)
-                or (name not in self.tools and name not in self.business_tools and name not in MEMORY_NAMES)
+                or (name not in self.tools and name not in self.business_tools and name not in MEMORY_NAMES
+                    and not (self.schedule_enabled and name==harness_schedule.NAME))
                 or not isinstance(call_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", call_id)
                 or (name not in MEMORY_NAMES and (run_id, call_id) in self.calls)):
             raise AppError(403, "HARNESS_TOOL_DENIED", "工具未注册或调用已处理")
@@ -270,7 +275,16 @@ class HarnessToolBridge:
             except AppError as exc:
                 return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
         self.calls.add((run_id, call_id))
-        arguments = self.arguments(name, payload["arguments"])
+        schedule_proposal = None
+        if name == harness_schedule.NAME:
+            try:
+                self.active(run_id)
+                schedule_proposal = await asyncio.to_thread(harness_schedule.prepare, runtime, run_id, payload["arguments"])
+                arguments = schedule_proposal[2]
+            except AppError as exc:
+                return {"is_error":True,"content":[{"type":"text","text":exc.message}]}
+        else:
+            arguments = self.arguments(name, payload["arguments"])
         started = time.monotonic()
         success = False
         sources = []
@@ -287,6 +301,8 @@ class HarnessToolBridge:
             if business:
                 automatic = False
             policies = self.policy_snapshot()
+            if schedule_proposal is not None:
+                harness_schedule.check_context(runtime,run_id)
             run = service.require("runs", run_id)
             review_required = service.model_approval.requires_review(runtime.conversation_id, tool_name)
             dual = service.high_risk_approval.requires_dual(run, tool_name, arguments)
@@ -298,7 +314,14 @@ class HarnessToolBridge:
                                "arguments": public_tool_arguments(tool_name, arguments), "requires_approval": not (automatic or session_decision) or review_required or dual,
                                "dispatch_tracked": True})
             review = await service.model_approval.review(run, tool_name, arguments)
-            allowed = (await runtime.approve(tool_name, arguments, review=review, review_checked=True)
+            def schedule_approval_guard():
+                self.active(run_id)
+                self.unchanged_policy(policies)
+                harness_schedule.check_context(runtime,run_id)
+                return service.require("runs",run_id)
+
+            allowed = (await runtime.approve(tool_name, arguments, review=review, review_checked=True,
+                         **({"check_active":schedule_approval_guard} if schedule_proposal is not None else {}))
                        if review is not None or dual or not (automatic or session_decision) else True)
             # An approval authorizes this exact operation only. It never makes
             # a revoked account, changed policy, or cancelled run executable.
@@ -338,7 +361,11 @@ class HarnessToolBridge:
                 await offload_write(record_dispatch, service, run_id, event_id, tool_name)
             recheck()
 
-            if business:
+            if schedule_proposal is not None:
+                body, prepared, preview = schedule_proposal
+                created = await offload_write(harness_schedule.commit, runtime, run_id, body, prepared, preview, allowed, recheck)
+                result = {"content":[{"type":"text","text":json.dumps(created,ensure_ascii=False)}]}
+            elif business:
                 result = await business.invoke(arguments, recheck)
             else:
                 # The real host callId is unique and auditable; never synthesize

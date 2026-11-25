@@ -584,7 +584,7 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         assert "/permission CASE_STREAM" in json.dumps(requests[0], ensure_ascii=False)
         assert {tool["name"] for tool in requests[0]["tools"]} == {
             "knowledge_search", "knowledge_read", "generate_xlsx", "generate_image", "file_read", "file_write", "file_search",
-            "memory_list", "memory_read", "memory_write", "ask_user", "review_plan", "delegate_tasks",
+            "memory_list", "memory_read", "memory_write", "ask_user", "review_plan", "delegate_tasks", "schedule_create",
         }
         assert json.loads(service.require("runs", first)["usage"])["output_tokens"] == 8
         assert requests[0]["max_tokens"] == settings.harness_max_output_tokens
@@ -995,3 +995,47 @@ def test_real_harness_interaction_resumes_after_answer(tmp_path, model_server, m
         assert answer in json.dumps(requests[-1]["messages"], ensure_ascii=False)
         assert client.get(route).json() == []
         assert client.post(answer_route, json={"answer": answer}).status_code == 409
+
+
+def schedule_model_reply(body, blocks, result):
+    from datetime import datetime, timedelta, timezone
+    if result is not None:
+        return "已收到计划工具的实际结果", None
+    first=(datetime.now(timezone.utc)+timedelta(days=1)).replace(microsecond=0)
+    return "",("schedule_create",{
+        "title":"测试日报","prompt":"只使用合成数据生成日报",
+        "rrule":"DTSTART:"+first.strftime("%Y%m%dT%H%M%SZ")+"\nRRULE:FREQ=DAILY;COUNT=2",
+        "target":"this_session",
+    })
+
+
+@pytest.mark.parametrize("model_server",[lambda:schedule_model_reply],indirect=True)
+def test_real_harness_natural_language_schedule_owner_confirmation(tmp_path,model_server,monkeypatch):
+    node,source=os.getenv("HARNESS_TEST_NODE"),os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires explicitly installed pinned Harness runtime")
+    for name in PROVIDER_KEYS:
+        monkeypatch.delenv(name,raising=False)
+    monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL","local-lexical-v1")
+    base,requests=model_server
+    app=create_app(image_fixture_settings(tmp_path,node,source,base))
+    with TestClient(app) as client:
+        service=app.state.service
+        user=service.create_user({"username":"admin","display_name":"Test","password":PASSWORD,"role":"admin"})
+        login(client)
+        assistant=service.save_assistant({"name":"Schedule fixture"},user=user)
+        cid=client.post("/api/v1/conversations",json={"assistant_id":assistant["id"]}).json()["id"]
+        run=send(client,cid,"请从明天开始每天用合成数据生成日报，共两天","schedule-natural-real")["run_id"]
+        pending=wait_run(client,run,{"awaiting_approval"})
+        assert pending["status"]=="awaiting_approval",pending
+        approval,=pending["approvals"]
+        assert approval["tool_name"]=="mcp__workspace__schedule_create"
+        assert approval["arguments"]["prompt"]=="只使用合成数据生成日报"
+        assert not service.db.all("SELECT * FROM conversation_schedule_series")
+        assert client.post(f"/api/v1/approvals/{approval['id']}/decision",json={"decision":"allow"}).status_code==200
+        assert wait_run(client,run)["status"]=="succeeded"
+        item,=client.get(f"/api/v1/conversations/{cid}/schedules").json()
+        assert item["text"]==approval["arguments"]["prompt"]
+        assert item["scheduled_at"]==approval["arguments"]["first_occurrence_utc"]
+        assert item["id"] in json.dumps(requests[-1]["messages"],ensure_ascii=False)
+        assert not service.db.all("SELECT * FROM conversation_schedules")
