@@ -15,6 +15,15 @@ describe('MCP resource catalog', () => {
     for (const text of ['订单服务', '汇总订单', '工具列表 · 1', '已发现 1 个工具', '测试连接']) expect(html).toContain(text);
     for (const text of ['配置助手', '绑定助手', '开始查询', '服务端如何连接', connection.url]) expect(html).not.toContain(text);
   });
+  it('offers a real business trial separately from discovery, only after connection testing', () => {
+    const html = card(connection, { onBusinessTrial: noop });
+    expect(html).toContain('验证业务结果');
+    expect(html).toContain('业务执行需另行验证');
+    for (const item of [{ ...connection, status: 'failed' as const }, { ...connection, tools: [] }, { ...connection, enabled: false }]) {
+      expect(card(item, { onBusinessTrial: noop })).not.toContain('验证业务结果');
+    }
+    expect(card(connection, { onBusinessTrial: noop, testError: 'request failed' })).not.toContain('验证业务结果');
+  });
   it('does not treat empty discovery, stale timestamps or disabled connections as ready', () => {
     expect(connectionDiscoveryState({ ...connection, tools: [] })).toMatchObject({ label: '未发现工具', complete: false });
     expect(connectionDiscoveryState({ ...connection, status: 'untested' }).complete).toBe(false);

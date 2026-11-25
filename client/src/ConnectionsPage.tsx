@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AlertCircle, CheckCircle2, ChevronDown, CircleHelp, Clock3, Handshake, LoaderCircle, Link2, Network, Pencil, PlugZap, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { api, ApiError, errorText, patch, post, remove, timeText } from './api';
-import type { Connection, MCPTool } from './types';
+import type { Assistant, Connection, MCPTool } from './types';
 import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, SuccessNotice } from './components';
 import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import McpImportDialog from './McpImportDialog';
+import ConnectionTrialDialog from './ConnectionTrialDialog';
+import { connectionSetupContext, type ConnectionSetupContext } from './connectionHandoff';
 import KaiwuHandoffDialog from './KaiwuHandoffDialog';
 import { KaiwuAssistDialog, useKaiwuAssistDevices } from './KaiwuAssistDialog';
 import { displayToolDescription, toolParameters } from './CapabilityGuide';
@@ -17,7 +19,7 @@ export function connectionDiscoveryState(item: Connection) {
   if (item.status === 'needs_auth') return { label: '认证未通过', detail: '请核对凭据和 MCP 端权限。', complete: false, tone: 'warning' };
   if (item.status === 'failed') return { label: '测试失败', detail: '请检查网络、地址与协议。', complete: false, tone: 'warning' };
   if (item.status === 'connected' && item.tools.length === 0) return { label: '未发现工具', detail: '连接已通，服务返回空工具清单。', complete: false, tone: 'warning' };
-  if (item.status === 'connected') return { label: `已发现 ${item.tools.length} 个工具`, detail: '工具清单已更新。', complete: true, tone: 'success' };
+  if (item.status === 'connected') return { label: `已发现 ${item.tools.length} 个工具`, detail: '工具清单已更新；连接测试不代表业务查询已通过。', complete: true, tone: 'success' };
   return { label: '待测试', detail: '配置已保存，尚未测试。', complete: false, tone: 'neutral' };
 }
 export const loadConnections = (signal?: AbortSignal) => api<Connection[]>('/connections', { signal });
@@ -53,9 +55,9 @@ export function ConnectionGroups({ items, renderCard }: { items: Connection[]; r
   const enabled = items.filter(item => item.enabled), disabled = items.filter(item => !item.enabled);
   return <>{enabled.length ? <div className="connections-grid">{enabled.map(renderCard)}</div> : <p className="connection-empty-active">暂无启用的 MCP。</p>}{disabled.length > 0 && <details className="connections-disabled"><summary><strong>已停用（{disabled.length}）</strong><ChevronDown size={16}/></summary><div className="connections-grid">{disabled.map(renderCard)}</div></details>}</>;
 }
-export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onOAuth, highlighted = false }: {
+export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onOAuth, onBusinessTrial, highlighted = false }: {
   item: Connection; testing?: boolean; actionsBusy?: boolean; testError?: string; admin: boolean;
-  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onOAuth?: () => void; highlighted?: boolean;
+  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onOAuth?: () => void; onBusinessTrial?: () => void; highlighted?: boolean;
 }) {
   const discovery = connectionDiscoveryState(item), editable = canEdit(item, admin);
   const currentTestPassed = !testing && !testError && discovery.complete;
@@ -67,6 +69,8 @@ export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = 
     <header className="connection-card-head"><span className="connection-icon"><BusinessIcon icon="data-connect" size={21}/></span><span className={`badge ${currentTestPassed ? 'green' : testError || discovery.tone === 'warning' ? 'amber' : ''}`} role="status">{testing ? <LoaderCircle size={13} className="spin"/> : currentTestPassed ? <CheckCircle2 size={13}/> : testError || discovery.tone === 'warning' ? <AlertCircle size={13}/> : <Clock3 size={13}/>} {statusLabel}</span></header>
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
     <div className="connection-capability-preview">{functions.length ? <ul>{functions.map(description => <li key={description}>{description}</li>)}</ul> : <p className="section-help">{discovery.detail}</p>}</div>
+    {currentTestPassed && <p className="section-help">连接测试仅验证工具发现，业务执行需另行验证。</p>}
+    {currentTestPassed && onBusinessTrial && <Button variant="secondary" disabled={actionsBusy} onClick={onBusinessTrial}>验证业务结果</Button>}
     {(testError || item.last_error) && <p className="inline-error">{testError || item.last_error}</p>}
     <button type="button" className="mcp-tool-list-button button ghost" onClick={onTools}>工具列表 · {item.tools.length}<ChevronDown size={15}/></button>
     <footer className="card-toolbar">
@@ -80,13 +84,16 @@ export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = 
   </article>;
 }
 
-export default function ConnectionsPage({ admin, focusConnectionId, handoffCode, onCloseHandoff, oauthReturn, clearOAuthReturn }: {
+export default function ConnectionsPage({ admin, focusConnectionId, handoffCode, onCloseHandoff, oauthReturn, clearOAuthReturn, onStartBusinessTrial, onConfigureConnection }: {
   admin: boolean; focusConnectionId?: string; handoffCode?: string | null; onCloseHandoff?: () => void;
   oauthReturn?: { status: string; connectionId?: string } | null; clearOAuthReturn?: () => void;
+  onStartBusinessTrial?: (assistant: Assistant, connection: Readonly<ConnectionSetupContext>, question: string) => void;
+  onConfigureConnection?: (connection: Readonly<ConnectionSetupContext>) => void;
 }) {
   const [items, setItems] = useState<Connection[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const [importing, setImporting] = useState(false), [success, setSuccess] = useState(''), [editor, setEditor] = useState<Connection | 'new' | null>(null);
   const [assisting, setAssisting] = useState(false);
+  const [trial, setTrial] = useState<ConnectionSetupContext | null>(null);
   const assistance = useKaiwuAssistDevices(admin);
   const [testing, setTesting] = useState(''), [testErrors, setTestErrors] = useState<Record<string, string>>({}), [toolsId, setToolsId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null), [busyDelete, setBusyDelete] = useState(false), [localFocusId, setLocalFocusId] = useState<string>();
@@ -137,7 +144,7 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
   const test = async (item: Connection) => {
     setTesting(item.id); setSuccess(''); setError('');
     setTestErrors(previous => { const next = { ...previous }; delete next[item.id]; return next; });
-    try { const next = await testConnectionDiscovery(item); setItems(previous => previous.map(existing => existing.id === next.id ? next : existing)); if (next.status === 'connected') setSuccess(`已发现 ${next.tools.length} 个工具。`); }
+    try { const next = await testConnectionDiscovery(item); setItems(previous => previous.map(existing => existing.id === next.id ? next : existing)); if (next.status === 'connected') setSuccess(`已发现 ${next.tools.length} 个工具。请验证真实业务结果。`); }
     catch (cause) { setTestErrors(previous => ({ ...previous, [item.id]: connectionTestError(cause) })); }
     finally { setTesting(''); }
   };
@@ -154,7 +161,8 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
     {oauthReturn?.status === 'failed' && <ErrorNotice message="OAuth 授权未完成，请在对应连接上重新授权。" onDismiss={clearOAuthReturn}/>}
     {oauthReturn?.status === 'linked' && <SuccessNotice message="已返回工作台。请查看连接卡片上的工具发现结果。"/>}
     <div className="connections-list-heading"><h2>已启用{!loading && ` · ${items.filter(item => item.enabled).length}`}</h2><Button variant="ghost" busy={loading} disabled={!!testing} onClick={() => void load()}><RefreshCw size={16}/>刷新</Button></div>
-    {loading && !items.length ? <Loader/> : !items.length ? <EmptyState icon={<Network size={32}/>} title={error ? '暂时无法读取 MCP' : '还没有 MCP'} description={error ? '请刷新重试。' : '填写服务地址，或导入已有配置。'}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} testing={testing === item.id} actionsBusy={!!testing || !!oauthAction || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setToolsId(item.id)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onOAuth={() => void manageOAuth(item)} highlighted={item.id === targetConnectionId}/>}/>}
+    {loading && !items.length ? <Loader/> : !items.length ? <EmptyState icon={<Network size={32}/>} title={error ? '暂时无法读取 MCP' : '还没有 MCP'} description={error ? '请刷新重试。' : '填写服务地址，或导入已有配置。'}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} testing={testing === item.id} actionsBusy={!!testing || !!oauthAction || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setToolsId(item.id)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onOAuth={() => void manageOAuth(item)} onBusinessTrial={onStartBusinessTrial ? () => setTrial(connectionSetupContext(item)) : undefined} highlighted={item.id === targetConnectionId}/>}/>}
+    {trial && onStartBusinessTrial && <ConnectionTrialDialog key={trial.id} target={trial} onClose={() => setTrial(null)} onStart={(assistant, target, question) => { setTrial(null); onStartBusinessTrial(assistant, target, question); }} onConfigure={onConfigureConnection ? target => { setTrial(null); onConfigureConnection(target); } : undefined}/>}
     {editor && <ConnectionEditor admin={admin} oauthProfiles={oauthProfiles} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => { setEditor(null); focusConnection(saved.id); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]); setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; }); setSuccess('MCP 配置已保存。'); if (shouldTest && saved.auth_type === 'oauth' && !saved.credential_present) await manageOAuth(saved); else if (shouldTest) await test(saved); }}/ >}
     {unlinking && <Modal title="断开 OAuth 授权" onClose={() => { if (!oauthAction) setUnlinking(null); }}><div className="modal-body"><p>断开「{unlinking.name}」后，已绑定的助手将停止使用该连接，直到你再次授权。</p><ErrorNotice message={error}/></div><footer className="modal-footer"><Button variant="secondary" disabled={!!oauthAction} onClick={() => setUnlinking(null)}>取消</Button><Button variant="danger" busy={!!oauthAction} onClick={() => void revokeOAuth(unlinking)}>断开授权</Button></footer></Modal>}
     {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); if (result.connections[0]) focusConnection(result.connections[0].id); setSuccess(`已导入 ${result.connections.length} 个 MCP。`); void load(); }}/ >}

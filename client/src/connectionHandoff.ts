@@ -42,3 +42,19 @@ export async function loadConnectionHandoff(connectionId: string, assistantId: s
   const assistant = assistants.find(item => item.id === assistantId);
   return { connection, assistant, ...connectionHandoffReadiness(connectionId, connection, assistant) };
 }
+
+// Reuse the same server-authoritative grants checked before creating a
+// guided conversation. The ordinary list excludes assistants the user cannot run.
+export async function loadConnectionTrialOptions(connectionId: string, signal?: AbortSignal) {
+  const [connections, assistants] = await Promise.all([
+    api<Connection[]>('/connections', { signal }),
+    api<Assistant[]>('/assistants', { signal }),
+  ]);
+  const connection = connections.find(item => item.id === connectionId);
+  return { connection, assistants: assistants.filter(assistant => connectionHandoffReadiness(connectionId, connection, assistant).ready) };
+}
+
+export function connectionTrialQuestion(connection: Readonly<ConnectionSetupContext>, question: string) {
+  return '请使用「' + connection.name + '」中已授权的只读业务工具，回答：' + question.trim()
+    + '\n请按实际工具返回结果作答，明细或统计优先用表格；如缺少对应数据集、字段、权限或工具执行失败，明确说明，不使用演示数据，不编造、不修改业务数据。';
+}

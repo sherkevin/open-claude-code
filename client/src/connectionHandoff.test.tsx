@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import AssistantConfiguration, { assistantChanges, assistantDraft, type AssistantResources } from './AssistantConfiguration';
 import AssistantsPage from './AssistantsPage';
 import NewSession, { createNewSession } from './NewSession';
-import { connectionHandoffReadiness, connectionSetupContext, connectionTrialSession, focusConnectionFirst, loadConnectionHandoff } from './connectionHandoff';
+import { connectionHandoffReadiness, connectionSetupContext, connectionTrialQuestion, connectionTrialSession, focusConnectionFirst, loadConnectionHandoff, loadConnectionTrialOptions } from './connectionHandoff';
 import type { Assistant, Connection } from './types';
 
 const connection: Connection = { id: 'target', name: '发货查询', transport: 'http', url: 'https://example.test/mcp', auth_type: 'bearer', credential_present: true, enabled: true, status: 'connected', tools: [{ name: 'shipments', description: '按日期查询', inputSchema: {} }], last_error: null, last_tested_at: '2026-11-15T01:00:00Z', revision: 2, scope: 'team', can_edit: false };
@@ -174,5 +174,24 @@ describe('connection trial session remains scoped to its configured assistant', 
     await createNewSession(false, other.id, selection, true);
     expect(fetch.mock.calls).toHaveLength(1);
     expect(fetch.mock.calls[0][0]).toBe('/api/v1/conversations');
+  });
+});
+
+describe('explicit business-trial entry', () => {
+  it('filters runnable assistants by actual current tool grants without writing or invoking tools', async () => {
+    const revoked = { ...assistant, id: 'revoked', connections: [] };
+    const fetch = vi.fn().mockImplementation((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/connections') ? [connection] : [assistant, revoked]))));
+    vi.stubGlobal('fetch', fetch);
+    expect((await loadConnectionTrialOptions('target')).assistants.map(a => a.id)).toEqual(['assistant']);
+    expect((await loadConnectionTrialOptions('missing')).assistants).toEqual([]);
+    expect(fetch.mock.calls.every(([, init]) => !init.method && !init.body)).toBe(true);
+  });
+  it('keeps a realistic question in a read-only table-oriented draft without pretending execution succeeded', () => {
+    const draft = connectionTrialQuestion(connectionSetupContext(connection), '最近三笔发货记录是什么？');
+    expect(draft).toContain('最近三笔发货记录是什么？');
+    expect(draft).toContain('只读');
+    expect(draft).toContain('表格');
+    expect(draft).toContain('不编造');
+    expect(draft).not.toContain(connection.url);
   });
 });
