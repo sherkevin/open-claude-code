@@ -1,8 +1,8 @@
-# 2026-11-25｜B2.2 Goal 执行授权、宿主接纳、预算与租约边界（候选，未运行）
+# 2026-11-26｜B2.2 Goal 执行授权、宿主接纳、预算与租约边界（隔离验收通过）
 
 基线 `ee5b491`，独立工作树 `kaiwu-goal-driver-pilot-20261125`。本切片只做官方 driver 接入前的**宿主安全边界**：用户明确批准目标与预算、真实 run 绑定、活动轮次唯一、预算与时间上限、停止/重启不重放。**未挂载官方 `dsh-goal-round-driver`，未开启无人值守自动执行，未触发真实模型。**
 
-> 状态说明：以下代码和合成测试已写入工作树；本轮**没有执行测试**，不把“已写”当作“已通过”。生产、客户数据、发布与权限均未改动。
+> 下方保留工程师初始候选说明及原始限制。总控最新复验见文末，97/97 通过；仅宿主安全边界及真实原生状态/授权联调通过，未接自动 driver、未上线。
 
 ## 1. 本切片实际写入的内容
 
@@ -176,3 +176,17 @@ docs/evidence/KAIWU_GOAL_DRIVER_PILOT_2026-11-25.md
 ## 总控复验（2026-11-26）
 
 工程师 2026-11-25 22:53:56 启动、11-26 00:01:21 退出码 0；候选尚未合入。第一次组合 8 通过、25 失败、1 跳过。检查隔离测试数据库确认原生 session marker 为空，定位为 fake-runtime 夹具在初次记忆快照迁移前写入 marker，随后被原有迁移机制清空。修正 test_goal_execution.py 的初始化顺序，不修改生产权限、迁移或会话状态检查。独立 Goal 执行授权/租约/预算专项 26/26 通过（controller-fixed.log，88.73s）。原始工程师说明保留，下文未运行状态仅指其初始交付。尚需基于最新主线复验、独立审查实际预算/运行回执及官方 round driver 接入。现有真实费用回执不完整，必须 fail-closed；不能将未知费用当作 0。没有启用无人值守驱动或切换生产。
+
+## 总控最终安全审查和当前主线隔离验收（2026-11-26）
+
+当前基线 97b89af 已包含 Mem0 派生索引独立验收（76/76 组合回归、真实 SDK/Qdrant 5/5）；不重复合入。两位工人退出码均为 0、末事件 result success；核对无同模块活动进程后，总控接续 Goal 候选。保留旧工人计划/架构修改为证据目录 worker-plan-stack.patch，在最新主线重新维护统一计划，未覆盖其他代码。候选代码 c02ade8 已基于 97b89af 重放。
+
+- 审查发现原 API 在释放 native actor 维护保留后才写授权，可能与另一个状态变更交错。现将读原生快照、关闭独占 runtime、复核当前会话和写批准置于同一 actor 维护保留；原生变更在同一 actor 内先撤销旧批准。事务内复核当前 owner、助手 revision、审批方式与角色。状态维护期间撤销接口显式返回 GOAL_SESSION_BUSY，不错误承诺撤销成功；活动 run 不因此失去撤销入口。
+- 官方固定源码 goal/fold.ts 的正轮次必须严格为 roundsStarted+1，故宿主接纳改为已有租约数与原生计数严格相等，拒绝落后或超前 checkpoint；接纳响应计入本次租约。新增落后计数拒绝测试。
+- 当前尚无官方 driver：通用 SessionActor 在任何带 goal_continuation 的任务实际启动前拒绝 GOAL_DRIVER_NOT_INTEGRATED，即使已获宿主租约；不会启动模型、业务工具或执行旁路。新增真实提交失败/租约撤销测试。
+- 固定官方源码 fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159 的 goal-round-driver/src/index.ts 实际使用 process-local reservation、sessions.flush、agent.inbox 与 agent/pre-step hook；正轮次进入 session user/message 后才计数，driver unload/dispose 会 disarm。原生 goal/src/index.ts 的 resume 是显式授权边沿且增加 revision，disarm 不增加 revision；新 Agent activation 初始为 disarmed。没有独立的跨进程持久 driver 任务队列，不能直接启用或把整个原生循环塞进一个宿主 run。
+- 真实 HarnessUsageLedger 的 receipt 费用仍为 None，capture_complete 不是权威费用。真实 Node 初次合成模型 run 的用量经 _run_usage 判为 unknown，授权/暂停不发新模型请求；未知不当零。预算目前为轮次间 admission，不承诺单轮内部硬上限。后续必须在执行前确定经批准的费用来源、单轮保守预留与实时中断策略，不能仅靠上一轮费用。
+
+最终隔离组合测试：tests/test_goal_execution.py（27 项）、tests/test_harness_goal_state.py（9 项）、tests/test_harness_profile.py（61 项），共 **97/97** 通过，退出码 0，123.59s。包含真实固定 Node/Harness、实际 FastAPI/SQLite 与回环合成模型的原生 Goal 生命周期、授权后保持 disarmed、暂停撤销、无额外模型调用。证据 controller-final.log、controller-final.exit（/media/data3/dengkw/acceptance/kaiwu-goal-driver-pilot-20261125/）。未开启生产、客户数据、自动轮次或新权限。
+
+下一切片 B2.3：在独立 worktree 验证官方 driver 的 before-step host RPC 及每个宿主 run 仅一正轮次合同；显式 resume revision 绑定、pre-step 接纳后原生 round checkpoint、下一轮需新 lease/真实 usage、失败/退出/撤销拒绝及不重放。须解决当前权威费用缺失与单轮硬预算问题，不能以假定零费用启用。未达门槛只允许回环合成隔离实验。独立 Team/工作环境产品验证可并行，生产 A2.10 发布闸门不变。
