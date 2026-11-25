@@ -4,6 +4,7 @@ import { api,errorText,remove } from './api';
 import { Button,EmptyState,ErrorNotice,Loader,PageHeader } from './components';
 import { ScheduleRow,changeScheduleLifecycle,scheduleLifecycleConfirmation,type Schedule } from './ConversationTasks';
 import type { Conversation } from './types';
+import ScheduleEditor from './ScheduleEditor';
 
 export type CatalogSchedule=Schedule & {
   conversation_id:string;conversation_title:string;conversation_archived:boolean|number;
@@ -25,6 +26,7 @@ export function scopedSchedulePath(task:CatalogSchedule){
 export default function SchedulesPage({onOpen}:{onOpen:(conversation:Conversation,messageId?:string)=>void}){
   const [scope,setScope]=useState<Scope>('active'),[page,setPage]=useState<Catalog|null>(null),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[reload,setReload]=useState(0);
   const lock=useRef(false), request=useRef<AbortController|null>(null);
+  const [editing,setEditing]=useState<CatalogSchedule|null>(null);
   const refresh=()=>setReload(v=>v+1);
   useEffect(()=>{
     const controller=new AbortController();request.current=controller;
@@ -79,10 +81,11 @@ export default function SchedulesPage({onOpen}:{onOpen:(conversation:Conversatio
     </div>
     <p className="section-help">只显示本人会话的任务。计划状态与实际运行状态分开；创建新任务请进入对应会话的右侧定时任务区域。</p>
     <ErrorNotice message={error}/>
+    {editing&&<ScheduleEditor task={editing} path={scopedSchedulePath(editing)} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null);refresh();}}/>}
     {loading?<Loader text="正在读取定时任务…"/>:!page?null:!page.items.length?<EmptyState icon={<CalendarClock size={30}/>} title={scope==='active'?'暂无活动计划与任务':'暂无执行历史'} description="在业务会话中安排定时任务后，记录会显示在这里。"/>:<ul className="task-sidebar-list" aria-label={scope==='active'?'活动定时任务':'定时执行历史'}>
       {page.items.map(task=><li key={task.id} className="approval-card">
         <div className="approval-title"><CalendarClock size={16}/><strong>{task.conversation_title||'新会话'}</strong><span>{task.kind==='series'?'周期计划':task.kind==='occurrence'?'周期执行记录':'单次任务'}{task.conversation_archived?' · 已归档':''}</span></div>
-        <ul className="task-sidebar-list"><ScheduleRow task={task} busy={busy} onCancel={()=>cancel(task)} onLifecycle={(_,action)=>lifecycle(task,action)}/></ul>
+        <ul className="task-sidebar-list"><ScheduleRow task={task} busy={busy} onCancel={()=>cancel(task)} onLifecycle={(_,action)=>lifecycle(task,action)} onEdit={task.conversation_archived?undefined:()=>setEditing(task)}/></ul>
         <Button variant="ghost" disabled={busy} onClick={()=>open(task)}>{task.message_id?'查看执行轮次':'打开关联会话'}</Button>
       </li>)}
     </ul>}

@@ -1,4 +1,6 @@
 """Persistent scheduled conversation runs using the existing durable FIFO."""
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone, time
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -64,6 +66,58 @@ def _available(service, cid, mode):
     if mode=="agent" and conversation.get("runtime_type")!="harness":
         raise AppError(409,"SCHEDULE_AGENT_UNAVAILABLE","智能体定时任务仅支持 Harness 会话")
     return conversation,user
+
+
+class ScheduleEdit(InputModel):
+    text: str = Field(min_length=1,max_length=50000)
+    expected_token: str = Field(pattern=r"^[a-f0-9]{64}$")
+    scheduled_at: AwareDatetime | None = None
+    rule_expression: str | None = Field(default=None,max_length=2048)
+    timezone: str | None = Field(default=None,min_length=1,max_length=100)
+
+
+def edit_token(row):
+    # Compare the visible plan version, including lifecycle and time. No
+    # persisted second source of truth or mutable client-supplied revision.
+    fields={"id":row["id"],"text":row["text"],"status":row["status"],
+            "scheduled_at":row.get("next_at",row.get("scheduled_at")),
+            "recurrence":row.get("recurrence","once"),
+            "execution_mode":row["execution_mode"],
+            "timezone":row.get("timezone"),"rule_expression":row.get("rule_expression")}
+    return hashlib.sha256(json.dumps(fields,sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest()
+
+
+def _editable_row(row):
+    return (row.get("recurrence","once")!="once" and row["status"] in {"scheduled","paused"}
+            or row.get("recurrence","once")=="once" and not row.get("series_id") and row["status"]=="scheduled")
+
+
+def with_edit_tokens(rows):
+    return [{**row, "edit_token":edit_token(row)} if _editable_row(row) else row for row in rows]
+
+
+def _edit_target(db,cid,identity):
+    row=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,cid))
+    if row:
+        return row,True
+    row=db.one("SELECT * FROM conversation_schedules WHERE id=? AND conversation_id=?",(identity,cid))
+    if not row:
+        raise AppError(404,"NOT_FOUND","计划任务不存在")
+    return row,False
+
+
+def _require_editable(db,row,is_series,previous,at):
+    if not _editable_row(row):
+        raise AppError(409,"SCHEDULE_NOT_EDITABLE","仅可修改尚未启动的单次任务或有效周期计划")
+    if is_series:
+        if previous and not _terminal(previous):
+            raise AppError(409,"SCHEDULE_OCCURRENCE_ACTIVE","上一次任务尚未结束，请先检查会话")
+        if row["status"]=="scheduled" and _failed(previous) and previous["id"]!=row["acknowledged_occurrence_id"]:
+            raise AppError(409,"SCHEDULE_FAILURE_ACK_REQUIRED","请先处理上一次失败并明确恢复")
+    elif db.one("SELECT id FROM message_queue WHERE conversation_id=? AND id=?",(row["conversation_id"],row["id"])):
+        raise AppError(409,"SCHEDULE_STARTED","任务已经进入队列，不能再修改计划")
+    if row["status"]=="scheduled" and datetime.fromisoformat(row.get("next_at",row.get("scheduled_at")))<=at:
+        raise AppError(409,"SCHEDULE_DUE","计划已到期，请刷新任务状态")
 
 
 class ScheduleResume(InputModel):
@@ -226,7 +280,7 @@ def schedule_catalog(service, user, scope, limit, before):
     ) SELECT * FROM catalog WHERE """+" AND ".join(clauses)+
         " ORDER BY created_at DESC,id DESC LIMIT ?",tuple(args))
     more=len(rows)>limit
-    items=rows[:limit]
+    items=with_edit_tokens(rows[:limit])
     return {"items":items,"next_cursor":items[-1]["created_at"]+"|"+items[-1]["id"] if more else None}
 
 
@@ -242,7 +296,7 @@ def create_schedule_router(svc,authenticated):
             LEFT JOIN runs r ON r.id=q.run_id WHERE s.conversation_id=? ORDER BY s.created_at DESC,s.id DESC LIMIT 100""",(conversation_id,))
         series=service.db.all("""SELECT id,text,next_at AS scheduled_at,status,error,execution_mode,recurrence,timezone,skipped_count,rule_expression,coalesced_batches
             FROM conversation_schedule_series WHERE conversation_id=? ORDER BY created_at DESC,id DESC LIMIT 100""",(conversation_id,))
-        return series+occurrences
+        return with_edit_tokens(series+occurrences)
 
     @router.post("",status_code=201)
     def create_schedule(conversation_id:str,body:ScheduleCreate,service=Depends(svc),user=Depends(authenticated)):
@@ -296,6 +350,71 @@ def create_schedule_router(svc,authenticated):
                     VALUES(?,?,?,?,?,?,?,?,?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),body.recurrence,effective_zone,
                                                  stamp.astimezone(zone).time().isoformat(),body.execution_mode,now(),expression))
         return {"id":identity,"status":"scheduled","execution_mode":body.execution_mode,"recurrence":body.recurrence,"scheduled_at":stamp.isoformat()}
+
+    @router.patch("/{identity}")
+    def edit_schedule(conversation_id:str,identity:str,body:ScheduleEdit,service=Depends(svc),user=Depends(authenticated)):
+        db=service.db
+        service.require("conversations",conversation_id,user)
+        snapshot,is_series=_edit_target(db,conversation_id,identity)
+        if body.expected_token!=edit_token(snapshot):
+            raise AppError(409,"SCHEDULE_CHANGED","计划已发生变化，请刷新后重试")
+        previous=_previous(db,identity) if is_series else None
+        reference=datetime.now(timezone.utc)
+        _available(service,conversation_id,snapshot["execution_mode"])
+        _require_editable(db,snapshot,is_series,previous,reference)
+        text=body.text.strip()
+        if not text:
+            raise AppError(422,"SCHEDULE_INVALID","请输入任务内容")
+        recurrence=snapshot.get("recurrence","once")
+        advanced=recurrence in {"cron","rrule"}
+        changed_timing=body.scheduled_at is not None or body.rule_expression is not None or body.timezone is not None
+        next_at=snapshot.get("next_at",snapshot.get("scheduled_at"))
+        expression=snapshot.get("rule_expression")
+        zone_name=snapshot.get("timezone")
+        local_time=snapshot.get("local_time")
+        if changed_timing:
+            if advanced:
+                if body.scheduled_at is not None or body.rule_expression is None:
+                    raise AppError(422,"SCHEDULE_INVALID","高级规则需要完整的新规则")
+                from .official_schedule_rules import create_rule
+                next_at,expression,zone_name=create_rule(service.settings,recurrence,body.rule_expression,body.timezone or zone_name,reference)
+            else:
+                if body.rule_expression is not None or body.scheduled_at is None:
+                    raise AppError(422,"SCHEDULE_INVALID","普通计划需要明确的新执行时间")
+                stamp=body.scheduled_at.astimezone(timezone.utc)
+                if not reference<stamp<=reference+timedelta(days=365):
+                    raise AppError(422,"SCHEDULE_INVALID","请选择未来一年内的执行时间")
+                if not is_series and body.timezone is not None:
+                    raise AppError(422,"SCHEDULE_INVALID","单次任务使用明确的绝对执行时间")
+                next_at=stamp.isoformat()
+                if is_series:
+                    zone_name=body.timezone or zone_name
+            if is_series:
+                try:
+                    local_time=datetime.fromisoformat(next_at).astimezone(ZoneInfo(zone_name)).time().isoformat()
+                except (ZoneInfoNotFoundError,ValueError,TypeError):
+                    raise AppError(422,"SCHEDULE_TIMEZONE_INVALID","请选择有效的时区") from None
+        prompt_safety=getattr(service,"prompt_safety",None)
+        if prompt_safety is not None and prompt_safety.enabled:
+            prompt_safety.require_allowed(text,user["id"])
+        with db.transaction():
+            service.require("conversations",conversation_id,user)
+            _available(service,conversation_id,snapshot["execution_mode"])
+            current,current_series=_edit_target(db,conversation_id,identity)
+            if current!=snapshot or current_series!=is_series or (is_series and _previous(db,identity)!=previous):
+                raise AppError(409,"SCHEDULE_CHANGED","计划或运行状态已变化，请刷新后重试")
+            current_time=datetime.now(timezone.utc)
+            _require_editable(db,current,is_series,previous,current_time)
+            if (changed_timing or current["status"]=="scheduled") and datetime.fromisoformat(next_at)<=current_time:
+                raise AppError(409,"SCHEDULE_CHANGED","编辑期间计划已到期，请刷新后重试")
+            if is_series:
+                db.execute("""UPDATE conversation_schedule_series SET text=?,next_at=?,timezone=?,local_time=?,rule_expression=? WHERE id=?""",
+                           (text,next_at,zone_name,local_time,expression,identity))
+            else:
+                db.execute("UPDATE conversation_schedules SET text=?,scheduled_at=? WHERE id=?",(text,next_at,identity))
+            saved,_=_edit_target(db,conversation_id,identity)
+            return {"id":identity,"text":text,"scheduled_at":next_at,"status":saved["status"],"recurrence":recurrence,
+                    "timezone":zone_name,"rule_expression":expression,"execution_mode":saved["execution_mode"],"edit_token":edit_token(saved)}
 
     @router.post("/{identity}/pause")
     def pause_series(conversation_id:str,identity:str,service=Depends(svc),user=Depends(authenticated)):

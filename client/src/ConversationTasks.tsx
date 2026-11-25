@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { ArrowLeft, CalendarClock, ChevronRight, GitFork, Plus, RefreshCw } from 'lucide-react';
 import { ApiError, api, errorText, post, remove, timeText } from './api';
 import { Button, ErrorNotice, Field } from './components';
+import ScheduleEditor from './ScheduleEditor';
 import { toolLabel } from './display';
 import { isSubagentActive, SubagentResult, subagentStatus, subagentTitle } from './SubagentProgress';
 import type { SubagentChild, SubagentPlan } from './SubagentProgress';
@@ -19,7 +20,7 @@ export interface ConversationTasksProps {
   canScheduleAgent?: boolean;
 }
 
-export type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null; recurrence?: string; execution_mode?: string; series_id?: string; skipped_count?: number; rule_expression?: string; coalesced_batches?: number; timezone?: string };
+export type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null; recurrence?: string; execution_mode?: string; series_id?: string; skipped_count?: number; rule_expression?: string; coalesced_batches?: number; timezone?: string; edit_token?: string };
 type PlanRun = { id: string; created_at: string; status: string };
 type ChildSelection = { plan: SubagentPlan; childId: string };
 type SelectChild = (selection: ChildSelection, trigger: HTMLButtonElement) => void;
@@ -145,7 +146,7 @@ export function changeScheduleLifecycle(path:string,id:string,action:"pause"|"re
   return post<Pick<Schedule,"id"|"status"|"scheduled_at">>(path+"/"+encodeURIComponent(id)+"/"+action,action==="resume"?{acknowledge_failure:true}:{});
 }
 
-export function ScheduleRow({ task, busy, onCancel, onLifecycle }: { task: Schedule; busy: boolean; onCancel: (id: string) => void; onLifecycle: (task: Schedule, action: "pause"|"resume") => void }) {
+export function ScheduleRow({ task, busy, onCancel, onLifecycle, onEdit }: { task: Schedule; busy: boolean; onCancel: (id: string) => void; onLifecycle: (task: Schedule, action: "pause"|"resume") => void; onEdit?: (task:Schedule)=>void }) {
   const title = task.text.trim().split('\n', 1)[0];
   const preview = title.length > 120 ? `${title.slice(0, 120)}…` : title;
   return <li className="task-sidebar-schedule-row">
@@ -161,6 +162,7 @@ export function ScheduleRow({ task, busy, onCancel, onLifecycle }: { task: Sched
       {task.rule_expression&&<pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{task.rule_expression}</pre>}{!!task.coalesced_batches&&<p className="section-help">已合并 {task.coalesced_batches} 批错过的周期（仅补最近一次）。</p>}
       {task.error && <p className="task-sidebar-read-error">{task.error}</p>}
     </details>
+    {task.edit_token&&onEdit&&<Button variant="ghost" disabled={busy} onClick={()=>onEdit(task)}>编辑</Button>}
     {task.recurrence && task.recurrence!=="once" && ["scheduled","paused"].includes(task.status) &&
       <Button variant="ghost" disabled={busy} onClick={()=>onLifecycle(task,task.status==="paused"?"resume":"pause")}>{task.status==="paused"?"恢复":"暂停"}</Button>}
     {canCancelSchedule(task.status) && <Button variant="ghost" disabled={busy} aria-label={`取消定时任务 ${preview}`} onClick={() => onCancel(task.id)}>取消</Button>}
@@ -181,6 +183,7 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
   const [executionMode,setExecutionMode]=useState<'text'|'agent'>(canScheduleAgent?'agent':'text');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [editing,setEditing]=useState<Schedule|null>(null);
   const createButton = useRef<HTMLButtonElement>(null);
   const textInput = useRef<HTMLTextAreaElement>(null);
   const returnToCreate = useRef(false);
@@ -253,6 +256,7 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
       </div>
     </header>
     <ReadError error={error} hasValue={!!schedules}/>
+    {editing&&<ScheduleEditor task={editing} path={path} onClose={()=>setEditing(null)} onSaved={()=>{setEditing(null);refresh();}}/>}
     <ErrorNotice message={actionError}/>
     <div id={formId} hidden={!creating}>
       <form className="task-sidebar-form" onSubmit={schedule}>
@@ -271,12 +275,12 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
     {!schedules && !error && <p className="task-sidebar-muted" role="status">正在读取定时任务…</p>}
     {schedules?.length === 0 && <p className="task-sidebar-empty">暂无定时任务。<br/>可安排一条消息在指定时间执行。</p>}
     {!!upcoming.length && <ul className="task-sidebar-list">
-      {upcoming.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel} onLifecycle={lifecycle}/>)}
+      {upcoming.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel} onLifecycle={lifecycle} onEdit={canSchedule?setEditing:undefined}/>)}
     </ul>}
     {!!history.length && <details className="task-sidebar-history">
       <summary tabIndex={0}><ChevronRight size={15} aria-hidden="true"/>历史定时任务 <small>{history.length} 条</small></summary>
       <ul className="task-sidebar-list">
-        {history.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel} onLifecycle={lifecycle}/>)}
+        {history.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel} onLifecycle={lifecycle} onEdit={canSchedule?setEditing:undefined}/>)}
       </ul>
     </details>}
   </section>;
