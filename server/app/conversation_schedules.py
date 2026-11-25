@@ -66,6 +66,31 @@ def _available(service, cid, mode):
     return conversation,user
 
 
+class ScheduleResume(InputModel):
+    acknowledge_failure: bool = False
+
+
+def _previous(db, identity):
+    return db.one("""SELECT s.id,s.status AS schedule_status, q.status AS queue_status,
+        q.error AS queue_error,r.status AS run_status FROM conversation_schedules s
+        LEFT JOIN message_queue q ON q.id=s.id AND q.conversation_id=s.conversation_id
+        LEFT JOIN runs r ON r.id=q.run_id WHERE s.series_id=?
+        ORDER BY s.created_at DESC,s.id DESC LIMIT 1""",(identity,))
+
+
+def _failed(previous):
+    return bool(previous and (previous["queue_error"] or any(
+        previous[key] in {"failed","cancelled","interrupted"}
+        for key in ("schedule_status","queue_status","run_status"))))
+
+
+def _terminal(previous):
+    if previous["run_status"] is not None:
+        return previous["run_status"] in {"succeeded","failed","cancelled","interrupted"}
+    return previous["queue_status"] == "cancelled" or (
+        previous["queue_status"] is None and previous["schedule_status"] in {"failed","cancelled"})
+
+
 def enqueue_due_series(service):
     db=service.db
     # Pause a failed series promptly, not only when its next slot arrives.
@@ -78,6 +103,7 @@ def enqueue_due_series(service):
               LEFT JOIN runs r ON r.id=q.run_id
               WHERE s.id=(SELECT latest.id FROM conversation_schedules latest WHERE latest.series_id=series.id
                   ORDER BY latest.created_at DESC,latest.id DESC LIMIT 1)
+              AND s.id<>COALESCE(series.acknowledged_occurrence_id,'')
               AND (s.status IN ('failed','cancelled') OR q.status='cancelled' OR q.error IS NOT NULL
                 OR r.status IN ('failed','cancelled','interrupted'))
             )""")
@@ -119,12 +145,10 @@ def enqueue_due_series(service):
             except AppError as exc:
                 db.execute("UPDATE conversation_schedule_series SET status='paused',error=? WHERE id=?",(exc.message,series["id"]))
                 continue
-            previous=db.one("""SELECT s.status AS schedule_status, q.status AS queue_status,
-                q.error AS queue_error,r.status AS run_status FROM conversation_schedules s
-                LEFT JOIN message_queue q ON q.id=s.id AND q.conversation_id=s.conversation_id
-                LEFT JOIN runs r ON r.id=q.run_id WHERE s.series_id=?
-                ORDER BY s.created_at DESC,s.id DESC LIMIT 1""",(series["id"],))
-            if previous and (previous["queue_error"] or any(previous[key] in {"failed","cancelled","interrupted"} for key in ("schedule_status","queue_status","run_status"))):
+            previous=_previous(db,series["id"])
+            if previous and previous["id"]==series["acknowledged_occurrence_id"]:
+                previous=None
+            if _failed(previous):
                 db.execute("UPDATE conversation_schedule_series SET status='paused',error=? WHERE id=?",
                            ("上一次执行未成功，已暂停后续周期；请检查会话任务",series["id"]))
                 continue
@@ -229,6 +253,60 @@ def create_schedule_router(svc,authenticated):
                     VALUES(?,?,?,?,?,?,?,?,?,?)""",(identity,conversation_id,body.text.strip(),stamp.isoformat(),body.recurrence,effective_zone,
                                                  stamp.astimezone(zone).time().isoformat(),body.execution_mode,now(),expression))
         return {"id":identity,"status":"scheduled","execution_mode":body.execution_mode,"recurrence":body.recurrence,"scheduled_at":stamp.isoformat()}
+
+    @router.post("/{identity}/pause")
+    def pause_series(conversation_id:str,identity:str,service=Depends(svc),user=Depends(authenticated)):
+        with service.db.transaction():
+            service.require("conversations",conversation_id,user)
+            row=service.db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
+            if not row:
+                raise AppError(404,"NOT_FOUND","周期计划不存在")
+            if row["status"] not in {"scheduled","paused"}:
+                raise AppError(409,"SCHEDULE_INACTIVE","该周期计划已结束")
+            if row["status"]=="scheduled":
+                service.db.execute("UPDATE conversation_schedule_series SET status='paused',error=NULL WHERE id=?",(identity,))
+            # Already committed occurrences are deliberately left alone.
+            return {"id":identity,"status":"paused","scheduled_at":row["next_at"]}
+
+    @router.post("/{identity}/resume")
+    def resume_series(conversation_id:str,identity:str,body:ScheduleResume,service=Depends(svc),user=Depends(authenticated)):
+        db=service.db
+        service.require("conversations",conversation_id,user)
+        snapshot=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
+        if not snapshot:
+            raise AppError(404,"NOT_FOUND","周期计划不存在")
+        if snapshot["status"]=="scheduled":
+            return {"id":identity,"status":"scheduled","scheduled_at":snapshot["next_at"]}
+        if snapshot["status"]!="paused":
+            raise AppError(409,"SCHEDULE_INACTIVE","该周期计划已结束")
+        _available(service,conversation_id,snapshot["execution_mode"])
+        previous=_previous(db,identity)
+        if previous and not _terminal(previous):
+            raise AppError(409,"SCHEDULE_OCCURRENCE_ACTIVE","上一次任务尚未结束，请先检查会话")
+        failed=_failed(previous) and previous["id"]!=snapshot["acknowledged_occurrence_id"]
+        if failed and not body.acknowledge_failure:
+            raise AppError(409,"SCHEDULE_FAILURE_ACK_REQUIRED","请确认上次失败可能产生的影响；恢复仅执行未来周期，不会重试上次任务")
+        reference=datetime.now(timezone.utc)
+        next_at=snapshot["next_at"]
+        if datetime.fromisoformat(next_at)<=reference:
+            if snapshot["recurrence"] in {"cron","rrule"}:
+                from .official_schedule_rules import resolve_resume_rule
+                next_at,_=resolve_resume_rule(service.settings,snapshot["recurrence"],snapshot["rule_expression"],snapshot["timezone"],next_at,reference)
+            else:
+                next_at,_,_=series_slots(snapshot,reference)
+        with db.transaction():
+            service.require("conversations",conversation_id,user)
+            _available(service,conversation_id,snapshot["execution_mode"])
+            current=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
+            if current!=snapshot or _previous(db,identity)!=previous:
+                raise AppError(409,"SCHEDULE_CHANGED","计划或运行状态已变化，请刷新后重试")
+            if next_at and datetime.fromisoformat(next_at)<=datetime.now(timezone.utc):
+                raise AppError(409,"SCHEDULE_CHANGED","计算期间下次时间已到期，请刷新后重试")
+            status="scheduled" if next_at else "exhausted"
+            ack=previous["id"] if failed else snapshot["acknowledged_occurrence_id"]
+            db.execute("UPDATE conversation_schedule_series SET status=?,next_at=?,error=NULL,acknowledged_occurrence_id=? WHERE id=?",
+                       (status,next_at or snapshot["next_at"],ack,identity))
+        return {"id":identity,"status":status,"scheduled_at":next_at or snapshot["next_at"]}
 
     @router.delete("/{identity}",status_code=204)
     def cancel_schedule(conversation_id:str,identity:str,service=Depends(svc),user=Depends(authenticated)):

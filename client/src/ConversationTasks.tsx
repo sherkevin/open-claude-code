@@ -138,7 +138,7 @@ function RefreshButton({ label, onClick }: { label: string; onClick: () => void 
   </Button>;
 }
 
-function ScheduleRow({ task, busy, onCancel }: { task: Schedule; busy: boolean; onCancel: (id: string) => void }) {
+export function ScheduleRow({ task, busy, onCancel, onLifecycle }: { task: Schedule; busy: boolean; onCancel: (id: string) => void; onLifecycle: (task: Schedule, action: "pause"|"resume") => void }) {
   const title = task.text.trim().split('\n', 1)[0];
   const preview = title.length > 120 ? `${title.slice(0, 120)}…` : title;
   return <li className="task-sidebar-schedule-row">
@@ -154,6 +154,8 @@ function ScheduleRow({ task, busy, onCancel }: { task: Schedule; busy: boolean; 
       {task.rule_expression&&<pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{task.rule_expression}</pre>}{!!task.coalesced_batches&&<p className="section-help">已合并 {task.coalesced_batches} 批错过的周期（仅补最近一次）。</p>}
       {task.error && <p className="task-sidebar-read-error">{task.error}</p>}
     </details>
+    {task.recurrence && task.recurrence!=="once" && ["scheduled","paused"].includes(task.status) &&
+      <Button variant="ghost" disabled={busy} onClick={()=>onLifecycle(task,task.status==="paused"?"resume":"pause")}>{task.status==="paused"?"恢复":"暂停"}</Button>}
     {canCancelSchedule(task.status) && <Button variant="ghost" disabled={busy} aria-label={`取消定时任务 ${preview}`} onClick={() => onCancel(task.id)}>取消</Button>}
   </li>;
 }
@@ -221,6 +223,16 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
     });
   }
 
+  function lifecycle(task: Schedule, action: "pause"|"resume") {
+    if (busy) return;
+    const message=action==="pause"?"暂停未来周期，已经进入队列或启动的任务不受影响。":"恢复后只安排未来周期，不补跑、不重试上次任务。若上次失败，请先确认可能产生的影响。确认恢复？";
+    if (!window.confirm(message)) return;
+    void act(async () => {
+      const result=await post<Pick<Schedule,"id"|"status"|"scheduled_at">>(`${path}/${encodeURIComponent(task.id)}/${action}`,action==="resume"?{acknowledge_failure:true}:{});
+      update(previous=>previous?.map(item=>item.id===task.id?{...item,...result,error:action==="resume"?null:item.error}:item));
+    });
+  }
+
   const upcoming = schedules?.filter(task => canCancelSchedule(task.status) || isSubagentActive(task.status)) ?? [];
   const history = schedules?.filter(task => !canCancelSchedule(task.status) && !isSubagentActive(task.status)) ?? [];
 
@@ -254,12 +266,12 @@ function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path
     {!schedules && !error && <p className="task-sidebar-muted" role="status">正在读取定时任务…</p>}
     {schedules?.length === 0 && <p className="task-sidebar-empty">暂无定时任务。<br/>可安排一条消息在指定时间执行。</p>}
     {!!upcoming.length && <ul className="task-sidebar-list">
-      {upcoming.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel}/>)}
+      {upcoming.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel} onLifecycle={lifecycle}/>)}
     </ul>}
     {!!history.length && <details className="task-sidebar-history">
       <summary tabIndex={0}><ChevronRight size={15} aria-hidden="true"/>历史定时任务 <small>{history.length} 条</small></summary>
       <ul className="task-sidebar-list">
-        {history.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel}/>)}
+        {history.map(task => <ScheduleRow key={task.id} task={task} busy={busy} onCancel={cancel} onLifecycle={lifecycle}/>)}
       </ul>
     </details>}
   </section>;

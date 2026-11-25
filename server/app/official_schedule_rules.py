@@ -107,3 +107,13 @@ def resolve_rule(settings, kind, expression, zone, next_at, reference):
     if not due<=occurrence<=reference or following is not None and following<=reference:
         raise AppError(503,"SCHEDULE_RULE_RECEIPT_INVALID","官方调度模块返回的周期顺序无效")
     return following.isoformat() if following else None, occurrence.isoformat()
+
+
+def resolve_resume_rule(settings, kind, expression, zone, next_at, reference):
+    """User-triggered recalculation shares the bounded creation slot."""
+    if not _CREATE_SLOT.acquire(blocking=False):
+        raise AppError(429,"SCHEDULE_RULE_BUSY","正在验证其他周期规则，请稍后重试")
+    try:
+        return resolve_rule(settings,kind,expression,zone,next_at,reference)
+    finally:
+        _CREATE_SLOT.release()

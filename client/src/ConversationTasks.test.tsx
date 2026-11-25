@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import ConversationTasks, { childTaskRecords } from './ConversationTasks';
+import ConversationTasks, { childTaskRecords, ScheduleRow } from './ConversationTasks';
 import type { StreamEvent } from './types';
 
 const at = '2026-11-23T01:00:00Z';
@@ -74,5 +74,16 @@ describe('conversation task sidebar', () => {
       { id: 'legacy', name: undefined, status: '状态未确认', at },
     ]);
     expect(result.tools).toEqual([]);
+  });
+});
+
+describe('recurring task lifecycle controls', () => {
+  it('offers pause or resume only for active recurring series', () => {
+    const fixture={id:'series-1',text:'周期检查',scheduled_at:at,status:'scheduled',recurrence:'daily'};
+    const callbacks={busy:false,onCancel:()=>{},onLifecycle:()=>{}};
+    expect(renderToStaticMarkup(<ScheduleRow task={fixture} {...callbacks}/>)).toContain('>暂停</button>');
+    expect(renderToStaticMarkup(<ScheduleRow task={{...fixture,status:'paused'}} {...callbacks}/>)).toContain('>恢复</button>');
+    expect(renderToStaticMarkup(<ScheduleRow task={{...fixture,recurrence:'once'}} {...callbacks}/>)).not.toContain('>暂停</button>');
+    expect(renderToStaticMarkup(<ScheduleRow task={{...fixture,status:'exhausted'}} {...callbacks}/>)).not.toContain('>恢复</button>');
   });
 });

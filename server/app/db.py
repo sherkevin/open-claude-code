@@ -599,6 +599,8 @@ class Database:
             self.conn.execute("ALTER TABLE conversation_schedule_series ADD COLUMN rule_expression TEXT")
         if "coalesced_batches" not in series_columns:
             self.conn.execute("ALTER TABLE conversation_schedule_series ADD COLUMN coalesced_batches INTEGER NOT NULL DEFAULT 0")
+        if "acknowledged_occurrence_id" not in series_columns:
+            self.conn.execute("ALTER TABLE conversation_schedule_series ADD COLUMN acknowledged_occurrence_id TEXT")
 
         diagnostic_columns = {
             row["name"]
