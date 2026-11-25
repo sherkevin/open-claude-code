@@ -29,7 +29,7 @@ export function assertNoPendingReadOnlyDrafts(drafts: ReadOnlyDrafts): void {
 }
 
 export function RemoteToolDeclaration({ tool }: { tool: MCPTool }) {
-  return <div className="tool-readonly-declaration"><p>{remoteReadOnlyLabel(tool)}{tool.annotations?.destructiveHint === true ? '；远端声明含破坏性操作' : ''}</p><small>远端提示不能作为只读授权。免确认执行只影响审批，不代表工具只读。</small>{tool.definition_digest && <small className="tool-definition-digest" title={tool.definition_digest}>当前定义指纹：{tool.definition_digest}</small>}</div>;
+  return <div className="tool-readonly-declaration"><p>{remoteReadOnlyLabel(tool)}{tool.annotations?.destructiveHint === true ? '；远端声明含破坏性操作' : ''}</p><small>远端提示不能作为只读授权。旧工作流免确认不代表工具只读；会话使用连接页的只读核验。</small>{tool.definition_digest && <small className="tool-definition-digest" title={tool.definition_digest}>当前定义指纹：{tool.definition_digest}</small>}</div>;
 }
 
 export default function ToolReadOnlyConfirmation({ connection, tool, value, savedValue, draftText, disabled, onDraftChange, onApply, onDiscard, onRemove }: {
@@ -50,7 +50,7 @@ export default function ToolReadOnlyConfirmation({ connection, tool, value, save
     <summary>工作流只读确认 · {label}</summary>
     <RemoteToolDeclaration tool={tool}/>
     <p className="section-help">此确认仅用于本助手。确认前须核查整个工具在所有允许参数下均仅读取，且服务端使用只读账号。填写依据不会改变远端权限，也不能替代只读账号或服务端权限控制。</p>
-    <p className="section-help">管理员保存的当前确认也可供会话自动审批使用。保存和执行时，服务端会重新核验连接与工具定义。</p>
+    <p className="section-help">旧有管理员确认在尚未使用连接级核验时仍可供会话自动审批使用。推荐在 MCP 连接页统一核验，不必为每个助手重复确认。执行时服务端会重新核验。</p>
     {value && <p className="tool-confirmation-basis"><strong>{state === 'current' ? '确认依据' : '原确认依据（当前不生效）'}</strong>{value.basis}</p>}
     {issue && <p className="section-help" role="status">{issue}</p>}
     <Field label={`${tool.name} 只读核查依据`} hint="填写实际检查过的接口说明、权限配置或验证记录，1–500 字。不要填写凭据。">

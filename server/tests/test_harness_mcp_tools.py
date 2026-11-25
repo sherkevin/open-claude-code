@@ -168,6 +168,20 @@ def mcp_server():
         thread.join(2)
 
 
+def review_fixture_connection(service, connection_id, owner, names=("read_records",)):
+    from app.connection_read_review import save_review
+    from app.read_only_tools import definition_digest
+    row = service.require("connections", connection_id)
+    selected = {tool["name"]: {"connection_revision": row["revision"],
+                "definition_digest": definition_digest(tool), "basis": "Inspected synthetic fixture's read-only implementation and contract"}
+                for tool in json.loads(row["tools"]) if tool["name"] in names}
+    return save_review(service, connection_id, {
+        "expected_connection_revision": row["revision"],
+        "expected_review_revision": row.get("read_only_review_revision", 0),
+        "tools": selected,
+    }, owner)
+
+
 @pytest.fixture
 def system(tmp_path, monkeypatch, mcp_server):
     monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL", "local-lexical-v1")
@@ -180,11 +194,12 @@ def system(tmp_path, monkeypatch, mcp_server):
     discovered = asyncio.run(service.test_connection(connection["id"], user=owner))
     assert discovered["status"] == "connected", discovered
     assert not mcp_server.calls, "Discovery must never execute a business operation"
+    review_fixture_connection(service, connection["id"], owner)
     assistant = service.save_assistant({"name": "Business MCP fixture", "connections": [{
         "connection_id": connection["id"], "allowed_tools": ["read_records", "write_record"],
         "auto_approved_tools": ["read_records"],
     }]}, user=owner)
-    cid = service.create_conversation({"assistant_id": assistant["id"], "title": "Fixture"}, owner)["id"]
+    cid = service.create_conversation({"assistant_id": assistant["id"], "title": "Fixture", "permission_mode": "auto"}, owner)["id"]
     result, _ = service.prepare_run(cid, {"text": "Read the synthetic pressure", "file_ids": [],
                                          "client_request_id": "fixture"}, owner)
     service.db.execute("UPDATE runs SET status='running' WHERE id=?", (result["run_id"],))
@@ -292,10 +307,7 @@ def test_session_approval_modes_use_the_same_certified_read_and_keep_permissions
     conversation = system.service.list_conversations(system.owner)[0]
     assert conversation["permission_mode"] == mode
     changes = system.service.db.all("SELECT * FROM conversation_permission_changes WHERE conversation_id=?", (conversation["id"],))
-    if mode == "manual":
-        assert not changes
-    else:
-        assert len(changes) == 1 and changes[0]["actor_id"] == system.owner["id"] and changes[0]["mode"] == mode
+    assert changes[-1]["actor_id"] == system.owner["id"] and changes[-1]["mode"] == mode
 
 
 def test_automatic_approval_rejects_live_definition_change_before_call(system):
@@ -314,6 +326,9 @@ def test_full_keeps_manual_external_writes_and_rejects_member_selection(system):
     with pytest.raises(AppError, match="完全权限需要管理员设置"):
         system.service.create_conversation({"assistant_id": member_assistant["id"], "title": "Member",
                                             "permission_mode": "full"}, member)
+    legacy = json.loads(system.service.require("assistants", system.assistant["id"])["connections"])
+    legacy[0]["auto_approved_tools"] = ["write_record"]
+    system.service.save_assistant({"connections": legacy}, system.assistant["id"], user=system.owner)
     new_run(system, permission_mode="full")
 
     async def scenario():
@@ -332,6 +347,7 @@ def test_unavailable_mcp_keeps_healthy_tools_and_rediscovers_without_call_or_use
     healthy = service.save_connection({"name": "Other synthetic MCP", "url": system.server.url + "/healthy",
                                        "auth_type": "bearer", "credential": SYNTHETIC_CREDENTIAL}, user=system.owner)
     assert asyncio.run(service.test_connection(healthy["id"], user=system.owner))["status"] == "connected"
+    review_fixture_connection(service, healthy["id"], system.owner)
     binding = {"allowed_tools": ["read_records"], "auto_approved_tools": ["read_records"]}
     service.save_assistant({"connections": [{**binding, "connection_id": connection["id"]}
                                              for connection in (system.connection, healthy)]}, system.assistant["id"], user=system.owner)
@@ -733,4 +749,40 @@ def test_business_completion_only_attributes_sources_registered_by_this_call(sys
         assert completed(system)["source_ids"] == [own["id"]]
         assert other["id"] not in dump(result)
 
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+def test_legacy_unreviewed_read_requires_manual_approval_even_in_auto(system, mode):
+    from app.connection_read_review import save_review
+    row = system.service.require("connections", system.connection["id"])
+    save_review(system.service, row["id"], {
+        "expected_connection_revision": row["revision"],
+        "expected_review_revision": row["read_only_review_revision"], "tools": {}}, system.owner)
+    new_run(system, permission_mode=mode)
+
+    async def scenario():
+        task = asyncio.create_task(system.runtime.bridge.invoke(request(system)))
+        approval = await pending_approval(system)
+        assert not system.server.calls
+        system.actor.manager.approvals[approval["id"]].set_result("deny")
+        result = await asyncio.wait_for(task, 8)
+        assert result["is_error"] and not system.server.calls
+
+    asyncio.run(scenario())
+
+
+def test_auto_mode_never_accepts_legacy_write_flag(system):
+    binding = json.loads(system.service.require("assistants", system.assistant["id"])["connections"])
+    binding[0]["auto_approved_tools"] = ["write_record"]
+    system.service.save_assistant({"connections": binding}, system.assistant["id"], user=system.owner)
+    new_run(system, permission_mode="auto")
+
+    async def scenario():
+        task = asyncio.create_task(system.runtime.bridge.invoke(write_request(system)))
+        approval = await pending_approval(system)
+        assert not system.server.calls
+        system.actor.manager.approvals[approval["id"]].set_result("deny")
+        assert (await asyncio.wait_for(task, 8))["is_error"]
+        assert not system.server.calls
     asyncio.run(scenario())

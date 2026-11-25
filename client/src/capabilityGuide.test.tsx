@@ -45,11 +45,11 @@ describe('capabilities follow saved permissions and evidence',()=>{
   });
   it('keeps remote hints, host confirmation and approval as different claims',()=>{
     expect(toolApprovalSummary(connection,tool,binding)).toEqual({readOnly:'远端声明：只读（仅提示）',approval:'调用前需要审批'});
-    expect(toolApprovalSummary(connection,tool,{...binding,auto_approved_tools:[tool.name]}).approval).toContain('免确认');
+    expect(toolApprovalSummary(connection,tool,{...binding,auto_approved_tools:[tool.name]}).approval).toBe('调用前需要审批');
     const confirmed={...binding,read_only_confirmations:{[tool.name]:{connection_revision:2,definition_digest:'digest',basis:'核过只读账号'}}};
     expect(toolApprovalSummary(connection,tool,confirmed).readOnly).toBe('当前定义已确认只读');
     expect(toolApprovalSummary({...connection,revision:3},tool,confirmed).readOnly).toBe('远端声明：只读（仅提示）');
-    expect(toolApprovalSummary(connection,tool).approval).toBe('审批方式由所选助手决定');
+    expect(toolApprovalSummary(connection,tool).approval).toBe('审批方式由所选助手和会话模式决定');
   });
   it('explains actual required fields, choices, defaults and declared limits',()=>{
     const params=toolParameters(tool);expect(params.find(p=>p.key==='customer_id')).toMatchObject({label:'客户编号',required:true,type:'文本',description:'实际客户编号'});

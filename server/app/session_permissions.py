@@ -79,6 +79,23 @@ def automatic_decision(service, run, tool_name):
     assistant = service.usable_assistant(conversation["assistant_id"], actor)
     snapshot = json.loads(run.get("capability_snapshot") or "null") or {}
     previous = next((item for item in snapshot.get("connections", []) if item["connection_id"] == connection["id"]), None)
+    if not previous or name not in previous.get("allowed_tools", []):
+        return None
+    from .connection_read_review import current_review, require_session_eligible
+    try:
+        require_session_eligible(connection, name)
+    except AppError:
+        return None
+    certificate = current_review(service, connection, name, run["created_at"])
+    if certificate:
+        return {**decision, "scope": "certified_read_only_connection",
+                "reason": "当前连接的只读工具已完成一次核验",
+                "connection_id": connection["id"], "certified_by": certificate["verified_by"],
+                "definition_digest": certificate["definition_digest"], "reviewed_at": certificate["verified_at"]}
+    # Once a connection has used the new review controls, an explicit removal
+    # or stale review must not silently reactivate an older binding certificate.
+    if connection.get("read_only_review_revision", 0):
+        return None
     try:
         digest = require_snapshot_confirmation(binding, previous, connection, name)
     except AppError:

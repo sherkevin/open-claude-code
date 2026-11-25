@@ -37,7 +37,8 @@ def user_view(row):
 
 def connection_view(row, user=None):
     from .read_only_tools import tool_view
-    return {"id": row["id"], "name": row["name"], "transport": "http", "url": row["url"], "auth_type": row["auth_type"], "credential_present": bool(row["secret"]), "enabled": bool(row["enabled"]), "status": row["status"], "tools": [tool_view(tool) for tool in json.loads(row["tools"])], "last_error": row["last_error"], "last_tested_at": row["last_tested_at"], "revision": row["revision"], "source_metadata": json.loads(row.get("source_metadata") or "{}"), **scope_fields(row, user)}
+    from .connection_read_review import review_tool_view
+    return {"id": row["id"], "name": row["name"], "transport": "http", "url": row["url"], "auth_type": row["auth_type"], "credential_present": bool(row["secret"]), "enabled": bool(row["enabled"]), "status": row["status"], "tools": [{**tool_view(tool), **review_tool_view(tool)} for tool in json.loads(row["tools"])], "last_error": row["last_error"], "last_tested_at": row["last_tested_at"], "revision": row["revision"], "source_metadata": json.loads(row.get("source_metadata") or "{}"), "read_only_certifications": json.loads(row.get("read_only_certifications") or "{}"), "read_only_review_revision": row.get("read_only_review_revision", 0), **scope_fields(row, user)}
 
 
 def assistant_view(row, user=None):

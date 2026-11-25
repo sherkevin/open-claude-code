@@ -62,6 +62,12 @@ class ReadOnlyToolConfirmation(InputModel):
     basis: str = Field(min_length=1, max_length=500)
 
 
+class ConnectionReadOnlyReview(InputModel):
+    expected_connection_revision: int = Field(ge=1, strict=True)
+    expected_review_revision: int = Field(ge=0, strict=True)
+    tools: dict[str, ReadOnlyToolConfirmation] = Field(default_factory=dict, max_length=128)
+
+
 class Binding(InputModel):
     connection_id: str
     allowed_tools: list[str] = Field(default_factory=list, max_length=1000)

@@ -22,7 +22,7 @@ describe('host read-only confirmations',()=>{
     const html=renderToStaticMarkup(<AssistantConfiguration value={{...assistant,connections:[{connection_id:'source',allowed_tools:['query'],auto_approved_tools:['query']}]}} resources={{...resources,connections:[{...connection,tools:[hinted]}]}} admin={false} onSaved={noop} onDirtyChange={noop} onSavingChange={noop} onReload={noop}/>);
     expect(html).toContain('工作流只读确认 · 未确认');
     expect(html).toContain('远端声明：只读（仅提示）');
-    expect(html).toContain('免确认执行只影响审批，不代表只读');
+    expect(html).toContain('旧工作流免确认不代表工具只读');
     expect(html).not.toContain('当前定义已由宿主确认');
   });
   it('requires an explicit basis and a verified current definition; a missing hint alone neither grants nor prevents confirmation',()=>{

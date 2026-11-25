@@ -155,6 +155,12 @@ CREATE TABLE IF NOT EXISTS session_read_only_certifications(
     confirmation_digest TEXT NOT NULL, admin_id TEXT NOT NULL REFERENCES users(id),
     PRIMARY KEY(assistant_id, connection_id, tool_name)
 );
+CREATE TABLE IF NOT EXISTS connection_read_only_review_audit(
+    id TEXT PRIMARY KEY, connection_id TEXT NOT NULL REFERENCES connections(id),
+    connection_revision INTEGER NOT NULL, review_revision INTEGER NOT NULL,
+    reviewer_id TEXT NOT NULL REFERENCES users(id), certifications TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
 CREATE INDEX IF NOT EXISTS runs_owner ON runs(user_id,created_at);
 CREATE INDEX IF NOT EXISTS runs_conversation ON runs(conversation_id,created_at);
@@ -555,6 +561,11 @@ class Database:
             self.conn.execute(
                 "ALTER TABLE kaiwu_assist_jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 60"
             )
+        connection_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(connections)")}
+        if "read_only_certifications" not in connection_columns:
+            self.conn.execute("ALTER TABLE connections ADD COLUMN read_only_certifications TEXT NOT NULL DEFAULT '{}'")
+        if "read_only_review_revision" not in connection_columns:
+            self.conn.execute("ALTER TABLE connections ADD COLUMN read_only_review_revision INTEGER NOT NULL DEFAULT 0")
         diagnostic_columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(kaiwu_diagnostic_events)")

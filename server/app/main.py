@@ -471,6 +471,11 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     def connection_patch(item_id: str, data: ConnectionPatch, user=Depends(authenticated), service: Service = Depends(svc)):
         return service.save_connection(data.model_dump(exclude_unset=True), item_id, user=user)
 
+    @app.post(prefix + "/connections/{item_id}/read-only-review")
+    def connection_review_read_only(item_id: str, data: ConnectionReadOnlyReview, user=Depends(authenticated), service: Service = Depends(svc)):
+        from .connection_read_review import save_review
+        return save_review(service, item_id, data.model_dump(), user)
+
     @app.delete(prefix + "/connections/{item_id}", status_code=204)
     async def connection_delete(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
         row = await offload(service.require_resource, "connections", item_id, user, True)

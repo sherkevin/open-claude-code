@@ -125,7 +125,7 @@ export default function AssistantConfiguration({value,resources,admin,onSaved,on
       <section className="configuration-section" aria-label="数据连接与工具"><header><span className="capability-section-icon"><Network size={21}/></span><div><h2>数据连接与工具</h2><p>选择数据连接、允许调用的工具和审批方式。</p></div><span className="configuration-count">{draft.connections.length} 个连接</span></header>
         {focusConnectionId&&<p className="section-help connection-setup-hint" role="status">{focusedConnection?<>当前连接「{focusedConnection.name}」已置顶。{editable?'请勾选连接，再展开选择允许的工具；不会自动授权或启用免确认执行。':'你只有查看权限，请由有编辑权限的成员配置。'}</>:'目标连接当前不在可绑定列表中。请返回连接页检查访问权限、启用状态与配置范围；已有绑定仍保留。'}</p>}
         {!visibleConnections.length&&<p className="section-help">还没有可绑定的业务连接。可在“业务连接”添加或导入 MCP 后返回配置。</p>}
-        <p className="section-help">免确认执行只影响审批，不代表只读。取消工具授权（含批量取消）会同时移除对应请求限制和只读确认；未发现工具的原配置会保留，直到明确解除。</p>
+        <p className="section-help">会话自动审批依据连接页的只读核验；旧工作流免确认选项不影响会话审批。取消工具授权（含批量取消）会同时移除对应请求限制和只读确认；未发现工具的原配置会保留，直到明确解除。</p>
         {visibleConnections.map(connection=>{
           const binding=draft.connections.find(b=>b.connection_id===connection.id);
           const missingTools=binding?[...new Set([...binding.allowed_tools,...Object.keys(binding.argument_constraints||{}),...Object.keys(binding.read_only_confirmations||{})])].filter(name=>!connection.tools.some(tool=>tool.name===name)||!binding.allowed_tools.includes(name)):[];
@@ -133,7 +133,7 @@ export default function AssistantConfiguration({value,resources,admin,onSaved,on
             <label className="checkbox-row binding-heading"><input type="checkbox" checked={!!binding} disabled={!connection.enabled&&!binding} onChange={e=>update('connections',e.target.checked?[...draft.connections,{connection_id:connection.id,allowed_tools:[],auto_approved_tools:[]}]:draft.connections.filter(b=>b.connection_id!==connection.id))}/><span>{connection.name}<small>{connection.enabled?`${connection.tools.length} 个已发现工具`:'连接已停用，原绑定保留'}</small></span><ScopeBadge scope={connection.scope}/>{binding&&<ChevronDown size={16}/>}</label>
             {binding&&<details className="binding-permissions"><summary>工具权限 · 已启用 {binding.allowed_tools.length}/{connection.tools.length}{binding.allowed_tools.length===0&&<span>请展开选择工具</span>}<ChevronDown size={14}/></summary><div className="binding-tools">
               {connection.tools.length>0&&<>
-                <div className="tool-selection-header"><label className="checkbox-row"><input type="checkbox" checked={connection.tools.every(t=>binding.allowed_tools.includes(t.name))} onChange={e=>update('connections',toggleDiscoveredBindingTools(draft.connections,connection.id,connection.tools.map(tool=>tool.name),e.target.checked))}/>选择已发现工具</label><span>免确认执行</span></div>
+                <div className="tool-selection-header"><label className="checkbox-row"><input type="checkbox" checked={connection.tools.every(t=>binding.allowed_tools.includes(t.name))} onChange={e=>update('connections',toggleDiscoveredBindingTools(draft.connections,connection.id,connection.tools.map(tool=>tool.name),e.target.checked))}/>选择已发现工具</label><span title="仅用于旧工作流，不影响会话审批">旧工作流免确认</span></div>
                 {connection.tools.map(tool=>{
                   const allowed=binding.allowed_tools.includes(tool.name);
                   const constraint=binding.argument_constraints&&Object.prototype.hasOwnProperty.call(binding.argument_constraints,tool.name)?binding.argument_constraints[tool.name]:undefined;

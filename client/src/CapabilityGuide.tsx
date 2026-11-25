@@ -1,5 +1,6 @@
 import { BookOpen, ChevronDown, Database, MessageSquare, ShieldCheck } from 'lucide-react';
 import { readOnlyConfirmationState, remoteReadOnlyLabel } from './ToolReadOnlyConfirmation';
+import { currentReviewedTools } from './ConnectionReadOnlyReview';
 import { BusinessIcon, businessIconFor, type BusinessIconName } from './BusinessIcon';
 import type { Assistant, AssistantBinding, Connection, KnowledgeBase, MCPTool } from './types';
 import './capability-guide.css';
@@ -42,10 +43,11 @@ export function toolParameters(tool: MCPTool) {
 
 /** A display aid, never a grant or a replacement for server-side schema validation. */
 export function toolApprovalSummary(connection: Connection, tool: MCPTool, binding?: AssistantBinding) {
-  const confirmed = binding && readOnlyConfirmationState(connection, tool, binding.read_only_confirmations?.[tool.name]) === 'current';
+  const reviewed = currentReviewedTools(connection).includes(tool.name);
+  const confirmed = reviewed || (!connection.read_only_review_revision && binding && readOnlyConfirmationState(connection, tool, binding.read_only_confirmations?.[tool.name]) === 'current');
   return {
     readOnly: confirmed ? '当前定义已确认只读' : remoteReadOnlyLabel(tool),
-    approval: !binding ? '审批方式由所选助手决定' : !binding.allowed_tools.includes(tool.name) ? '此助手未授权此工具' : binding.auto_approved_tools.includes(tool.name) ? '助手配置为免确认；执行仍受服务端权限限制' : '调用前需要审批',
+    approval: !binding ? '审批方式由所选助手和会话模式决定' : !binding.allowed_tools.includes(tool.name) ? '此助手未授权此工具' : reviewed ? '自动模式下可直接执行；执行前仍核验授权及定义' : confirmed ? '旧只读确认；自动模式仍须通过服务端核验' : '调用前需要审批',
   };
 }
 

@@ -43,11 +43,15 @@ export interface MCPTool {
   definition_digest?: string | null;
   read_only_confirmation_eligible?: boolean;
   read_only_confirmation_reason?: string | null;
+  session_read_only_review_eligible?: boolean;
+  session_read_only_review_reason?: string | null;
 }
 export interface ScopedResource { owner_id?: string | null; scope?: 'private' | 'team'; can_edit?: boolean }
 export interface Connection extends ScopedResource {
   id: string; name: string; transport: 'http'; url: string; auth_type: 'none' | 'bearer' | 'oauth';
   credential_present: boolean; enabled: boolean; status: 'untested' | 'connected' | 'needs_auth' | 'failed';
+  read_only_certifications?: Record<string, ReadOnlyConfirmation & { verified_by: string; verified_at: string }>;
+  read_only_review_revision?: number;
   source_metadata?: Record<string,string>; tools: MCPTool[]; last_error: string | null; last_tested_at: string | null; revision: number;
 }
 export interface MCPImportPreview {

@@ -281,6 +281,11 @@ class HarnessToolBridge:
         try:
             self.active(run_id)
             automatic = runtime.check_tool(tool_name, arguments)
+            # Business MCP grants authorize use, not absence of confirmation.
+            # The selected session mode and current read-only certificate are
+            # the only paths to unattended external business execution.
+            if business:
+                automatic = False
             policies = self.policy_snapshot()
             run = service.require("runs", run_id)
             review_required = service.model_approval.requires_review(runtime.conversation_id, tool_name)

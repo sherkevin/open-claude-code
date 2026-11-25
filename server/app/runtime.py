@@ -343,6 +343,8 @@ class SDKRuntime(WorkspaceRuntime):
             try:
                 tool, arguments = data["tool_name"], data.get("tool_input", {})
                 automatic = await offload(self.check_tool, tool, arguments)
+                if tool.startswith("mcp__c"):
+                    automatic = False
                 model_review = await offload(self.service.model_approval.requires_review, self.conversation_id, tool)
                 self.tool_started[tool_use_id] = time.monotonic()
                 self.tool_run_ids[tool_use_id] = (self.current_run or {}).get("id")
@@ -361,6 +363,8 @@ class SDKRuntime(WorkspaceRuntime):
         async def permission(tool, arguments, context):
             try:
                 automatic = await offload(self.check_tool, tool, arguments)
+                if tool.startswith("mcp__c"):
+                    automatic = False
                 # Evaluate a configured model policy before safe-read's normal
                 # automatic path. A policy allowlist therefore cannot be
                 # bypassed merely because a tool is normally auto-approved.

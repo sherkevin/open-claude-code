@@ -6,6 +6,7 @@ import { Button, EmptyState, ErrorNotice, Field, Loader, Modal, PageHeader, Succ
 import { canEdit, ScopeBadge, ScopeField, type ResourceScope } from './resources';
 import McpImportDialog from './McpImportDialog';
 import ConnectionTrialDialog from './ConnectionTrialDialog';
+import ConnectionReadOnlyReview, { currentReviewedTools } from './ConnectionReadOnlyReview';
 import { connectionSetupContext, type ConnectionSetupContext } from './connectionHandoff';
 import KaiwuHandoffDialog from './KaiwuHandoffDialog';
 import { KaiwuAssistDialog, useKaiwuAssistDevices } from './KaiwuAssistDialog';
@@ -55,12 +56,13 @@ export function ConnectionGroups({ items, renderCard }: { items: Connection[]; r
   const enabled = items.filter(item => item.enabled), disabled = items.filter(item => !item.enabled);
   return <>{enabled.length ? <div className="connections-grid">{enabled.map(renderCard)}</div> : <p className="connection-empty-active">暂无启用的 MCP。</p>}{disabled.length > 0 && <details className="connections-disabled"><summary><strong>已停用（{disabled.length}）</strong><ChevronDown size={16}/></summary><div className="connections-grid">{disabled.map(renderCard)}</div></details>}</>;
 }
-export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onOAuth, onBusinessTrial, highlighted = false }: {
+export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = false, testError = '', admin, onTest, onTools, onEdit, onDelete, onOAuth, onBusinessTrial, onReadOnlyReview, highlighted = false }: {
   item: Connection; testing?: boolean; actionsBusy?: boolean; testError?: string; admin: boolean;
-  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onOAuth?: () => void; onBusinessTrial?: () => void; highlighted?: boolean;
+  onTest: () => void; onTools: () => void; onEdit: () => void; onDelete: () => void; onOAuth?: () => void; onBusinessTrial?: () => void; onReadOnlyReview?: () => void; highlighted?: boolean;
 }) {
   const discovery = connectionDiscoveryState(item), editable = canEdit(item, admin);
   const currentTestPassed = !testing && !testError && discovery.complete;
+  const reviewed = currentReviewedTools(item);
   const statusLabel = testing ? '正在测试' : testError ? '本次测试未完成' : discovery.label;
   const purposes = [...new Set(item.tools.map(mcpToolPurpose))];
   const businessPurposes = purposes.filter(purpose => !purpose.startsWith('连接诊断：') && !purpose.startsWith('连接诊断专用：'));
@@ -70,6 +72,8 @@ export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = 
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
     <div className="connection-capability-preview">{functions.length ? <ul>{functions.map(description => <li key={description}>{description}</li>)}</ul> : <p className="section-help">{discovery.detail}</p>}</div>
     {currentTestPassed && <p className="section-help">连接测试仅验证工具发现，业务执行需另行验证。</p>}
+    {currentTestPassed && item.read_only_review_revision !== undefined && <p className="section-help">当前只读核验记录：{reviewed.length}/{item.tools.length}。自动审批还会复核实际权限及工具定义。</p>}
+    {currentTestPassed && onReadOnlyReview && editable && <Button variant="secondary" disabled={actionsBusy} onClick={onReadOnlyReview}>核验只读工具</Button>}
     {currentTestPassed && onBusinessTrial && <Button variant="secondary" disabled={actionsBusy} onClick={onBusinessTrial}>验证业务结果</Button>}
     {(testError || item.last_error) && <p className="inline-error">{testError || item.last_error}</p>}
     <button type="button" className="mcp-tool-list-button button ghost" onClick={onTools}>工具列表 · {item.tools.length}<ChevronDown size={15}/></button>
@@ -94,6 +98,8 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
   const [importing, setImporting] = useState(false), [success, setSuccess] = useState(''), [editor, setEditor] = useState<Connection | 'new' | null>(null);
   const [assisting, setAssisting] = useState(false);
   const [trial, setTrial] = useState<ConnectionSetupContext | null>(null);
+  const [reviewId, setReviewId] = useState<string | null>(null);
+  const review = items.find(item => item.id === reviewId);
   const assistance = useKaiwuAssistDevices(admin);
   const [testing, setTesting] = useState(''), [testErrors, setTestErrors] = useState<Record<string, string>>({}), [toolsId, setToolsId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null), [busyDelete, setBusyDelete] = useState(false), [localFocusId, setLocalFocusId] = useState<string>();
@@ -144,7 +150,7 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
   const test = async (item: Connection) => {
     setTesting(item.id); setSuccess(''); setError('');
     setTestErrors(previous => { const next = { ...previous }; delete next[item.id]; return next; });
-    try { const next = await testConnectionDiscovery(item); setItems(previous => previous.map(existing => existing.id === next.id ? next : existing)); if (next.status === 'connected') setSuccess(`已发现 ${next.tools.length} 个工具。请验证真实业务结果。`); }
+    try { const next = await testConnectionDiscovery(item); setItems(previous => previous.map(existing => existing.id === next.id ? next : existing)); if (next.status === 'connected') setSuccess(`已发现 ${next.tools.length} 个工具。请核验只读工具并验证真实业务结果。`); }
     catch (cause) { setTestErrors(previous => ({ ...previous, [item.id]: connectionTestError(cause) })); }
     finally { setTesting(''); }
   };
@@ -161,7 +167,8 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
     {oauthReturn?.status === 'failed' && <ErrorNotice message="OAuth 授权未完成，请在对应连接上重新授权。" onDismiss={clearOAuthReturn}/>}
     {oauthReturn?.status === 'linked' && <SuccessNotice message="已返回工作台。请查看连接卡片上的工具发现结果。"/>}
     <div className="connections-list-heading"><h2>已启用{!loading && ` · ${items.filter(item => item.enabled).length}`}</h2><Button variant="ghost" busy={loading} disabled={!!testing} onClick={() => void load()}><RefreshCw size={16}/>刷新</Button></div>
-    {loading && !items.length ? <Loader/> : !items.length ? <EmptyState icon={<Network size={32}/>} title={error ? '暂时无法读取 MCP' : '还没有 MCP'} description={error ? '请刷新重试。' : '填写服务地址，或导入已有配置。'}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} testing={testing === item.id} actionsBusy={!!testing || !!oauthAction || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setToolsId(item.id)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onOAuth={() => void manageOAuth(item)} onBusinessTrial={onStartBusinessTrial ? () => setTrial(connectionSetupContext(item)) : undefined} highlighted={item.id === targetConnectionId}/>}/>}
+    {loading && !items.length ? <Loader/> : !items.length ? <EmptyState icon={<Network size={32}/>} title={error ? '暂时无法读取 MCP' : '还没有 MCP'} description={error ? '请刷新重试。' : '填写服务地址，或导入已有配置。'}/> : <ConnectionGroups items={items} renderCard={item => <ConnectionOnboardingCard key={item.id} item={item} testing={testing === item.id} actionsBusy={!!testing || !!oauthAction || loading} testError={testErrors[item.id]} admin={admin} onTest={() => void test(item)} onTools={() => setToolsId(item.id)} onEdit={() => setEditor(item)} onDelete={() => setDeleting(item)} onOAuth={() => void manageOAuth(item)} onBusinessTrial={onStartBusinessTrial ? () => setTrial(connectionSetupContext(item)) : undefined} onReadOnlyReview={item.read_only_review_revision !== undefined ? () => setReviewId(item.id) : undefined} highlighted={item.id === targetConnectionId}/>}/>}
+    {review && <ConnectionReadOnlyReview key={review.id} connection={review} onClose={() => setReviewId(null)} onSaved={saved => { setItems(previous => previous.map(item => item.id === saved.id ? saved : item)); setReviewId(null); setSuccess('只读核验已保存。自动审批仅适用于已授权且核验仍有效的工具。'); }}/>}
     {trial && onStartBusinessTrial && <ConnectionTrialDialog key={trial.id} target={trial} onClose={() => setTrial(null)} onStart={(assistant, target, question) => { setTrial(null); onStartBusinessTrial(assistant, target, question); }} onConfigure={onConfigureConnection ? target => { setTrial(null); onConfigureConnection(target); } : undefined}/>}
     {editor && <ConnectionEditor admin={admin} oauthProfiles={oauthProfiles} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => { setEditor(null); focusConnection(saved.id); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]); setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; }); setSuccess('MCP 配置已保存。'); if (shouldTest && saved.auth_type === 'oauth' && !saved.credential_present) await manageOAuth(saved); else if (shouldTest) await test(saved); }}/ >}
     {unlinking && <Modal title="断开 OAuth 授权" onClose={() => { if (!oauthAction) setUnlinking(null); }}><div className="modal-body"><p>断开「{unlinking.name}」后，已绑定的助手将停止使用该连接，直到你再次授权。</p><ErrorNotice message={error}/></div><footer className="modal-footer"><Button variant="secondary" disabled={!!oauthAction} onClick={() => setUnlinking(null)}>取消</Button><Button variant="danger" busy={!!oauthAction} onClick={() => void revokeOAuth(unlinking)}>断开授权</Button></footer></Modal>}

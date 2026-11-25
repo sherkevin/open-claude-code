@@ -77,11 +77,17 @@ def mcp_app(tmp_path, monkeypatch, local_model_server, local_mcp_server, record_
         assert discovery.status_code == 200 and discovery.json()["status"] == "connected", discovery.text
         assert {item["name"] for item in discovery.json()["tools"]} == {*GRANTED, "hidden_admin"}
         assert not mcp.calls, "discovery must not execute business tools"
+        reviewed = {tool["name"]: {"connection_revision": discovery.json()["revision"],
+                    "definition_digest": tool["definition_digest"], "basis": "Reviewed synthetic read-only fixture implementation"}
+                    for tool in discovery.json()["tools"] if tool["name"] in ("read_assets", "read_failure")}
+        assert client.post(f"/api/v1/connections/{connection['id']}/read-only-review", json={
+            "expected_connection_revision": discovery.json()["revision"], "expected_review_revision": 0,
+            "tools": reviewed}).status_code == 200
         response = client.post("/api/v1/assistants", json={"name": "Harness MCP", "scope": "team", "connections": [{
             "connection_id": connection["id"], "allowed_tools": GRANTED, "auto_approved_tools": ["read_assets", "read_failure"]}]})
         assert response.status_code == 201, response.text
         assistant = response.json()
-        response = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]})
+        response = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"], "permission_mode": "auto"})
         assert response.status_code == 201, response.text
         cid = response.json()["id"]
 
