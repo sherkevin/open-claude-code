@@ -919,7 +919,7 @@ class SessionActor:
             if not future.done():
                 future.set_result(value)
 
-    async def goal_command(self, request, user, session_id, future):
+    async def goal_command(self, request, user, session_id, future, authorization=None):
         from .conversation_goal import require_goal_session
         value=None
         failure=None
@@ -929,6 +929,9 @@ class SessionActor:
             await offload(require_goal_session,self.service,self.conversation_id,user,session_id)
             if getattr(self.runtime,"session_id",None)!=session_id or not callable(getattr(self.runtime,"goal_state",None)):
                 raise AppError(503,"GOAL_RUNTIME_UNAVAILABLE","原生目标运行器不可用")
+            if request["action"] != "get" and self.service.settings.harness_goal_execution_enabled:
+                from .goal_execution import stop_goal_execution
+                await offload_write(stop_goal_execution,self.service,self.conversation_id,"goal_"+request["action"])
             value=await self.runtime.goal_state(request)
         except AppError as error:
             failure=error
@@ -945,6 +948,16 @@ class SessionActor:
                         self.runtime=None
                 if failure is None:
                     await offload(require_goal_session,self.service,self.conversation_id,user,session_id)
+                    if authorization is not None:
+                        from .goal_execution import authorize_goal_execution
+                        goal=value.get("goal") if isinstance(value,dict) else None
+                        if not isinstance(goal,dict):
+                            raise AppError(409,"GOAL_NOT_FOUND","请先创建目标再授权执行")
+                        # Persist approval before releasing the same native
+                        # maintenance reservation that produced the snapshot.
+                        value=await offload_write(authorize_goal_execution,self.service,self.conversation_id,user,authorization,goal)
+            except AppError as error:
+                failure=error
             except Exception:
                 failure=AppError(503,"GOAL_STATE_UNCERTAIN","原生目标状态暂不可核验，请刷新后确认，不要重复提交")
             finally:
@@ -1300,6 +1313,11 @@ class SessionActor:
                 try:
                     message = await offload(self.service.require, "messages", run["message_id"])
                     metadata = json.loads(run.get("execution_meta") or "{}")
+                    # This milestone has no mounted official round driver.
+                    # A prepared continuation must not run through a generic
+                    # actor submission, even with a valid host lease.
+                    if metadata.get("goal_continuation") is True:
+                        raise AppError(409,"GOAL_DRIVER_NOT_INTEGRATED","持续目标自动驱动尚未接入，不执行续行任务")
                     selection = metadata.get("selection") or {}
                     identity = identity_reply_for_message(
                         message["text"], public_model_id=selection.get("model_id", ""),
@@ -1495,6 +1513,8 @@ class RunManager:
                 self.finish(row["id"], "interrupted", "服务重启中断了本轮任务，请先查看操作记录和恢复选项。",
                             approval_source="restart", error_code="SERVICE_RESTARTED")
         self.service.db.execute("UPDATE approvals SET status='expired',decided_at=COALESCE(decided_at,?),decided_by=NULL,decision_source=COALESCE(decision_source,'restart') WHERE status='pending'", (now(),))
+        from .goal_execution import recover_goal_execution
+        recover_goal_execution(self.service)
         self.service.memory.recover()
 
     def start_queue_worker(self):
@@ -1620,7 +1640,7 @@ class RunManager:
     def maintenance_busy(self, conversation_id):
         return conversation_id in self.context_requests or conversation_id in self.fork_requests or conversation_id in self.goal_requests
 
-    async def goal_state(self,conversation_id,request,user):
+    async def goal_state(self,conversation_id,request,user,*,authorization=None):
         from .conversation_goal import require_goal_session
         row=await offload(require_goal_session,self.service,conversation_id,user)
         if self.maintenance_busy(conversation_id):
@@ -1628,7 +1648,7 @@ class RunManager:
         actor=self.actor_for(conversation_id)
         future=asyncio.get_running_loop().create_future()
         self.goal_requests[conversation_id]=future
-        actor.enqueue(("goal",request,user,row["harness_session_id"],future))
+        actor.enqueue(("goal",request,user,row["harness_session_id"],future,authorization))
         return await asyncio.shield(future)
 
     async def fork(self, conversation_id, child_id, boundary, body, user):
@@ -1740,6 +1760,17 @@ class RunManager:
         self.service.db.execute("UPDATE conversations SET active_run_id=NULL,updated_at=? WHERE id=? AND active_run_id=?", (now(), run["conversation_id"], run_id))
         self.service.db.execute("UPDATE approvals SET status='expired',decided_at=COALESCE(decided_at,?),decided_by=NULL,decision_source=COALESCE(decision_source,?) WHERE run_id=? AND status='pending'", (now(), approval_source, run_id))
         self.service.db.event(run_id, "run.completed", {"status": status, "message_id": run["assistant_message_id"], "error": error, "error_code": error_code, "usage": json.loads(run["usage"]) if run["usage"] else None, "timings": timings})
+        # A failed, cancelled or interrupted continuation must never be
+        # replayed. A successful round leaves the lease for explicit
+        # settlement and the next admission; restart is handled as one
+        # service-level recovery with the service_restarted reason.
+        if (approval_source != "restart" and status in {"cancelled", "failed", "interrupted"}
+                and run.get("kind", "chat") == "chat"
+                and json.loads(run.get("execution_meta") or "{}").get("goal_continuation") is True
+                and self.service.settings.harness_goal_state_enabled
+                and self.service.settings.harness_goal_execution_enabled):
+            from .goal_execution import stop_goal_execution_locked
+            stop_goal_execution_locked(self.service, run["conversation_id"], f"run_{status}")
 
     async def cancel(self, run_id):
         def mark_cancelling():

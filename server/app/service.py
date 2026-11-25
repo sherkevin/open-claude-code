@@ -386,6 +386,12 @@ class Service:
             self.db.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash(data["password"]), item_id))
         if "password" in data or data.get("enabled") is False or "role" in data:
             self.db.execute("DELETE FROM sessions WHERE user_id=?", (item_id,))
+        if data.get("enabled") is False:
+            from .goal_execution import revoke_user_goal_execution
+            revoke_user_goal_execution(self, item_id, "user_disabled")
+        elif data.get("role") is not None and data["role"] != row["role"]:
+            from .goal_execution import revoke_user_goal_execution
+            revoke_user_goal_execution(self, item_id, "user_role_changed")
         return user_view(self.require("users", item_id))
 
     def save_connection(self, data, item_id=None, user=None):
@@ -673,7 +679,18 @@ class Service:
         with self.db.transaction():
             row = self.require("conversations", item_id, user)
             from .session_permissions import change as change_permission_mode
+            prior_permission = row.get("permission_mode", "manual")
             change_permission_mode(self, row, user, data.get("permission_mode"))
+            goal_execution_on = (row.get("runtime_type") == "harness"
+                                 and self.settings.harness_goal_state_enabled
+                                 and self.settings.harness_goal_execution_enabled)
+            if goal_execution_on and data.get("permission_mode") is not None \
+                    and data["permission_mode"] != prior_permission:
+                from .goal_execution import stop_goal_execution_locked
+                stop_goal_execution_locked(self, item_id, "permission_changed")
+            if goal_execution_on and data.get("archived") is True and not row.get("archived"):
+                from .goal_execution import stop_goal_execution_locked
+                stop_goal_execution_locked(self, item_id, "conversation_archived")
             if data.get("archived") is not None and self.manager and item_id in getattr(self.manager,"goal_requests",{}):
                 raise AppError(409,"GOAL_SESSION_BUSY","目标正在更新，请稍后归档")
             if row["active_run_id"] and data.get("archived"):
@@ -709,7 +726,12 @@ class Service:
             self.db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now(), item_id))
             return conversation_view(self.require("conversations", item_id, user), user)
 
-    def prepare_run(self, conversation_id, data, user, *, queue_sequence=None):
+    def prepare_run(self, conversation_id, data, user, *, queue_sequence=None, goal_continuation=False):
+        if goal_continuation:
+            # The internal continuation path is unavailable unless the separate
+            # execution pilot is on; a public request can never pass this flag.
+            from .goal_execution import require_goal_execution_enabled
+            require_goal_execution_enabled(self)
         # Trial boundary applies at the Service layer too: advanced routing,
         # skills and attachments are refused before the run transaction can
         # create runs/messages or call a provider.
@@ -725,15 +747,24 @@ class Service:
             return {"message": message_view(self.require("messages", prior["message_id"])), "run_id": prior["id"]}, False
         if conversation_runtime_type(initial) == "harness":
             with self.memory.verified_for_run(user["id"], conversation_id):
-                return self._prepare_run(conversation_id, data, user, queue_sequence=queue_sequence)
-        return self._prepare_run(conversation_id, data, user, queue_sequence=queue_sequence)
+                return self._prepare_run(conversation_id, data, user, queue_sequence=queue_sequence,
+                                         goal_continuation=goal_continuation)
+        return self._prepare_run(conversation_id, data, user, queue_sequence=queue_sequence,
+                                 goal_continuation=goal_continuation)
 
-    def _prepare_run(self, conversation_id, data, user, *, queue_sequence=None):
+    def _prepare_run(self, conversation_id, data, user, *, queue_sequence=None, goal_continuation=False):
         with self.db.transaction():
             conversation = self.require("conversations", conversation_id, user)
             prior = self.db.one("SELECT * FROM runs WHERE conversation_id=? AND client_request_id=?", (conversation_id, data["client_request_id"]))
             if prior:
                 return {"message": message_view(self.require("messages", prior["message_id"])), "run_id": prior["id"]}, False
+            # A manually initiated instruction supersedes any approved goal
+            # continuation. The private driver-only flag is never accepted from
+            # the public message body; this is the host-side continuation path.
+            if not goal_continuation and conversation_runtime_type(conversation) == "harness" \
+                    and self.settings.harness_goal_state_enabled and self.settings.harness_goal_execution_enabled:
+                from .goal_execution import stop_goal_execution_locked
+                stop_goal_execution_locked(self, conversation_id, "user_instruction")
             assistant = self.usable_assistant(conversation["assistant_id"], user)
             if conversation["archived"]:
                 raise AppError(409, "CONVERSATION_ARCHIVED", "请先恢复此对话")
@@ -844,7 +875,8 @@ class Service:
             execution_meta = {"model": selection["upstream_model"], "effort": selection["upstream_effort"], "provider": provider,
                               "provider_route": route.kind, "selection": selection, "model_routing": route_decision,
                               "runtime_type": conversation_runtime_type(conversation), "permission_mode": conversation["permission_mode"],
-                              "permission_mode_by": conversation.get("permission_mode_by"), **memory_meta, **recovery}
+                              "permission_mode_by": conversation.get("permission_mode_by"), **memory_meta, **recovery,
+                              **({"goal_continuation": True} if goal_continuation else {})}
             if scheduled:
                 execution_meta["schedule_id"] = scheduled["id"]
                 execution_meta["schedule_execution_mode"] = scheduled.get("execution_mode", "text")

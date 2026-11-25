@@ -49,6 +49,10 @@ class Settings:
     harness_source_dir: str = field(default_factory=lambda: os.getenv("AGENT_HARNESS_SOURCE_DIR", "").strip())
     # State-only native Goal pilot. The autonomous driver is not mounted.
     harness_goal_state_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_GOAL_STATE_ENABLED", "false").lower() == "true")
+    # Separate, default-off execution admission. Even when both switches are
+    # on, this host only records an owner's explicit budget approval and a
+    # durable round lease; it never starts a model round by itself.
+    harness_goal_execution_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_GOAL_EXECUTION_ENABLED", "false").lower() == "true")
     # Per model response limit; independent of goal budgets and turn limits.
     harness_max_output_tokens: int = field(default_factory=lambda: int(os.getenv("AGENT_HARNESS_MAX_OUTPUT_TOKENS", "8192")))
     # One owned Node process executes a manual compaction, including its

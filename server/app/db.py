@@ -529,6 +529,60 @@ CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_level
     ON kaiwu_diagnostic_events(level,received_at);
 CREATE INDEX IF NOT EXISTS kaiwu_diagnostic_events_code
     ON kaiwu_diagnostic_events(event_code,received_at);
+-- Goal execution pilot: the owner's explicit budget approval and the host
+-- round lease. These tables never store model output or business data.
+-- Rounds are a separate limit from token, cost and wall-clock budgets.
+CREATE TABLE IF NOT EXISTS goal_execution_authorizations(
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    goal_id TEXT NOT NULL,
+    goal_revision INTEGER NOT NULL,
+    harness_session_id TEXT NOT NULL,
+    native_rounds_started INTEGER NOT NULL,
+    native_max_rounds INTEGER NOT NULL,
+    assistant_revision INTEGER NOT NULL,
+    permission_mode TEXT NOT NULL,
+    max_rounds INTEGER NOT NULL,
+    token_budget INTEGER NOT NULL,
+    cost_budget_micros INTEGER NOT NULL,
+    time_budget_seconds INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active','revoked')),
+    created_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoked_reason TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS goal_execution_authorizations_active
+    ON goal_execution_authorizations(conversation_id) WHERE status='active';
+CREATE INDEX IF NOT EXISTS goal_execution_authorizations_owner
+    ON goal_execution_authorizations(conversation_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS goal_execution_leases(
+    id TEXT PRIMARY KEY,
+    authorization_id TEXT NOT NULL REFERENCES goal_execution_authorizations(id),
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    goal_id TEXT NOT NULL,
+    goal_revision INTEGER NOT NULL,
+    harness_session_id TEXT NOT NULL,
+    round_index INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('admitted','settled','aborted')),
+    admitted_at TEXT NOT NULL,
+    finished_at TEXT,
+    outcome TEXT,
+    usage_status TEXT CHECK(usage_status IS NULL OR usage_status IN ('complete','unknown')),
+    total_tokens INTEGER,
+    cost_micros INTEGER,
+    abort_reason TEXT,
+    error_code TEXT,
+    UNIQUE(authorization_id,round_index)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS goal_execution_leases_active
+    ON goal_execution_leases(conversation_id) WHERE state='admitted';
+CREATE INDEX IF NOT EXISTS goal_execution_leases_authorization
+    ON goal_execution_leases(authorization_id,round_index);
+CREATE INDEX IF NOT EXISTS goal_execution_leases_run
+    ON goal_execution_leases(run_id);
 """
 
 
@@ -977,6 +1031,12 @@ COMMIT;""")
         operation_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(memory_operations)")}
         if "old_content_sha256" not in operation_columns:
             self.conn.execute("ALTER TABLE memory_operations ADD COLUMN old_content_sha256 TEXT")
+        goal_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(goal_execution_authorizations)")}
+        if "assistant_revision" not in goal_columns:
+            # A row written by an earlier candidate cannot verify the assistant
+            # configuration; revision 0 fails closed until the owner re-approves.
+            self.conn.execute("ALTER TABLE goal_execution_authorizations "
+                              "ADD COLUMN assistant_revision INTEGER NOT NULL DEFAULT 0")
 
     def one(self, query, values=()):
         with self.lock:

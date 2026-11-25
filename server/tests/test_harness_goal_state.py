@@ -100,3 +100,40 @@ def test_real_native_goal_lifecycle_restart_and_no_extra_model_calls(tmp_path,mo
         assert client.get(path).json()["goal"] is None
         assert len(requests)==baseline
         assert app2.state.service.db.one("SELECT count(*) n FROM runs WHERE conversation_id=?",(cid,))["n"]==1
+
+
+def test_real_native_goal_authorization_does_not_run_driver(tmp_path,model_server):
+    from app.goal_execution import _run_usage
+    node,source=os.getenv("HARNESS_TEST_NODE"),os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:pytest.skip("requires pinned Node Harness")
+    base,requests=model_server
+    settings=image_fixture_settings(tmp_path,node,source,base)
+    settings.harness_goal_state_enabled=True
+    settings.harness_goal_execution_enabled=True
+    app=create_app(settings)
+    with TestClient(app) as client:
+        service=app.state.service
+        service.create_user({"username":"admin","display_name":"admin","password":PASSWORD,"role":"admin"})
+        login(client)
+        cid=conversation(client)["id"]
+        path=f"/api/v1/conversations/{cid}/goal"
+        first=send(client,cid,"Goal execution fixture")["run_id"]
+        assert wait_run(client,first)["status"]=="succeeded"
+        receipt=service.require("runs",first)
+        assert _run_usage(receipt)[2]=="unknown"
+        baseline=len(requests)
+        goal=client.post(path,json={"action":"create","objective":"Synthetic authorized goal","maxGoalRounds":4}).json()["goal"]
+        owner=service.require("conversations",cid)
+        payload={"goal_id":goal["id"],"goal_revision":goal["revision"],
+                 "harness_session_id":owner["harness_session_id"],"max_rounds":2,
+                 "token_budget":10000,"cost_budget_micros":10000,"time_budget_seconds":3600,"confirm":True}
+        reply=client.post(path+"/execution",json=payload)
+        assert reply.status_code==200,reply.text
+        assert reply.json()["authorization"]["status"]=="active"
+        assert reply.json()["driver_integrated"] is False
+        assert client.get(path).json()["goal"]["activation"]=="disarmed"
+        paused=client.post(path,json={"action":"pause","ref":ref(goal)})
+        assert paused.status_code==200,paused.text
+        assert client.get(path+"/execution").json()["authorization"]["status"]=="revoked"
+        assert len(requests)==baseline
+        assert service.db.one("SELECT count(*) n FROM runs WHERE conversation_id=?",(cid,))["n"]==1

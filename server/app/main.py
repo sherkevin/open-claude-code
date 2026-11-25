@@ -272,6 +272,9 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         app.include_router(create_feedback_router(svc, authenticated, admin))
         if settings.harness_goal_state_enabled:
             app.include_router(create_goal_router(svc, authenticated))
+            if settings.harness_goal_execution_enabled:
+                from .conversation_goal_execution import create_goal_execution_router
+                app.include_router(create_goal_execution_router(svc, authenticated))
     from .workflows import create_workflow_router
     app.include_router(create_workflow_router(svc, authenticated, enabled=settings.workflows_enabled))
     from .kaiwu_control import create_kaiwu_control_router
@@ -305,6 +308,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             **({"harness_subagents": bool(settings.harness_source_dir and settings.harness_node_path and settings.max_active_sessions >= 2)}
                if not policy.is_trial else {}),
             **({"harness_goal_state": True} if settings.harness_goal_state_enabled and not policy.is_trial else {}),
+            **({"harness_goal_execution": True} if settings.harness_goal_state_enabled
+               and settings.harness_goal_execution_enabled and not policy.is_trial else {}),
             "feishu_h5": {
                 "enabled": feishu_ready,
                 "app_id": settings.feishu_h5_app_id if feishu_ready else "",
