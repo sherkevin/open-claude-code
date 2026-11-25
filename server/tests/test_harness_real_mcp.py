@@ -588,3 +588,48 @@ def test_real_harness_subagent_cannot_dispatch_after_grant_revocation(mcp_app):
     assert not env.mcp.calls
     assert env.service.require("approvals", row["id"])["status"] == "denied"
     assert not any(item.get("subagent_child_id") == row["subagent_child_id"] for item in tool_events(env, run, "tool.dispatched"))
+
+
+@pytest.mark.parametrize("kind",["direct","child","write"])
+def test_real_scheduled_agent_executes_with_existing_approval_boundary(mcp_app,kind):
+    from datetime import datetime,timedelta,timezone
+    env=mcp_app
+    marker="SCHEDULED_AGENT_"+kind.upper()
+    if kind=="child":
+        task="SCHEDULED_CHILD_READ"
+        env.model.actions[marker]=("delegate_tasks",{"tasks":[task,"SCHEDULED_CHILD_INDEPENDENT_SUMMARY"]})
+        env.model.actions[task]=(env.alias("read_assets"),READ_ARGUMENTS)
+    elif kind=="write":
+        env.model.actions[marker]=(env.alias("update_asset"),WRITE_ARGUMENTS)
+    else:
+        env.model.actions[marker]=(env.alias("read_assets"),READ_ARGUMENTS)
+    stamp=(datetime.now(timezone.utc)+timedelta(seconds=2)).isoformat()
+    route=f"/api/v1/conversations/{env.cid}/schedules"
+    response=env.client.post(route,json={"text":marker,"scheduled_at":stamp,"execution_mode":"agent"})
+    assert response.status_code==201,response.text
+    identity=response.json()["id"]
+    deadline=time.monotonic()+30
+    run=None
+    while time.monotonic()<deadline:
+        row=env.service.db.one("SELECT id FROM runs WHERE conversation_id=? AND client_request_id=?",(env.cid,identity))
+        if row:
+            run=row["id"]
+            break
+        time.sleep(.05)
+    assert run,"Scheduled task did not dispatch"
+    if kind=="write":
+        pending=approval(env,run,"update_asset")
+        assert not env.mcp.calls
+        decide(env,pending,"deny")
+        completed(env,run)
+        assert not env.mcp.calls
+    else:
+        completed(env,run)
+        assert [call["tool"] for call in env.mcp.calls]==["read_assets"]
+        assert not env.service.db.one("SELECT id FROM approvals WHERE run_id=?",(run,))
+        if kind=="child":
+            plan=env.client.get(f"/api/v1/runs/{run}/subagents").json()
+            assert plan["counts"]["succeeded"]==2
+    meta=json.loads(env.service.require("runs",run)["execution_meta"])
+    assert meta["schedule_id"]==identity and meta["schedule_execution_mode"]=="agent"
+    assert env.service.db.one("SELECT count(*) n FROM runs WHERE conversation_id=? AND client_request_id=?",(env.cid,identity))["n"]==1

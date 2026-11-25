@@ -264,9 +264,11 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         from .conversation_fork import create_conversation_fork_router
         from .conversation_interactions import create_interaction_router
         from .conversation_schedules import create_schedule_router
+        from .conversation_feedback import create_feedback_router
         app.include_router(create_conversation_fork_router(svc, authenticated))
         app.include_router(create_interaction_router(svc, authenticated))
         app.include_router(create_schedule_router(svc, authenticated))
+        app.include_router(create_feedback_router(svc, authenticated, admin))
     from .workflows import create_workflow_router
     app.include_router(create_workflow_router(svc, authenticated, enabled=settings.workflows_enabled))
     from .kaiwu_control import create_kaiwu_control_router

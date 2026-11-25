@@ -134,6 +134,28 @@ CREATE TABLE IF NOT EXISTS conversation_forks(conversation_id TEXT PRIMARY KEY R
 CREATE INDEX IF NOT EXISTS message_queue_pending ON message_queue(conversation_id,sequence) WHERE status='pending';
 CREATE TABLE IF NOT EXISTS conversation_schedules(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), text TEXT NOT NULL, scheduled_at TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, error TEXT);
 CREATE INDEX IF NOT EXISTS conversation_schedules_due ON conversation_schedules(status,scheduled_at);
+CREATE TABLE IF NOT EXISTS conversation_schedule_series(
+    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    text TEXT NOT NULL, next_at TEXT NOT NULL, recurrence TEXT NOT NULL,
+    timezone TEXT NOT NULL, local_time TEXT NOT NULL, execution_mode TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled', created_at TEXT NOT NULL,
+    skipped_count INTEGER NOT NULL DEFAULT 0, error TEXT
+);
+CREATE INDEX IF NOT EXISTS conversation_schedule_series_due ON conversation_schedule_series(status,next_at);
+CREATE TABLE IF NOT EXISTS conversation_feedback(
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+    conversation_id TEXT NOT NULL REFERENCES conversations(id), run_id TEXT REFERENCES runs(id),
+    message_id TEXT REFERENCES messages(id), description TEXT NOT NULL,
+    request_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'new',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE(user_id,request_id)
+);
+CREATE INDEX IF NOT EXISTS conversation_feedback_recent ON conversation_feedback(created_at,id);
+CREATE TABLE IF NOT EXISTS conversation_feedback_images(
+    id TEXT PRIMARY KEY, feedback_id TEXT NOT NULL REFERENCES conversation_feedback(id) ON DELETE CASCADE,
+    mime TEXT NOT NULL, content BLOB NOT NULL, size INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chat_draft_expiry(file_id TEXT PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS chat_draft_expiry_due ON chat_draft_expiry(expires_at);
 CREATE TABLE IF NOT EXISTS chat_draft_upload_requests(user_id TEXT NOT NULL REFERENCES users(id),request_id TEXT NOT NULL,file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,content_digest TEXT NOT NULL,PRIMARY KEY(user_id,request_id));
@@ -566,6 +588,12 @@ class Database:
             self.conn.execute("ALTER TABLE connections ADD COLUMN read_only_certifications TEXT NOT NULL DEFAULT '{}'")
         if "read_only_review_revision" not in connection_columns:
             self.conn.execute("ALTER TABLE connections ADD COLUMN read_only_review_revision INTEGER NOT NULL DEFAULT 0")
+        schedule_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(conversation_schedules)")}
+        if "execution_mode" not in schedule_columns:
+            self.conn.execute("ALTER TABLE conversation_schedules ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'text'")
+        if "series_id" not in schedule_columns:
+            self.conn.execute("ALTER TABLE conversation_schedules ADD COLUMN series_id TEXT")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS conversation_schedules_series ON conversation_schedules(series_id,created_at)")
         diagnostic_columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(kaiwu_diagnostic_events)")

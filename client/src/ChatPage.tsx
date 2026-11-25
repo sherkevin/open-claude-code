@@ -31,6 +31,7 @@ import { pendingRun, retryRead, transientReadError } from './runReadback';
 import RunOutcome from './RunOutcome';
 import RunInteractions from './RunInteractions';
 import ConversationTasks from './ConversationTasks';
+import ConversationFeedback from './ConversationFeedback';
 import ConversationSidebar, { useConversationSidebar } from './ConversationSidebar';
 import InlineSubagentRun from './InlineSubagentRun';
 import ComposerReferences from './ComposerReferences';
@@ -655,6 +656,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       </div></div>
       <div className="chat-actions">
         {!trial && <>
+          <ConversationFeedback conversationId={conversation.id} runId={run?.id} messages={messages}/>
           <ConversationExport conversationId={conversation.id}/>
           <button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={() => setInspectionView('trajectory')}><ListTree size={17}/></button>
           <button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={() => setShowMemory(true)}><BookOpen size={17}/></button>
@@ -793,7 +795,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       onFile={referenceFile} onClose={() => setShowReferences(false)}/>}
     {!trial && sidebar.open && <ConversationSidebar docked={sidebar.docked} onClose={() => sidebar.setOpen(false)}>
       <ConversationTasks conversationId={conversation.id} runId={active ? run?.id : undefined}
-        canDelegate={!!config.harness_subagents && canSteer} canSchedule={canSend && !archived} events={events}
+        canDelegate={!!config.harness_subagents && canSteer} canSchedule={canSend && !archived} canScheduleAgent={conversation.runtime_type === "harness"} events={events}
         onSummarize={results => {
           const summary = `请汇总以下子任务结果，并注明尚未验证的结论。\n\n${results}`;
           const next = input.trim() ? `${input.trimEnd()}\n\n${summary}` : summary;

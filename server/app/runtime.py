@@ -1469,6 +1469,8 @@ class RunManager:
                 next_sweep = time.monotonic() + 3600
                 try:
                     await offload_write(sweep_expired_draft_uploads, self.service)
+                    from .conversation_feedback import sweep_feedback
+                    await offload_write(sweep_feedback, self.service)
                 except Exception:
                     log.warning("Draft attachment cleanup failed", exc_info=True)
             try:

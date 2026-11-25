@@ -195,7 +195,7 @@ class SubagentOrchestrator:
             self.service.usable_assistant(conversation["assistant_id"], owner)
             if (self.service.policy.is_trial or conversation["archived"] or conversation["active_run_id"] != parent_run_id
                     or conversation["runtime_type"] != "harness" or parent.get("kind", "chat") != "chat"
-                    or parent["status"] != "running" or metadata.get("recovery_mode") == "answer_only" or metadata.get("schedule_id")
+                    or parent["status"] != "running" or metadata.get("recovery_mode") == "answer_only" or (metadata.get("schedule_id") and metadata.get("schedule_execution_mode") != "agent")
                     or not settings.harness_source_dir or not settings.harness_node_path or settings.max_active_sessions < 2):
                 raise AppError(409, "SUBAGENT_PARENT_INACTIVE", "当前运行不支持创建分析子任务")
             _, runtime = self.harness_parent(parent)

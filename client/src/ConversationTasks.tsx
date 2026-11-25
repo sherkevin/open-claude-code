@@ -16,9 +16,10 @@ export interface ConversationTasksProps {
   onSummarize: (results: string) => void;
   events?: StreamEvent[];
   canSchedule?: boolean;
+  canScheduleAgent?: boolean;
 }
 
-type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null };
+type Schedule = { id: string; text: string; scheduled_at: string; status: string; error?: string | null; recurrence?: string; execution_mode?: string; series_id?: string; skipped_count?: number };
 type PlanRun = { id: string; created_at: string; status: string };
 type ChildSelection = { plan: SubagentPlan; childId: string };
 type SelectChild = (selection: ChildSelection, trigger: HTMLButtonElement) => void;
@@ -31,11 +32,11 @@ type ReadOptions<T> = {
 };
 
 const statusLabels = new Map([
-  ['scheduled', '等待到期'], ['pending', '待发送'], ['queued', '排队中'], ['running', '执行中'], ['cancelling', '正在取消'],
+  ['scheduled', '等待到期'], ['paused','已暂停'], ['pending', '待发送'], ['queued', '排队中'], ['running', '执行中'], ['cancelling', '正在取消'],
   ['awaiting_approval', '等待审批'], ['succeeded', '已完成'], ['failed', '失败'], ['cancelled', '已取消'], ['interrupted', '已中断'],
 ]);
 const statusLabel = (status: string) => statusLabels.get(status) ?? '状态未确认';
-const canCancelSchedule = (status: string) => status === 'scheduled' || status === 'pending';
+const canCancelSchedule = (status: string) => status === 'scheduled' || status === 'pending' || status === 'paused';
 
 function fetchTask<T>(path: string, signal: AbortSignal) {
   return api<T>(path, { signal, cache: 'no-store' });
@@ -145,24 +146,26 @@ function ScheduleRow({ task, busy, onCancel }: { task: Schedule; busy: boolean; 
       <summary tabIndex={0}>
         <span>
           <span className="task-sidebar-schedule-text">{preview}</span>
-          <small><time dateTime={task.scheduled_at}>{timeText(task.scheduled_at)}</time> · {statusLabel(task.status)}</small>
+          <small><time dateTime={task.scheduled_at}>{timeText(task.scheduled_at)}</time> · {statusLabel(task.status)}{task.recurrence==='daily'?' · 每天':task.recurrence==='weekly'?' · 每周':''}{task.execution_mode==='agent'?' · 智能体':''}</small>
         </span>
         <ChevronRight size={15} aria-hidden="true"/>
       </summary>
-      <p>{task.text}</p>
+      <p>{task.text}</p>{!!task.skipped_count&&<p className="section-help">已跳过 {task.skipped_count} 个错过或重叠的周期。</p>}
       {task.error && <p className="task-sidebar-read-error">{task.error}</p>}
     </details>
     {canCancelSchedule(task.status) && <Button variant="ghost" disabled={busy} aria-label={`取消定时任务 ${preview}`} onClick={() => onCancel(task.id)}>取消</Button>}
   </li>;
 }
 
-function ScheduledTasks({ path, visible, canSchedule }: { path: string; visible: boolean; canSchedule: boolean }) {
+function ScheduledTasks({ path, visible, canSchedule, canScheduleAgent }: { path: string; visible: boolean; canSchedule: boolean; canScheduleAgent: boolean }) {
   const heading = useId();
   const formId = useId();
   const { value: schedules, error, refresh, update } = useTaskRead<Schedule[]>(path, { enabled: visible, nextRead: scheduleInterval });
   const [creating, setCreating] = useState(false);
   const [text, setText] = useState('');
   const [when, setWhen] = useState('');
+  const [recurrence,setRecurrence]=useState<'once'|'daily'|'weekly'>('once');
+  const [executionMode,setExecutionMode]=useState<'text'|'agent'>(canScheduleAgent?'agent':'text');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const createButton = useRef<HTMLButtonElement>(null);
@@ -196,7 +199,7 @@ function ScheduledTasks({ path, visible, canSchedule }: { path: string; visible:
     }
     void act(async () => {
       const scheduled_at = date.toISOString();
-      const task = await post<Pick<Schedule, 'id' | 'status'>>(path, { text: content, scheduled_at });
+      const task = await post<Pick<Schedule, 'id' | 'status'>>(path, { text: content, scheduled_at, recurrence, execution_mode: canScheduleAgent?executionMode:'text', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC' });
       update(previous => [{ ...task, text: content, scheduled_at }, ...(previous ?? []).filter(item => item.id !== task.id)]);
       setText('');
       setWhen('');
@@ -233,7 +236,9 @@ function ScheduledTasks({ path, visible, canSchedule }: { path: string; visible:
       <form className="task-sidebar-form" onSubmit={schedule}>
         <Field label="任务内容"><textarea ref={textInput} value={text} onChange={event => setText(event.target.value)} required maxLength={50000} rows={2}/></Field>
         <Field label="执行时间（本地时间）"><input value={when} onChange={event => setWhen(event.target.value)} type="datetime-local" required/></Field>
-        <p className="task-sidebar-muted">到期后进入会话队列，仅执行一次文字任务。</p>
+        <Field label="执行频率"><select value={recurrence} onChange={e=>setRecurrence(e.target.value as 'once'|'daily'|'weekly')}><option value="once">仅一次</option><option value="daily">每天</option><option value="weekly">每周</option></select></Field>
+        {canScheduleAgent&&<Field label="执行方式"><select value={executionMode} onChange={e=>setExecutionMode(e.target.value as 'text'|'agent')}><option value="agent">智能体任务（工具、子任务）</option><option value="text">仅文字回答</option></select></Field>}
+        <p className="task-sidebar-muted">到期进入会话队列，沿用当前助手的权限和审批策略。周期任务不会堆积重复执行，失败后暂停。取消周期不影响已经启动的执行。</p>
         <Button type="submit" busy={busy} disabled={!text.trim() || !when}>设定时间</Button>
       </form>
     </div>
@@ -553,7 +558,7 @@ function ChildTaskDetail({ selection, events, onBack }: { selection: ChildSelect
   </section>;
 }
 
-function ConversationTaskBody({ conversationId, runId, canDelegate, canSchedule = true, events, onSummarize }: ConversationTasksProps) {
+function ConversationTaskBody({ conversationId, runId, canDelegate, canSchedule = true, canScheduleAgent = false, events, onSummarize }: ConversationTasksProps) {
   const heading = useId();
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -569,7 +574,7 @@ function ConversationTaskBody({ conversationId, runId, canDelegate, canSchedule 
 
   return <div className="conversation-task-sidebar" ref={root}>
     <div hidden={!!selection}>
-      <ScheduledTasks canSchedule={canSchedule} path={`${path}/schedules`} visible={!selection}/>
+      <ScheduledTasks canSchedule={canSchedule} canScheduleAgent={canScheduleAgent} path={`${path}/schedules`} visible={!selection}/>
       <SubagentTasks path={`${path}/subagent-plans`} runId={runId} canDelegate={canDelegate} onSummarize={onSummarize}
         heading={heading} visible={!selection} onSelect={(child, button) => { trigger.current = button; setSelection(child); }}/>
     </div>

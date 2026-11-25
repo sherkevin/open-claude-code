@@ -18,6 +18,15 @@ describe('conversation task sidebar', () => {
     expect(html).not.toMatch(/role="dialog"|modal-body/);
   });
 
+  it('offers one-time, daily and weekly schedules with explicit Harness agent mode', () => {
+    const html=renderToStaticMarkup(<ConversationTasks conversationId="conversation-1" canDelegate={false} canScheduleAgent onSummarize={()=>{}}/>);
+    expect(html).toContain('仅一次');
+    expect(html).toContain('每天');
+    expect(html).toContain('每周');
+    expect(html).toContain('智能体任务（工具、子任务）');
+    expect(html).toContain('沿用当前助手的权限和审批策略');
+  });
+
   it('reads tool outcomes only for calls explicitly attributed to the selected child', () => {
     const result = childTaskRecords({ run: { id: 'run-1' }, events: [
       event(1, 'tool.started', { child_id: 'child-1', tool_call_id: 'read-1', tool_name: 'Read', arguments: { path: 'private' } }),

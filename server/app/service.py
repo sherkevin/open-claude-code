@@ -737,7 +737,7 @@ class Service:
                 raise AppError(409, "CONVERSATION_ARCHIVED", "请先恢复此对话")
             if conversation["active_run_id"]:
                 raise AppError(409, "CONVERSATION_BUSY", "当前任务仍在执行，请等待或停止后重试")
-            scheduled = self.db.one("SELECT id FROM conversation_schedules WHERE id=? AND conversation_id=?",
+            scheduled = self.db.one("SELECT id,execution_mode,series_id FROM conversation_schedules WHERE id=? AND conversation_id=?",
                                     (data["client_request_id"], conversation_id))
             if scheduled and not queue_sequence:
                 raise AppError(409, "SCHEDULE_NOT_DUE", "此任务由计划队列启动")
@@ -845,6 +845,9 @@ class Service:
                               "permission_mode_by": conversation.get("permission_mode_by"), **memory_meta, **recovery}
             if scheduled:
                 execution_meta["schedule_id"] = scheduled["id"]
+                execution_meta["schedule_execution_mode"] = scheduled.get("execution_mode", "text")
+                if scheduled.get("series_id"):
+                    execution_meta["schedule_series_id"] = scheduled["series_id"]
             self.db.execute("UPDATE runs SET execution_meta=? WHERE id=?", (dump(execution_meta), run_id))
             if conversation["auto_title_pending"]:
                 title = first_message_title(data["text"])
@@ -1047,7 +1050,7 @@ class Service:
             if metadata.get("runtime_type", "claude") != runtime_type:
                 raise AppError(409, "RUNTIME_TYPE_CHANGED", "任务与会话执行器不一致，请重新创建会话")
             selection = metadata.get("selection")
-            recovery_only = metadata.get("recovery_mode") == "answer_only" or bool(metadata.get("schedule_id"))
+            recovery_only = metadata.get("recovery_mode") == "answer_only" or bool(metadata.get("schedule_id") and metadata.get("schedule_execution_mode") != "agent")
         selection = self.catalog.validate_snapshot(selection or json.loads(conversation["model_snapshot"]))
         provider_env = self.validated_provider(selection)
         user = self.require("users", conversation["user_id"])
