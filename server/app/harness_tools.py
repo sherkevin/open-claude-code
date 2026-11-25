@@ -107,8 +107,9 @@ class HarnessToolBridge:
         memory = [item for item in self.memory.definitions()
                   if policy.tool_allowed(f"mcp__workspace__{item['name']}")]
         definitions = workspace + business + memory
-        if self.schedule_enabled and policy.tool_allowed(harness_schedule.CANONICAL):
-            definitions.append(harness_schedule.DEFINITION)
+        if self.schedule_enabled:
+            definitions.extend(item for item in [harness_schedule.DEFINITION,*harness_schedule.READ_DEFINITIONS]
+                               if policy.tool_allowed(f"mcp__workspace__{item['name']}"))
         if self.inherited_names is not None:
             definitions = [item for item in definitions if item["name"] in self.inherited_names]
         return definitions
@@ -255,7 +256,7 @@ class HarnessToolBridge:
         service.policy.require_tool(policy_name)
         if ((self.inherited_names is not None and name not in self.inherited_names)
                 or (name not in self.tools and name not in self.business_tools and name not in MEMORY_NAMES
-                    and not (self.schedule_enabled and name==harness_schedule.NAME))
+                    and not (self.schedule_enabled and name in harness_schedule.NAMES))
                 or not isinstance(call_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", call_id)
                 or (name not in MEMORY_NAMES and (run_id, call_id) in self.calls)):
             raise AppError(403, "HARNESS_TOOL_DENIED", "工具未注册或调用已处理")
@@ -281,6 +282,11 @@ class HarnessToolBridge:
                 self.active(run_id)
                 schedule_proposal = await asyncio.to_thread(harness_schedule.prepare, runtime, run_id, payload["arguments"])
                 arguments = schedule_proposal[2]
+            except AppError as exc:
+                return {"is_error":True,"content":[{"type":"text","text":exc.message}]}
+        elif name in harness_schedule.READ_NAMES:
+            try:
+                arguments=harness_schedule.read_arguments(name,payload["arguments"])
             except AppError as exc:
                 return {"is_error":True,"content":[{"type":"text","text":exc.message}]}
         else:
@@ -365,6 +371,9 @@ class HarnessToolBridge:
                 body, prepared, preview = schedule_proposal
                 created = await offload_write(harness_schedule.commit, runtime, run_id, body, prepared, preview, allowed, recheck)
                 result = {"content":[{"type":"text","text":json.dumps(created,ensure_ascii=False)}]}
+            elif name in harness_schedule.READ_NAMES:
+                receipt=await asyncio.to_thread(harness_schedule.read,runtime,run_id,name,arguments,recheck)
+                result={"content":[{"type":"text","text":json.dumps(receipt,ensure_ascii=False)}]}
             elif business:
                 result = await business.invoke(arguments, recheck)
             else:

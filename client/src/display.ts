@@ -4,6 +4,8 @@ import type { CompactionStatus } from './types';
 export function toolLabel(name: string): string {
   const memoryTools:Record<string,string> = { mcp__workspace__memory_list:'列出当前会话记忆', mcp__workspace__memory_read:'读取当前会话记忆', mcp__workspace__memory_write:'申请保存会话记忆' };
   if (name === 'mcp__workspace__schedule_create') return '创建定时智能体任务';
+  if (name === 'mcp__workspace__schedule_list') return '查询当前会话定时计划';
+  if (name === 'mcp__workspace__schedule_view') return '查看定时计划详情';
   if (memoryTools[name]) return memoryTools[name];
   return name.replace(/^mcp__c[0-9a-f]{32}__(.+)$/i, '$1');
 }

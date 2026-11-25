@@ -584,7 +584,7 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         assert "/permission CASE_STREAM" in json.dumps(requests[0], ensure_ascii=False)
         assert {tool["name"] for tool in requests[0]["tools"]} == {
             "knowledge_search", "knowledge_read", "generate_xlsx", "generate_image", "file_read", "file_write", "file_search",
-            "memory_list", "memory_read", "memory_write", "ask_user", "review_plan", "delegate_tasks", "schedule_create",
+            "memory_list", "memory_read", "memory_write", "ask_user", "review_plan", "delegate_tasks", "schedule_create", "schedule_list", "schedule_view",
         }
         assert json.loads(service.require("runs", first)["usage"])["output_tokens"] == 8
         assert requests[0]["max_tokens"] == settings.harness_max_output_tokens
@@ -1039,3 +1039,50 @@ def test_real_harness_natural_language_schedule_owner_confirmation(tmp_path,mode
         assert item["scheduled_at"]==approval["arguments"]["first_occurrence_utc"]
         assert item["id"] in json.dumps(requests[-1]["messages"],ensure_ascii=False)
         assert not service.db.all("SELECT * FROM conversation_schedules")
+
+
+def schedule_read_reply(body, blocks, result):
+    if result is None:
+        return "",("schedule_list",{"active":True,"limit":5})
+    value=json.dumps(result,ensure_ascii=False)
+    # Use the returned ID, not a guessed ID or an unrestricted Host query.
+    if "fixture plan for natural query" in value and '"items"' in value.replace('\\"','"'):
+        match=re.search(r"series-[a-f0-9]{32}",value)
+        assert match,"Expected actual plan id in tool receipt"
+        return "",("schedule_view",{"id":match.group(0)})
+    return "已收到当前会话的计划详情",None
+
+
+@pytest.mark.parametrize("model_server",[lambda:schedule_read_reply],indirect=True)
+def test_real_harness_natural_language_schedule_read(tmp_path,model_server,monkeypatch):
+    from datetime import datetime,timedelta,timezone
+    node,source=os.getenv("HARNESS_TEST_NODE"),os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires explicitly installed pinned Harness runtime")
+    for name in PROVIDER_KEYS:
+        monkeypatch.delenv(name,raising=False)
+    monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL","local-lexical-v1")
+    base,requests=model_server
+    app=create_app(image_fixture_settings(tmp_path,node,source,base))
+    with TestClient(app) as client:
+        service=app.state.service
+        user=service.create_user({"username":"admin","display_name":"Test","password":PASSWORD,"role":"admin"})
+        login(client)
+        assistant=service.save_assistant({"name":"Schedule read fixture"},user=user)
+        cid=client.post("/api/v1/conversations",json={"assistant_id":assistant["id"]}).json()["id"]
+        other=client.post("/api/v1/conversations",json={"assistant_id":assistant["id"]}).json()["id"]
+        stamp=(datetime.now(timezone.utc)+timedelta(days=1)).isoformat()
+        plan=client.post(f"/api/v1/conversations/{cid}/schedules",json={"text":"fixture plan for natural query","scheduled_at":stamp,"recurrence":"daily"})
+        assert plan.status_code==201,plan.text
+        foreign=client.post(f"/api/v1/conversations/{other}/schedules",json={"text":"FOREIGN_SESSION_PLAN_EXCLUDED","scheduled_at":stamp,"recurrence":"daily"})
+        assert foreign.status_code==201,foreign.text
+        run=send(client,cid,"查询我的当前会话定时任务和详情","schedule-natural-read-real")["run_id"]
+        assert wait_run(client,run)["status"]=="succeeded"
+        records=[e["data"] for e in service.db.events(run,0) if e["type"]=="tool.completed"]
+        assert [(e["tool_name"],e["success"]) for e in records]==[
+            ("mcp__workspace__schedule_list",True),("mcp__workspace__schedule_view",True)]
+        assert plan.json()["id"] in json.dumps(requests[-1]["messages"],ensure_ascii=False)
+        assert "FOREIGN_SESSION_PLAN_EXCLUDED" not in json.dumps(requests,ensure_ascii=False)
+        assert not service.db.all("SELECT id FROM approvals WHERE run_id=?",(run,))
+        assert not service.db.all("SELECT * FROM message_queue")
+        assert service.db.one("SELECT count(*) n FROM conversation_schedule_series")["n"]==2

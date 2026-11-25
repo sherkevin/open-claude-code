@@ -23,7 +23,7 @@ TOOL_NAMES = frozenset({
     "ocr", "image_search",
     "memory_list", "memory_read", "memory_write",
     "ask_user", "review_plan",
-    "delegate_tasks", "schedule_create",
+    "delegate_tasks", "schedule_create", "schedule_list", "schedule_view",
 })
 EXTERNAL_TOOL_NAME = re.compile(r"external_[0-9a-f]{32}")
 MAX_TOOL_DEFINITION_BYTES = 524_288
