@@ -19,7 +19,7 @@ export function feedbackForm(description:string,requestId:string,target:string,r
   files.forEach(file=>body.append('screenshots',file,file.name));
   return body;
 }
-type FeedbackRow={id:string;description:string;status:'new'|'in_progress'|'resolved';created_at:string;updated_at:string;run_id?:string|null;message_id?:string|null};
+type FeedbackRow={id:string;description:string;status:'new'|'in_progress'|'resolved';created_at:string;updated_at:string;resolution_note?:string;run_id?:string|null;message_id?:string|null};
 const labels={new:'待处理',in_progress:'处理中',resolved:'已解决'} as const;
 type FeedbackProps={conversationId:string;runId?:string;messages:Message[]};
 export function FeedbackHistory({rows}:{rows:FeedbackRow[]}){
@@ -28,6 +28,7 @@ export function FeedbackHistory({rows}:{rows:FeedbackRow[]}){
     <details className="task-sidebar-schedule">
       <summary><strong>{labels[row.status]||'状态未确认'}</strong> · {timeText(row.created_at)} · {row.description.replace(/\s+/g,' ').slice(0,80)}</summary>
       <p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{row.description}</p>
+      {row.resolution_note&&<><strong>管理员处理说明</strong><p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{row.resolution_note}</p></>}
       <p className="form-note">反馈编号：<code>{row.id}</code> · 最后更新：{timeText(row.updated_at)}</p>
     </details>
   </li>)}</ul>;

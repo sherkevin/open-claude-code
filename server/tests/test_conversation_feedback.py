@@ -97,7 +97,7 @@ def test_own_feedback_receipt_history_reflects_admin_status_and_isolation(client
     assert reply.headers["cache-control"]=="no-store"
     rows=reply.json()
     assert len(rows)==1 and rows[0]["id"]==fid and rows[0]["status"]=="new"
-    assert set(rows[0])=={"id","description","status","created_at","updated_at","run_id","message_id"}
+    assert set(rows[0])=={"id","description","status","created_at","updated_at","run_id","message_id","resolution_note"}
     assert other_id not in reply.text and "another session" not in reply.text
     assert client.patch(f"/api/v1/admin/feedback/{fid}",json={"status":"resolved"}).status_code==403
     # Administrator processing does not grant access to another user's
@@ -118,3 +118,34 @@ def test_own_feedback_receipt_history_reflects_admin_status_and_isolation(client
         ((datetime.now(timezone.utc)-timedelta(days=91)).isoformat(),fid))
     sweep_feedback(service)
     assert client.get(route).json()==[]
+
+
+def test_published_resolution_note_is_scoped_versioned_and_legacy_compatible(client):
+    service=client.app.state.service
+    for name in ("reporter","other"):
+        service.create_user({"username":name,"display_name":name,"password":PASSWORD,"role":"member"})
+    login(client,"reporter")
+    cid=conversation(client)["id"]
+    route=f"/api/v1/conversations/{cid}/feedback"
+    fid=client.post(route,data={"description":"fixture","request_id":"resolution-note-1"}).json()["id"]
+    target=f"/api/v1/admin/feedback/{fid}"
+    initial=client.get(route).json()[0]
+    assert initial["resolution_note"]==""
+    assert client.patch(target,json={"status":"resolved","resolution_note":"forged"}).status_code==403
+    login(client)
+    assert client.patch(target,json={"status":"resolved","resolution_note":"x"*2001}).status_code==422
+    update=client.patch(target,json={"status":"resolved","resolution_note":"  已修复显示问题  ","expected_updated_at":initial["updated_at"]})
+    assert update.status_code==200,update.text
+    assert update.json()["resolution_note"]=="已修复显示问题"
+    assert client.patch(target,json={"status":"new","resolution_note":"stale","expected_updated_at":initial["updated_at"]}).status_code==409
+    assert client.patch(target,json={"status":"in_progress"}).json()["resolution_note"]=="已修复显示问题"
+    login(client,"other")
+    assert client.get(route).status_code==404
+    login(client,"reporter")
+    visible=client.get(route).json()[0]
+    assert visible["status"]=="in_progress" and visible["resolution_note"]=="已修复显示问题"
+    login(client)
+    assert client.patch(target,json={"status":"resolved","resolution_note":"","expected_updated_at":visible["updated_at"]}).json()["resolution_note"]==""
+    login(client,"reporter")
+    assert client.get(route).json()[0]["resolution_note"]==""
+    assert service.db.all("SELECT id FROM runs WHERE conversation_id=?",(cid,))==[]

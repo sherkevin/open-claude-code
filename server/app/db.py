@@ -620,6 +620,10 @@ class Database:
         if "acknowledged_occurrence_id" not in series_columns:
             self.conn.execute("ALTER TABLE conversation_schedule_series ADD COLUMN acknowledged_occurrence_id TEXT")
 
+        feedback_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(conversation_feedback)")}
+        if "resolution_note" not in feedback_columns:
+            self.conn.execute("ALTER TABLE conversation_feedback ADD COLUMN resolution_note TEXT NOT NULL DEFAULT ''")
+
         diagnostic_columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(kaiwu_diagnostic_events)")

@@ -31,10 +31,11 @@ describe('reporter feedback history',()=>{
     expect(renderToStaticMarkup(<FeedbackHistory rows={[]}/>)).toContain('本会话暂无历史反馈');
     const html=renderToStaticMarkup(<FeedbackHistory rows={[
       {id:'ticket-1',description:'<script>fixture</script>',status:'in_progress',created_at:'2026-11-25T00:00:00Z',updated_at:'2026-11-25T01:00:00Z'},
-      {id:'ticket-2',description:'fixed',status:'resolved',created_at:'2026-11-25T00:00:00Z',updated_at:'2026-11-25T02:00:00Z'},
+      {id:'ticket-2',description:'fixed',resolution_note:'<script>public note</script>',status:'resolved',created_at:'2026-11-25T00:00:00Z',updated_at:'2026-11-25T02:00:00Z'},
     ]}/>);
     expect(html).toContain('处理中');expect(html).toContain('已解决');expect(html).toContain('ticket-1');
     expect(html).not.toContain('<script>fixture</script>');
     expect(html).toContain('&lt;script&gt;fixture&lt;/script&gt;');
+    expect(html).toContain('管理员处理说明');expect(html).toContain('&lt;script&gt;public note&lt;/script&gt;');
   });
 });

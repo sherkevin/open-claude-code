@@ -33,6 +33,8 @@ ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 
 class FeedbackStatus(InputModel):
     status: Literal["new", "in_progress", "resolved"]
+    resolution_note: str | None = Field(default=None, max_length=2000)
+    expected_updated_at: str | None = Field(default=None, max_length=64)
 
 
 def normalize_image(raw, mime):
@@ -152,7 +154,7 @@ def create_feedback_router(svc, authenticated, admin):
         response.headers["Cache-Control"] = "no-store"
         # Project only fields deliberately shown to the reporter. Do not
         # return admin diagnostics, screenshot bytes, credentials or chat logs.
-        return service.db.all("""SELECT id,description,status,created_at,updated_at,run_id,message_id
+        return service.db.all("""SELECT id,description,status,created_at,updated_at,run_id,message_id,resolution_note
             FROM conversation_feedback WHERE conversation_id=? AND user_id=?
             ORDER BY created_at DESC,id DESC LIMIT 100""", (cid, user["id"]))
 
@@ -181,8 +183,16 @@ def create_feedback_router(svc, authenticated, admin):
 
     @router.patch("/admin/feedback/{fid}")
     def update_status(fid:str,body:FeedbackStatus,service=Depends(svc),user=Depends(admin)):
-        service.require("conversation_feedback",fid)
-        service.db.execute("UPDATE conversation_feedback SET status=?,updated_at=? WHERE id=?", (body.status,now(),fid))
-        return {"id":fid,"status":body.status}
+        with service.db.transaction():
+            row=service.require("conversation_feedback",fid)
+            if body.expected_updated_at is not None and body.expected_updated_at != row["updated_at"]:
+                raise AppError(409,"FEEDBACK_CHANGED","反馈已被更新，请重新打开后再处理")
+            # Older clients may update the status alone. Preserve an already
+            # published note unless the administrator explicitly replaces it.
+            note=row["resolution_note"] if body.resolution_note is None else body.resolution_note.strip()
+            stamp=now()
+            service.db.execute("UPDATE conversation_feedback SET status=?,resolution_note=?,updated_at=? WHERE id=?",
+                               (body.status,note,stamp,fid))
+        return {"id":fid,"status":body.status,"resolution_note":note,"updated_at":stamp}
 
     return router
