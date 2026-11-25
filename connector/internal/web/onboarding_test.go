@@ -77,6 +77,8 @@ const mcpConfig = {mcpServers:{"只读示例":{
 let exportAttempts = 0;
 const assistTarget = {name:"销售合同",url:"https://customer.example/mcp/sales"};
 let assistance = null;
+let allowedAssist = false;
+let failAssist = false;
 const fetch = async (path, options) => {
   const body = options && options.body ? JSON.parse(options.body) : undefined;
   calls.push({path, body});
@@ -85,7 +87,8 @@ const fetch = async (path, options) => {
     data = control;
   }else if(path === "/api/assist/offer"){
     assert.ok(options.headers["X-Connector-Token"]);
-    data = {enabled:control.bound,offer:assistance,target_after_start:control.bound,
+    if(failAssist){ throw new Error("control unavailable"); }
+    data = {enabled:control.bound && allowedAssist,offer:assistance,target_after_start:control.bound && allowedAssist,
       last_command:assistance?.last_command};
   }else if(path === "/api/assist/start"){
     assert.deepEqual(body, {});
@@ -139,6 +142,18 @@ async function verifyWorkflow(){
   assert.equal(ui("bindCode").value, "");
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(ui("assistPanel").hidden, false);
+  assert.equal(ui("assistStart").hidden, true);
+  assert.match(ui("assistState").textContent, /尚未开通协助权限/);
+  assert.equal(calls.filter(call=>call.path === "/api/assist/start").length, 0);
+  allowedAssist = true;
+  await refreshAssist();
+  assert.equal(ui("assistStart").hidden, false);
+  failAssist = true;
+  await refreshAssist();
+  assert.equal(ui("assistStart").hidden, true);
+  assert.match(ui("assistState").textContent, /暂时无法读取/);
+  failAssist = false;
+  await refreshAssist();
   assert.equal(ui("assistStart").hidden, false);
   assert.equal(ui("assistTarget").hidden, true);
   assert.equal(ui("assistStop").hidden, true);

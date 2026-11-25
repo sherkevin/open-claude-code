@@ -288,10 +288,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
 	template = strings.Replace(template, "__CONNECTOR_TOKEN__", s.Token, 1)
 	if r.URL.Path == "/" {
-		content := `<p class="muted">开物尚未配置远程协助入口。</p>`
+		content := ""
 		if s.supportPortalURL != "" {
-			content = `<p class="muted">在远程支持工具中允许工程师操作命令行，需要停止时，在同一工具中结束会话。</p>
-    <a class="button-link" target="_blank" rel="noopener noreferrer" href="` + html.EscapeString(s.supportPortalURL) + `">打开远程协助</a>`
+			content = `<section class="panel terminal-help" aria-labelledby="terminalHelpTitle">
+    <h2 id="terminalHelpTitle">备用远程支持（独立工具）</h2>
+    <p class="muted">仅在需要使用独立远程支持工具时打开；与上方开物技术协助独立。</p>
+    <a class="button-link" target="_blank" rel="noopener noreferrer" href="` + html.EscapeString(s.supportPortalURL) + `">打开远程协助</a>
+  </section>`
 		}
 		template = strings.Replace(template, "__ATTENDED_SUPPORT_ENTRY__", content, 1)
 	}

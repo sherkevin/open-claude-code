@@ -962,7 +962,28 @@ func isOpaqueSourceID(value string) bool {
 }
 
 // Diagnose 对指定来源执行分层诊断；sourceID 为空表示全部来源。
-func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) (reports []diag.Report, err error) {
+func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) ([]diag.Report, error) {
+	return a.diagnose(ctx, sourceID, probe, nil, false)
+}
+
+// DiagnoseWithArguments reproduces one explicitly selected, authorized query
+// directly against the saved upstream, without returning credentials or business
+// records. This is a local operator diagnostic, not a new cloud tool.
+func (a *Agent) DiagnoseWithArguments(ctx context.Context, sourceID, probe string, raw json.RawMessage) ([]diag.Report, error) {
+	if !isOpaqueSourceID(strings.TrimSpace(sourceID)) || (probe != "query" && probe != "describe") {
+		return nil, errors.New("参数诊断必须指定已保存的来源和经批准的 query/describe 只读工具")
+	}
+	var args map[string]any
+	if len(raw) == 0 || len(raw) > 16<<10 || json.Unmarshal(raw, &args) != nil || args == nil {
+		return nil, errors.New("诊断参数必须为不超过 16 KiB 的 JSON 对象")
+	}
+	if a.state.Current() == state.Revoked || a.store.Exists(fileRevoked) {
+		return nil, errors.New("企业绑定已撤销")
+	}
+	return a.diagnose(ctx, sourceID, probe, raw, true)
+}
+
+func (a *Agent) diagnose(ctx context.Context, sourceID, probe string, arguments any, replay bool) (reports []diag.Report, err error) {
 	sourceID = strings.TrimSpace(sourceID)
 	started := time.Now()
 	operationID := diagnostics.NewOperationID()
@@ -985,10 +1006,8 @@ func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) (reports [
 	}()
 	a.mu.RLock()
 	sources := append([]config.Source(nil), a.config.Sources...)
-	secrets := map[string]map[string]string{}
-	for key, value := range a.secrets {
-		secrets[key] = value
-	}
+	secrets := cloneSourceSecrets(a.secrets)
+	profiles := cloneProfiles(a.profiles)
 	a.mu.RUnlock()
 	if sourceID == "" {
 		sources = enabledSources(sources)
@@ -1003,15 +1022,16 @@ func (a *Agent) Diagnose(ctx context.Context, sourceID, probe string) (reports [
 		if source.Disabled {
 			return nil, fmt.Errorf("来源 %s 已停用，请先启用后再诊断", source.DisplayName)
 		}
-		a.mu.RLock()
-		profile, hasProfile := a.profiles[source.SourceID]
-		a.mu.RUnlock()
+		profile, hasProfile := profiles[source.SourceID]
 		if probe != "" {
 			if !containsTool(source.ToolAllowlist, probe) {
 				return nil, errors.New("试调用工具不在当前已批准列表内")
 			}
 		}
-		options := diag.Options{HeaderValues: secrets[source.SourceID], ToolProbe: probe}
+		options := diag.Options{HeaderValues: secrets[source.SourceID], ToolProbe: probe, ToolArguments: arguments, ReplayProbe: replay}
+		if replay {
+			options.Timeout = 20 * time.Second
+		}
 		if hasProfile {
 			options.HeaderProvider = func(method, tool string) (map[string]string, error) {
 				if method != "tools/call" {

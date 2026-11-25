@@ -7,10 +7,13 @@ package diag
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,12 +31,15 @@ const (
 
 // Check 是单项检查结果。
 type Check struct {
-	Name       string `json:"name"`
-	Label      string `json:"label"`
-	Status     string `json:"status"`
-	Code       string `json:"code,omitempty"`
-	Detail     string `json:"detail,omitempty"`
-	DurationMS int64  `json:"duration_ms"`
+	Name         string `json:"name"`
+	Label        string `json:"label"`
+	Status       string `json:"status"`
+	Code         string `json:"code,omitempty"`
+	Detail       string `json:"detail,omitempty"`
+	DurationMS   int64  `json:"duration_ms"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	UpstreamCode string `json:"upstream_code,omitempty"`
+	RequestID    string `json:"request_id,omitempty"`
 }
 
 // Report 是一次诊断的完整结果。
@@ -54,6 +60,9 @@ type Options struct {
 	ToolProbe string
 	// ToolArguments 是试调用参数，默认空对象。
 	ToolArguments any
+	// ReplayProbe aligns transport headers with the installed authentication
+	// proxy for a fresh direct session and emits only bounded diagnostic metadata.
+	ReplayProbe bool
 	// HeaderProvider injects request-specific authentication headers. It is
 	// only used by local diagnosis and must not be sourced from browser input.
 	HeaderProvider func(method, tool string) (map[string]string, error)
@@ -102,13 +111,28 @@ func Run(ctx context.Context, source config.Source, opts Options) Report {
 		HTTP:           newHTTPClient(opts.timeout()),
 		HeaderProvider: opts.HeaderProvider,
 	}
+	if opts.ReplayProbe {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		transport.DisableCompression = true
+		transport.ResponseHeaderTimeout = 30 * time.Second
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		defer transport.CloseIdleConnections()
+		client.HTTP = &http.Client{Transport: transport, Timeout: opts.timeout()}
+		client.UserAgent = "kaiwu-intranet-connector-authproxy/1"
+		client.ProtocolVersion = "2025-11-25"
+	}
 
 	initCtx, cancel := context.WithTimeout(ctx, opts.timeout())
 	info, initErr := client.Initialize(initCtx)
 	cancel()
 	if initErr != nil {
 		code := classify(initErr)
-		report.Checks = append(report.Checks, Check{Name: "protocol", Label: "协议握手", Status: StatusFail, Code: code, Detail: initErr.Error()})
+		detail := initErr.Error()
+		if opts.ReplayProbe {
+			detail = safeProbeFailure(initErr, code)
+		}
+		report.Checks = append(report.Checks, Check{Name: "protocol", Label: "协议握手", Status: StatusFail, Code: code, Detail: detail, HTTPStatus: client.LastHTTPStatus()})
 		return report
 	}
 	report.Checks = append(report.Checks, Check{
@@ -120,7 +144,11 @@ func Run(ctx context.Context, source config.Source, opts Options) Report {
 	tools, toolsErr := client.ListTools(toolsCtx)
 	cancel()
 	if toolsErr != nil {
-		report.Checks = append(report.Checks, Check{Name: "auth", Label: "认证与工具目录", Status: StatusFail, Code: classify(toolsErr), Detail: toolsErr.Error()})
+		detail := toolsErr.Error()
+		if opts.ReplayProbe {
+			detail = safeProbeFailure(toolsErr, classify(toolsErr))
+		}
+		report.Checks = append(report.Checks, Check{Name: "auth", Label: "认证与工具目录", Status: StatusFail, Code: classify(toolsErr), Detail: detail, HTTPStatus: client.LastHTTPStatus()})
 		return report
 	}
 	check := Check{Name: "auth", Label: "认证与工具目录", Status: StatusPass, Detail: fmt.Sprintf("可用工具 %d 个", len(tools))}
@@ -153,13 +181,15 @@ func Run(ctx context.Context, source config.Source, opts Options) Report {
 		}
 		callCtx, cancel := context.WithTimeout(ctx, opts.timeout())
 		started := time.Now()
-		_, callErr := client.CallTool(callCtx, opts.ToolProbe, args)
+		raw, callErr := client.CallTool(callCtx, opts.ToolProbe, args)
 		cancel()
-		result := Check{Name: "tool", Label: "测试查询", Status: StatusPass, DurationMS: time.Since(started).Milliseconds(), Detail: "调用成功: " + opts.ToolProbe}
+		result := Check{Name: "tool", Label: "测试查询", Status: StatusPass, DurationMS: time.Since(started).Milliseconds(), Detail: "调用成功: " + opts.ToolProbe, HTTPStatus: client.LastHTTPStatus()}
 		if callErr != nil {
 			result.Status = StatusFail
 			result.Code = classify(callErr)
-			result.Detail = callErr.Error()
+			result.Detail = safeProbeFailure(callErr, result.Code)
+		} else {
+			inspectToolResult(raw, &result)
 		}
 		report.Checks = append(report.Checks, result)
 		if result.Status == StatusFail {
@@ -169,6 +199,65 @@ func Run(ctx context.Context, source config.Source, opts Options) Report {
 
 	report.OK = true
 	return report
+}
+
+// Tool errors are returned within a successful JSON-RPC result. HTTP 200 is
+// not proof that the business tool succeeded. Never echo arbitrary remote
+// text, record content, or credential-bearing headers into diagnostics.
+var diagnosticRequestID = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func inspectToolResult(raw json.RawMessage, check *Check) {
+	var result struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		StructuredContent json.RawMessage `json:"structuredContent"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil || (result.Content == nil && len(result.StructuredContent) == 0) {
+		check.Status, check.Code, check.Detail = StatusFail, "MCP_TOOL_RESPONSE_INVALID", "上游工具返回格式无效"
+		return
+	}
+	if !result.IsError {
+		return
+	}
+	check.Status, check.Code, check.Detail = StatusFail, "MCP_TOOL_ERROR", "上游返回 isError=true，业务工具执行失败"
+	inspect := func(data []byte) {
+		var item struct {
+			Code      string `json:"code"`
+			RequestID string `json:"request_id"`
+		}
+		if len(data) > 16<<10 || json.Unmarshal(data, &item) != nil {
+			return
+		}
+		// Recognize the observed upstream diagnostic code, rather than
+		// transferring arbitrary error text or untrusted field contents.
+		if item.Code == "QUERY_EXECUTION_FAILED" {
+			check.UpstreamCode = item.Code
+			if diagnosticRequestID.MatchString(item.RequestID) {
+				check.RequestID = item.RequestID
+			}
+		}
+	}
+	inspect(result.StructuredContent)
+	for _, item := range result.Content {
+		if item.Type == "text" {
+			inspect([]byte(item.Text))
+		}
+	}
+}
+
+func safeProbeFailure(err error, code string) string {
+	var status interface{ HTTPStatusCode() int }
+	var rpc *mcp.RPCError
+	if errors.As(err, &status) {
+		return fmt.Sprintf("上游 HTTP %d", status.HTTPStatusCode())
+	}
+	if errors.As(err, &rpc) {
+		return fmt.Sprintf("上游 JSON-RPC 错误 %d", rpc.Code)
+	}
+	return "MCP 请求未完成：" + code
 }
 
 func checkConfig(source config.Source) Check {

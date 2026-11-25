@@ -127,7 +127,7 @@ func TestHomeOffersOnlyConfiguredAttendedSupportPortal(t *testing.T) {
 				t.Fatal("home must show attended support independently of enrollment and query parameters")
 			}
 			if tc.wantHref == "" {
-				if !strings.Contains(body, "开物尚未配置远程协助入口") || strings.Contains(body, "打开远程协助") || strings.Contains(body, "secret") {
+				if strings.Contains(body, "备用远程支持（独立工具）") || strings.Contains(body, "开物尚未配置远程协助入口") || strings.Contains(body, "打开远程协助") || strings.Contains(body, "secret") {
 					t.Fatal("unavailable portal should not expose a link or its invalid configuration")
 				}
 				return

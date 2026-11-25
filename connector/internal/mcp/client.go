@@ -26,6 +26,7 @@ type Client struct {
 	ProtocolVersion string
 	ClientName      string
 	ClientVersion   string
+	UserAgent       string
 	// HeaderProvider can add request-specific authentication headers. The
 	// connector uses it for HwMain's per-call dynamic identity and HMAC.
 	HeaderProvider func(method, tool string) (map[string]string, error)
@@ -33,6 +34,7 @@ type Client struct {
 	nextID            atomic.Int64
 	sessionID         string
 	negotiatedVersion string
+	lastHTTPStatus    int
 }
 
 // Tool 是服务端返回的工具描述。
@@ -170,7 +172,12 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments any) (json
 	return result, nil
 }
 
+// LastHTTPStatus returns the HTTP response status for the last RPC call, or
+// zero when no response was received. A Client is used for one sequential session.
+func (c *Client) LastHTTPStatus() int { return c.lastHTTPStatus }
+
 func (c *Client) call(ctx context.Context, method, tool string, params any, out any) error {
+	c.lastHTTPStatus = 0
 	id := c.nextID.Add(1)
 	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params})
 	if err != nil {
@@ -189,6 +196,7 @@ func (c *Client) call(ctx context.Context, method, tool string, params any, out 
 		return err
 	}
 	defer resp.Body.Close()
+	c.lastHTTPStatus = resp.StatusCode
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		c.sessionID = sid
 	}
@@ -317,6 +325,9 @@ func (c *Client) notify(ctx context.Context, method string) {
 func (c *Client) setRequestHeaders(req *http.Request, method, tool string) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
 	if c.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", c.sessionID)
 	}

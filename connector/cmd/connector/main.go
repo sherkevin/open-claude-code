@@ -14,6 +14,7 @@ import (
 
 	"github.com/sherkevin/open-claude-code/connector/internal/agent"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/diag"
 	"github.com/sherkevin/open-claude-code/connector/internal/version"
 	"github.com/sherkevin/open-claude-code/connector/internal/web"
 )
@@ -160,14 +161,49 @@ func diagnoseCommand(args []string) {
 	opts, _ := registerCommon(flags)
 	sourceID := flags.String("source", "", "只诊断指定来源")
 	probe := flags.String("probe", "", "试调用的工具名称")
+	probeArgs := flags.String("probe-args", "", "只读 query/describe 诊断的 JSON 参数（需指定来源）")
+	probeFile := flags.String("probe-args-file", "", "从本机 JSON 文件读取诊断参数")
 	flags.Parse(args)
+	var raw json.RawMessage
+	if *probeArgs != "" && *probeFile != "" {
+		fatal(fmt.Errorf("只能指定一种诊断参数输入"))
+	}
+	if *probeArgs != "" {
+		raw = json.RawMessage(*probeArgs)
+	}
+	if *probeFile != "" {
+		info, err := os.Stat(*probeFile)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 16<<10 {
+			fatal(fmt.Errorf("诊断参数文件不存在或超过 16 KiB"))
+		}
+		raw, err = os.ReadFile(*probeFile)
+		if err != nil {
+			fatal(fmt.Errorf("无法读取诊断参数文件"))
+		}
+		if len(raw) == 0 {
+			fatal(fmt.Errorf("诊断参数文件为空"))
+		}
+	}
+	// The running service owns the durable diagnostics queue. An operator
+	// probe must not contend with or replace that queue.
+	opts.ExclusiveDiagnostics = true
 	instance, err := agent.New(*opts)
 	if err != nil {
 		fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	budget := 60 * time.Second
+	if raw != nil {
+		budget = 100 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
-	reports, err := instance.Diagnose(ctx, *sourceID, *probe)
+	var reports []diag.Report
+	if raw != nil {
+		reports, err = instance.DiagnoseWithArguments(ctx, *sourceID, *probe, raw)
+	} else {
+		reports, err = instance.Diagnose(ctx, *sourceID, *probe)
+	}
+	instance.Close()
 	if err != nil {
 		fatal(err)
 	}

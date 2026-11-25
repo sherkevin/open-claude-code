@@ -58,12 +58,8 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
   <h1>连接业务系统</h1>
   <p class="lead">将已经授权的业务服务接入开物。</p>
   <div class="identity"><span id="connectionDot" class="dot" aria-hidden="true"></span><span id="connectionState" role="status">正在读取连接状态…</span><button id="reloadStatusBtn" type="button" hidden>重试</button><button id="resumeBtn" type="button" hidden>恢复连接</button></div>
-  <section class="panel terminal-help" aria-labelledby="terminalHelpTitle">
-    <h2 id="terminalHelpTitle">远程 CMD 协助</h2>
-    __ATTENDED_SUPPORT_ENTRY__
-  </section>
   <section id="assistPanel" class="panel assistance" aria-labelledby="assistTitle" hidden>
-    <h2 id="assistTitle">开物技术协助</h2>
+    <h2 id="assistTitle">开物技术协助（远程 CMD 协助）</h2>
     <strong id="assistService"></strong>
     <code id="assistAddress"></code>
     <p id="assistState" class="muted" role="status"></p>
@@ -85,6 +81,7 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
     </section>
     <p id="assistNotice" class="notice" role="status"></p>
   </section>
+  __ATTENDED_SUPPORT_ENTRY__
   <section class="panel" aria-label="接入本机 MCP">
     <form id="bindForm" hidden>
       <h2>绑定企业</h2>
@@ -154,6 +151,7 @@ let pendingExport = "";
 let exportNeedsSupport = false;
 let assistOffer;
 let assistEnabled = false;
+let assistAvailability = "checking";
 let assistTargetAfterStart = false;
 let assistRefreshing = false;
 let assistAction = "";
@@ -185,7 +183,7 @@ function notice(text, kind = ""){
 
 function renderAssist(){
   const eligible = status?.bound && status.state !== "REVOKED" && assistEnabled;
-  $("assistPanel").hidden = !eligible && !assistOffer && !$("assistNotice").textContent;
+  $("assistPanel").hidden = (!status?.bound || status.state === "REVOKED") && !assistOffer && !$("assistNotice").textContent;
   const pending = assistOffer?.status === "pending";
   const active = assistOffer?.status === "active";
   const local = !!assistOffer?.local_active;
@@ -198,9 +196,12 @@ function renderAssist(){
   $("assistService").textContent = target?.name || "";
   $("assistAddress").textContent = target?.url || "";
   $("assistAddress").hidden = !target;
-  $("assistState").textContent = awaitingTarget ? "已开始协助。开物可以下发命令；需要读取工具时，在下方填写地址并确认此业务服务。" :
+  $("assistState").textContent = awaitingTarget ? "已开启命令行协助。排查本机已保存的服务无需重新填写地址或凭据；若需新增业务服务，再在下方确认该服务。" :
     local ? "已开始协助。开物工程师下发的命令会由连接器自动执行，并把输出回传开物。你随时可以停止。" :
     active ? "本机协助已停止。请点「停止协助」通知开物。" :
+    !eligible && !pending ? (assistAvailability === "checking" ? "正在核对本机协助权限…" :
+      assistAvailability === "unreachable" ? "暂时无法读取协助权限，请检查连接或联系开物技术支持。" :
+      "此设备尚未开通协助权限，请联系开物技术支持。无需重新安装。") :
     assistTargetAfterStart ? "点击「开始协助」后，开物工程师可在授权期间排查本机问题。" :
     target ? "点击「开始协助」，允许开物工程师读取并协助接入这个 MCP 服务。" :
     "先在下方填写 MCP 地址，再点击「开始协助」。";
@@ -233,12 +234,18 @@ async function refreshAssist(){
     const {enabled, offer, target_after_start, last_command} = await api("/api/assist/offer");
     if(assistAction || revision !== assistChange){ return; }
     assistEnabled = enabled;
+    assistAvailability = enabled ? "enabled" : "disabled";
     assistTargetAfterStart = !!target_after_start;
     assistCommand = last_command;
     assistOffer = offer?.status === "active" || (!assistEnabled && offer?.status === "pending") ? offer : undefined;
     renderAssist();
   }catch(_error){
-    // Keep the displayed target and Stop available when the cloud is unreachable.
+    // Keep an active local consent and its Stop action available even offline.
+    if(!assistAction && revision === assistChange && !assistOffer?.local_active){
+      assistEnabled = false;
+      assistAvailability = "unreachable";
+      renderAssist();
+    }
   }finally{
     assistRefreshing = false;
   }
@@ -440,6 +447,7 @@ async function loadStatus(){
       assistChange++;
       assistOffer = undefined;
       assistEnabled = false;
+      assistAvailability = "checking";
       assistTargetAfterStart = false;
       assistAction = "";
       assistCommand = undefined;
