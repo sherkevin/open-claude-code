@@ -14,7 +14,7 @@
 | B | 官方 Goal 状态、round driver 与预算/检查点恢复 | 官方固定源码 149/149、原生 Goal 状态及工作台隔离接入通过；默认关闭的宿主授权/预算/租约 97/97 组合隔离验收通过；官方自动 driver、实时预算及恢复接线待做 |
 | C | 官方持久子智能体、子智能体通信、Team 任务板及多层协作 | 固定官方 12 套件 389/389 通过，产品接入待做 |
 | D | Mem0 派生索引适配、中文记忆质量和隔离评测 | SDK pilot、默认关闭的独立派生索引适配器及真实 SDK 隔离验收通过；正式产品接线和记忆质量评测待做 |
-| E | 终端/Jobs/工作区/Codex App Server 与受控浏览器环境 | 官方工作环境 37 套件 737/737 通过；Codex 0.165.0 本地 schema 基线通过；产品接入、实际 provider 与 Codex 运行时验证待做 |
+| E | 终端/Jobs/工作区/Codex App Server 与受控浏览器环境 | 官方工作环境 37 套件 737/737 通过；Codex 0.165.0 本地 schema 及无外网真实 stdio 元数据 4/4 通过；产品接入、实际 provider、turn/审批/重启恢复待做 |
 
 ## A1 实现和验收
 
@@ -101,6 +101,10 @@ Goal driver 与 Mem0 工人仍实际修改各自候选时，总控独立运行�
 ## E2 Codex App Server 本地协议基线（2026-11-26）
 
 现有独立 Codex 二进制报告 0.165.0，固定 SHA-256 并离线生成 320 个 JSON Schema，4 组方法、5 组参数、4 组身份约束、3 对审批 schema 检查通过。见 [本地协议基线](../evidence/KAIWU_CODEX_APPSERVER_SCHEMA_2026-11-26.md)。来源/许可复核、隔离 stdio 握手、真实 turn 与审批/恢复联调未完成，未启用任何模型或工具。仍优先 Goal 与 Mem0 工人候选验收、Team 产品接入；生产闸门不变。
+
+## E2.1 Codex App Server 实际 stdio 元数据（2026-11-26）
+
+在 Goal 组合回归同时独立完成；复用同一固定本地二进制，已有无特权 bubblewrap 隔离仅 lo/零 IPv4 route，清空环境，独立 data3 HOME 和 cwd，不挂载真实用户目录，不向外部发送遥测。实际进程 initialize/initialized、空 thread/list、隔离 thread/start、精确 thread/read 4/4 通过，零模型 turn。见 [实际 stdio 验收](../evidence/KAIWU_CODEX_APPSERVER_STDIO_2026-11-26.md)。来源/许可复核、真实 turn、审批、interrupt、重启后的 thread resume 与企业宿主集成未完成。优先接续 B2.3 官方 Goal driver 和 C2 原生 subagent/Team，生产闸门不变。
 
 ## D1 Mem0 派生索引独立验收（2026-11-26）
 
