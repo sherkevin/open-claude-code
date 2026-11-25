@@ -13,3 +13,10 @@
 增加本机 CLI 的指定参数诊断，仅允许明确来源且获准的 query/describe，不执行 call。使用已保存配置，不输出认证原文和业务记录正文；检测 HTTP 200 下 isError=true，返回有限的技术错误信息。请求在新会话中执行，动态值重新生成，不宣称抓取过生产原始报文。
 复现目标：src_6c3da9ba11a4d653cc6c99f49b44e37f 的 erp_pur_order_type / Type_Name / rows=1。11:22:58 实测原平台请求到达华微 MCP 并 HTTP 200，工具失败。地址指纹与 https://svr39.bjhwsj.com/SysDevCore/mcp 一致；不以此前发来的过期凭据替代本机现有配置。
 真实客户本地查询复现须等待客户主动开启协助，未发生之前不得写成已通过。试用签名要求沿用此前用户决定，不要求关闭终端防护。
+
+## 1.5.3 候选构建与验收
+- 构建提交 1863d00；Go 全量回归 16 个测试包通过，3 个无测试文件。
+- 原生 Windows x64 EXE 安装包与 ZIP 已通过 SHA-256、ZIP CRC 校验。安装包 SHA-256: 677ae959c3e55dac4ec3eb648bb95dc0277067786f9349e13bb6fb98a0acea1d；ZIP SHA-256: 4dc7afd340154ef7e25b1a5484c3026955c05c6d3d815c0fb55c5333b258e3f8。
+- Shervin Windows 11：经现有 SSH 从 VIP 复制后再次核对 SHA-256，解压独立目录，version 确认 1.5.3/1863d00，diagnose --help 显示新参数。Windows 真实运行 TestSavedSourceReplayReusesAuthAndRecognizesToolError PASS，验证测试用持久化凭据、请求头、会话、参数一致性、错误识别、结果不泄露、非法/停用来源不调用。
+- Windows 端首次测试命令因 PowerShell 对带点参数解析错误而退出；使用显式引用参数重新运行通过。未关闭终端防护。
+- 产物已交付到用户 Windows Downloads/Kaiwu-1.5.3。未覆盖用户本机正在运行的连接器。实际 1.5.1 到 1.5.3 的安装器覆盖升级、配置保留与回退尚未进行实机验收；真实华微协助和实际查询须待客户主动授权，不能把合成测试当真实查询成功。建议先用已在线 1.5.1 刷新页面开始协助，升级只在需要新增诊断能力时由企业管理员批准执行。
