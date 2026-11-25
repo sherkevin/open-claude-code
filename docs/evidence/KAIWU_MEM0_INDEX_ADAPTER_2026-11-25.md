@@ -204,3 +204,7 @@ python -m pytest tests/test_harness_memory_storage.py tests/test_mem0_index_adap
 - 未接入主流程；适配器当前只能由后续宿主代码显式构造。
 - 未做真实记忆质量、性能、成本、召回率或过期事实误用评估。
 - 未声称物理删除、租户隔离或生产并发已经验收。
+
+## 最新主线复验
+
+基于 99da5c4 重放后，Mem0 适配器与原生记忆存储组合 76/76 通过（controller-rebased.log，107.56s）。本切片仅交付默认关闭的独立适配器；尚未接入产品主流程、未生产启用。

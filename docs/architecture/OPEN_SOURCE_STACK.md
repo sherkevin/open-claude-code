@@ -194,3 +194,8 @@ flowchart LR
 - Mem0 开源自托管: https://github.com/mem0ai/mem0/blob/main/docs/open-source/overview.mdx ；固定版本: https://github.com/mem0ai/mem0/releases/tag/v2.2.1
 - Qdrant client local mode: https://github.com/qdrant/qdrant-client
 - OpenTelemetry Collector: https://github.com/open-telemetry/opentelemetry-collector
+
+
+### 2026-11-26 Mem0 复用记录
+
+Mem0 2.2.1 原生接口派生索引默认关闭候选完成真实 SDK 100 份文件/代次替换/隔离验收 5/5，最新主线组合回归 76/76；详见 [验收记录](../evidence/KAIWU_MEM0_INDEX_ADAPTER_2026-11-25.md)。正式宿主接线、质量与生产验收仍待做。
