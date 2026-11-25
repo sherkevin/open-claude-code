@@ -457,7 +457,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
 
     @app.get(prefix + "/connections")
     def connections(user=Depends(authenticated), service: Service = Depends(svc)):
-        return [connection_view(row, user) for row in service.db.all("SELECT * FROM connections WHERE deleted=0 ORDER BY name") if service.resource_access(row, user)]
+        return [connection_view(row, user, service) for row in service.db.all("SELECT * FROM connections WHERE deleted=0 ORDER BY name") if service.resource_access(row, user)]
 
     @app.post(prefix + "/connections", status_code=201)
     def connection_create(data: ConnectionCreate, user=Depends(authenticated), service: Service = Depends(svc)):
@@ -465,7 +465,7 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
 
     @app.get(prefix + "/connections/{item_id}")
     def connection_get(item_id: str, user=Depends(authenticated), service: Service = Depends(svc)):
-        return connection_view(service.require_resource("connections", item_id, user), user)
+        return connection_view(service.require_resource("connections", item_id, user), user, service)
 
     @app.patch(prefix + "/connections/{item_id}")
     def connection_patch(item_id: str, data: ConnectionPatch, user=Depends(authenticated), service: Service = Depends(svc)):

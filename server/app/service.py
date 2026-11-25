@@ -35,10 +35,16 @@ def user_view(row):
     return {key: bool(row[key]) if key == "enabled" else row[key] for key in ("id", "username", "display_name", "role", "enabled")}
 
 
-def connection_view(row, user=None):
+def connection_view(row, user=None, service=None):
     from .read_only_tools import tool_view
     from .connection_read_review import review_tool_view
-    return {"id": row["id"], "name": row["name"], "transport": "http", "url": row["url"], "auth_type": row["auth_type"], "credential_present": bool(row["secret"]), "enabled": bool(row["enabled"]), "status": row["status"], "tools": [{**tool_view(tool), **review_tool_view(tool)} for tool in json.loads(row["tools"])], "last_error": row["last_error"], "last_tested_at": row["last_tested_at"], "revision": row["revision"], "source_metadata": json.loads(row.get("source_metadata") or "{}"), "read_only_certifications": json.loads(row.get("read_only_certifications") or "{}"), "read_only_review_revision": row.get("read_only_review_revision", 0), **scope_fields(row, user)}
+    from .trusted_mcp_read import platform_read_defaults
+    tools = [{**tool_view(tool), **review_tool_view(tool)} for tool in json.loads(row["tools"])]
+    if service is not None:
+        matching = platform_read_defaults(service, row, (tool["name"] for tool in tools), now())
+        for tool in tools:
+            tool["platform_read_default"] = tool["name"] in matching
+    return {"id": row["id"], "name": row["name"], "transport": "http", "url": row["url"], "auth_type": row["auth_type"], "credential_present": bool(row["secret"]), "enabled": bool(row["enabled"]), "status": row["status"], "tools": tools, "last_error": row["last_error"], "last_tested_at": row["last_tested_at"], "revision": row["revision"], "source_metadata": json.loads(row.get("source_metadata") or "{}"), "read_only_certifications": json.loads(row.get("read_only_certifications") or "{}"), "read_only_review_revision": row.get("read_only_review_revision", 0), **scope_fields(row, user)}
 
 
 def assistant_view(row, user=None):
@@ -421,7 +427,7 @@ class Service:
         else:
             item_id = uid()
             self.db.execute("INSERT INTO connections(id,name,url,auth_type,secret,enabled,status,scope,owner_id,source_metadata) VALUES(?,?,?,?,?,?,?,?,?,?)", (item_id, merged["name"], merged["url"], merged["auth_type"], merged["secret"], merged["enabled"], "needs_auth" if merged["auth_type"] == "oauth" else "untested", scope, owner_id, dump(metadata)))
-        return connection_view(self.require("connections", item_id), user)
+        return connection_view(self.require("connections", item_id), user, self)
 
     async def discover(self, row):
         from mcp import ClientSession
@@ -460,7 +466,7 @@ class Service:
             raise AppError(409, "CONNECTION_DISABLED", "请先启用此连接")
         await self.probe_connection(row, timeout=35)
         current = await offload(self.require_resource, "connections", item_id, user) if user else await offload(self.require, "connections", item_id)
-        return connection_view(current, user)
+        return connection_view(current, user, self)
 
     async def probe_connection(self, row, *, timeout):
         from .mcp_tools import transport_logs

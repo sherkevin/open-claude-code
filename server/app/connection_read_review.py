@@ -111,4 +111,4 @@ def save_review(service, connection_id, data, user):
                            (serialized, revision, connection_id))
         service.db.execute("INSERT INTO connection_read_only_review_audit VALUES(?,?,?,?,?,?,?)",
                            (uid(), connection_id, connection["revision"], revision, reviewer["id"], serialized, timestamp))
-        return connection_view(service.require_resource("connections", connection_id, reviewer), reviewer)
+        return connection_view(service.require_resource("connections", connection_id, reviewer), reviewer, service)

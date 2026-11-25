@@ -30,6 +30,34 @@ export function connectionTestError(error: unknown) {
   return `测试请求未完成：${errorText(error)}`;
 }
 export const testConnectionDiscovery = (item: Connection) => post<Connection>(`/connections/${encodeURIComponent(item.id)}/test`);
+// Sequential discovery isolates a failed source and caps concurrency.
+// This only tests connection metadata, never calls a business tool.
+export async function testImportedConnections(items: Connection[], hooks: {
+  onStart: (item: Connection) => void;
+  onResult: (item: Connection) => void;
+  onError: (item: Connection, error: string) => void;
+}, isCancelled: () => boolean = () => false) {
+  let passed = 0, failed = 0, matches = 0;
+  for (const item of items) {
+    if (isCancelled()) break;
+    hooks.onStart(item);
+    try {
+      const next = await testConnectionDiscovery(item);
+      if (next.id !== item.id) throw new Error('测试返回的连接与导入连接不一致');
+      if (isCancelled()) break;
+      hooks.onResult(next);
+      if (next.status === 'connected' && next.tools.length) {
+        passed++;
+        matches += next.tools.filter(tool => tool.platform_read_default === true).length;
+      } else failed++;
+    } catch (cause) {
+      if (isCancelled()) break;
+      failed++; hooks.onError(item, connectionTestError(cause));
+    }
+  }
+  return {passed, failed, matches};
+}
+
 export const saveConnectionConfiguration = (value: Connection | null, body: Record<string, unknown>) => value ? patch<Connection>(`/connections/${encodeURIComponent(value.id)}`, body) : post<Connection>('/connections', body);
 
 // Only known functional descriptions are shortened. The source description and
@@ -72,7 +100,7 @@ export function ConnectionOnboardingCard({ item, testing = false, actionsBusy = 
     <div className="onboarding-card-title"><h2 id={`connection-${item.id}`}>{item.name}</h2><ScopeBadge scope={item.scope}/></div>
     <div className="connection-capability-preview">{functions.length ? <ul>{functions.map(description => <li key={description}>{description}</li>)}</ul> : <p className="section-help">{discovery.detail}</p>}</div>
     {currentTestPassed && <p className="section-help">连接测试仅验证工具发现，业务执行需另行验证。</p>}
-    {currentTestPassed && item.read_only_review_revision !== undefined && <p className="section-help">在会话中选择自动审批即可使用平台已识别的只读工具；写入及未识别的操作仍需确认。</p>}
+    {currentTestPassed && item.read_only_review_revision !== undefined && <p className="section-help">在会话中选择自动审批即可使用平台已识别的只读工具；写入及未识别的操作仍需确认。{item.tools.some(tool => tool.platform_read_default !== undefined) && <span> 当前匹配可信契约：{item.tools.filter(tool => tool.platform_read_default === true).length} 个工具。</span>}</p>}
     {currentTestPassed && onReadOnlyReview && editable && <details className="resource-advanced"><summary>高级审批设置</summary><p className="section-help">已有人工核验：{reviewed.length} 个。一般业务用户无需配置；人工核验会覆盖平台默认识别。</p><Button variant="secondary" disabled={actionsBusy} onClick={onReadOnlyReview}>核验只读工具</Button></details>}
     {currentTestPassed && onBusinessTrial && <Button variant="secondary" disabled={actionsBusy} onClick={onBusinessTrial}>验证业务结果</Button>}
     {(testError || item.last_error) && <p className="inline-error">{testError || item.last_error}</p>}
@@ -101,6 +129,8 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
   const [reviewId, setReviewId] = useState<string | null>(null);
   const review = items.find(item => item.id === reviewId);
   const assistance = useKaiwuAssistDevices(admin);
+  const importTestEpoch = useRef(0);
+  useEffect(() => () => { importTestEpoch.current++; }, []);
   const [testing, setTesting] = useState(''), [testErrors, setTestErrors] = useState<Record<string, string>>({}), [toolsId, setToolsId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null), [busyDelete, setBusyDelete] = useState(false), [localFocusId, setLocalFocusId] = useState<string>();
   const [oauthProfiles, setOAuthProfiles] = useState<string[]>([]);
@@ -172,7 +202,26 @@ export default function ConnectionsPage({ admin, focusConnectionId, handoffCode,
     {trial && onStartBusinessTrial && <ConnectionTrialDialog key={trial.id} target={trial} onClose={() => setTrial(null)} onStart={(assistant, target, question) => { setTrial(null); onStartBusinessTrial(assistant, target, question); }} onConfigure={onConfigureConnection ? target => { setTrial(null); onConfigureConnection(target); } : undefined}/>}
     {editor && <ConnectionEditor admin={admin} oauthProfiles={oauthProfiles} value={editor === 'new' ? null : editor} onClose={() => setEditor(null)} onSaved={async (saved, shouldTest) => { setEditor(null); focusConnection(saved.id); setItems(previous => previous.some(item => item.id === saved.id) ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]); setTestErrors(previous => { const next = { ...previous }; delete next[saved.id]; return next; }); setSuccess('MCP 配置已保存。'); if (shouldTest && saved.auth_type === 'oauth' && !saved.credential_present) await manageOAuth(saved); else if (shouldTest) await test(saved); }}/ >}
     {unlinking && <Modal title="断开 OAuth 授权" onClose={() => { if (!oauthAction) setUnlinking(null); }}><div className="modal-body"><p>断开「{unlinking.name}」后，已绑定的助手将停止使用该连接，直到你再次授权。</p><ErrorNotice message={error}/></div><footer className="modal-footer"><Button variant="secondary" disabled={!!oauthAction} onClick={() => setUnlinking(null)}>取消</Button><Button variant="danger" busy={!!oauthAction} onClick={() => void revokeOAuth(unlinking)}>断开授权</Button></footer></Modal>}
-    {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={result => { setImporting(false); if (result.connections[0]) focusConnection(result.connections[0].id); setSuccess(`已导入 ${result.connections.length} 个 MCP。`); void load(); }}/ >}
+    {importing && <McpImportDialog admin={admin} onClose={() => setImporting(false)} onImported={async (result, shouldTest) => {
+      setImporting(false);
+      const imported = result.connections;
+      if (imported[0]) focusConnection(imported[0].id);
+      setItems(previous => [...previous.filter(item => !imported.some(next => next.id === item.id)), ...imported]);
+      setError('');
+      setSuccess('已导入 ' + imported.length + ' 个 MCP。');
+      if (!shouldTest || !imported.length) return;
+      const epoch = ++importTestEpoch.current;
+      try {
+        const summary = await testImportedConnections(imported, {
+          onStart: item => { setTesting(item.id); setSuccess('已导入 ' + imported.length + ' 个 MCP，正在测试「' + item.name + '」。'); },
+          onResult: next => setItems(previous => previous.map(item => item.id === next.id ? next : item)),
+          onError: (item, message) => setTestErrors(previous => ({...previous, [item.id]: message})),
+        }, () => epoch !== importTestEpoch.current);
+        if (epoch === importTestEpoch.current) setSuccess('已导入 ' + imported.length + ' 个 MCP，工具发现通过 ' + summary.passed + ' 个，需检查 ' + summary.failed + ' 个；匹配可信只读契约 ' + summary.matches + ' 个工具。请验证真实业务结果。');
+      } finally {
+        if (epoch === importTestEpoch.current) setTesting('');
+      }
+    }}/ >}
     {admin && assisting && <KaiwuAssistDialog devices={assistance.devices} devicesError={assistance.error} onRefresh={() => void assistance.refresh(undefined, true)}
       onClose={() => { setAssisting(false); void assistance.refresh(); }} onImported={async item => {
         focusConnection(item.id);

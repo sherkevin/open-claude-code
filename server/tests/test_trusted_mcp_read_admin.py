@@ -220,3 +220,32 @@ def test_inspection_explains_changed_or_removed_reviewed_definition(registry):
     assert next(t for t in state["tools"] if t["name"] == "query")["reason"] == "definition_changed"
     update(registry, "source-a", "tools", json.dumps([WRITE, ACTION]))
     assert registry.inspect("source-a")["missing_reviewed_tool_count"] == 1
+
+
+def test_explicit_reimport_opt_in_and_target_revocation(registry):
+    m = manifest(registry)
+    m["allow_reimport"] = True
+    registry.apply(m, commit=True)
+    assert registry.inspect("source-a")["allow_reimport"] is True
+    assert registry.inspect("source-b")["registry_status"] == "runtime_match_required"
+    sha = registry.inspect("source-a")["policy_sha256"]
+    registry.revoke("source-b", sha, commit=True)
+    assert registry.inspect("source-b")["registry_status"] == "reuse_revoked"
+    assert registry.inspect("source-a")["platform_auto_count"] == 1
+    registry.apply(manifest(registry, "source-b"), commit=True)
+    assert registry.inspect("source-b")["platform_auto_count"] == 1
+    assert "source-b" not in registry.load()[0].get("blocked_reuse", [])
+
+
+def test_reimport_flag_is_strict_and_needs_bearer(registry):
+    m = manifest(registry)
+    m["allow_reimport"] = "true"
+    with pytest.raises(ops.ContractError, match="INVALID_REIMPORT_SETTING"):
+        registry.apply(m, commit=True)
+    with sqlite3.connect(registry.directory / "app.sqlite3") as db:
+        db.execute("UPDATE connections SET auth_type='none',secret=NULL WHERE id='source-a'")
+    m = manifest(registry)
+    m["allow_reimport"] = True
+    with pytest.raises(ops.ContractError, match="REIMPORT_REQUIRES_REVIEWED_BEARER"):
+        registry.apply(m, commit=True)
+    assert not registry.path.exists()

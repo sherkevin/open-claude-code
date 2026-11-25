@@ -148,7 +148,7 @@ def parse_mcp_config(config, allowed_hosts: tuple[str, ...]) -> ImportPlan:
         invalid("同一批配置中的连接名称不能重复")
     for row in rows:
         validate_mcp_url(row.url, allowed_hosts)
-    warnings = ["导入仅保存连接。请先测试连接，再在助手设置中选择允许使用的工具；不会自动授予工具权限或免审批权限。"]
+    warnings = ["导入仅保存连接。请先测试连接，再在助手设置中选择允许使用的工具；不会自动授予工具权限。自动审批只复用平台已审核且仍匹配的只读契约，不采信导入文件的审批声明。"]
     if any(row.allowed_tools is not None or row.require_approval != "always" for row in rows):
         warnings.append("配置中的工具过滤和审批规则仅在预览中展示，持久导入后需在助手设置中确认；不会因 require_approval=never 自动放行工具。")
     if format_name == "openai_mcp":

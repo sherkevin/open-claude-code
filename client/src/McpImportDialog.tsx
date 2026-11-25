@@ -8,11 +8,12 @@ import type { MCPImportPreview, MCPImportResult } from './types';
 
 const sample = '{\n  "mcpServers": {\n    "knowledge": {\n      "type": "http",\n      "url": "https://mcp.example.com/mcp"\n    }\n  }\n}';
 
-export default function McpImportDialog({ onClose, onImported,admin=false }: { admin?:boolean;onClose: () => void; onImported: (result: MCPImportResult) => void }) {
+export default function McpImportDialog({ onClose, onImported,admin=false }: { admin?:boolean;onClose: () => void; onImported: (result: MCPImportResult, shouldTest: boolean) => void }) {
   const [scope,setScope]=useState<ResourceScope>('private');
   const [source, setSource] = useState('');
   const [preview, setPreview] = useState<MCPImportPreview | null>(null);
   const [busy, setBusy] = useState(false);
+  const [shouldTest, setShouldTest] = useState(true);
   const [error, setError] = useState('');
   const pending = useRef(false);
   const previewSource = useRef('');
@@ -28,7 +29,7 @@ export default function McpImportDialog({ onClose, onImported,admin=false }: { a
     if(pending.current || !previewSource.current)return; pending.current=true; setError(''); setBusy(true);
     try {
       const result = await post<MCPImportResult>('/connections/import', { config: parseMcpConfig(previewSource.current),scope });
-      setSource(''); setPreview(null); onImported(result);
+      setSource(''); setPreview(null); onImported(result, shouldTest);
     } catch (e) { setError(importErrorText(e)); }
     finally { pending.current=false; setBusy(false); }
   };
@@ -52,9 +53,10 @@ export default function McpImportDialog({ onClose, onImported,admin=false }: { a
           return <article className="import-preview-card" key={`${index}-${connection.name}`}><div className="import-preview-title"><Link2 size={17}/><h3>{connection.name}</h3><span className="badge">HTTP MCP</span></div><p className="import-url">{connection.url}</p><dl><div><dt>认证凭据</dt><dd>{connection.auth_type === 'bearer' ? connection.credential_present ? 'Bearer · ••••••••（已提供）' : 'Bearer · 未提供' : '无需认证'}</dd></div><div><dt>源配置工具范围</dt><dd>{tools ? tools.length ? tools.join('、') : '未选择工具' : '未指定具体工具'}{!Array.isArray(connection.allowed_tools) && connection.allowed_tools?.read_only ? ' · 只读提示' : ''}</dd></div><div><dt>源配置审批要求</dt><dd>{connection.require_approval === 'always' ? '每次审批' : connection.require_approval === 'never' ? '不要求审批（不会自动应用）' : '按工具配置（不会自动应用）'}</dd></div></dl></article>;
         })}</div>
         {preview.warnings.length > 0 && <div className="import-warnings" role="note"><strong>导入说明</strong><ul>{preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>}
-        <p className="form-note import-permission-note"><CheckCircle2 size={16}/>导入只保存 MCP 配置，不调用或批准任何业务工具。</p>
+        <label className="checkbox-row"><input type="checkbox" checked={shouldTest} disabled={busy} onChange={event => setShouldTest(event.target.checked)}/>导入后自动测试连接</label>
+        <p className="form-note import-permission-note"><CheckCircle2 size={16}/>测试仅发现工具并匹配平台已有可信契约，不执行或授权任何业务操作。</p>
       </>}
     </div>
-    <footer className="modal-footer"><Button variant="secondary" disabled={busy} onClick={preview ? () => { setPreview(null); setError(''); } : close}>{preview ? <><ArrowLeft size={15}/>返回修改</> : '取消'}</Button>{preview ? <Button busy={busy} onClick={() => void commit()}><Upload size={15}/>确认导入 {preview.connections.length} 个连接</Button> : <Button busy={busy} disabled={!source.trim()} onClick={() => void inspect()}>预览配置<ArrowRight size={15}/></Button>}</footer>
+    <footer className="modal-footer"><Button variant="secondary" disabled={busy} onClick={preview ? () => { setPreview(null); setError(''); } : close}>{preview ? <><ArrowLeft size={15}/>返回修改</> : '取消'}</Button>{preview ? <Button busy={busy} onClick={() => void commit()}><Upload size={15}/>{shouldTest ? '导入并测试' : '确认导入'} {preview.connections.length} 个连接</Button> : <Button busy={busy} disabled={!source.trim()} onClick={() => void inspect()}>预览配置<ArrowRight size={15}/></Button>}</footer>
   </Modal>;
 }

@@ -44,6 +44,7 @@ export interface MCPTool {
   read_only_confirmation_eligible?: boolean;
   read_only_confirmation_reason?: string | null;
   session_read_only_review_eligible?: boolean;
+  platform_read_default?: boolean;
   session_read_only_review_reason?: string | null;
 }
 export interface ScopedResource { owner_id?: string | null; scope?: 'private' | 'team'; can_edit?: boolean }

@@ -163,6 +163,11 @@ class Registry:
             reason = "manual_override"
         elif not row.get("enabled") or row.get("status") != "connected":
             reason = "connection_not_ready"
+        elif cid in policy.get("blocked_reuse", []):
+            reason = "reuse_revoked"
+        elif entry is None and any(isinstance(item, dict) and item.get("allow_reimport") is True
+                                  for item in policy["connections"].values()):
+            reason = "runtime_match_required"
 
         try:
             definitions = json.loads(row.get("tools") or "[]")
@@ -202,17 +207,18 @@ class Registry:
             "connection_identity": connection_identity(row),
             "policy_sha256": policy_sha, "registry_status": reason,
             "registered_policy_id": entry.get("policy_id") if isinstance(entry, dict) else None,
+            "allow_reimport": bool(isinstance(entry, dict) and entry.get("allow_reimport") is True),
             "expires_at": expiry.isoformat() if expiry else None,
             "expires_within_7_days": bool(expiry and now < expiry <= now + timedelta(days=7)),
             "platform_auto_count": sum(t["platform_default"] == "platform_auto" for t in results),
             "registered_tool_count": len(reviewed),
             "missing_reviewed_tool_count": len(set(reviewed) - set(names)),
             "tools": results,
-            "notice": "Eligibility is not approval; other ACLs and approval policies still apply.",
+            "notice": "Direct registry entries only. The workbench resolves reused bearer contracts at runtime. Eligibility is not approval; ACLs and other approval policies still apply.",
         }
 
     def build_entry(self, manifest, row, stamp):
-        require(type(manifest) is dict and set(manifest) == MANIFEST_KEYS
+        require(type(manifest) is dict and MANIFEST_KEYS <= set(manifest) <= MANIFEST_KEYS | {"allow_reimport"}
                 and type(manifest["version"]) is int and manifest["version"] == 1,
                 "INVALID_MANIFEST")
         require(manifest["connection_id"] == row["id"], "CONNECTION_MISMATCH")
@@ -231,6 +237,10 @@ class Registry:
         except (ValueError, TypeError, AttributeError):
             raise ContractError("INVALID_EXPIRY") from None
         require(stamp < expiry <= authority_expiry, "EXPIRY_OUTSIDE_REVIEWED_AUTHORIZATION")
+        reuse = manifest.get("allow_reimport", False)
+        require(type(reuse) is bool, "INVALID_REIMPORT_SETTING")
+        require(not reuse or row.get("auth_type") == "bearer" and row.get("secret"),
+                "REIMPORT_REQUIRES_REVIEWED_BEARER")
         tools = manifest["tools"]
         require(type(tools) is dict and 1 <= len(tools) <= 128, "INVALID_TOOL_SELECTION")
         for name, expected in tools.items():
@@ -244,12 +254,13 @@ class Registry:
         return {"identity": manifest["expected_identity"], "policy_id": manifest["policy_id"],
                 "review_reference": manifest["review_reference"],
                 "registered_at": stamp.isoformat(), "expires_at": expiry.isoformat(),
-                "authorization_expires_at": authority_expiry.isoformat(), "tools": dict(tools)}
+                "authorization_expires_at": authority_expiry.isoformat(), "tools": dict(tools),
+                **({"allow_reimport": True} if reuse else {})}
 
     def apply(self, manifest, *, commit=False):
         # A prepared plan never authorizes a call. Commit requires an independently
         # reviewed manifest, exact identity/digests and current policy CAS.
-        require(type(manifest) is dict and set(manifest) == MANIFEST_KEYS, "INVALID_MANIFEST")
+        require(type(manifest) is dict and MANIFEST_KEYS <= set(manifest) <= MANIFEST_KEYS | {"allow_reimport"}, "INVALID_MANIFEST")
         cid = manifest["connection_id"]
         with self.lock():
             policy, before = self.load()
@@ -264,11 +275,15 @@ class Registry:
                 entry = prior
             result = {**policy, "connections": {**policy["connections"], cid: entry}}
             require(len(canonical(result)) + 1 <= MAX_POLICY_BYTES, "POLICY_TOO_LARGE")
+            if cid in result.get("blocked_reuse", []):
+                result["blocked_reuse"] = [item for item in result["blocked_reuse"] if item != cid]
+                unchanged = False
             if commit and not unchanged:
                 self.write(result)
             return {"action": "apply", "committed": commit, "changed": not unchanged, "connection_id": cid,
                     "policy_id": entry["policy_id"], "review_reference": entry["review_reference"],
                     "expires_at": entry["expires_at"], "tools": sorted(entry["tools"]),
+                    "allow_reimport": entry.get("allow_reimport", False),
                     "before_policy_sha256": before, "after_policy_sha256": digest(result)}
 
     def revoke(self, cid, expected_policy_sha256, *, commit=False):
@@ -278,8 +293,12 @@ class Registry:
         with self.lock():
             policy, before = self.load()
             require(expected_policy_sha256 == before, "POLICY_CHANGED")
-            require(cid in policy["connections"], "POLICY_ENTRY_NOT_FOUND")
-            result = {**policy, "connections": {k: v for k, v in policy["connections"].items() if k != cid}}
+            if cid not in policy["connections"]:
+                # A derived connection has no direct registry entry. Verify it
+                # exists before recording an explicit exclusion.
+                self.connection(cid)
+            result = {**policy, "connections": {k: v for k, v in policy["connections"].items() if k != cid},
+                      "blocked_reuse": sorted(set(policy.get("blocked_reuse", [])) | {cid})}
             if commit:
                 self.write(result)
             return {"action": "revoke_platform_default", "committed": commit,

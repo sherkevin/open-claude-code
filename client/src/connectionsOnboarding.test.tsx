@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from './api';
-import { ConnectionEditor, ConnectionOnboardingCard, McpToolDetails, connectionDiscoveryState, connectionTestError, loadConnections, mcpToolPurpose, saveConnectionConfiguration, testConnectionDiscovery } from './ConnectionsPage';
+import { ConnectionEditor, ConnectionOnboardingCard, McpToolDetails, connectionDiscoveryState, connectionTestError, loadConnections, mcpToolPurpose, saveConnectionConfiguration, testConnectionDiscovery, testImportedConnections } from './ConnectionsPage';
 import type { Connection } from './types';
 
 const connection: Connection = { id: 'orders', name: '订单服务', transport: 'http', url: 'https://mcp.example/mcp', auth_type: 'none', credential_present: false, enabled: true, status: 'connected', tools: [{ name: 'orders_total', description: '汇总订单', inputSchema: {} }], last_error: null, last_tested_at: '2026-11-14T09:00:00Z', revision: 2, scope: 'private', can_edit: true };
@@ -20,6 +20,14 @@ describe('MCP resource catalog', () => {
     expect(html).toContain('高级审批设置');
     expect(html).toContain('平台已识别的只读工具');
     expect(html).toContain('验证业务结果');
+  });
+  it('shows actual trusted defaults after discovery, without inferring approval from tool names', () => {
+    const item = {...connection, read_only_review_revision: 0, tools: [
+      {...connection.tools[0], platform_read_default: true},
+      {...connection.tools[0], name: 'query', platform_read_default: false},
+    ]};
+    expect(card(item)).toMatch(/当前匹配可信契约：(?:<!-- -->)?1(?:<!-- -->)? 个工具/);
+    expect(card({...item, status: 'untested'})).not.toContain('当前匹配可信契约');
   });
   it('offers a real business trial separately from discovery, only after connection testing', () => {
     const html = card(connection, { onBusinessTrial: noop });
@@ -117,5 +125,33 @@ describe('MCP editor controls', () => {
   it('keeps credential replacement, clear and data-source controls without revealing a saved token', () => {
     const html = renderToStaticMarkup(<ConnectionEditor value={{ ...connection, auth_type: 'bearer', credential_present: true, source_metadata: { timezone: 'Asia/Shanghai' } }} admin={false} onClose={noop} onSaved={noop}/>);
     for (const value of ['替换 Token', 'type="password"', '清除已保存的凭据', 'Asia/Shanghai', '启用此连接']) expect(html).toContain(value);
+  });
+});
+
+describe('one-step import discovery', () => {
+  it('tests only newly imported connections and isolates one failed source', async () => {
+    const one = {...connection, id:'one', status:'untested' as const, tools:[]};
+    const two = {...connection, id:'two', status:'untested' as const, tools:[]};
+    const checked = {...two, status:'connected' as const, tools:[{...connection.tools[0],platform_read_default:true}]};
+    const fetch = vi.fn().mockImplementation((url:string) => Promise.resolve(
+      url.endsWith('/one/test') ? new Response(JSON.stringify({error:{code:'FORBIDDEN',message:'Forbidden'}}),{status:403}) :
+      new Response(JSON.stringify(checked))));
+    vi.stubGlobal('fetch',fetch);
+    const onStart=vi.fn(), onResult=vi.fn(), onError=vi.fn();
+    expect(await testImportedConnections([one,two],{onStart,onResult,onError})).toEqual({passed:1,failed:1,matches:1});
+    expect(fetch.mock.calls.map(([url])=>url)).toEqual(['/api/v1/connections/one/test','/api/v1/connections/two/test']);
+    expect(onError).toHaveBeenCalledWith(one, expect.stringContaining('无权'));
+    expect(onResult).toHaveBeenCalledWith(checked);
+    expect(onStart.mock.calls).toEqual([[one],[two]]);
+  });
+  it('does not start another test after the catalog is left', async () => {
+    const one={...connection,id:'one'}, two={...connection,id:'two'};
+    let cancelled=false;
+    const fetch=vi.fn().mockImplementation(()=>{cancelled=true;return Promise.resolve(new Response(JSON.stringify(one)))});
+    vi.stubGlobal('fetch',fetch);
+    const onResult=vi.fn();
+    await testImportedConnections([one,two],{onStart:vi.fn(),onResult,onError:vi.fn()},()=>cancelled);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(onResult).not.toHaveBeenCalled();
   });
 });
