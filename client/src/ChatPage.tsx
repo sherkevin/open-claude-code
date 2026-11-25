@@ -31,7 +31,7 @@ import { pendingRun, retryRead, transientReadError } from './runReadback';
 import RunOutcome from './RunOutcome';
 import RunInteractions from './RunInteractions';
 import ConversationTasks from './ConversationTasks';
-import ConversationFeedback from './ConversationFeedback';
+import ConversationFeedback, {MessageFeedbackButton,type FeedbackHandle} from './ConversationFeedback';
 import ConversationSidebar, { useConversationSidebar } from './ConversationSidebar';
 import InlineSubagentRun from './InlineSubagentRun';
 import ComposerReferences from './ComposerReferences';
@@ -91,6 +91,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const trial = config.deployment_mode === 'trial'; const canSend = configAllows(config, 'messages.send'); const {canUseAttachments,canUseSkills,canUseCompletion,canUseContext,canRecommend} = chatTrialFeatures(trial,config);
   const history = useChatHistory(conversation.id);
   const { messages } = history.page;
+  const feedbackRef=useRef<FeedbackHandle>(null);
   const [run, setRun] = useState<Run | null>(null); const [events, setEvents] = useState<StreamEvent[]>([]);
   const [archived,setArchived]=useState(conversation.archived);const [restoring,setRestoring]=useState(false);
   const [inspectionView, setInspectionView] = useState<InspectionView | null>(null);
@@ -656,7 +657,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       </div></div>
       <div className="chat-actions">
         {!trial && <>
-          <ConversationFeedback conversationId={conversation.id} runId={run?.id} messages={messages}/>
+          <ConversationFeedback ref={feedbackRef} conversationId={conversation.id} runId={run?.id} messages={messages}/>
           <ConversationExport conversationId={conversation.id}/>
           <button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={() => setInspectionView('trajectory')}><ListTree size={17}/></button>
           <button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={() => setShowMemory(true)}><BookOpen size={17}/></button>
@@ -688,6 +689,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
               {canUseAttachments && message.file_ids.length > 0 && <div className="attachment-row">
                 {message.file_ids.map(id => <Attachment key={id} id={id} onPreview={setPreview}/>)}
               </div>}
+              {!trial && message.role==='assistant' && <MessageFeedbackButton onClick={()=>feedbackRef.current?.openMessage(message.id)}/>}
               {!trial && conversation.runtime_type === 'harness' && onOpenConversation && message.role === 'assistant' && message.run_id && message.text &&
                 <Button variant="ghost" disabled={active || !!forking} busy={forking === message.id} onClick={() => void forkMessage(message)}>从这条消息创建分支</Button>}
               {message.run_id && historyResultIds.has(message.id) && <HistoricalBusinessResults conversationId={conversation.id}

@@ -1,6 +1,7 @@
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe,expect,it} from 'vitest';
-import ConversationFeedback,{feedbackForm,feedbackImageProblem,FeedbackHistory} from './ConversationFeedback';
+import type {Message} from './types';
+import ConversationFeedback,{feedbackForm,feedbackImageProblem,FeedbackHistory,feedbackMessageOptions,MessageFeedbackButton} from './ConversationFeedback';
 
 describe('session-scoped explicit feedback',()=>{
   it('offers a session feedback action without uploading anything on render',()=>{
@@ -37,5 +38,19 @@ describe('reporter feedback history',()=>{
     expect(html).not.toContain('<script>fixture</script>');
     expect(html).toContain('&lt;script&gt;fixture&lt;/script&gt;');
     expect(html).toContain('管理员处理说明');expect(html).toContain('&lt;script&gt;public note&lt;/script&gt;');
+  });
+});
+
+describe('per-answer shortcut',()=>{
+  it('offers a distinct accessible feedback action',()=>{
+    expect(renderToStaticMarkup(<MessageFeedbackButton onClick={()=>{}}/>)).toContain('aria-label="反馈此条回答"');
+  });
+  it('preserves the explicitly selected older answer without duplicating recent messages',()=>{
+    const messages:Message[]=Array.from({length:50},(_,i)=>({id:'m-'+i,conversation_id:'session-1',role:'assistant',text:'fixture',file_ids:[],run_id:null,created_at:'2026-11-25T00:00:00Z'}));
+    const older=feedbackMessageOptions(messages,messages[0]);
+    expect(older[0].id).toBe('m-0');
+    expect(older.length).toBe(41);
+    expect(feedbackMessageOptions(messages,messages[49]).length).toBe(40);
+    expect(feedbackMessageOptions([],messages[0])).toEqual([messages[0]]);
   });
 });

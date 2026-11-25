@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState} from 'react';
+import {forwardRef,useEffect,useImperativeHandle,useRef,useState} from 'react';
 import {MessageSquareWarning,RefreshCw} from 'lucide-react';
 import {api,clientRequestId,errorText,timeText,sizeText} from './api';
 import {Button,ErrorNotice,Field,Modal} from './components';
@@ -22,6 +22,15 @@ export function feedbackForm(description:string,requestId:string,target:string,r
 type FeedbackRow={id:string;description:string;status:'new'|'in_progress'|'resolved';created_at:string;updated_at:string;resolution_note?:string;run_id?:string|null;message_id?:string|null};
 const labels={new:'待处理',in_progress:'处理中',resolved:'已解决'} as const;
 type FeedbackProps={conversationId:string;runId?:string;messages:Message[]};
+export type FeedbackHandle={openMessage:(messageId:string)=>void};
+export function feedbackMessageOptions(messages:Message[],selected?:Message){
+  const recent=messages.slice(-40).reverse();
+  return selected&&!recent.some(m=>m.id===selected.id)?[selected,...recent]:recent;
+}
+export function MessageFeedbackButton({onClick}:{onClick:()=>void}){
+  return <Button variant="ghost" onClick={onClick} aria-label="反馈此条回答" title="反馈此条回答"><MessageSquareWarning size={15}/>反馈</Button>;
+}
+
 export function FeedbackHistory({rows}:{rows:FeedbackRow[]}){
   if(!rows.length)return <p className="form-note">本会话暂无历史反馈。</p>;
   return <ul className="task-sidebar-list" aria-label="我的反馈记录">{rows.map(row=><li key={row.id}>
@@ -33,14 +42,15 @@ export function FeedbackHistory({rows}:{rows:FeedbackRow[]}){
     </details>
   </li>)}</ul>;
 }
-export default function ConversationFeedback(props:FeedbackProps){
+const ConversationFeedback=forwardRef<FeedbackHandle,FeedbackProps>(function ConversationFeedback(props,ref){
   // A conversation change must never retain another conversation's draft,
   // receipt, or cached records, even when the parent component is reused.
-  return <FeedbackDialog key={props.conversationId} {...props}/>;
-}
-function FeedbackDialog({conversationId,runId,messages}:FeedbackProps){
+  return <FeedbackDialog key={props.conversationId} ref={ref} {...props}/>;
+});
+export default ConversationFeedback;
+const FeedbackDialog=forwardRef<FeedbackHandle,FeedbackProps>(function FeedbackDialog({conversationId,runId,messages},ref){
   const [open,setOpen]=useState(false),[description,setDescription]=useState(''),[target,setTarget]=useState('current'),[files,setFiles]=useState<File[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState(''),[receipt,setReceipt]=useState('');
-  const pending=useRef(false),requestId=useRef(''),frozenRun=useRef<string>();
+  const pending=useRef(false),requestId=useRef(''),frozenRun=useRef<string>(),frozenMessage=useRef<Message>();
   const path='/conversations/'+encodeURIComponent(conversationId)+'/feedback';
   const [rows,setRows]=useState<FeedbackRow[]>(),[historyError,setHistoryError]=useState(''),[refresh,setRefresh]=useState(0),[historyLoading,setHistoryLoading]=useState(false);
   useEffect(()=>{
@@ -53,7 +63,14 @@ function FeedbackDialog({conversationId,runId,messages}:FeedbackProps){
       .finally(()=>{if(!controller.signal.aborted)setHistoryLoading(false);});
     return ()=>controller.abort();
   },[open,path,refresh]);
-  function start(){requestId.current=clientRequestId();frozenRun.current=runId;setTarget(runId?'current':'session');setDescription('');setFiles([]);setReceipt('');setError('');setRows(undefined);setHistoryError('');setOpen(true);}
+  function start(messageId?:string){
+    if(open||pending.current)return;
+    const selected=messageId?messages.find(m=>m.id===messageId&&m.conversation_id===conversationId&&m.role==='assistant'):undefined;
+    if(messageId&&!selected)return;
+    requestId.current=clientRequestId();frozenRun.current=runId;frozenMessage.current=selected;
+    setTarget(selected?'message:'+selected.id:runId?'current':'session');setDescription('');setFiles([]);setReceipt('');setError('');setRows(undefined);setHistoryError('');setOpen(true);
+  }
+  useImperativeHandle(ref,()=>({openMessage:start}));
   async function submit(){
     if(pending.current||!description.trim())return;
     const issue=feedbackImageProblem(files);if(issue){setError(issue);return;}
@@ -61,12 +78,12 @@ function FeedbackDialog({conversationId,runId,messages}:FeedbackProps){
     try{const result=await api<{id:string}>(path,{method:'POST',body:feedbackForm(description,requestId.current,target,frozenRun.current,files)});setReceipt(result.id);setFiles([]);setRefresh(value=>value+1);}
     catch(e){setError(errorText(e));}finally{pending.current=false;setBusy(false);}
   }
-  return <><button type="button" className="icon-button" title="问题反馈" aria-label="问题反馈" onClick={start}><MessageSquareWarning size={17}/></button>
+  return <><button type="button" className="icon-button" title="问题反馈" aria-label="问题反馈" onClick={()=>start()}><MessageSquareWarning size={17}/></button>
   {open&&<Modal title="问题反馈" description="帮助我们定位和修复本次使用中的问题。" onClose={()=>{if(!pending.current)setOpen(false);}} wide>
     <div className="modal-body"><ErrorNotice message={error}/>{receipt?<div role="status"><strong>反馈已提交</strong><p>反馈编号：{receipt}</p><p>工作台管理员可在反馈管理中查看和处理。</p></div>:<>
       <Field label="问题发生位置"><select value={target} disabled={busy} onChange={e=>setTarget(e.target.value)}>
         <option value="session">整个会话</option>{frozenRun.current&&<option value="current">打开反馈时的当前执行轮次</option>}
-        {messages.slice(-40).reverse().map(m=><option key={m.id} value={'message:'+m.id}>{timeText(m.created_at)} · {m.role==='user'?'提问':'回答'} · {m.text.trim().replace(/\s+/g,' ').slice(0,60)||'附件消息'}</option>)}
+        {feedbackMessageOptions(messages,frozenMessage.current).map(m=><option key={m.id} value={'message:'+m.id}>{timeText(m.created_at)} · {m.role==='user'?'提问':'回答'} · {m.text.trim().replace(/\s+/g,' ').slice(0,60)||'附件消息'}</option>)}
       </select></Field>
       <Field label="问题描述" required><textarea value={description} disabled={busy} onChange={e=>setDescription(e.target.value)} rows={5} maxLength={4000} placeholder="发生了什么？预期结果是什么？如何复现？"/></Field>
       <Field label="上传截图（可选）" hint="最多 3 张，每张 4 MB，合计 8 MB。"><input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>{const next=[...files,...Array.from(e.target.files||[])];e.target.value='';const issue=feedbackImageProblem(next);setError(issue);if(!issue)setFiles(next);}}/></Field>
@@ -81,4 +98,4 @@ function FeedbackDialog({conversationId,runId,messages}:FeedbackProps){
     </details>
     </div><footer className="modal-footer"><Button variant="secondary" disabled={busy} onClick={()=>setOpen(false)}>{receipt?'关闭':'取消'}</Button>{!receipt&&<Button busy={busy} disabled={busy||!description.trim()} onClick={()=>void submit()}>提交反馈</Button>}</footer>
   </Modal>}</>;
-}
+});

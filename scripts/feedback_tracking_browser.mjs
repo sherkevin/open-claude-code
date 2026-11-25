@@ -69,6 +69,43 @@ try {
   const denied=await admin.request.get(api+'/conversations/'+cid+'/feedback');
   assert.equal(denied.status(),404);
   checks.push('another user including admin cannot read reporter history route');
+  await modal.getByRole('button',{name:'取消',exact:true}).click();
+  // Seed one synthetic answer through the existing test-only FakeRuntime.
+  const created=await getJson(await reporter.request.post(api+'/conversations/'+cid+'/messages',{
+    data:{client_request_id:'feedback-message-fixture',text:'Synthetic answer seed',file_ids:[]}
+  }),202);
+  const deadline=Date.now()+15000;
+  let run;
+  do{
+    run=await getJson(await reporter.request.get(api+'/runs/'+created.run_id),200);
+    if(['succeeded','failed','cancelled','interrupted'].includes(run.status))break;
+    await new Promise(resolve=>setTimeout(resolve,150));
+  }while(Date.now()<deadline);
+  assert.equal(run.status,'succeeded');
+  assert(run.assistant_message_id);
+  await page.reload();
+  const answer=page.locator('[data-message-id="'+run.assistant_message_id+'"]');
+  const shortcut=answer.getByRole('button',{name:'反馈此条回答',exact:true});
+  const countBefore=(await getJson(await reporter.request.get(api+'/conversations/'+cid+'/feedback'),200)).length;
+  await shortcut.click({timeout:20000});
+  assert.equal(await modal.getByLabel('问题发生位置').inputValue(),'message:'+run.assistant_message_id);
+  assert.equal((await getJson(await reporter.request.get(api+'/conversations/'+cid+'/feedback'),200)).length,countBefore);
+  await modal.getByLabel('问题描述').fill('Synthetic answer-specific issue');
+  const [messageSubmitted]=await Promise.all([
+    page.waitForResponse(r=>r.request().method()==='POST'&&r.url()===api+'/conversations/'+cid+'/feedback'),
+    modal.getByRole('button',{name:'提交反馈'}).click()
+  ]);
+  const messageFid=(await getJson(messageSubmitted,201)).id;
+  await modal.getByText('反馈编号：'+messageFid,{exact:true}).waitFor();
+  const messageRows=await getJson(await reporter.request.get(api+'/conversations/'+cid+'/feedback'),200);
+  const linked=messageRows.find(row=>row.id===messageFid);
+  assert(linked&&linked.message_id===run.assistant_message_id&&linked.description==='Synthetic answer-specific issue');
+  checks.push('answer shortcut targets the exact persisted message, no write before submission');
+  await modal.getByRole('button',{name:'关闭',exact:true}).click();
+  await feedback.click();
+  assert.equal(await modal.getByLabel('问题发生位置').inputValue(),'current');
+  await modal.getByRole('button',{name:'取消',exact:true}).click();
+  checks.push('shared dialog resets to session header context after message feedback');
   assert.equal(messages.length,0);
   checks.push('no model message sent');
   console.log(JSON.stringify({passed:checks.length,checks}));
