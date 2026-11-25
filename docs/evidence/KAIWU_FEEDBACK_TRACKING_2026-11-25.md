@@ -22,3 +22,7 @@
 第一次 Chromium 启动失败（data3 临时路径过长，Unix Socket path too long），随后使用 data3 下短路径的私有临时目录成功运行；证据 browser-2.log。无生产部署结论。测试脚本要求新建隔离 data 目录，浏览器只连 127.0.0.1，账号为测试固定数据，启动器使用 FakeRuntime，无法访问真实模型。
 
 后续：A2 全局计划中心和任务生命周期仍优先；A3 尚需管理员处理说明、逐消息反馈、通知及生产验收。
+
+## 合并候选复验
+
+基于 A1 c42d040 的组合版本：反馈、原有周期任务、官方 Cron/RRULE 和消息队列后端共 26 项通过；反馈及会话任务前端共 9 项通过，TypeScript 与 /project/kaiwu/ 构建通过；组合构建再次在真实 Chromium 验收 4 项通过。证据 pytest-combined.log、vitest-combined.log、tsc-combined.log、build-combined.log、browser-combined.log。没有执行生产发布。

@@ -72,7 +72,7 @@ DeepSeek Harness 采用插件组合架构，固定源码中已经包含下面的
 | 终端与后台任务 | dsh-terminal、dsh-terminal-bash、dsh-jobs、dsh-jobs-local、dsh-tool-jobs；如原 UI 不能嵌入，评估 xterm.js (MIT) | 已选定，待隔离验证 | 官方 terminal/jobs-local 是进程本地能力；若要跨进程持续，需可持久执行器和恢复协议，不能声称现成支持 |
 | 浏览器/计算机操作 | dsh-browser-use、dsh-computer-use 的 provider seam；可复用现成受控浏览器/桌面 provider | 待选定实际 provider、隔离与许可复核 | 用户授权、租户独立环境、网络出站和文件边界；注册 seam 本身不包含操作驱动 |
 | Sandbox / 文件环境 | 官方 sandbox、sandbox-local、sandbox-policy、fs、subprocess 与 SSH provider | 已选定，待部署验证 | 不将同内核本机读写限制当强租户隔离；禁止直接把客户/宿主整机挂给 Agent |
-| 反馈和观测 | dsh-message-feedback、command-feedback、telemetry；[OpenTelemetry Collector](https://github.com/open-telemetry/opentelemetry-collector) (Apache-2.0) | 现有反馈已上线；上游交互/受控遥测待接入 | 开物反馈编号、会话/轮次关联、管理员处理状态保留。默认不向上游/外部发送反馈、截图、业务正文或完整会话 |
+| 反馈和观测 | dsh-message-feedback、command-feedback、telemetry；[OpenTelemetry Collector](https://github.com/open-telemetry/opentelemetry-collector) (Apache-2.0) | 现有反馈已上线；本人回执/历史/状态隔离通过（见 [验收](../evidence/KAIWU_FEEDBACK_TRACKING_2026-11-25.md)）；上游交互/受控遥测待接入 | 开物反馈编号、会话/轮次关联、管理员处理状态保留。默认不向上游/外部发送反馈、截图、业务正文或完整会话 |
 | 知识检索 | 继续 FastEmbed/现有文件及证据链；Qdrant 服务器作为大规模向量检索候选 | 现有实现，Qdrant 服务器未部署 | 不与 Mem0 混淆：知识库是有来源的企业知识；记忆是用户/任务历史。先压测再决定迁移 |
 | UI 体验 | 优先复用上游 ui-schedule/ui-goal/ui-subagent/ui-agent-team/ui-commands/ui-reference/ui-jobs 等插件；如 Cordis 组合与开物 React/API 不兼容，使用官方公开协议及交互契约薄适配 | 待兼容性验证 | 不为了复用而替换整个工作台、破坏会话 URL 或丢失企业功能 |
 
