@@ -881,13 +881,13 @@ class Service:
             if active["status"] not in {"running", "awaiting_approval"}:
                 raise AppError(403, "INTERACTION_INACTIVE", "交互任务已结束")
             return True
-        if tool_name in {"mcp__workspace__schedule_create","mcp__workspace__schedule_list","mcp__workspace__schedule_view"}:
+        if tool_name in {"mcp__workspace__schedule_create","mcp__workspace__schedule_list","mcp__workspace__schedule_view","mcp__workspace__schedule_edit"}:
             if conversation_runtime_type(conversation)!="harness" or conversation["archived"] or not conversation["active_run_id"]:
                 raise AppError(403,"SCHEDULE_RUN_REQUIRED","定时计划创建需要当前人工发起的 Harness 会话")
             active=self.require("runs",conversation["active_run_id"],user)
             if active["status"] not in {"running","awaiting_approval"} or json.loads(active.get("execution_meta") or "{}").get("schedule_id"):
                 raise AppError(403,"SCHEDULE_RUN_REQUIRED","定时执行不能管理计划")
-            return tool_name!="mcp__workspace__schedule_create"
+            return tool_name in {"mcp__workspace__schedule_list","mcp__workspace__schedule_view"}
         if tool_name in {"mcp__workspace__memory_list", "mcp__workspace__memory_read", "mcp__workspace__memory_write"}:
             if (conversation_runtime_type(conversation) != "harness" or conversation["archived"]
                     or not conversation["active_run_id"]):

@@ -63,7 +63,7 @@ DeepSeek Harness 采用插件组合架构，固定源码中已经包含下面的
 | 功能 | 首选及复用方式 | 当前采用状态 | 开物需要保留/适配的边界 |
 |---|---|---|---|
 | 调度规则 | 官方 packages/schedule/schedule/src/domain.ts 与 packages/util/time，直接调用其 cron / RFC 5545 RRULE 规则计算 | **原始源码直接调用已验证；高级规则已完成候选集成**，见 §4 | 现有 SQLite/FIFO 负责持久任务、用户隔离、运行回执、防重复；不得把单次 inbox 投递成功当业务执行成功 |
-| 全局定时任务、自然语言自动化 | 官方 dsh-schedule、dsh-tool-schedule、packages/client/ui-schedule 的协议与交互；优先兼容接口与实现复用 | 会话暂停/恢复、全局中心、编辑、立即运行及自然语言创建/查询已隔离通过；自然语言修改待接入 | 原生 Host 任务管理跨整个 Host，不能向多租户模型直接暴露；用户绑定由宿主推导，创建/改周期需明确授权 |
+| 全局定时任务、自然语言自动化 | 官方 dsh-schedule、dsh-tool-schedule、packages/client/ui-schedule 的协议与交互；优先兼容接口与实现复用 | 会话暂停/恢复、全局中心、编辑、立即运行及自然语言创建/查询/修改已隔离通过；整包发布及浏览器审批验收待完成 | 原生 Host 任务管理跨整个 Host，不能向多租户模型直接暴露；用户绑定由宿主推导，创建/改周期需明确授权 |
 | 持久 Goal | dsh-goal、dsh-goal-round-driver、dsh-tool-goal、command-goal | 已选定，待隔离验收 | 一目标一会话；目标完成条件、轮次/成本上限、人工暂停、审批与恢复。官方持久目标不等于进程重启后自动获准继续 |
 | 持久子智能体与通信 | dsh-subagent、subagent-spawn-in-process、subagent-fork-in-process、tool-subagent、tool-subagent-control | 已选定，待接入 | 本地 spawn/fork 才是当前上游可继续会话；外部 ACP/DSH SDK/Codex/Claude Code provider 在该固定版本是一次性执行。保留现有子任务能力直到迁移通过 |
 | 团队及 DAG | dsh-agent-team、dsh-tool-agent-team、ui-agent-team | 已选定，待接入 | 共用任务板、依赖和 CAS 认领直接复用，企业账号/项目/权限、资源隔离及 L1/L2/L3 角色控制由宿主补齐。上游任务板不是跨进程分布式调度器 |

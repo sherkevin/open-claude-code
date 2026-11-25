@@ -227,7 +227,7 @@ def test_real_mcp_granted_tools_full_arguments_sources_and_failure(mcp_app):
     # This assistant has no knowledge collection binding, so no knowledge
     # retrieval tools may be advertised alongside its explicit MCP grants.
     assert names == {"generate_xlsx", "generate_image", "file_read", "file_write", "file_search", "memory_list", "memory_read", "memory_write",
-                     "ask_user", "review_plan", "delegate_tasks", "schedule_create", "schedule_list", "schedule_view", *(env.alias(name) for name in GRANTED)}
+                     "ask_user", "review_plan", "delegate_tasks", "schedule_create", "schedule_list", "schedule_view", "schedule_edit", *(env.alias(name) for name in GRANTED)}
     assert env.alias("hidden_admin") not in names
     for name in GRANTED:
         provider_description = definitions[env.alias(name)]["description"]

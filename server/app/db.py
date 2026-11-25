@@ -158,6 +158,13 @@ CREATE TABLE IF NOT EXISTS conversation_schedule_create_requests(
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS conversation_schedule_edit_requests(
+    run_id TEXT PRIMARY KEY REFERENCES runs(id),
+    approval_id TEXT NOT NULL UNIQUE REFERENCES approvals(id),
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    plan_id TEXT NOT NULL, operation TEXT NOT NULL, created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS conversation_feedback(
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
     conversation_id TEXT NOT NULL REFERENCES conversations(id), run_id TEXT REFERENCES runs(id),

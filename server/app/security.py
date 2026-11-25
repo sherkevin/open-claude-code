@@ -92,6 +92,9 @@ def tool_risk_profile(tool_name: str) -> dict[str, object]:
         }
     if tool_name in {"mcp__workspace__schedule_list","mcp__workspace__schedule_view"}:
         return {"risk_level":"low","approval_policy":"safe_read","impact":"只读取当前人工会话的定时计划，不修改或执行任务"}
+    if tool_name == "mcp__workspace__schedule_edit":
+        return {"risk_level":"medium","approval_policy":"user_confirmation",
+                "impact":"修改或取消当前会话的未来计划；须本人确认完整变更，不追溯修改历史"}
     if tool_name == "mcp__workspace__schedule_create":
         return {"risk_level":"medium","approval_policy":"user_confirmation",
                 "impact":"为当前会话创建持续运行计划，须本人确认完整指令、规则和首次执行时间；每次执行仍沿用业务审批"}

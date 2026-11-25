@@ -390,6 +390,171 @@ def persist_schedule(service,user,conversation_id,body,prepared):
     return {"id":identity,"status":"scheduled","execution_mode":body.execution_mode,"recurrence":body.recurrence,"scheduled_at":stamp.isoformat()}
 
 
+def prepare_schedule_edit(service,user,conversation_id,identity,body):
+    db=service.db
+    service.require("conversations",conversation_id,user)
+    snapshot,is_series=_edit_target(db,conversation_id,identity)
+    if body.expected_token!=edit_token(snapshot):
+        raise AppError(409,"SCHEDULE_CHANGED","计划已发生变化，请刷新后重试")
+    previous=_previous(db,identity) if is_series else None
+    reference=datetime.now(timezone.utc)
+    _available(service,conversation_id,snapshot["execution_mode"])
+    _require_editable(db,snapshot,is_series,previous,reference)
+    text=body.text.strip()
+    if not text:
+        raise AppError(422,"SCHEDULE_INVALID","请输入任务内容")
+    recurrence=snapshot.get("recurrence","once")
+    advanced=recurrence in {"cron","rrule"}
+    changed_timing=body.scheduled_at is not None or body.rule_expression is not None or body.timezone is not None
+    next_at=snapshot.get("next_at",snapshot.get("scheduled_at"))
+    expression=snapshot.get("rule_expression")
+    zone_name=snapshot.get("timezone")
+    local_time=snapshot.get("local_time")
+    if changed_timing:
+        if advanced:
+            if body.scheduled_at is not None or body.rule_expression is None:
+                raise AppError(422,"SCHEDULE_INVALID","高级规则需要完整的新规则")
+            from .official_schedule_rules import create_rule
+            next_at,expression,zone_name=create_rule(service.settings,recurrence,body.rule_expression,body.timezone or zone_name,reference)
+        else:
+            if body.rule_expression is not None or body.scheduled_at is None:
+                raise AppError(422,"SCHEDULE_INVALID","普通计划需要明确的新执行时间")
+            stamp=body.scheduled_at.astimezone(timezone.utc)
+            if not reference<stamp<=reference+timedelta(days=365):
+                raise AppError(422,"SCHEDULE_INVALID","请选择未来一年内的执行时间")
+            if not is_series and body.timezone is not None:
+                raise AppError(422,"SCHEDULE_INVALID","单次任务使用明确的绝对执行时间")
+            next_at=stamp.isoformat()
+            if is_series:
+                zone_name=body.timezone or zone_name
+        if is_series:
+            try:
+                local_time=datetime.fromisoformat(next_at).astimezone(ZoneInfo(zone_name)).time().isoformat()
+            except (ZoneInfoNotFoundError,ValueError,TypeError):
+                raise AppError(422,"SCHEDULE_TIMEZONE_INVALID","请选择有效的时区") from None
+    prompt_safety=getattr(service,"prompt_safety",None)
+    if prompt_safety is not None and prompt_safety.enabled:
+        prompt_safety.require_allowed(text,user["id"])
+    return {"snapshot":snapshot,"is_series":is_series,"previous":previous,"text":text,
+            "recurrence":recurrence,"changed_timing":changed_timing,"next_at":next_at,
+            "expression":expression,"zone_name":zone_name,"local_time":local_time}
+
+
+def persist_schedule_edit(service,user,conversation_id,identity,prepared):
+    """Caller holds the authoritative write transaction."""
+    db=service.db
+    snapshot,is_series,previous=prepared["snapshot"],prepared["is_series"],prepared["previous"]
+    text,recurrence=prepared["text"],prepared["recurrence"]
+    changed_timing,next_at=prepared["changed_timing"],prepared["next_at"]
+    expression,zone_name,local_time=prepared["expression"],prepared["zone_name"],prepared["local_time"]
+    service.require("conversations",conversation_id,user)
+    _available(service,conversation_id,snapshot["execution_mode"])
+    current,current_series=_edit_target(db,conversation_id,identity)
+    if current!=snapshot or current_series!=is_series or (is_series and _previous(db,identity)!=previous):
+        raise AppError(409,"SCHEDULE_CHANGED","计划或运行状态已变化，请刷新后重试")
+    current_time=datetime.now(timezone.utc)
+    _require_editable(db,current,is_series,previous,current_time)
+    if (changed_timing or current["status"]=="scheduled") and datetime.fromisoformat(next_at)<=current_time:
+        raise AppError(409,"SCHEDULE_CHANGED","编辑期间计划已到期，请刷新后重试")
+    if is_series:
+        db.execute("""UPDATE conversation_schedule_series SET text=?,next_at=?,timezone=?,local_time=?,rule_expression=? WHERE id=?""",
+                   (text,next_at,zone_name,local_time,expression,identity))
+    else:
+        db.execute("UPDATE conversation_schedules SET text=?,scheduled_at=? WHERE id=?",(text,next_at,identity))
+    saved,_=_edit_target(db,conversation_id,identity)
+    return {"id":identity,"text":text,"scheduled_at":next_at,"status":saved["status"],"recurrence":recurrence,
+            "timezone":zone_name,"rule_expression":expression,"execution_mode":saved["execution_mode"],"edit_token":edit_token(saved)}
+
+def persist_schedule_pause(service,user,conversation_id,identity):
+    """Caller holds the authoritative write transaction."""
+    service.require("conversations",conversation_id,user)
+    row=service.db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
+    if not row:
+        raise AppError(404,"NOT_FOUND","周期计划不存在")
+    if row["status"] not in {"scheduled","paused"}:
+        raise AppError(409,"SCHEDULE_INACTIVE","该周期计划已结束")
+    if row["status"]=="scheduled":
+        service.db.execute("UPDATE conversation_schedule_series SET status='paused',error=NULL WHERE id=?",(identity,))
+    # Already committed occurrences are deliberately left alone.
+    return {"id":identity,"status":"paused","scheduled_at":row["next_at"]}
+
+def prepare_schedule_resume(service,user,conversation_id,identity,body):
+    db=service.db
+    service.require("conversations",conversation_id,user)
+    snapshot=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
+    if not snapshot:
+        raise AppError(404,"NOT_FOUND","周期计划不存在")
+    if snapshot["status"]=="scheduled":
+        return {"already_scheduled":True,"snapshot":snapshot}
+    if snapshot["status"]!="paused":
+        raise AppError(409,"SCHEDULE_INACTIVE","该周期计划已结束")
+    _available(service,conversation_id,snapshot["execution_mode"])
+    previous=_previous(db,identity)
+    if previous and not _terminal(previous):
+        raise AppError(409,"SCHEDULE_OCCURRENCE_ACTIVE","上一次任务尚未结束，请先检查会话")
+    failed=_failed(previous) and previous["id"]!=snapshot["acknowledged_occurrence_id"]
+    if failed and not body.acknowledge_failure:
+        raise AppError(409,"SCHEDULE_FAILURE_ACK_REQUIRED","请确认上次失败可能产生的影响；恢复仅执行未来周期，不会重试上次任务")
+    reference=datetime.now(timezone.utc)
+    next_at=snapshot["next_at"]
+    if datetime.fromisoformat(next_at)<=reference:
+        if snapshot["recurrence"] in {"cron","rrule"}:
+            from .official_schedule_rules import resolve_resume_rule
+            next_at,_=resolve_resume_rule(service.settings,snapshot["recurrence"],snapshot["rule_expression"],snapshot["timezone"],next_at,reference)
+        else:
+            next_at,_,_=series_slots(snapshot,reference)
+    return {"snapshot":snapshot,"previous":previous,"failed":failed,"next_at":next_at}
+
+
+def persist_schedule_resume(service,user,conversation_id,identity,prepared):
+    """Caller holds the authoritative write transaction."""
+    db=service.db
+    snapshot=prepared["snapshot"]
+    if prepared.get("already_scheduled"):
+        current=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
+        service.require("conversations",conversation_id,user)
+        if current!=snapshot:
+            raise AppError(409,"SCHEDULE_CHANGED","计划已发生变化，请刷新后重试")
+        return {"id":identity,"status":"scheduled","scheduled_at":snapshot["next_at"]}
+    previous,failed,next_at=prepared["previous"],prepared["failed"],prepared["next_at"]
+    service.require("conversations",conversation_id,user)
+    _available(service,conversation_id,snapshot["execution_mode"])
+    current=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
+    if current!=snapshot or _previous(db,identity)!=previous:
+        raise AppError(409,"SCHEDULE_CHANGED","计划或运行状态已变化，请刷新后重试")
+    if next_at and datetime.fromisoformat(next_at)<=datetime.now(timezone.utc):
+        raise AppError(409,"SCHEDULE_CHANGED","计算期间下次时间已到期，请刷新后重试")
+    status="scheduled" if next_at else "exhausted"
+    ack=previous["id"] if failed else snapshot["acknowledged_occurrence_id"]
+    db.execute("UPDATE conversation_schedule_series SET status=?,next_at=?,error=NULL,acknowledged_occurrence_id=? WHERE id=?",
+               (status,next_at or snapshot["next_at"],ack,identity))
+    return {"id":identity,"status":status,"scheduled_at":next_at or snapshot["next_at"]}
+
+def persist_schedule_cancel(service,user,conversation_id,identity):
+    """Cancel only unstarted work; caller holds the write transaction."""
+    service.require("conversations",conversation_id,user)
+    series=service.db.one("SELECT status FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
+    if series:
+        service.db.execute("UPDATE conversation_schedule_series SET status='cancelled' WHERE id=?",(identity,))
+        # Cancel outstanding occurrences that have not been dispatched.
+        service.db.execute("""UPDATE message_queue SET status='cancelled',revision=revision+1,updated_at=? WHERE status='pending' AND conversation_id=? AND id IN
+            (SELECT id FROM conversation_schedules WHERE series_id=?)""",(now(),conversation_id,identity))
+        service.db.execute("UPDATE conversation_schedules SET status='cancelled' WHERE series_id=? AND status='scheduled'",(identity,))
+        return
+    row=service.db.one("SELECT status FROM conversation_schedules WHERE id=? AND conversation_id=?",(identity,conversation_id))
+    if row is None:
+        raise AppError(404,"NOT_FOUND","计划任务不存在")
+    if row["status"]=="cancelled":
+        return
+    if row["status"]=="queued":
+        changed=service.db.execute("UPDATE message_queue SET status='cancelled',revision=revision+1,updated_at=? WHERE id=? AND conversation_id=? AND status='pending'",(now(),identity,conversation_id))
+        if not changed.rowcount:
+            raise AppError(409,"SCHEDULE_STARTED","任务已启动，请在会话里操作")
+    elif row["status"]!="scheduled":
+        raise AppError(409,"SCHEDULE_INACTIVE","该计划任务已结束")
+    service.db.execute("UPDATE conversation_schedules SET status='cancelled' WHERE id=?",(identity,))
+
+
 def create_schedule_router(svc,authenticated):
     router=APIRouter(prefix="/api/v1/conversations/{conversation_id}/schedules")
 
@@ -473,147 +638,25 @@ def create_schedule_router(svc,authenticated):
 
     @router.patch("/{identity}")
     def edit_schedule(conversation_id:str,identity:str,body:ScheduleEdit,service=Depends(svc),user=Depends(authenticated)):
-        db=service.db
-        service.require("conversations",conversation_id,user)
-        snapshot,is_series=_edit_target(db,conversation_id,identity)
-        if body.expected_token!=edit_token(snapshot):
-            raise AppError(409,"SCHEDULE_CHANGED","计划已发生变化，请刷新后重试")
-        previous=_previous(db,identity) if is_series else None
-        reference=datetime.now(timezone.utc)
-        _available(service,conversation_id,snapshot["execution_mode"])
-        _require_editable(db,snapshot,is_series,previous,reference)
-        text=body.text.strip()
-        if not text:
-            raise AppError(422,"SCHEDULE_INVALID","请输入任务内容")
-        recurrence=snapshot.get("recurrence","once")
-        advanced=recurrence in {"cron","rrule"}
-        changed_timing=body.scheduled_at is not None or body.rule_expression is not None or body.timezone is not None
-        next_at=snapshot.get("next_at",snapshot.get("scheduled_at"))
-        expression=snapshot.get("rule_expression")
-        zone_name=snapshot.get("timezone")
-        local_time=snapshot.get("local_time")
-        if changed_timing:
-            if advanced:
-                if body.scheduled_at is not None or body.rule_expression is None:
-                    raise AppError(422,"SCHEDULE_INVALID","高级规则需要完整的新规则")
-                from .official_schedule_rules import create_rule
-                next_at,expression,zone_name=create_rule(service.settings,recurrence,body.rule_expression,body.timezone or zone_name,reference)
-            else:
-                if body.rule_expression is not None or body.scheduled_at is None:
-                    raise AppError(422,"SCHEDULE_INVALID","普通计划需要明确的新执行时间")
-                stamp=body.scheduled_at.astimezone(timezone.utc)
-                if not reference<stamp<=reference+timedelta(days=365):
-                    raise AppError(422,"SCHEDULE_INVALID","请选择未来一年内的执行时间")
-                if not is_series and body.timezone is not None:
-                    raise AppError(422,"SCHEDULE_INVALID","单次任务使用明确的绝对执行时间")
-                next_at=stamp.isoformat()
-                if is_series:
-                    zone_name=body.timezone or zone_name
-            if is_series:
-                try:
-                    local_time=datetime.fromisoformat(next_at).astimezone(ZoneInfo(zone_name)).time().isoformat()
-                except (ZoneInfoNotFoundError,ValueError,TypeError):
-                    raise AppError(422,"SCHEDULE_TIMEZONE_INVALID","请选择有效的时区") from None
-        prompt_safety=getattr(service,"prompt_safety",None)
-        if prompt_safety is not None and prompt_safety.enabled:
-            prompt_safety.require_allowed(text,user["id"])
-        with db.transaction():
-            service.require("conversations",conversation_id,user)
-            _available(service,conversation_id,snapshot["execution_mode"])
-            current,current_series=_edit_target(db,conversation_id,identity)
-            if current!=snapshot or current_series!=is_series or (is_series and _previous(db,identity)!=previous):
-                raise AppError(409,"SCHEDULE_CHANGED","计划或运行状态已变化，请刷新后重试")
-            current_time=datetime.now(timezone.utc)
-            _require_editable(db,current,is_series,previous,current_time)
-            if (changed_timing or current["status"]=="scheduled") and datetime.fromisoformat(next_at)<=current_time:
-                raise AppError(409,"SCHEDULE_CHANGED","编辑期间计划已到期，请刷新后重试")
-            if is_series:
-                db.execute("""UPDATE conversation_schedule_series SET text=?,next_at=?,timezone=?,local_time=?,rule_expression=? WHERE id=?""",
-                           (text,next_at,zone_name,local_time,expression,identity))
-            else:
-                db.execute("UPDATE conversation_schedules SET text=?,scheduled_at=? WHERE id=?",(text,next_at,identity))
-            saved,_=_edit_target(db,conversation_id,identity)
-            return {"id":identity,"text":text,"scheduled_at":next_at,"status":saved["status"],"recurrence":recurrence,
-                    "timezone":zone_name,"rule_expression":expression,"execution_mode":saved["execution_mode"],"edit_token":edit_token(saved)}
+        prepared=prepare_schedule_edit(service,user,conversation_id,identity,body)
+        with service.db.transaction():
+            return persist_schedule_edit(service,user,conversation_id,identity,prepared)
 
     @router.post("/{identity}/pause")
     def pause_series(conversation_id:str,identity:str,service=Depends(svc),user=Depends(authenticated)):
         with service.db.transaction():
-            service.require("conversations",conversation_id,user)
-            row=service.db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
-            if not row:
-                raise AppError(404,"NOT_FOUND","周期计划不存在")
-            if row["status"] not in {"scheduled","paused"}:
-                raise AppError(409,"SCHEDULE_INACTIVE","该周期计划已结束")
-            if row["status"]=="scheduled":
-                service.db.execute("UPDATE conversation_schedule_series SET status='paused',error=NULL WHERE id=?",(identity,))
-            # Already committed occurrences are deliberately left alone.
-            return {"id":identity,"status":"paused","scheduled_at":row["next_at"]}
+            return persist_schedule_pause(service,user,conversation_id,identity)
 
     @router.post("/{identity}/resume")
     def resume_series(conversation_id:str,identity:str,body:ScheduleResume,service=Depends(svc),user=Depends(authenticated)):
-        db=service.db
-        service.require("conversations",conversation_id,user)
-        snapshot=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
-        if not snapshot:
-            raise AppError(404,"NOT_FOUND","周期计划不存在")
-        if snapshot["status"]=="scheduled":
-            return {"id":identity,"status":"scheduled","scheduled_at":snapshot["next_at"]}
-        if snapshot["status"]!="paused":
-            raise AppError(409,"SCHEDULE_INACTIVE","该周期计划已结束")
-        _available(service,conversation_id,snapshot["execution_mode"])
-        previous=_previous(db,identity)
-        if previous and not _terminal(previous):
-            raise AppError(409,"SCHEDULE_OCCURRENCE_ACTIVE","上一次任务尚未结束，请先检查会话")
-        failed=_failed(previous) and previous["id"]!=snapshot["acknowledged_occurrence_id"]
-        if failed and not body.acknowledge_failure:
-            raise AppError(409,"SCHEDULE_FAILURE_ACK_REQUIRED","请确认上次失败可能产生的影响；恢复仅执行未来周期，不会重试上次任务")
-        reference=datetime.now(timezone.utc)
-        next_at=snapshot["next_at"]
-        if datetime.fromisoformat(next_at)<=reference:
-            if snapshot["recurrence"] in {"cron","rrule"}:
-                from .official_schedule_rules import resolve_resume_rule
-                next_at,_=resolve_resume_rule(service.settings,snapshot["recurrence"],snapshot["rule_expression"],snapshot["timezone"],next_at,reference)
-            else:
-                next_at,_,_=series_slots(snapshot,reference)
-        with db.transaction():
-            service.require("conversations",conversation_id,user)
-            _available(service,conversation_id,snapshot["execution_mode"])
-            current=db.one("SELECT * FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
-            if current!=snapshot or _previous(db,identity)!=previous:
-                raise AppError(409,"SCHEDULE_CHANGED","计划或运行状态已变化，请刷新后重试")
-            if next_at and datetime.fromisoformat(next_at)<=datetime.now(timezone.utc):
-                raise AppError(409,"SCHEDULE_CHANGED","计算期间下次时间已到期，请刷新后重试")
-            status="scheduled" if next_at else "exhausted"
-            ack=previous["id"] if failed else snapshot["acknowledged_occurrence_id"]
-            db.execute("UPDATE conversation_schedule_series SET status=?,next_at=?,error=NULL,acknowledged_occurrence_id=? WHERE id=?",
-                       (status,next_at or snapshot["next_at"],ack,identity))
-        return {"id":identity,"status":status,"scheduled_at":next_at or snapshot["next_at"]}
+        prepared=prepare_schedule_resume(service,user,conversation_id,identity,body)
+        with service.db.transaction():
+            return persist_schedule_resume(service,user,conversation_id,identity,prepared)
 
     @router.delete("/{identity}",status_code=204)
     def cancel_schedule(conversation_id:str,identity:str,service=Depends(svc),user=Depends(authenticated)):
         with service.db.transaction():
-            service.require("conversations",conversation_id,user)
-            series=service.db.one("SELECT status FROM conversation_schedule_series WHERE id=? AND conversation_id=?",(identity,conversation_id))
-            if series:
-                service.db.execute("UPDATE conversation_schedule_series SET status='cancelled' WHERE id=?",(identity,))
-                # Cancel outstanding occurrences that have not been dispatched.
-                service.db.execute("""UPDATE message_queue SET status='cancelled',revision=revision+1,updated_at=? WHERE status='pending' AND conversation_id=? AND id IN
-                    (SELECT id FROM conversation_schedules WHERE series_id=?)""",(now(),conversation_id,identity))
-                service.db.execute("UPDATE conversation_schedules SET status='cancelled' WHERE series_id=? AND status='scheduled'",(identity,))
-                return
-            row=service.db.one("SELECT status FROM conversation_schedules WHERE id=? AND conversation_id=?",(identity,conversation_id))
-            if row is None:
-                raise AppError(404,"NOT_FOUND","计划任务不存在")
-            if row["status"]=="cancelled":
-                return
-            if row["status"]=="queued":
-                changed=service.db.execute("UPDATE message_queue SET status='cancelled',revision=revision+1,updated_at=? WHERE id=? AND conversation_id=? AND status='pending'",(now(),identity,conversation_id))
-                if not changed.rowcount:
-                    raise AppError(409,"SCHEDULE_STARTED","任务已启动，请在会话里操作")
-            elif row["status"]!="scheduled":
-                raise AppError(409,"SCHEDULE_INACTIVE","该计划任务已结束")
-            service.db.execute("UPDATE conversation_schedules SET status='cancelled' WHERE id=?",(identity,))
+            persist_schedule_cancel(service,user,conversation_id,identity)
     root=APIRouter()
     root.include_router(router)
 

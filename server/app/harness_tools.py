@@ -108,7 +108,7 @@ class HarnessToolBridge:
                   if policy.tool_allowed(f"mcp__workspace__{item['name']}")]
         definitions = workspace + business + memory
         if self.schedule_enabled:
-            definitions.extend(item for item in [harness_schedule.DEFINITION,*harness_schedule.READ_DEFINITIONS]
+            definitions.extend(item for item in [harness_schedule.DEFINITION,harness_schedule.EDIT_DEFINITION,*harness_schedule.READ_DEFINITIONS]
                                if policy.tool_allowed(f"mcp__workspace__{item['name']}"))
         if self.inherited_names is not None:
             definitions = [item for item in definitions if item["name"] in self.inherited_names]
@@ -277,10 +277,11 @@ class HarnessToolBridge:
                 return {"is_error": True, "content": [{"type": "text", "text": exc.message}]}
         self.calls.add((run_id, call_id))
         schedule_proposal = None
-        if name == harness_schedule.NAME:
+        if name in {harness_schedule.NAME,harness_schedule.EDIT_NAME}:
             try:
                 self.active(run_id)
-                schedule_proposal = await asyncio.to_thread(harness_schedule.prepare, runtime, run_id, payload["arguments"])
+                prepare = harness_schedule.prepare if name==harness_schedule.NAME else harness_schedule.prepare_edit
+                schedule_proposal = await asyncio.to_thread(prepare, runtime, run_id, payload["arguments"])
                 arguments = schedule_proposal[2]
             except AppError as exc:
                 return {"is_error":True,"content":[{"type":"text","text":exc.message}]}
@@ -308,7 +309,7 @@ class HarnessToolBridge:
                 automatic = False
             policies = self.policy_snapshot()
             if schedule_proposal is not None:
-                harness_schedule.check_context(runtime,run_id)
+                harness_schedule.check_context(runtime,run_id,tool_name)
             run = service.require("runs", run_id)
             review_required = service.model_approval.requires_review(runtime.conversation_id, tool_name)
             dual = service.high_risk_approval.requires_dual(run, tool_name, arguments)
@@ -323,7 +324,7 @@ class HarnessToolBridge:
             def schedule_approval_guard():
                 self.active(run_id)
                 self.unchanged_policy(policies)
-                harness_schedule.check_context(runtime,run_id)
+                harness_schedule.check_context(runtime,run_id,tool_name)
                 return service.require("runs",run_id)
 
             allowed = (await runtime.approve(tool_name, arguments, review=review, review_checked=True,
@@ -369,7 +370,8 @@ class HarnessToolBridge:
 
             if schedule_proposal is not None:
                 body, prepared, preview = schedule_proposal
-                created = await offload_write(harness_schedule.commit, runtime, run_id, body, prepared, preview, allowed, recheck)
+                commit = harness_schedule.commit if name==harness_schedule.NAME else harness_schedule.commit_edit
+                created = await offload_write(commit, runtime, run_id, body, prepared, preview, allowed, recheck)
                 result = {"content":[{"type":"text","text":json.dumps(created,ensure_ascii=False)}]}
             elif name in harness_schedule.READ_NAMES:
                 receipt=await asyncio.to_thread(harness_schedule.read,runtime,run_id,name,arguments,recheck)

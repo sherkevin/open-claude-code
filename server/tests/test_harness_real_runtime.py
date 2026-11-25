@@ -584,7 +584,7 @@ def test_real_harness_stream_tools_approval_cancel_resume(tmp_path, monkeypatch,
         assert "/permission CASE_STREAM" in json.dumps(requests[0], ensure_ascii=False)
         assert {tool["name"] for tool in requests[0]["tools"]} == {
             "knowledge_search", "knowledge_read", "generate_xlsx", "generate_image", "file_read", "file_write", "file_search",
-            "memory_list", "memory_read", "memory_write", "ask_user", "review_plan", "delegate_tasks", "schedule_create", "schedule_list", "schedule_view",
+            "memory_list", "memory_read", "memory_write", "ask_user", "review_plan", "delegate_tasks", "schedule_create", "schedule_list", "schedule_view", "schedule_edit",
         }
         assert json.loads(service.require("runs", first)["usage"])["output_tokens"] == 8
         assert requests[0]["max_tokens"] == settings.harness_max_output_tokens
@@ -1086,3 +1086,62 @@ def test_real_harness_natural_language_schedule_read(tmp_path,model_server,monke
         assert not service.db.all("SELECT id FROM approvals WHERE run_id=?",(run,))
         assert not service.db.all("SELECT * FROM message_queue")
         assert service.db.one("SELECT count(*) n FROM conversation_schedule_series")["n"]==2
+
+
+def schedule_edit_reply(body,blocks,result):
+    if result is None:
+        return "",("schedule_list",{"active":True,"limit":5})
+    value=json.dumps(result,ensure_ascii=False).replace('\\"','"')
+    if '"operation": "edit"' in value or '"operation":"edit"' in value:
+        return "已收到修改后的实际计划回执",None
+    if '"items"' in value:
+        match=re.search(r"series-[a-f0-9]{32}",value)
+        assert match
+        return "",("schedule_view",{"id":match.group(0)})
+    plan=re.search(r"series-[a-f0-9]{32}",value)
+    version=re.search(r'"expectedUpdatedAt"\s*:\s*"([a-f0-9]{64})"',value)
+    assert plan and version,"Expected actual plan ID and version from view"
+    return "",("schedule_edit",{"id":plan.group(0),"expectedUpdatedAt":version.group(1),
+                                 "action":"update","prompt":"只使用合成数据生成更新后的日报"})
+
+
+@pytest.mark.parametrize("model_server",[lambda:schedule_edit_reply],indirect=True)
+def test_real_harness_natural_language_schedule_edit(tmp_path,model_server,monkeypatch):
+    from datetime import datetime,timedelta,timezone
+    node,source=os.getenv("HARNESS_TEST_NODE"),os.getenv("HARNESS_TEST_SOURCE")
+    if not node or not source:
+        pytest.skip("requires explicitly installed pinned Harness runtime")
+    for name in PROVIDER_KEYS:
+        monkeypatch.delenv(name,raising=False)
+    monkeypatch.setenv("AGENT_KNOWLEDGE_EMBEDDING_MODEL","local-lexical-v1")
+    base,requests=model_server
+    app=create_app(image_fixture_settings(tmp_path,node,source,base))
+    with TestClient(app) as client:
+        service=app.state.service
+        user=service.create_user({"username":"admin","display_name":"Test","password":PASSWORD,"role":"admin"})
+        login(client)
+        assistant=service.save_assistant({"name":"Schedule edit fixture"},user=user)
+        cid=client.post("/api/v1/conversations",json={"assistant_id":assistant["id"]}).json()["id"]
+        stamp=(datetime.now(timezone.utc)+timedelta(days=1)).isoformat()
+        plan=client.post(f"/api/v1/conversations/{cid}/schedules",json={"text":"original natural edit fixture","scheduled_at":stamp,"recurrence":"daily"})
+        assert plan.status_code==201,plan.text
+        identity=plan.json()["id"]
+        run=send(client,cid,"请修改当前会话定时日报的指令","schedule-natural-edit-real")["run_id"]
+        pending=wait_run(client,run,{"awaiting_approval"})
+        assert pending["status"]=="awaiting_approval",pending
+        approval,=pending["approvals"]
+        assert approval["tool_name"]=="mcp__workspace__schedule_edit"
+        assert approval["arguments"]["before"]["prompt"]=="original natural edit fixture"
+        assert approval["arguments"]["after"]["prompt"]=="只使用合成数据生成更新后的日报"
+        assert service.db.one("SELECT text FROM conversation_schedule_series WHERE id=?",(identity,))["text"]=="original natural edit fixture"
+        assert client.post(f"/api/v1/approvals/{approval['id']}/decision",json={"decision":"allow"}).status_code==200
+        assert wait_run(client,run)["status"]=="succeeded"
+        item,=client.get(f"/api/v1/conversations/{cid}/schedules").json()
+        assert item["id"]==identity and item["text"]==approval["arguments"]["after"]["prompt"]
+        assert item["scheduled_at"]==plan.json()["scheduled_at"]
+        events=[e["data"] for e in service.db.events(run,0) if e["type"]=="tool.completed"]
+        assert [(e["tool_name"],e["success"]) for e in events]==[
+            ("mcp__workspace__schedule_list",True),("mcp__workspace__schedule_view",True),
+            ("mcp__workspace__schedule_edit",True)]
+        assert not service.db.all("SELECT * FROM message_queue")
+        assert service.db.one("SELECT count(*) n FROM conversation_schedule_edit_requests")["n"]==1
