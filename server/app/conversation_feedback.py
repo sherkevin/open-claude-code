@@ -145,6 +145,17 @@ def create_feedback_router(svc, authenticated, admin):
             raise AppError(413, "FEEDBACK_IMAGE_LIMIT", "截图合计不能超过 8 MB")
         return await offload_write(save_feedback, service,user,cid,description,request_id,run_id,message_id,normalized)
 
+    @router.get("/conversations/{cid}/feedback")
+    def own_feedback(cid: str, response: Response, service=Depends(svc), user=Depends(authenticated)):
+        """Read persisted ticket status; no Agent or upstream upload is involved."""
+        service.require("conversations", cid, user)
+        response.headers["Cache-Control"] = "no-store"
+        # Project only fields deliberately shown to the reporter. Do not
+        # return admin diagnostics, screenshot bytes, credentials or chat logs.
+        return service.db.all("""SELECT id,description,status,created_at,updated_at,run_id,message_id
+            FROM conversation_feedback WHERE conversation_id=? AND user_id=?
+            ORDER BY created_at DESC,id DESC LIMIT 100""", (cid, user["id"]))
+
     @router.get("/admin/feedback")
     def list_feedback(service=Depends(svc), user=Depends(admin)):
         return service.db.all("""SELECT f.id,f.user_id,f.conversation_id,f.run_id,f.message_id,

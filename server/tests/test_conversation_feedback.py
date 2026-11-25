@@ -79,3 +79,42 @@ def test_feedback_retention_cascades_screenshot_cleanup(client):
     sweep_feedback(service)
     assert not service.db.one("SELECT id FROM conversation_feedback WHERE id=?",(fid,))
     assert not service.db.one("SELECT id FROM conversation_feedback_images WHERE feedback_id=?",(fid,))
+
+
+def test_own_feedback_receipt_history_reflects_admin_status_and_isolation(client):
+    service=client.app.state.service
+    for username in ("reporter", "other"):
+        service.create_user({"username":username,"display_name":username,"password":PASSWORD,"role":"member"})
+    login(client,"reporter")
+    cid=conversation(client)["id"]
+    other_cid=conversation(client)["id"]
+    route=f"/api/v1/conversations/{cid}/feedback"
+    other_route=f"/api/v1/conversations/{other_cid}/feedback"
+    assert client.get(route).json()==[]
+    fid=client.post(route,data={"description":"my issue","request_id":"own-status-1"}).json()["id"]
+    other_id=client.post(other_route,data={"description":"another session","request_id":"own-status-2"}).json()["id"]
+    reply=client.get(route)
+    assert reply.headers["cache-control"]=="no-store"
+    rows=reply.json()
+    assert len(rows)==1 and rows[0]["id"]==fid and rows[0]["status"]=="new"
+    assert set(rows[0])=={"id","description","status","created_at","updated_at","run_id","message_id"}
+    assert other_id not in reply.text and "another session" not in reply.text
+    assert client.patch(f"/api/v1/admin/feedback/{fid}",json={"status":"resolved"}).status_code==403
+    # Administrator processing does not grant access to another user's
+    # reporter endpoint or start a model turn.
+    login(client)
+    assert client.get(route).status_code==404
+    assert client.patch(f"/api/v1/admin/feedback/{fid}",json={"status":"in_progress"}).status_code==200
+    login(client,"reporter")
+    assert client.get(route).json()[0]["status"]=="in_progress"
+    login(client,"other")
+    assert client.get(route).status_code==404
+    login(client)
+    assert client.patch(f"/api/v1/admin/feedback/{fid}",json={"status":"resolved"}).status_code==200
+    login(client,"reporter")
+    assert client.get(route).json()[0]["status"]=="resolved"
+    assert service.db.all("SELECT id FROM runs WHERE conversation_id=?",(cid,))==[]
+    service.db.execute("UPDATE conversation_feedback SET created_at=? WHERE id=?",
+        ((datetime.now(timezone.utc)-timedelta(days=91)).isoformat(),fid))
+    sweep_feedback(service)
+    assert client.get(route).json()==[]

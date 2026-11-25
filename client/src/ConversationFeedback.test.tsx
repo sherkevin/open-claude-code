@@ -1,6 +1,6 @@
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe,expect,it} from 'vitest';
-import ConversationFeedback,{feedbackForm,feedbackImageProblem} from './ConversationFeedback';
+import ConversationFeedback,{feedbackForm,feedbackImageProblem,FeedbackHistory} from './ConversationFeedback';
 
 describe('session-scoped explicit feedback',()=>{
   it('offers a session feedback action without uploading anything on render',()=>{
@@ -23,5 +23,18 @@ describe('session-scoped explicit feedback',()=>{
     expect(feedbackImageProblem([png])).toBe('');
     expect(feedbackImageProblem([png,png,png,png])).toContain('3');
     expect(feedbackImageProblem([new File(['bad'],'bad.svg',{type:'image/svg+xml'})])).toContain('PNG');
+  });
+});
+
+describe('reporter feedback history',()=>{
+  it('shows no history for an empty session and displays committed processing status and receipt',()=>{
+    expect(renderToStaticMarkup(<FeedbackHistory rows={[]}/>)).toContain('本会话暂无历史反馈');
+    const html=renderToStaticMarkup(<FeedbackHistory rows={[
+      {id:'ticket-1',description:'<script>fixture</script>',status:'in_progress',created_at:'2026-11-25T00:00:00Z',updated_at:'2026-11-25T01:00:00Z'},
+      {id:'ticket-2',description:'fixed',status:'resolved',created_at:'2026-11-25T00:00:00Z',updated_at:'2026-11-25T02:00:00Z'},
+    ]}/>);
+    expect(html).toContain('处理中');expect(html).toContain('已解决');expect(html).toContain('ticket-1');
+    expect(html).not.toContain('<script>fixture</script>');
+    expect(html).toContain('&lt;script&gt;fixture&lt;/script&gt;');
   });
 });

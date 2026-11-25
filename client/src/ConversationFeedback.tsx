@@ -1,5 +1,5 @@
-import {useRef,useState} from 'react';
-import {MessageSquareWarning} from 'lucide-react';
+import {useEffect,useRef,useState} from 'react';
+import {MessageSquareWarning,RefreshCw} from 'lucide-react';
 import {api,clientRequestId,errorText,timeText,sizeText} from './api';
 import {Button,ErrorNotice,Field,Modal} from './components';
 import type {Message} from './types';
@@ -19,15 +19,45 @@ export function feedbackForm(description:string,requestId:string,target:string,r
   files.forEach(file=>body.append('screenshots',file,file.name));
   return body;
 }
-export default function ConversationFeedback({conversationId,runId,messages}:{conversationId:string;runId?:string;messages:Message[]}){
+type FeedbackRow={id:string;description:string;status:'new'|'in_progress'|'resolved';created_at:string;updated_at:string;run_id?:string|null;message_id?:string|null};
+const labels={new:'待处理',in_progress:'处理中',resolved:'已解决'} as const;
+type FeedbackProps={conversationId:string;runId?:string;messages:Message[]};
+export function FeedbackHistory({rows}:{rows:FeedbackRow[]}){
+  if(!rows.length)return <p className="form-note">本会话暂无历史反馈。</p>;
+  return <ul className="task-sidebar-list" aria-label="我的反馈记录">{rows.map(row=><li key={row.id}>
+    <details className="task-sidebar-schedule">
+      <summary><strong>{labels[row.status]||'状态未确认'}</strong> · {timeText(row.created_at)} · {row.description.replace(/\s+/g,' ').slice(0,80)}</summary>
+      <p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{row.description}</p>
+      <p className="form-note">反馈编号：<code>{row.id}</code> · 最后更新：{timeText(row.updated_at)}</p>
+    </details>
+  </li>)}</ul>;
+}
+export default function ConversationFeedback(props:FeedbackProps){
+  // A conversation change must never retain another conversation's draft,
+  // receipt, or cached records, even when the parent component is reused.
+  return <FeedbackDialog key={props.conversationId} {...props}/>;
+}
+function FeedbackDialog({conversationId,runId,messages}:FeedbackProps){
   const [open,setOpen]=useState(false),[description,setDescription]=useState(''),[target,setTarget]=useState('current'),[files,setFiles]=useState<File[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState(''),[receipt,setReceipt]=useState('');
   const pending=useRef(false),requestId=useRef(''),frozenRun=useRef<string>();
-  function start(){requestId.current=clientRequestId();frozenRun.current=runId;setTarget(runId?'current':'session');setDescription('');setFiles([]);setReceipt('');setError('');setOpen(true);}
+  const path='/conversations/'+encodeURIComponent(conversationId)+'/feedback';
+  const [rows,setRows]=useState<FeedbackRow[]>(),[historyError,setHistoryError]=useState(''),[refresh,setRefresh]=useState(0),[historyLoading,setHistoryLoading]=useState(false);
+  useEffect(()=>{
+    if(!open)return;
+    const controller=new AbortController();
+    setHistoryLoading(true);setHistoryError('');
+    api<FeedbackRow[]>(path,{signal:controller.signal,cache:'no-store'})
+      .then(value=>{if(!controller.signal.aborted)setRows(value);})
+      .catch(e=>{if(!controller.signal.aborted){setRows(undefined);setHistoryError(errorText(e));}})
+      .finally(()=>{if(!controller.signal.aborted)setHistoryLoading(false);});
+    return ()=>controller.abort();
+  },[open,path,refresh]);
+  function start(){requestId.current=clientRequestId();frozenRun.current=runId;setTarget(runId?'current':'session');setDescription('');setFiles([]);setReceipt('');setError('');setRows(undefined);setHistoryError('');setOpen(true);}
   async function submit(){
     if(pending.current||!description.trim())return;
     const issue=feedbackImageProblem(files);if(issue){setError(issue);return;}
     pending.current=true;setBusy(true);setError('');
-    try{const result=await api<{id:string}>('/conversations/'+encodeURIComponent(conversationId)+'/feedback',{method:'POST',body:feedbackForm(description,requestId.current,target,frozenRun.current,files)});setReceipt(result.id);setFiles([]);}
+    try{const result=await api<{id:string}>(path,{method:'POST',body:feedbackForm(description,requestId.current,target,frozenRun.current,files)});setReceipt(result.id);setFiles([]);setRefresh(value=>value+1);}
     catch(e){setError(errorText(e));}finally{pending.current=false;setBusy(false);}
   }
   return <><button type="button" className="icon-button" title="问题反馈" aria-label="问题反馈" onClick={start}><MessageSquareWarning size={17}/></button>
@@ -41,6 +71,13 @@ export default function ConversationFeedback({conversationId,runId,messages}:{co
       <Field label="上传截图（可选）" hint="最多 3 张，每张 4 MB，合计 8 MB。"><input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>{const next=[...files,...Array.from(e.target.files||[])];e.target.value='';const issue=feedbackImageProblem(next);setError(issue);if(!issue)setFiles(next);}}/></Field>
       {files.map((file,i)=><div key={i} className="checkbox-row"><span>{file.name} · {sizeText(file.size)}</span><Button variant="ghost" disabled={busy} onClick={()=>setFiles(old=>old.filter((_,index)=>index!==i))}>移除</Button></div>)}
       <p className="form-note">提交后，工作台管理员可以查看你填写的内容、所选截图、关联会话/轮次编号和有限的执行状态日志。不会自动附上完整对话、请求参数或业务结果。请遮盖截图中的敏感信息；反馈默认保留 90 天。</p>
-    </>}</div><footer className="modal-footer"><Button variant="secondary" disabled={busy} onClick={()=>setOpen(false)}>{receipt?'关闭':'取消'}</Button>{!receipt&&<Button busy={busy} disabled={busy||!description.trim()} onClick={()=>void submit()}>提交反馈</Button>}</footer>
+    </>}
+    <details className="task-sidebar-history" open={receipt?true:undefined}>
+      <summary>我的反馈记录</summary>
+      <div className="checkbox-row"><p className="form-note">显示本会话最近 100 条反馈，保留 90 天。</p><Button variant="ghost" busy={historyLoading} onClick={()=>setRefresh(value=>value+1)} aria-label="刷新反馈处理状态"><RefreshCw size={15}/>刷新状态</Button></div>
+      <ErrorNotice message={historyError}/>
+      {rows?<FeedbackHistory rows={rows}/>:historyLoading?<p role="status">正在读取反馈记录…</p>:null}
+    </details>
+    </div><footer className="modal-footer"><Button variant="secondary" disabled={busy} onClick={()=>setOpen(false)}>{receipt?'关闭':'取消'}</Button>{!receipt&&<Button busy={busy} disabled={busy||!description.trim()} onClick={()=>void submit()}>提交反馈</Button>}</footer>
   </Modal>}</>;
 }
