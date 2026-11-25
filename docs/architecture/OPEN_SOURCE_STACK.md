@@ -157,6 +157,8 @@ flowchart LR
 - 固定官方 subagent/Team 的 12 套件 389/389 通过，见 [官方基线](../evidence/KAIWU_SUBAGENT_TEAM_UPSTREAM_2026-11-25.md)，仍需产品集成，不代表已上线。
 - Mem0 派生索引适配由 VIP 独立 Claude Code 工人开发，真实 SDK 产品集成尚待验收。
 
+- 2026-11-26：固定官方工作区、Jobs、终端、sandbox policy 与浏览器/计算机 provider registry 37 套件 737/737 通过，见 [工作环境基线](../evidence/KAIWU_WORKSPACE_UPSTREAM_2026-11-26.md)；尚未产品接入，不代表实际浏览器/桌面驱动或强租户隔离已验证。
+
 ## 6. 实施顺序与工作量控制
 
 1. **任务管理**：优先以官方 Schedule/时间规则、自动化工具协议及 ui-schedule 的交互为基础，完善现有队列的管理生命周期；反馈处理回执/状态查询优先借鉴 message-feedback，保留已有企业工单。
