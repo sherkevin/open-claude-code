@@ -67,7 +67,7 @@ DeepSeek Harness 采用插件组合架构，固定源码中已经包含下面的
 | 持久 Goal | dsh-goal、dsh-goal-round-driver、dsh-tool-goal、command-goal | 已选定，待隔离验收 | 一目标一会话；目标完成条件、轮次/成本上限、人工暂停、审批与恢复。官方持久目标不等于进程重启后自动获准继续 |
 | 持久子智能体与通信 | dsh-subagent、subagent-spawn-in-process、subagent-fork-in-process、tool-subagent、tool-subagent-control | 已选定，待接入 | 本地 spawn/fork 才是当前上游可继续会话；外部 ACP/DSH SDK/Codex/Claude Code provider 在该固定版本是一次性执行。保留现有子任务能力直到迁移通过 |
 | 团队及 DAG | dsh-agent-team、dsh-tool-agent-team、ui-agent-team | 已选定，待接入 | 共用任务板、依赖和 CAS 认领直接复用，企业账号/项目/权限、资源隔离及 L1/L2/L3 角色控制由宿主补齐。上游任务板不是跨进程分布式调度器 |
-| Codex 编码执行器 | [openai/codex](https://github.com/openai/codex) 开源 CLI / [App Server](https://github.com/openai/codex/tree/main/codex-rs/app-server) | Apache-2.0，待选固定发行版及验证 | 作为可选工程执行器；优先 App Server 的线程、事件、审批和恢复接口，不通过终端文本猜测状态。Codex 桌面端/云服务并非全部开源 |
+| Codex 编码执行器 | [openai/codex](https://github.com/openai/codex) 开源 CLI / [App Server](https://github.com/openai/codex/tree/main/codex-rs/app-server) | Apache-2.0，上游发行来源与实际二进制许可待复核 | 本地 0.165.0 固定 SHA-256、官方 CLI 生成 schema 通过（[基线](../evidence/KAIWU_CODEX_APPSERVER_SCHEMA_2026-11-26.md)）；作为可选工程执行器；优先 App Server 的线程、事件、审批和恢复接口，不通过终端文本猜测状态。Codex 桌面端/云服务并非全部开源 |
 | 长期记忆 | [Mem0 OSS](https://github.com/mem0ai/mem0) 2.2.1、[Qdrant client](https://github.com/qdrant/qdrant-client) 1.20.0（pilot） | **真实 SDK 隔离验证通过**，均 Apache-2.0 | 见 §5。Mem0 为语义索引及记忆提取候选，不替代现有权威记忆、审批或用户身份 |
 | 终端与后台任务 | dsh-terminal、dsh-terminal-bash、dsh-jobs、dsh-jobs-local、dsh-tool-jobs；如原 UI 不能嵌入，评估 xterm.js (MIT) | 已选定，待隔离验证 | 官方 terminal/jobs-local 是进程本地能力；若要跨进程持续，需可持久执行器和恢复协议，不能声称现成支持 |
 | 浏览器/计算机操作 | dsh-browser-use、dsh-computer-use 的 provider seam；可复用现成受控浏览器/桌面 provider | 待选定实际 provider、隔离与许可复核 | 用户授权、租户独立环境、网络出站和文件边界；注册 seam 本身不包含操作驱动 |

@@ -14,7 +14,7 @@
 | B | 官方 Goal 状态、round driver 与预算/检查点恢复 | 官方固定源码 149/149、原生 Goal 状态服务/工作台隔离接入通过；自动 driver、执行预算及恢复待做 |
 | C | 官方持久子智能体、子智能体通信、Team 任务板及多层协作 | 固定官方 12 套件 389/389 通过，产品接入待做 |
 | D | Mem0 派生索引适配、中文记忆质量和隔离评测 | SDK pilot 通过；VIP Claude Code 独立候选开发中 |
-| E | 终端/Jobs/工作区/Codex App Server 与受控浏览器环境 | 官方工作环境 37 套件 737/737 通过；产品接入、实际 provider、Codex 验证待做 |
+| E | 终端/Jobs/工作区/Codex App Server 与受控浏览器环境 | 官方工作环境 37 套件 737/737 通过；Codex 0.165.0 本地 schema 基线通过；产品接入、实际 provider 与 Codex 运行时验证待做 |
 
 ## A1 实现和验收
 
@@ -93,6 +93,10 @@ A1 工作树仍有开发活动时，独立工作树 kaiwu-feedback-tracking-2026
 ## E1 官方工作环境基线（2026-11-26）
 
 Goal driver 与 Mem0 工人仍实际修改各自候选时，总控独立运行固定官方 workspace、workspace-files/controller、路径、Jobs、terminal、sandbox policy 与 browser/computer provider registry 基线：37 套件 737/737 通过，退出码 0。详见 [工作环境基线](../evidence/KAIWU_WORKSPACE_UPSTREAM_2026-11-26.md)。这不是产品集成或真实桌面能力验收；生产闸门不变。下一步仍优先验收 Goal driver 与 Mem0 已写代码，其后 Team 原生状态接入；E2 先做只读工作区/任务视图，后续实际 provider 和 Codex App Server 独立固定版本验证。
+
+## E2 Codex App Server 本地协议基线（2026-11-26）
+
+现有独立 Codex 二进制报告 0.165.0，固定 SHA-256 并离线生成 320 个 JSON Schema，4 组方法、5 组参数、4 组身份约束、3 对审批 schema 检查通过。见 [本地协议基线](../evidence/KAIWU_CODEX_APPSERVER_SCHEMA_2026-11-26.md)。来源/许可复核、隔离 stdio 握手、真实 turn 与审批/恢复联调未完成，未启用任何模型或工具。仍优先 Goal 与 Mem0 工人候选验收、Team 产品接入；生产闸门不变。
 
 ### 发布前关键条件
 
