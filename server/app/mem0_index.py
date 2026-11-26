@@ -1026,6 +1026,33 @@ class NativeMemorySourceReader:
             except Exception:
                 raise Mem0IndexScopeInvalid("无法核验当前记忆索引授权") from None
 
+    def require_committed_clear(self, scope: TrustedScope, operation_key: str) -> None:
+        """Require an exact, current, owner-initiated native clear receipt."""
+        if type(operation_key) is not str or not operation_key or len(operation_key) > 256:
+            raise Mem0IndexScopeInvalid("清理操作标识无效")
+        if self.run_id is not None or self.load(scope).documents:
+            raise Mem0IndexScopeInvalid("仅允许已清空的空闲权威快照")
+        service = self.memory.service
+        with service.db.lock:
+            if self._admitted_scope(scope.user_id, scope.conversation_id) != scope:
+                raise Mem0IndexSourceChanged("权威记忆作用域已变化")
+            row = service.db.one("""SELECT * FROM memory_operations WHERE conversation_id=?
+                AND operation_key=? AND user_id=? AND run_id IS NULL AND kind='clear'
+                AND status='committed'""", (scope.conversation_id, operation_key, scope.user_id))
+            try:
+                result = json.loads(row["result"]) if row else None
+                valid = (isinstance(result, dict) and row["snapshot_id"] == scope.snapshot_id
+                         and result.get("operation_id") == operation_key
+                         and result.get("mutation_status") == "committed"
+                         and result.get("context_reset") is True
+                         and type(result.get("revision")) is int and result["revision"] == scope.revision
+                         and type(result.get("native_epoch")) is int and result["native_epoch"] == scope.native_epoch
+                         and result.get("files") == [])
+            except (TypeError, ValueError, KeyError):
+                valid = False
+            if not valid:
+                raise Mem0IndexScopeInvalid("缺少当前权威快照的已提交清空回执")
+
     def current_scope(self, user_id: str, conversation_id: str) -> TrustedScope:
         """Host-only scope derivation. No creation, migration or backend calls."""
         scope = self._admitted_scope(user_id, conversation_id)

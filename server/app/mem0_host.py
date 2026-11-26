@@ -83,6 +83,33 @@ class Mem0Host:
             index, scope = self._index(user_id, conversation_id, run_id=None)
             return index.sync(scope)
 
+    def clear_committed(self, user_id: str, conversation_id: str, operation_key: str) -> SyncResult:
+        """Explicit maintenance for a currently authorized native clear.
+
+        Reuse scoped enumeration and individually owned row reconciliation;
+        never invoke broad delete_all or automatically replay an uncertain clear.
+        A successful result requires a fresh complete empty enumeration.
+        """
+        with self._slot():
+            reader = NativeMemorySourceReader(self.service.memory)
+            scope = reader.current_scope(user_id, conversation_id)
+            reader.require_committed_clear(scope, operation_key)
+            index = Mem0DerivedIndex(self.config, self.backend, reader)
+            result = index.sync(scope)
+            reader.require_committed_clear(scope, operation_key)
+            if result.status == "partial":
+                return result
+            try:
+                remaining = index._rows(self.backend.get_all(filters=index._filters(scope)), "get_all")
+            except Mem0IndexError:
+                raise
+            except Exception as exc:
+                raise Mem0IndexUnavailable("Mem0 清理结果无法确认") from exc
+            reader.require_committed_clear(scope, operation_key)
+            if remaining:
+                raise Mem0IndexUnavailable("Mem0 清理后仍有派生记录，未确认完成")
+            return result
+
     def lookup(self, user_id: str, conversation_id: str, query: str,
                *, run_id: str | None = None) -> Lookup:
         """At most one search, zero index writes. Whole verified hit texts only;

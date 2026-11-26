@@ -112,6 +112,28 @@ def main():
                 assert not backend.get_all(filters=filters)["results"]
                 assert len(other_adapter.search("fixture",scope=other).hits)==2
                 checks.append("scoped empty snapshot cleanup preserves other owner")
+                # Real SDK and host path, with a synthetic authority fixture.
+                # The actual SQLite clear receipt is covered by backend pytest.
+                from unittest.mock import patch
+                from app.mem0_host import Mem0Host
+                class ClearReader(Reader):
+                    current=scope(1,cid="synthetic-clear-session")
+                    def current_scope(self, user_id, conversation_id):
+                        assert (user_id,conversation_id)==(self.current.user_id,self.current.conversation_id)
+                        return self.current
+                    def require_committed_clear(self, scope, operation_key):
+                        assert scope==self.current and operation_key=="synthetic-clear" and not self.docs
+                clear_reader=ClearReader(docs(1)[:1])
+                clear_host=Mem0Host(SimpleNamespace(settings=SimpleNamespace(data_dir=root),memory=None),
+                                    Mem0IndexConfig(enabled=True),backend=backend)
+                with patch("app.mem0_host.NativeMemorySourceReader",return_value=clear_reader):
+                    target=clear_reader.current
+                    assert clear_host.sync(target.user_id,target.conversation_id).added==1
+                    clear_reader.docs=[]
+                    clear_reader.current=scope(2,cid=target.conversation_id)
+                    assert clear_host.clear_committed(target.user_id,target.conversation_id,"synthetic-clear").deleted==1
+                    assert len(other_adapter.search("fixture",scope=other).hits)==2
+                checks.append("real SDK host clear and complete empty readback preserve other owner; synthetic authority")
                 # Actual SDK write succeeds; the source is revoked before the
                 # next document can be submitted. Roll back the acknowledged
                 # new row without touching another owner's rows.

@@ -1031,3 +1031,53 @@ def test_sync_failed_response_rolls_back_prior_acknowledged_writes():
     with pytest.raises(Mem0IndexUnavailable):
         adapter.sync(make_scope())
     assert not backend.rows
+
+
+def test_host_clear_requires_current_committed_receipt_and_preserves_other_scope(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic indexed fact","edit-before-clear")
+    backend = FakeMem0()
+    host = Mem0Host(service,Mem0IndexConfig(enabled=True),backend=backend)
+    assert host.sync(user["id"],cid).added == 1
+    other = backend.insert("other scope",{},user_id="other",agent_id=INDEX_AGENT_ID,run_id=cid)["id"]
+    backend.calls.clear()
+    with pytest.raises(Mem0IndexScopeInvalid):
+        host.clear_committed(user["id"],cid,"edit-before-clear")
+    assert backend.calls == []
+    service.memory.edit(user,cid,1,operation_id="clear-current")
+    with pytest.raises(Mem0IndexScopeInvalid):
+        host.clear_committed(user["id"],cid,"missing-clear")
+    assert backend.calls == []
+    assert host.clear_committed(user["id"],cid,"clear-current").deleted == 1
+    assert set(backend.rows) == {other}
+    assert all(call[0] in {"get_all","delete"} for call in backend.calls)
+    service.memory.edit(user,cid,2,operation_id="clear-again")
+    backend.calls.clear()
+    with pytest.raises(Mem0IndexScopeInvalid):
+        host.clear_committed(user["id"],cid,"clear-current")
+    assert backend.calls == []
+    assert host.clear_committed(user["id"],cid,"clear-again").status == "unchanged"
+
+
+def test_host_clear_never_reports_unverified_delete_as_complete(native_store):
+    from app.mem0_host import Mem0Host
+    service, user, cid = native_store
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic indexed fact","edit-before-clear")
+    class LostDelete(FakeMem0):
+        def delete(self, memory_id):
+            self.calls.append(("delete",memory_id))
+            return {"message":"synthetic false acknowledgment"}
+    backend = LostDelete()
+    host = Mem0Host(service,Mem0IndexConfig(enabled=True),backend=backend)
+    host.sync(user["id"],cid)
+    service.memory.edit(user,cid,1,operation_id="clear-current")
+    with pytest.raises(Mem0IndexUnavailable,match="未确认完成"):
+        host.clear_committed(user["id"],cid,"clear-current")
+    assert len(backend.rows) == 1
+    assert sum(call[0] == "delete" for call in backend.calls) == 1
+    backend.calls.clear()
+    service.db.execute("UPDATE users SET enabled=0 WHERE id=?",(user["id"],))
+    with pytest.raises(Mem0IndexScopeInvalid):
+        host.clear_committed(user["id"],cid,"clear-current")
+    assert backend.calls == []
