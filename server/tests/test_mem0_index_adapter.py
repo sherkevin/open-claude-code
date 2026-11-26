@@ -493,6 +493,104 @@ def test_sdk_wrapper_matches_probe_contract_and_refuses_infer_true():
     assert raw.closed == 1
 
 
+def test_sdk_close_owned_resources_once_and_reject_all_later_calls():
+    class Resource:
+        def __init__(self):
+            self.closed = 0
+        def close(self):
+            self.closed += 1
+
+    memory, embedding, vector = Resource(), Resource(), Resource()
+    backend = Mem0SdkBackend(memory, owned_resources=(embedding, vector, embedding, memory))
+    backend.close()
+    backend.close()
+    assert [r.closed for r in (memory, embedding, vector)] == [1, 1, 1]
+    operations = [
+        lambda: backend.add("text", user_id="u", agent_id="a", run_id="r", metadata={}, infer=False),
+        lambda: backend.search("q", filters={}, top_k=1, threshold=0),
+        lambda: backend.get_all(filters={}),
+        lambda: backend.delete("id"),
+        lambda: backend.delete_all(user_id="u", agent_id="a", run_id="r"),
+    ]
+    for operation in operations:
+        with pytest.raises(Mem0IndexUnavailable, match="已关闭"):
+            operation()
+
+
+def test_sdk_close_attempts_remaining_resources_after_failure():
+    class Resource:
+        def __init__(self, fail=False):
+            self.closed = 0
+            self.fail = fail
+        def close(self):
+            self.closed += 1
+            if self.fail:
+                raise RuntimeError("synthetic failure")
+
+    memory, first, second = Resource(), Resource(True), Resource()
+    backend = Mem0SdkBackend(memory, owned_resources=(first, second))
+    with pytest.raises(Mem0IndexUnavailable, match="资源关闭失败"):
+        backend.close()
+    backend.close()
+    assert [r.closed for r in (memory, first, second)] == [1, 1, 1]
+    with pytest.raises(Mem0IndexUnavailable, match="已关闭"):
+        backend.get_all(filters={})
+
+
+def test_sdk_close_waits_for_actual_active_call():
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    close_started = threading.Event()
+    closed = threading.Event()
+    errors = []
+
+    class Memory:
+        def search(self, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("test release timed out")
+            finished.set()
+            return {"results": []}
+        def close(self):
+            if not finished.is_set():
+                raise AssertionError("close before search returned")
+            closed.set()
+
+    backend = Mem0SdkBackend(Memory())
+
+    def lookup():
+        try:
+            backend.search("q", filters={}, top_k=1, threshold=0)
+        except Exception as exc:
+            errors.append(exc)
+
+    def close():
+        close_started.set()
+        try:
+            backend.close()
+        except Exception as exc:
+            errors.append(exc)
+
+    reader = threading.Thread(target=lookup)
+    closer = threading.Thread(target=close)
+    reader.start()
+    try:
+        assert entered.wait(2)
+        closer.start()
+        assert close_started.wait(2)
+        assert not closed.wait(0.1)
+    finally:
+        release.set()
+        reader.join(5)
+        if closer.ident is not None:
+            closer.join(5)
+    assert not reader.is_alive() and not closer.is_alive()
+    assert not errors and closed.is_set()
+
+
 def test_sdk_loader_requires_explicit_providers_before_any_import():
     with pytest.raises(Mem0IndexUnavailable):
         load_mem0_backend({})

@@ -196,10 +196,30 @@ def main():
                     stalled.join(5)
                 checks.append("real stalled read times out without retry; slot held until return")
                 assert calls["extraction"]==0
+                # Loader-owned SDK resources close without a separate Qdrant
+                # client.close() call; reopening the same local store proves
+                # the on-disk lock is released and existing rows survive.
+                backend.close()
+                backend.close()
+                assert backend.memory.embedding_model.client.is_closed()
+                assert backend.memory.llm.client.is_closed()
+                assert backend.memory.db is None
+                try:
+                    backend.get_all(filters=filters)
+                except Mem0IndexUnavailable:
+                    pass
+                else:
+                    raise AssertionError("closed backend unexpectedly admitted read")
+                reopened=load_mem0_backend(config, io_timeout_seconds=1.0)
+                try:
+                    other_filters={"user_id":other.user_id,"agent_id":adapter.config.agent_id,"run_id":other.conversation_id}
+                    assert len(reopened.get_all(filters=other_filters)["results"])==2
+                finally:
+                    reopened.close()
+                checks.append("real SDK owned resources close idempotently; persisted Qdrant reopens")
                 print(json.dumps({"sdk":version("mem0ai"),"passed":len(checks),"checks":checks,"loopback_requests":calls,"enumeration_sentinel":MAX_ENUMERATION_ROWS,"quality_evaluation":False}))
             finally:
                 backend.close()
-                backend.memory.vector_store.client.close()
     finally:
         server.shutdown()
         server.server_close()

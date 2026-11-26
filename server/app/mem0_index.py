@@ -775,50 +775,88 @@ class Mem0DerivedIndex:
 
 
 class Mem0SdkBackend:
-    """Thin wrapper over ``mem0.Memory`` using the probe's existing contract."""
+    """Thin, serialized wrapper over the fixed Mem0 SDK.
 
-    def __init__(self, memory: Any):
+    Only the loader supplies owned transport/vector resources. A directly
+    injected memory object retains the previous close() contract.
+    """
+
+    def __init__(self, memory: Any, *, owned_resources: tuple[Any, ...] = ()):
         if memory is None:
             raise ValueError("memory 不能为空")
         self.memory = memory
+        self._owned_resources = tuple(owned_resources)
+        self._lock = threading.RLock()
+        self._closed = False
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise Mem0IndexUnavailable("Mem0 SDK 已关闭")
 
     def add(self, text: str, *, user_id: str, agent_id: str, run_id: str,
             metadata: Mapping[str, Any], infer: bool) -> Mapping[str, Any]:
         if infer is not False:
             raise ValueError("派生索引只允许 infer=False，禁止自动写入正式事实")
-        return self.memory.add(
-            text,
-            user_id=user_id,
-            agent_id=agent_id,
-            run_id=run_id,
-            metadata=dict(metadata),
-            infer=False,
-        )
+        with self._lock:
+            self._require_open()
+            return self.memory.add(
+                text,
+                user_id=user_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                metadata=dict(metadata),
+                infer=False,
+            )
 
     def search(self, query: str, *, filters: Mapping[str, Any], top_k: int,
                threshold: float) -> Mapping[str, Any]:
-        return self.memory.search(query, filters=dict(filters), top_k=top_k, threshold=threshold)
+        with self._lock:
+            self._require_open()
+            return self.memory.search(query, filters=dict(filters), top_k=top_k, threshold=threshold)
 
     def get_all(self, *, filters: Mapping[str, Any]) -> Mapping[str, Any]:
-        result = self.memory.get_all(filters=dict(filters),
-                                     top_k=MAX_ENUMERATION_ROWS, show_expired=True)
-        if not isinstance(result, Mapping) or not isinstance(result.get("results"), list):
-            raise Mem0IndexUnavailable("Mem0 枚举回执格式无效")
-        # A full page is ambiguous; do not reconcile a partial generation
-        # or add more duplicates. An explicit repair is required.
-        if len(result["results"]) >= MAX_ENUMERATION_ROWS:
-            raise Mem0IndexUnavailable("Mem0 枚举达到安全上限，需先核对并清理派生索引")
-        return result
+        with self._lock:
+            self._require_open()
+            result = self.memory.get_all(filters=dict(filters),
+                                         top_k=MAX_ENUMERATION_ROWS, show_expired=True)
+            if not isinstance(result, Mapping) or not isinstance(result.get("results"), list):
+                raise Mem0IndexUnavailable("Mem0 枚举回执格式无效")
+            # A full page is ambiguous; never reconcile a partial generation.
+            if len(result["results"]) >= MAX_ENUMERATION_ROWS:
+                raise Mem0IndexUnavailable("Mem0 枚举达到安全上限，需先核对并清理派生索引")
+            return result
 
     def delete(self, memory_id: str) -> Any:
-        return self.memory.delete(memory_id)
+        with self._lock:
+            self._require_open()
+            return self.memory.delete(memory_id)
 
     def delete_all(self, *, user_id: str, agent_id: str, run_id: str) -> Any:
-        return self.memory.delete_all(user_id=user_id, agent_id=agent_id, run_id=run_id)
+        with self._lock:
+            self._require_open()
+            return self.memory.delete_all(user_id=user_id, agent_id=agent_id, run_id=run_id)
 
-    def close(self) -> Any:
-        close = getattr(self.memory, "close", None)
-        return close() if callable(close) else None
+    def close(self) -> None:
+        # Do not close the transport while a synchronous SDK call is active.
+        # Even on cleanup failure, never admit another operation on this instance.
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            seen: set[int] = set()
+            failed = False
+            for resource in (self.memory, *self._owned_resources):
+                if resource is None or id(resource) in seen:
+                    continue
+                seen.add(id(resource))
+                try:
+                    close = getattr(resource, "close", None)
+                    if callable(close):
+                        close()
+                except Exception:
+                    failed = True
+            if failed:
+                raise Mem0IndexUnavailable("Mem0 SDK 资源关闭失败，需人工核对") from None
 
 
 def load_mem0_backend(config: Mapping[str, Any], *, io_timeout_seconds: float = 10.0) -> Mem0SdkBackend:
@@ -898,7 +936,9 @@ def load_mem0_backend(config: Mapping[str, Any], *, io_timeout_seconds: float = 
                 except Exception:
                     pass
         raise Mem0IndexUnavailable("Mem0 有界 I/O 初始化失败") from None
-    return Mem0SdkBackend(memory)
+    return Mem0SdkBackend(memory, owned_resources=(
+        memory.embedding_model.client, memory.llm.client, memory.vector_store.client,
+    ))
 
 
 class NativeMemorySourceReader:
