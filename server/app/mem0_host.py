@@ -13,13 +13,14 @@ import fcntl
 import os
 from pathlib import Path
 import stat
-from typing import Literal
+from typing import Callable, Literal
 
 from .mem0_index import (
     Mem0Backend, Mem0DerivedIndex, Mem0IndexConfig, Mem0IndexDisabled,
     Mem0IndexError, Mem0IndexUnavailable, NativeMemorySourceReader,
     SyncResult, VerifiedHit,
 )
+from .mem0_scope_store import ScopePaths, ScopeStore
 
 
 @dataclass(frozen=True)
@@ -36,16 +37,24 @@ class Mem0Host:
 
     def __init__(self, service, config: Mem0IndexConfig = Mem0IndexConfig(),
                  *, backend: Mem0Backend | None = None,
+                 scoped_factory: Callable[[ScopePaths], Mem0Backend] | None = None,
                  max_context_bytes: int = 16384):
         if type(config) is not Mem0IndexConfig:
             raise TypeError("invalid Mem0 host config")
-        if config.enabled and backend is None:
+        if backend is not None and scoped_factory is not None:
+            raise ValueError("choose one Mem0 backend mode")
+        if scoped_factory is not None and not callable(scoped_factory):
+            raise TypeError("invalid scoped Mem0 factory")
+        if config.enabled and backend is None and scoped_factory is None:
             raise ValueError("enabled Mem0 host needs an explicit backend")
         if type(max_context_bytes) is not int or not 1 <= max_context_bytes <= 131072:
             raise ValueError("invalid Mem0 context byte budget")
         self.service = service
         self.config = config
         self.backend = backend
+        self.scoped_factory = scoped_factory
+        self.scope_store = (ScopeStore(service.settings.data_dir, config)
+                            if scoped_factory is not None else None)
         self.max_context_bytes = max_context_bytes
 
     @contextmanager
@@ -72,15 +81,46 @@ class Mem0Host:
         finally:
             os.close(fd)
 
-    def _index(self, user_id: str, conversation_id: str, *, run_id: str | None):
+    @contextmanager
+    def _index(self, user_id: str, conversation_id: str, *, run_id: str | None,
+               provision: bool = False):
         reader = NativeMemorySourceReader(self.service.memory, run_id=run_id)
         scope = reader.current_scope(user_id, conversation_id)
-        return Mem0DerivedIndex(self.config, self.backend, reader), scope
+        if self.scope_store is None:
+            yield Mem0DerivedIndex(self.config, self.backend, reader), scope
+            return
+        # No provider on missing or retired lookup. Only explicit maintenance
+        # can create the private SDK paths; the model never controls them.
+        if provision:
+            self.scope_store.provision(scope)
+        with self.scope_store.lease(scope) as paths:
+            reader.load(scope)
+            try:
+                backend = self.scoped_factory(paths)
+            except Mem0IndexError:
+                raise
+            except Exception:
+                raise Mem0IndexUnavailable("Mem0 scope backend unavailable") from None
+            close = getattr(backend, "close", None)
+            if not callable(close):
+                raise Mem0IndexUnavailable("scoped Mem0 backend must own a close operation")
+            try:
+                reader.load(scope)
+                yield Mem0DerivedIndex(self.config, backend, reader), scope
+            finally:
+                # Hold both cooperative locks until the synchronous close
+                # returns. A failure is not a verified result or auto-retry.
+                try:
+                    close()
+                except Exception:
+                    raise Mem0IndexUnavailable("Mem0 scope backend close unconfirmed") from None
+            # No result may escape if authority changed during close.
+            reader.load(scope)
 
     def sync(self, user_id: str, conversation_id: str) -> SyncResult:
         """Explicit host maintenance only. Never called automatically on lookup."""
-        with self._slot():
-            index, scope = self._index(user_id, conversation_id, run_id=None)
+        with self._slot(), self._index(user_id, conversation_id, run_id=None,
+                                      provision=True) as (index, scope):
             return index.sync(scope)
 
     def clear_committed(self, user_id: str, conversation_id: str, operation_key: str) -> SyncResult:
@@ -91,6 +131,8 @@ class Mem0Host:
         A successful result requires a fresh complete empty enumeration.
         """
         with self._slot():
+            if self.scope_store is not None:
+                raise Mem0IndexUnavailable("scoped storage needs independent retirement admission")
             reader = NativeMemorySourceReader(self.service.memory)
             scope = reader.current_scope(user_id, conversation_id)
             reader.require_committed_clear(scope, operation_key)
@@ -118,8 +160,7 @@ class Mem0Host:
         result is not proof of absent authoritative memory.
         """
         try:
-            with self._slot():
-                index, scope = self._index(user_id, conversation_id, run_id=run_id)
+            with self._slot(), self._index(user_id, conversation_id, run_id=run_id) as (index, scope):
                 result = index.search(query, scope=scope)
                 if sum(len(hit.text.encode("utf-8")) for hit in result.hits) > self.max_context_bytes:
                     return Lookup("fallback", reason="context_byte_budget")

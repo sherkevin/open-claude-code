@@ -1187,3 +1187,94 @@ def test_scope_retirement_holds_authoritative_database_write_reservation(native_
         competing.execute("UPDATE users SET enabled=0 WHERE id=?",(uid,))
         with pytest.raises(Mem0IndexError):
             retire_committed_clear(service,store,uid,cid,"clear")
+
+
+def test_scoped_host_only_explicit_sync_provisions_and_closes_under_lease(native_store):
+    from app.mem0_host import Mem0Host
+    service,user,cid = native_store
+    uid = user["id"]
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic indexed fact","edit")
+    scope = NativeMemorySourceReader(service.memory).current_scope(uid,cid)
+    opened, closed = [], []
+    class ScopedBackend(FakeMem0):
+        def close(self):
+            with pytest.raises(Mem0IndexUnavailable), host.scope_store.lease(scope):
+                pass
+            closed.append(True)
+    backend = ScopedBackend()
+    def factory(paths):
+        opened.append(paths)
+        return backend
+    host = Mem0Host(service,Mem0IndexConfig(enabled=True),scoped_factory=factory)
+    assert host.lookup(uid,cid,"fact").status == "fallback"
+    assert not host.scope_store.root.exists() and not opened
+    assert host.sync(uid,cid).added == 1
+    assert len(opened) == len(closed) == 1
+    assert host.lookup(uid,cid,"fact").hits[0].text == "synthetic indexed fact"
+    assert len(opened) == len(closed) == 2 and opened[0] == opened[1]
+    assert opened[0].history.parent.parent == host.scope_store.root
+    service.memory.edit(user,cid,1,operation_id="clear")
+    with pytest.raises(Mem0IndexUnavailable):
+        host.clear_committed(uid,cid,"clear")
+    assert len(opened) == len(closed) == 2
+    from app.mem0_retirement import retire_committed_clear
+    retire_committed_clear(service,host.scope_store,uid,cid,"clear")
+    assert host.lookup(uid,cid,"fact").status == "fallback"
+    with pytest.raises(Mem0IndexUnavailable):
+        host.sync(uid,cid)
+    assert len(opened) == len(closed) == 2
+
+
+def test_scoped_host_does_not_return_hits_after_revocation_during_close(native_store):
+    from app.mem0_host import Mem0Host
+    service,user,cid = native_store
+    uid = user["id"]
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic indexed fact","edit")
+    class RevokingBackend(FakeMem0):
+        revoke = False
+        def close(self):
+            if self.revoke:
+                service.db.execute("UPDATE users SET enabled=0 WHERE id=?",(uid,))
+    backend = RevokingBackend()
+    host = Mem0Host(service,Mem0IndexConfig(enabled=True),scoped_factory=lambda paths: backend)
+    assert host.sync(uid,cid).added == 1
+    backend.revoke = True
+    result = host.lookup(uid,cid,"fact")
+    assert result.status == "fallback" and not result.hits
+
+
+def test_scoped_host_factory_and_close_errors_fall_back_without_retry(native_store):
+    from app.mem0_host import Mem0Host
+    service,user,cid = native_store
+    uid = user["id"]
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic indexed fact","edit")
+    cfg = Mem0IndexConfig(enabled=True)
+    calls = []
+    class ClosingBackend(FakeMem0):
+        fail = False
+        def close(self):
+            calls.append("close")
+            if self.fail:
+                raise RuntimeError("synthetic close error")
+    backend = ClosingBackend()
+    def factory(paths):
+        calls.append("open")
+        return backend
+    host = Mem0Host(service,cfg,scoped_factory=factory)
+    host.sync(uid,cid)
+    backend.fail = True
+    calls.clear()
+    result = host.lookup(uid,cid,"fact")
+    assert result.status == "fallback" and not result.hits and calls == ["open","close"]
+    def failing_factory(paths):
+        calls.append("factory failure")
+        raise RuntimeError("synthetic unavailable")
+    host = Mem0Host(service,cfg,scoped_factory=failing_factory)
+    calls.clear()
+    assert host.lookup(uid,cid,"fact").status == "fallback"
+    assert calls == ["factory failure"]
+    calls.clear()
+    disabled = Mem0Host(service,scoped_factory=failing_factory)
+    assert disabled.lookup(uid,cid,"fact").status == "fallback" and not calls
+    with pytest.raises(ValueError):
+        Mem0Host(service,cfg,backend=backend,scoped_factory=factory)
