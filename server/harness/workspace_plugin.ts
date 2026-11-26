@@ -9,6 +9,7 @@ import { installUsageObserver } from './usage_observer.ts'
 import { forkWorkspaceSession } from './fork_session.ts'
 import { goalStateRequest } from './goal_state.ts'
 import { teamStateRequest } from './team_state.ts'
+import { teamTaskRequest } from './team_tasks.ts'
 
 export const name = 'zhixing-workspace-host'
 export const inject = ['tools', 'agents', 'workingDirectory', 'loader', 'sdkAppStartup', 'tokenMeter', 'sessionProjections', 'commands', 'sessions', 'attachments', 'goals']
@@ -161,7 +162,10 @@ function assertLocalSchemaReferences(root: Record<string, unknown>): void {
 /** Mount the official RPC server alongside only host-dispatched workspace tools. */
 export async function apply(ctx: any, config: any): Promise<void> {
   if (config.sourceCommit !== SOURCE_COMMIT || typeof config.sessionId !== 'string'
-      || !Array.isArray(config.tools) || !Number.isSafeInteger(config.maxSteps) || config.maxSteps < 1) {
+      || !Array.isArray(config.tools) || !Number.isSafeInteger(config.maxSteps) || config.maxSteps < 1
+      || (config.teamState !== undefined && typeof config.teamState !== 'boolean')
+      || (config.teamTasks !== undefined && typeof config.teamTasks !== 'boolean')
+      || (config.teamTasks === true && config.teamState !== true)) {
     throw new Error('Invalid locked workspace profile')
   }
   const sourceImport = (path: string) => import(pathToFileURL(resolve(config.sourceDir, path)).href)
@@ -574,6 +578,10 @@ export async function apply(ctx: any, config: any): Promise<void> {
     if (method === 'workspace/team-state') {
       if (config.teamState !== true || !teamContext) throw new Error('Team state disabled')
       return teamStateRequest(teamContext, config, params, initialized)
+    }
+    if (method === 'workspace/team-task') {
+      if (config.teamTasks !== true || !teamContext) throw new Error('Team task disabled')
+      return teamTaskRequest(teamContext, config, params, initialized)
     }
     if (method === 'workspace/fork' && initialized) return forkWorkspaceSession(ctx, config, params)
     if (method === 'workspace/steer') {

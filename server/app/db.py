@@ -599,6 +599,50 @@ CREATE INDEX IF NOT EXISTS goal_execution_leases_authorization
     ON goal_execution_leases(authorization_id,round_index);
 CREATE INDEX IF NOT EXISTS goal_execution_leases_run
     ON goal_execution_leases(run_id);
+-- Native Team task lifecycle pilot: the owner's explicit, bounded approval and
+-- an append-only host audit of board mutations. The official Team service and
+-- its JSONL session projection remain the sole task-board authority; these
+-- tables never store task subject/description or duplicate the board.
+CREATE TABLE IF NOT EXISTS team_task_authorizations(
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    harness_session_id TEXT NOT NULL,
+    assistant_revision INTEGER NOT NULL,
+    permission_mode TEXT NOT NULL,
+    max_operations INTEGER NOT NULL,
+    expires_in_seconds INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active','revoked')),
+    created_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoked_reason TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS team_task_authorizations_active
+    ON team_task_authorizations(conversation_id) WHERE status='active';
+CREATE INDEX IF NOT EXISTS team_task_authorizations_owner
+    ON team_task_authorizations(conversation_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS team_task_operations(
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id),
+    authorization_id TEXT NOT NULL REFERENCES team_task_authorizations(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    client_request_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('enable','disable','create','claim','complete')),
+    request_digest TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','confirmed','rejected','uncertain')),
+    error_code TEXT,
+    result TEXT,
+    acknowledged_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(conversation_id,client_request_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS team_task_operations_pending
+    ON team_task_operations(conversation_id) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS team_task_operations_history
+    ON team_task_operations(conversation_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS team_task_operations_owner
+    ON team_task_operations(user_id,created_at DESC);
 """
 
 

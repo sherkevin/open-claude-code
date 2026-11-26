@@ -393,9 +393,13 @@ class Service:
         if data.get("enabled") is False:
             from .goal_execution import revoke_user_goal_execution
             revoke_user_goal_execution(self, item_id, "user_disabled")
+            from .team_tasks import revoke_user_team_tasks
+            revoke_user_team_tasks(self, item_id, "user_disabled")
         elif data.get("role") is not None and data["role"] != row["role"]:
             from .goal_execution import revoke_user_goal_execution
             revoke_user_goal_execution(self, item_id, "user_role_changed")
+            from .team_tasks import revoke_user_team_tasks
+            revoke_user_team_tasks(self, item_id, "user_role_changed")
         return user_view(self.require("users", item_id))
 
     def save_connection(self, data, item_id=None, user=None):
@@ -688,6 +692,10 @@ class Service:
             goal_execution_on = (row.get("runtime_type") == "harness"
                                  and self.settings.harness_goal_state_enabled
                                  and self.settings.harness_goal_execution_enabled)
+            team_tasks_on = (row.get("runtime_type") == "harness"
+                             and self.settings.harness_team_state_enabled
+                             and self.settings.harness_team_tasks_enabled
+                             and not self.policy.is_trial)
             if goal_execution_on and data.get("permission_mode") is not None \
                     and data["permission_mode"] != prior_permission:
                 from .goal_execution import stop_goal_execution_locked
@@ -695,6 +703,13 @@ class Service:
             if goal_execution_on and data.get("archived") is True and not row.get("archived"):
                 from .goal_execution import stop_goal_execution_locked
                 stop_goal_execution_locked(self, item_id, "conversation_archived")
+            if team_tasks_on and data.get("permission_mode") is not None \
+                    and data["permission_mode"] != prior_permission:
+                from .team_tasks import stop_team_tasks_locked
+                stop_team_tasks_locked(self, item_id, "permission_changed")
+            if team_tasks_on and data.get("archived") is True and not row.get("archived"):
+                from .team_tasks import stop_team_tasks_locked
+                stop_team_tasks_locked(self, item_id, "conversation_archived")
             if data.get("archived") is not None and self.manager and item_id in getattr(self.manager,"goal_requests",{}):
                 raise AppError(409,"GOAL_SESSION_BUSY","目标正在更新，请稍后归档")
             if row["active_run_id"] and data.get("archived"):

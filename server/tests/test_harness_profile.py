@@ -640,5 +640,29 @@ def test_team_profile_mounts_only_read_only_services(arguments):
     assert next(e for e in entries if e["id"]=="team-state-service")["config"]=={"defaultEnabled":False,"maxTasks":256}
     host=next(e for e in entries if e["id"]=="workspace-host")["config"]
     assert host["teamState"] is True
+    assert "teamTasks" not in host
     assert host["tools"]==arguments["tools"]
     assert all("tool-subagent" not in e["name"] and "tool-agent-team" not in e["name"] and "spawn-in-process" not in e["name"] for e in entries)
+
+
+def test_team_task_profile_requires_state_and_stays_narrow(arguments):
+    source=arguments["source_dir"]
+    for package in ("subagent/subagent","team/agent-team"):
+        path=source/"packages"/package/"src"/"index.ts"
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text("// test fixture")
+    # The mutation seam cannot be composed without the reviewed read-only
+    # service; no profile file is written by the failed call.
+    with pytest.raises(ValueError, match="requires the Team state service"):
+        write_profile(**arguments, team_tasks=True)
+    result=write_profile(**arguments, team_state=True, team_tasks=True)
+    entries=json.loads((Path(result["profile_dir"])/"cordis.patch.yml").read_text())[0]["insert"]
+    assert [entry["id"] for entry in entries]==[name for name,_ in KERNEL_MODULES]+[
+        "team-subagent-service","team-state-service","workspace-compaction","workspace-host"]
+    host=next(e for e in entries if e["id"]=="workspace-host")["config"]
+    assert host["teamState"] is True and host["teamTasks"] is True
+    assert host["tools"]==arguments["tools"]
+    assert all("tool-agent-team" not in e["name"] and "tool-subagent" not in e["name"]
+               and "spawn-in-process" not in e["name"] for e in entries)
+    with pytest.raises(ValueError, match="Team task switch must be boolean"):
+        write_profile(**arguments, team_state=True, team_tasks="true")

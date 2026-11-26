@@ -16,6 +16,8 @@ export interface AppConfig {
   harness_subagents?: boolean;
   harness_goal_state?: boolean;
   harness_goal_execution?: boolean;
+  harness_team_state?: boolean;
+  harness_team_tasks?: boolean;
   default_model_id?: string; default_reasoning_level?: string;
   deployment_mode?: 'normal' | 'trial'; capabilities?: string[]; allowed_retrieval_modes?: KnowledgeRetrievalMode[];
   feishu_h5?: { enabled: boolean; app_id: string; path: string };

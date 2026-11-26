@@ -1,0 +1,94 @@
+/* Native Team task lifecycle pilot: board metadata only, no execution UI. */
+.team-boundary {
+  border-left: 3px solid var(--border-color, #d8dee9);
+  padding-left: 10px;
+}
+.team-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-color, #e5e9f0);
+}
+.team-section > h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+.team-authorization,
+.team-task-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.team-authorization p {
+  margin: 0;
+}
+.team-task-list,
+.team-operation-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-task-item,
+.team-operation-list li {
+  border: 1px solid var(--border-color, #e5e9f0);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.team-task-item[data-status='in_progress'] {
+  border-color: var(--accent-color, #4f7cff);
+}
+.team-task-heading,
+.team-task-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.team-task-heading strong {
+  font-size: 13px;
+}
+.team-task-status {
+  flex: none;
+  font-size: 12px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-muted, #f2f4f8);
+}
+.team-task-item p {
+  margin: 6px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.team-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+.team-task-warning {
+  color: var(--warning-color, #b26a00);
+  font-size: 12px;
+}
+.team-task-action-row + .team-task-action-row {
+  border-top: 1px dashed var(--border-color, #e5e9f0);
+  padding-top: 8px;
+}
+.team-task-action-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.team-operation-list small {
+  display: block;
+  margin-top: 3px;
+  opacity: 0.7;
+  overflow-wrap: anywhere;
+}
+.team-operation-list li[data-status='uncertain'] {
+  border-color: var(--warning-color, #b26a00);
+}
+.team-operation-list li[data-status='rejected'] {
+  opacity: 0.7;
+}

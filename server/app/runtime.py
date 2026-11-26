@@ -976,6 +976,104 @@ class SessionActor:
                     else:
                         future.set_exception(AppError(503,"EXECUTION_STOPPED","执行服务已停止，请刷新会话状态"))
 
+    async def team_task_command(self, request, user, session_id, future, operation_id):
+        """One owner-approved native Team board mutation, never a model turn.
+
+        The operation row is already ``pending``. A reply is confirmed only
+        when the pinned native seam returns a structurally valid board/task
+        receipt. Transport or receipt ambiguity becomes ``uncertain`` and is
+        never retried automatically.
+        """
+        from .team_tasks import (
+            confirm_team_operation, is_controlled_rejection,
+            reject_team_operation, require_team_task_session,
+            require_pending_team_operation, uncertain_team_operation,
+        )
+
+        value = failure = None
+        native_attempted = False
+        confirmed = False
+        try:
+            await offload(require_team_task_session, self.service,
+                          self.conversation_id, user, session_id)
+            await self.ensure_runtime()
+            await offload(require_team_task_session, self.service,
+                          self.conversation_id, user, session_id)
+            if (getattr(self.runtime, "session_id", None) != session_id
+                    or not callable(getattr(self.runtime, "team_task", None))):
+                raise AppError(503, "TEAM_RUNTIME_UNAVAILABLE", "任务板运行器不可用")
+            await offload(require_pending_team_operation, self.service,
+                          self.conversation_id, user, session_id, operation_id)
+            native_attempted = True
+            receipt = await self.runtime.team_task(request)
+            if not isinstance(receipt, dict):
+                raise AppError(503, "TEAM_TASK_UNCERTAIN",
+                               "任务板操作结果未确认，请刷新核对")
+            operation = await offload_write(confirm_team_operation, self.service,
+                                            operation_id, receipt)
+            confirmed = True
+            value = {**receipt, "operation": operation}
+        except AppError as error:
+            failure = error
+        except Exception:
+            failure = AppError(503, "TEAM_TASK_UNCERTAIN",
+                               "任务板操作结果未确认，请刷新核对")
+        finally:
+            close_failed = False
+            if self.runtime:
+                try:
+                    await self.runtime.close()
+                    if callable(getattr(self.runtime, "require_process_reaped", None)):
+                        self.runtime.require_process_reaped()
+                except Exception:
+                    close_failed = True
+                    log.warning("Team task runtime close failed for %s",
+                                self.conversation_id)
+                finally:
+                    self.runtime = None
+            if not confirmed and failure is not None:
+                try:
+                    if native_attempted and not is_controlled_rejection(failure):
+                        await offload_write(uncertain_team_operation, self.service,
+                                            operation_id, failure.code)
+                    else:
+                        await offload_write(reject_team_operation, self.service,
+                                            operation_id, failure.code)
+                except Exception:
+                    log.warning("Team task operation bookkeeping failed: %s", operation_id)
+            if value is not None:
+                # The native mutation is already durable. A concurrent account
+                # or permission change can still invalidate the approval; keep
+                # the receipt and tell the owner to refresh instead of
+                # pretending the board did not change.
+                try:
+                    await offload(require_team_task_session, self.service,
+                                  self.conversation_id, user, session_id)
+                except AppError:
+                    failure = AppError(409, "TEAM_BINDING_CHANGED",
+                                       "任务板操作已生效，但会话授权状态已变化，请刷新核对")
+                except Exception:
+                    failure = AppError(503, "TEAM_BINDING_CHANGED",
+                                       "任务板操作已生效，但会话授权状态无法核验，请刷新核对")
+                if failure is None and close_failed:
+                    failure = AppError(503, "TEAM_RUNTIME_UNCLEAN",
+                                       "任务板操作已提交，但执行进程未确认退出，请刷新核对后再操作")
+            else:
+                try:
+                    await offload(require_team_task_session, self.service,
+                                  self.conversation_id, user, session_id)
+                except AppError:
+                    pass
+            self.manager.goal_requests.pop(self.conversation_id, None)
+            if not future.done():
+                if failure is not None:
+                    future.set_exception(failure)
+                elif value is not None:
+                    future.set_result(value)
+                else:
+                    future.set_exception(AppError(
+                        503, "EXECUTION_STOPPED", "执行服务已停止，请刷新会话状态"))
+
     async def fork_command(self, child_id, boundary, body, user, future):
         from .conversation_fork import clear_fork_home, fork_boundary, save_fork
 
@@ -1305,6 +1403,8 @@ class SessionActor:
                         await self.goal_command(*run_id[1:])
                     elif run_id[0] == "team":
                         await self.goal_command(*run_id[1:],team=True)
+                    elif run_id[0] == "team-task":
+                        await self.team_task_command(*run_id[1:])
                     else:
                         await self.context_command(run_id[1])
                     continue
@@ -1529,6 +1629,8 @@ class RunManager:
         self.service.db.execute("UPDATE approvals SET status='expired',decided_at=COALESCE(decided_at,?),decided_by=NULL,decision_source=COALESCE(decision_source,'restart') WHERE status='pending'", (now(),))
         from .goal_execution import recover_goal_execution
         recover_goal_execution(self.service)
+        from .team_tasks import recover_team_tasks
+        recover_team_tasks(self.service)
         self.service.memory.recover()
 
     def start_queue_worker(self):
@@ -1694,6 +1796,21 @@ class RunManager:
         # memory mutation and run/Goal authorization exclusion checks.
         self.goal_requests[conversation_id]=future
         actor.enqueue(("team",{"action":"get"},user,row["harness_session_id"],future))
+        return await asyncio.shield(future)
+
+    async def team_task(self, conversation_id, user, request, operation_id):
+        """Run one already-authorized metadata mutation in the session actor."""
+        from .team_tasks import require_team_task_session
+        row=await offload(require_team_task_session,self.service,conversation_id,user)
+        if self.maintenance_busy(conversation_id) or conversation_id in self.goal_requests:
+            raise AppError(409,"TEAM_SESSION_BUSY","会话正在处理其他操作，请稍后刷新")
+        actor=self.actor_for(conversation_id)
+        future=asyncio.get_running_loop().create_future()
+        # Keep the pending audit row and the native process in one serialized
+        # reservation; the same slot fences reads, Goal state and archiving.
+        self.goal_requests[conversation_id]=future
+        actor.enqueue(("team-task",request,user,row["harness_session_id"],
+                       future,operation_id))
         return await asyncio.shield(future)
 
     async def fork(self, conversation_id, child_id, boundary, body, user):

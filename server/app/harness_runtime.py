@@ -6,6 +6,7 @@ import importlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -103,18 +104,20 @@ class _GoalAdmissionRequest(BaseModel):
 
 
 class _TeamTask(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    id: str
+    # The pinned projection may add advisory task metadata. Only the fields
+    # below cross the host boundary; unknown task-level fields are dropped.
+    model_config = ConfigDict(extra="ignore", strict=True)
+    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
     revision: int = Field(ge=1)
     subject: str
     description: str
     status: Literal["pending", "in_progress", "completed"]
-    blockedBy: list[str]
-    writeScopes: list[str]
+    blockedBy: list[str] = Field(default_factory=list)
+    writeScopes: list[str] = Field(default_factory=list)
     ownerId: str | None = None
     ownerName: str | None = None
-    ready: bool
-    writeScopeWarnings: list[str]
+    ready: bool = False
+    writeScopeWarnings: list[str] = Field(default_factory=list)
 
 
 class _TeamBoard(BaseModel):
@@ -136,6 +139,39 @@ class _TeamReceipt(BaseModel):
     sessionId: str
     board: _TeamBoard
     executionEnabled: Literal[False]
+
+
+class _TeamTaskReceipt(BaseModel):
+    """Success receipt for one official board mutation; never a model turn."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schema_: Literal["workspace-team-task/v1"] = Field(alias="schema")
+    sourceCommit: Literal["fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"]
+    sessionId: str
+    action: Literal["enable", "disable", "create", "claim", "complete"]
+    boardEnabled: bool
+    board: _TeamBoard
+    task: _TeamTask | None
+    executionEnabled: Literal[False]
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if self.board.enabled != self.boardEnabled:
+            raise ValueError("Team board receipt is inconsistent")
+        if self.action in {"enable", "disable"}:
+            if self.task is not None:
+                raise ValueError("Board action cannot return a task")
+            if self.boardEnabled != (self.action == "enable"):
+                raise ValueError("Team board state does not match the action")
+            return self
+        if not self.boardEnabled or self.task is None:
+            raise ValueError("Task action requires an enabled board and task")
+        if not any(item.id == self.task.id for item in self.board.tasks):
+            raise ValueError("Receipt task is not in the board projection")
+        expected = {"create": "pending", "claim": "in_progress",
+                    "complete": "completed"}[self.action]
+        if self.task.status != expected:
+            raise ValueError("Receipt task status does not match the action")
+        return self
 
 
 class _EmptyResult(BaseModel):
@@ -494,6 +530,7 @@ class HarnessRuntime(WorkspaceRuntime):
                       "maxTokens": max_output},
             tools=tools, max_steps=self.config.get("worker_max_steps", settings.max_turns),
             team_state=settings.harness_team_state_enabled and not self.subagent_child_id and not self.service.policy.is_trial,
+            team_tasks=settings.harness_team_tasks_enabled and not self.subagent_child_id and not self.service.policy.is_trial,
             tool_timeout_ms=(settings.approval_seconds + 60) * 1000,
             delegation_timeout_ms=(self.service.subagents.delegation_timeout() * 1000
                                    if "delegate_tasks" in tool_names else None),
@@ -1157,6 +1194,50 @@ class HarnessRuntime(WorkspaceRuntime):
         if receipt.sessionId!=self.session_id:
             raise AppError(502,"TEAM_RECEIPT_INVALID","任务板回执与会话不匹配")
         return {"board":receipt.board.model_dump(exclude_none=True),"execution_enabled":False}
+
+    @staticmethod
+    def _team_task_error(exc):
+        """Translate only our controlled seam codes; never leak native text."""
+        from .team_tasks import rejection_error
+        raw = getattr(exc, "message", "")
+        text = f"{raw} {exc}" if raw else str(exc)
+        if "TEAM_REQUEST_INVALID" in text:
+            return AppError(422, "TEAM_REQUEST_INVALID", "任务板操作内容无效")
+        if "TEAM_ROOT_UNAVAILABLE" in text:
+            return AppError(409, "TEAM_SESSION_BUSY", "任务板仅支持空闲主会话")
+        match = re.search(r"TEAM_TASK_REJECTED:([A-Z][A-Z0-9_]{0,63})", text)
+        if match:
+            return rejection_error(match.group(1))
+        if "TEAM_TASK_UNCERTAIN" in text:
+            return AppError(503, "TEAM_TASK_UNCERTAIN",
+                            "任务板操作结果未确认，请刷新核对后再操作")
+        # Any other failure after sending the RPC may have reached the board.
+        return AppError(503, "TEAM_TASK_UNCERTAIN",
+                        "任务板操作结果未确认，请刷新核对后再操作")
+
+    async def team_task(self, request):
+        if (self.subagent_child_id or self.current_run
+                or not self.service.settings.harness_team_tasks_enabled
+                or self.service.policy.is_trial):
+            raise AppError(409, "TEAM_SESSION_BUSY", "任务板协作仅支持空闲主会话")
+        if self.client is None:
+            raise AppError(503, "TEAM_RUNTIME_UNAVAILABLE", "任务板运行器不可用")
+        try:
+            receipt = await asyncio.to_thread(
+                self.client.request, "workspace/team-task",
+                {**request, "sessionId": self.session_id},
+                response_model=_TeamTaskReceipt, timeout_seconds=30)
+        except AppError:
+            raise
+        except Exception as exc:
+            raise self._team_task_error(exc) from None
+        if receipt.sessionId != self.session_id or receipt.action != request.get("action"):
+            raise AppError(502, "TEAM_RECEIPT_INVALID", "任务板回执与当前操作不匹配")
+        return {"action": receipt.action, "board_enabled": receipt.boardEnabled,
+                "board": receipt.board.model_dump(exclude_none=True),
+                "task": (receipt.task.model_dump(exclude_none=True)
+                         if receipt.task is not None else None),
+                "execution_enabled": False}
 
     async def goal_state(self, request):
         if self.subagent_child_id or self.current_run or not self.service.settings.harness_goal_state_enabled:

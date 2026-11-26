@@ -51,6 +51,10 @@ class Settings:
     harness_goal_state_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_GOAL_STATE_ENABLED", "false").lower() == "true")
     # Owner-only native Team projection; no providers or model tools mounted.
     harness_team_state_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_TEAM_STATE_ENABLED", "false").lower() == "true")
+    # Separate, default-off task lifecycle (enable/create/claim/complete) on the
+    # official Team board. It is metadata-only: no model turn, subagent spawn,
+    # shell, provider or business write is mounted by this switch.
+    harness_team_tasks_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_TEAM_TASKS_ENABLED", "false").lower() == "true")
     # Separate, default-off execution admission. Even when both switches are
     # on, this host only records an owner's explicit budget approval and a
     # durable round lease; it never starts a model round by itself.
@@ -286,6 +290,11 @@ class Settings:
             raise ValueError("AGENT_RUNTIME_TYPE must be claude or harness")
         self.runtime_type = self.runtime_type.strip().lower()
         self.deployment_mode = valid_deployment_mode(self.deployment_mode)
+        # The task lifecycle is a narrower opt-in on top of the native Team
+        # projection. Never let it mount a mutation seam while the reviewed
+        # read-only service is off.
+        if self.harness_team_tasks_enabled and not self.harness_team_state_enabled:
+            raise ValueError("AGENT_HARNESS_TEAM_TASKS_ENABLED requires AGENT_HARNESS_TEAM_STATE_ENABLED=true")
         self.web_search_provider = str(self.web_search_provider).strip().lower()
         if self.web_search_provider not in {"bing_rss", "searxng", "brave", "deepseek_api"}:
             raise ValueError("AGENT_WEB_SEARCH_PROVIDER must be bing_rss, searxng, brave or deepseek_api")

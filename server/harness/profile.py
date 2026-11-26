@@ -148,6 +148,7 @@ def write_profile(
     delegation_timeout_ms: int | None = None,
     team_state: bool = False,
     goal_execution: dict | None = None,
+    team_tasks: bool = False,
 ) -> dict:
     """Write one locked profile and return dsh arguments and SDK initialize data.
 
@@ -235,6 +236,12 @@ def write_profile(
     entries = []
     if type(team_state) is not bool:
         raise ValueError("Team state switch must be boolean")
+    if type(team_tasks) is not bool:
+        raise ValueError("Team task switch must be boolean")
+    if team_tasks and not team_state:
+        # The mutation seam is always narrower than the reviewed read-only
+        # service. It cannot compose without that service.
+        raise ValueError("Team task switch requires the Team state service")
     modules = list(KERNEL_MODULES)
     if goal_round is not None:
         # The official round driver must be mounted before sdk-app-startup
@@ -309,6 +316,7 @@ def write_profile(
             "model": model, "tools": definitions, "maxSteps": max_steps,
             "toolTimeoutMs": tool_timeout_ms, "sourceCommit": PINNED_COMMIT,
             **({"teamState": True} if team_state else {}),
+            **({"teamTasks": True} if team_tasks else {}),
             **({"delegationTimeoutMs": delegation_timeout_ms} if delegation_timeout_ms is not None else {}),
             **({"goalRound": {
                 "goalId": goal_round["goal_id"],
