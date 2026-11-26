@@ -211,3 +211,5 @@ Mem0 2.2.1 原生接口派生索引默认关闭候选完成真实 SDK 100 份文
 固定 Mem0 2.2.1 / Qdrant 1.20.0 删除边界真实 SDK 5/5：Qdrant 归属字段投影无需正文，SDK delete 则读正文并保留 SQLite 历史；清空向量不是删除历史。详见 [删除边界验收](../evidence/KAIWU_MEM0_DELETE_BOUNDARY_2026-11-26.md)。正式接线前优先验证作用域独立存储及删除专用准入。
 
 固定 SDK 每权威作用域独立 Qdrant/SQLite 存储的合成可行性真实 SDK 5/5；验证同用户不同会话、跨用户及关闭后目录隔离，非物理删除。见 [作用域存储验收](../evidence/KAIWU_MEM0_SCOPE_STORE_2026-11-26.md)。优先薄适配权威身份与资源生命周期，尚未产品接线。
+
+固定 Mem0 2.2.1 / Qdrant 1.20.0 作用域独立存储的持久身份与终态退役拒绝重开通过后端 68/68、真实 SDK 4/4，复用既有 SDK 与 TrustedScope，仅新增宿主文件生命周期薄适配；详见 [持久绑定验收](../evidence/KAIWU_MEM0_SCOPE_BINDING_2026-11-26.md)。正式删除授权、保留策略和产品接线待验收。
