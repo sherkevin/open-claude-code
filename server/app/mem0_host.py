@@ -93,8 +93,13 @@ class Mem0Host:
         # can create the private SDK paths; the model never controls them.
         if provision:
             self.scope_store.provision(scope)
-        with self.scope_store.lease(scope) as paths:
-            reader.load(scope)
+        with self.scope_store.sdk_lease(scope) as (paths, confirm_closed):
+            try:
+                reader.load(scope)
+            except BaseException:
+                # The factory was never called: no SDK resources can be open.
+                confirm_closed()
+                raise
             try:
                 backend = self.scoped_factory(paths)
             except Mem0IndexError:
@@ -114,6 +119,7 @@ class Mem0Host:
                     close()
                 except Exception:
                     raise Mem0IndexUnavailable("Mem0 scope backend close unconfirmed") from None
+                confirm_closed()
             # No result may escape if authority changed during close.
             reader.load(scope)
 

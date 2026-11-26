@@ -102,6 +102,29 @@ def main():
             assert host.lookup(b.user_id, b.conversation_id, "fixture").status == "verified"
             assert len(opened) == len(closed) == 5
             checks.append("retired scope never reopens, other scope remains usable")
+            c = scope(1, user="synthetic-host-close-loss")
+            authority[c.user_id] = (c, docs(3)[:1])
+            assert host.sync(c.user_id, c.conversation_id).added == 1
+
+            class LostCloseReceipt(Owned):
+                def close(self):
+                    super().close()
+                    raise RuntimeError("synthetic loss of SDK close receipt")
+
+            def uncertain_factory(p):
+                owned = factory(p)
+                return LostCloseReceipt(owned.backend, p)
+
+            uncertain = mem0_host.Mem0Host(service, cfg, scoped_factory=uncertain_factory)
+            result = uncertain.lookup(c.user_id, c.conversation_id, "fixture")
+            assert result.status == "fallback" and not result.hits
+            before = len(opened)
+            fresh = mem0_host.Mem0Host(service, cfg, scoped_factory=factory)
+            assert fresh.lookup(c.user_id, c.conversation_id, "fixture").status == "fallback"
+            assert len(opened) == before
+            assert fresh.lookup(b.user_id, b.conversation_id, "fixture").status == "verified"
+            assert len(opened) == before + 1
+            checks.append("lost real SDK close acknowledgment persists across host instances and isolates only affected scope")
             assert calls["extraction"] == 0
             print(json.dumps({"passed": len(checks), "checks": checks,
                               "loopback_requests": calls, "production_authority_verified": False}))

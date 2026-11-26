@@ -99,7 +99,7 @@ class ScopeStore:
                 raise Mem0IndexUnavailable("invalid scope binding") from None
             if (type(item) is not dict or set(item) not in ({"key", "state", "dev", "ino"},
                                          {"key", "state", "dev", "ino", "clear_proof"})
-                    or item["key"] != key or item["state"] not in ("active", "retired")
+                    or item["key"] != key or item["state"] not in ("active", "retired", "sdk_open")
                     or type(item["dev"]) is not int or type(item["ino"]) is not int
                     or ("clear_proof" in item and (item["state"] != "retired"
                         or type(item["clear_proof"]) is not str
@@ -181,6 +181,35 @@ class ScopeStore:
         key = self._key(scope)
         with self._locked() as fd:
             yield self._paths(fd, key, self._read(fd, key))
+
+    @contextmanager
+    def sdk_lease(self, scope: TrustedScope):
+        """Persist uncertainty *before* opening a backend.
+
+        The caller may acknowledge only a confirmed close (or no attempted
+        open). A crash or failed factory/close leaves the scope unavailable
+        across processes. No automatic recovery, deletion or new generation.
+        """
+        key = self._key(scope)
+        with self._locked() as fd:
+            item = self._read(fd, key)
+            paths = self._paths(fd, key, item)
+            pending = {**item, "state": "sdk_open"}
+            self._write(fd, key, pending)
+            confirmed = False
+            live = True
+
+            def confirm_closed():
+                nonlocal confirmed
+                if not live or confirmed or self._read(fd, key) != pending:
+                    raise Mem0IndexUnavailable("invalid SDK close acknowledgment")
+                self._write(fd, key, item)
+                confirmed = True
+
+            try:
+                yield paths, confirm_closed
+            finally:
+                live = False
 
     def retire(self, scope: TrustedScope) -> None:
         """Terminal metadata transition only. Does not read or delete SDK data.

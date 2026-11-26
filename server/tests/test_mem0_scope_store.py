@@ -145,3 +145,47 @@ def test_hard_link_and_public_permissions_rejected(tmp_path):
     p.history.chmod(0o644)
     with pytest.raises(Mem0IndexUnavailable), s.lease(scope()):
         pass
+
+
+def _unconfirmed_sdk_process(root):
+    s = store(Path(root))
+    with s.sdk_lease(scope()):
+        # Simulate a process exit before an SDK close receipt.
+        os._exit(17)
+
+
+def test_sdk_lease_unconfirmed_process_exit_blocks_reopen(tmp_path):
+    s = store(tmp_path)
+    s.provision(scope())
+    s.provision(scope("other"))
+    proc = multiprocessing.get_context("spawn").Process(
+        target=_unconfirmed_sdk_process, args=(str(tmp_path),))
+    proc.start()
+    proc.join(10)
+    assert proc.exitcode == 17
+    fresh = store(tmp_path)
+    for operation in (lambda: fresh.provision(scope()),
+                      lambda: fresh.retire(scope())):
+        with pytest.raises(Mem0IndexUnavailable):
+            operation()
+    with pytest.raises(Mem0IndexUnavailable), fresh.sdk_lease(scope()):
+        pass
+    with fresh.sdk_lease(scope("other")) as (_, confirm):
+        confirm()
+    with fresh.lease(scope("other")):
+        pass
+
+
+def test_sdk_lease_requires_close_receipt_inside_lock(tmp_path):
+    s = store(tmp_path)
+    s.provision(scope())
+    with s.sdk_lease(scope()) as (paths, confirm):
+        with pytest.raises(Mem0IndexUnavailable), s.lease(scope()):
+            pass
+        confirm()
+        with pytest.raises(Mem0IndexUnavailable):
+            confirm()
+    with pytest.raises(Mem0IndexUnavailable):
+        confirm()
+    with store(tmp_path).lease(scope()) as reopened:
+        assert reopened == paths

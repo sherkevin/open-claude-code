@@ -1272,8 +1272,21 @@ def test_scoped_host_factory_and_close_errors_fall_back_without_retry(native_sto
     host = Mem0Host(service,cfg,scoped_factory=failing_factory)
     calls.clear()
     assert host.lookup(uid,cid,"fact").status == "fallback"
+    # A fresh host may not open a scope with an unconfirmed prior close.
+    assert calls == []
+    with pytest.raises(Mem0IndexUnavailable):
+        host.sync(uid,cid)
+    assert calls == []
+    assistant = service.save_assistant({"name": "other scoped fixture"}, user=user)
+    other = service.create_conversation(
+        {"assistant_id": assistant["id"], "title": "Independent synthetic scope"}, user)["id"]
+    service.memory.edit(user,other,0,"MEMORY.md","other approved fact","edit")
+    with pytest.raises(Mem0IndexUnavailable):
+        host.sync(uid,other)
     assert calls == ["factory failure"]
     calls.clear()
+    assert host.lookup(uid,other,"fact").status == "fallback"
+    assert calls == []
     disabled = Mem0Host(service,scoped_factory=failing_factory)
     assert disabled.lookup(uid,cid,"fact").status == "fallback" and not calls
     with pytest.raises(ValueError):
