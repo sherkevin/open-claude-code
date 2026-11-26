@@ -87,7 +87,8 @@ class DeploymentPolicyMiddleware:
         await self.app(scope, receive, send)
 
 
-def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAPI:
+def create_app(settings: Settings | None = None, runtime_factory=None,
+               codex_host_factory=None) -> FastAPI:
     settings = settings or Settings()
     policy = DeploymentPolicy(settings.deployment_mode, settings.trial_capabilities)
     prefix = "/api/v1"
@@ -118,6 +119,9 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
         app.state.dummy_password_hash = password_hash(secrets.token_urlsafe(32))
         manager.start_queue_worker()
         yield
+        codex_host = getattr(app.state, "codex_host", None)
+        if codex_host is not None:
+            codex_host.close_all()
         await manager.close()
         service.db.close()
 
@@ -283,6 +287,13 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             if settings.harness_goal_execution_enabled:
                 from .conversation_goal_execution import create_goal_execution_router
                 app.include_router(create_goal_execution_router(svc, authenticated))
+        if settings.codex_appserver_enabled:
+            from .codex_appserver import CodexHost, CodexHostConfig
+            from .conversation_codex import create_codex_router
+            codex_host = (codex_host_factory(settings) if codex_host_factory is not None
+                          else CodexHost(CodexHostConfig.from_settings(settings)))
+            app.state.codex_host = codex_host
+            app.include_router(create_codex_router(svc, authenticated, codex_host))
     from .workflows import create_workflow_router
     app.include_router(create_workflow_router(svc, authenticated, enabled=settings.workflows_enabled))
     from .kaiwu_control import create_kaiwu_control_router
@@ -319,6 +330,8 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
             **({"harness_goal_state": True} if settings.harness_goal_state_enabled and not policy.is_trial else {}),
             **({"harness_goal_execution": True} if settings.harness_goal_state_enabled
                and settings.harness_goal_execution_enabled and not policy.is_trial else {}),
+            **({"codex_appserver": True} if settings.codex_appserver_enabled
+               and not policy.is_trial else {}),
             "feishu_h5": {
                 "enabled": feishu_ready,
                 "app_id": settings.feishu_h5_app_id if feishu_ready else "",

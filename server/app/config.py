@@ -55,6 +55,18 @@ class Settings:
     # on, this host only records an owner's explicit budget approval and a
     # durable round lease; it never starts a model round by itself.
     harness_goal_execution_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_HARNESS_GOAL_EXECUTION_ENABLED", "false").lower() == "true")
+    # Optional Codex App Server engineering executor. Off by default. The
+    # product host only speaks the pinned native JSON-RPC stdio contract and
+    # never selects a model, reads real Codex credentials or grants tools.
+    codex_appserver_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_CODEX_APPSERVER_ENABLED", "false").lower() == "true")
+    codex_appserver_binary: str = field(default_factory=lambda: os.getenv("AGENT_CODEX_APPSERVER_BINARY", "").strip())
+    # Local fixed candidate from the 2026-11-26 baseline. An operator installing
+    # a different official build must pin its own digest explicitly.
+    codex_appserver_binary_sha256: str = field(default_factory=lambda: os.getenv("AGENT_CODEX_APPSERVER_BINARY_SHA256", "c06a67fd8ac76508dc78bd99ce20c9f317b8d568beda59485f3f4134df9962d5").strip().lower())
+    codex_appserver_response_timeout_seconds: float = field(default_factory=lambda: float(os.getenv("AGENT_CODEX_APPSERVER_RESPONSE_TIMEOUT_SECONDS", "30")))
+    codex_appserver_turn_timeout_seconds: float = field(default_factory=lambda: float(os.getenv("AGENT_CODEX_APPSERVER_TURN_TIMEOUT_SECONDS", "300")))
+    codex_appserver_max_input_chars: int = field(default_factory=lambda: int(os.getenv("AGENT_CODEX_APPSERVER_MAX_INPUT_CHARS", "20000")))
+    codex_appserver_max_output_chars: int = field(default_factory=lambda: int(os.getenv("AGENT_CODEX_APPSERVER_MAX_OUTPUT_CHARS", "131072")))
     # Per model response limit; independent of goal budgets and turn limits.
     harness_max_output_tokens: int = field(default_factory=lambda: int(os.getenv("AGENT_HARNESS_MAX_OUTPUT_TOKENS", "8192")))
     # One owned Node process executes a manual compaction, including its
@@ -299,6 +311,24 @@ class Settings:
             raise ValueError("AGENT_HARNESS_MAX_OUTPUT_TOKENS must be an integer from 1 to 131072")
         if type(self.harness_compaction_timeout_seconds) is not int or not 1 <= self.harness_compaction_timeout_seconds <= 3600:
             raise ValueError("AGENT_HARNESS_COMPACTION_TIMEOUT_SECONDS must be an integer from 1 to 3600")
+        if self.codex_appserver_enabled and not self.codex_appserver_binary:
+            raise ValueError("AGENT_CODEX_APPSERVER_BINARY is required when the Codex host is enabled")
+        if self.codex_appserver_enabled and not self.codex_appserver_binary_sha256:
+            raise ValueError("AGENT_CODEX_APPSERVER_BINARY_SHA256 is required when the Codex host is enabled")
+        if self.codex_appserver_binary and not os.path.isabs(self.codex_appserver_binary):
+            raise ValueError("AGENT_CODEX_APPSERVER_BINARY must be an absolute path")
+        if self.codex_appserver_binary_sha256 and not re.fullmatch(r"[a-f0-9]{64}", self.codex_appserver_binary_sha256):
+            raise ValueError("AGENT_CODEX_APPSERVER_BINARY_SHA256 must be a lowercase SHA-256 digest")
+        if (type(self.codex_appserver_response_timeout_seconds) not in {int, float}
+                or not 1 <= float(self.codex_appserver_response_timeout_seconds) <= 600):
+            raise ValueError("AGENT_CODEX_APPSERVER_RESPONSE_TIMEOUT_SECONDS must be between 1 and 600")
+        if (type(self.codex_appserver_turn_timeout_seconds) not in {int, float}
+                or not 1 <= float(self.codex_appserver_turn_timeout_seconds) <= 3600):
+            raise ValueError("AGENT_CODEX_APPSERVER_TURN_TIMEOUT_SECONDS must be between 1 and 3600")
+        if type(self.codex_appserver_max_input_chars) is not int or not 1 <= self.codex_appserver_max_input_chars <= 131072:
+            raise ValueError("AGENT_CODEX_APPSERVER_MAX_INPUT_CHARS must be between 1 and 131072")
+        if type(self.codex_appserver_max_output_chars) is not int or not 1024 <= self.codex_appserver_max_output_chars <= 1048576:
+            raise ValueError("AGENT_CODEX_APPSERVER_MAX_OUTPUT_CHARS must be between 1024 and 1048576")
         if not self.model:
             self.model = self.provider_env().get("ANTHROPIC_MODEL") or DEFAULT_MODEL
         if type(self.kaiwu_control_relay_port) is not int or not 0 <= self.kaiwu_control_relay_port <= 65535:

@@ -1,0 +1,170 @@
+"""Default-off product API for the Codex App Server host slice.
+
+Synthetic stdio peer only: no real binary, model, provider or business tool.
+"""
+from __future__ import annotations
+
+import hashlib
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.config import Settings
+from app.main import create_app
+from test_api import FakeRuntime, PASSWORD, conversation, login
+from test_codex_appserver_host import make_host
+
+
+def settings_for(tmp_path, *, enabled: bool = True, trial: bool = False):
+    return Settings(
+        data_dir=tmp_path,
+        provider_settings="",
+        origins=("http://testserver",),
+        mcp_hosts=("localhost", "127.0.0.1"),
+        idle_seconds=60,
+        approval_seconds=3,
+        deployment_mode="trial" if trial else "normal",
+        codex_appserver_enabled=enabled,
+        codex_appserver_binary=str(tmp_path / "pinned-codex") if enabled else "",
+        # The injected factory never calls from_settings; a syntactically valid
+        # placeholder keeps the real settings gate exercised in production.
+        codex_appserver_binary_sha256="0" * 64 if enabled else "",
+    )
+
+
+def build(tmp_path, *, enabled: bool = True, trial: bool = False):
+    settings = settings_for(tmp_path, enabled=enabled, trial=trial)
+    hosts = []
+
+    def factory(_settings):
+        host, _log = make_host(tmp_path)
+        hosts.append(host)
+        return host
+
+    app = create_app(settings, runtime_factory=FakeRuntime, codex_host_factory=factory)
+    return app, hosts
+
+
+@pytest.fixture
+def codex_env(tmp_path):
+    app, hosts = build(tmp_path)
+    with TestClient(app) as client:
+        service = app.state.service
+        service.create_user({"username": "admin", "display_name": "admin",
+                             "password": PASSWORD, "role": "admin"})
+        login(client)
+        yield client, service, hosts[0]
+
+
+def test_codex_disabled_by_default(tmp_path):
+    app, hosts = build(tmp_path, enabled=False)
+    with TestClient(app) as client:
+        app.state.service.create_user({"username": "admin", "display_name": "admin",
+                                       "password": PASSWORD, "role": "admin"})
+        login(client)
+        cid = conversation(client)["id"]
+        assert client.get(f"/api/v1/conversations/{cid}/codex").status_code == 404
+        assert "codex_appserver" not in client.get("/api/v1/config").json()
+    assert hosts == []
+
+
+def test_trial_mode_does_not_expose_codex_router(tmp_path):
+    app, hosts = build(tmp_path, enabled=True, trial=True)
+    with TestClient(app) as client:
+        response = client.get("/api/v1/conversations/anything/codex")
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "FEATURE_DISABLED"
+    assert hosts == []
+
+
+def test_owner_thread_turn_and_replay(codex_env):
+    client, _service, _host = codex_env
+    cid = conversation(client)["id"]
+    base = f"/api/v1/conversations/{cid}/codex"
+    assert client.get("/api/v1/config").json()["codex_appserver"] is True
+
+    status = client.get(base)
+    assert status.status_code == 200, status.text
+    assert status.json()["bound"] is False
+    assert status.headers["cache-control"] == "no-store"
+
+    prepared = client.post(base + "/thread")
+    assert prepared.status_code == 200, prepared.text
+    assert prepared.json()["bound"] is True
+    thread_id = prepared.json()["thread_id"]
+
+    turn = client.post(base + "/turn", json={
+        "client_request_id": "request-0001", "text": "合成请求"})
+    assert turn.status_code == 200, turn.text
+    receipt = turn.json()
+    assert receipt["thread_id"] == thread_id
+    assert receipt["status"] == "completed"
+    assert receipt["text"] == "合成回复"
+    assert receipt["replayed"] is False
+
+    replay = client.post(base + "/turn", json={
+        "client_request_id": "request-0001", "text": "合成请求"})
+    assert replay.status_code == 200
+    assert replay.json()["replayed"] is True
+    assert replay.json()["turn_id"] == receipt["turn_id"]
+
+    conflict = client.post(base + "/turn", json={
+        "client_request_id": "request-0001", "text": "不同内容"})
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "CODEX_CONFLICT"
+
+    assert client.post(base + "/interrupt", json={}).status_code == 409
+    reconciled = client.post(base + "/reconcile")
+    assert reconciled.status_code == 200
+    assert reconciled.json()["recovery_required"] is False
+
+    extra = client.post(base + "/turn", json={
+        "client_request_id": "request-0002", "text": "合成", "model": "not-allowed"})
+    assert extra.status_code == 422
+
+
+def test_other_owner_cannot_read_or_use_the_binding(codex_env):
+    client, service, _host = codex_env
+    cid = conversation(client)["id"]
+    base = f"/api/v1/conversations/{cid}/codex"
+    assert client.post(base + "/thread").status_code == 200
+    service.create_user({"username": "other", "display_name": "other",
+                         "password": PASSWORD, "role": "member"})
+    login(client, "other")
+    assert client.get(base).status_code == 404
+    assert client.post(base + "/thread").status_code == 404
+    assert client.post(base + "/turn", json={
+        "client_request_id": "request-0001", "text": "合成"}).status_code == 404
+
+
+def test_busy_conversation_and_active_run_are_refused(codex_env):
+    client, service, host = codex_env
+    cid = conversation(client)["id"]
+    base = f"/api/v1/conversations/{cid}/codex"
+    assert client.post(base + "/thread").status_code == 200
+    key = hashlib.sha256(
+        f"{client.get('/api/v1/auth/me').json()['id']}\x00{cid}".encode("utf-8")).hexdigest()
+    with host._turn_lock(key):
+        busy = client.post(base + "/turn", json={
+            "client_request_id": "request-0001", "text": "合成"})
+        assert busy.status_code == 409
+        assert busy.json()["error"]["code"] == "CODEX_BUSY"
+    service.db.execute("UPDATE conversations SET active_run_id='synthetic-run' WHERE id=?",
+                       (cid,))
+    assert client.get(base).status_code == 409
+    service.db.execute("UPDATE conversations SET active_run_id=NULL, archived=1 WHERE id=?",
+                       (cid,))
+    assert client.get(base).status_code == 409
+
+
+def test_feature_errors_are_not_leaked(codex_env):
+    client, _service, _host = codex_env
+    cid = conversation(client)["id"]
+    base = f"/api/v1/conversations/{cid}/codex"
+    # A turn before thread preparation is a closed-state conflict, not a
+    # server path or binary detail.
+    response = client.post(base + "/turn", json={
+        "client_request_id": "request-0001", "text": "合成"})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CODEX_CONFLICT"
+    assert "app-server" not in response.text
