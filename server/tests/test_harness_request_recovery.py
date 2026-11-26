@@ -18,7 +18,8 @@ from test_harness_real_runtime import wait_run
 
 @pytest.fixture
 def recovery_provider():
-    state = {"case": "first", "requests": []}
+    state = {"case": "first", "requests": [],
+             "second_request": threading.Event(), "release_second": threading.Event()}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -31,8 +32,16 @@ def recovery_provider():
             if case == "once-timeout" and attempt == 1:
                 time.sleep(0.6)
                 return
+            if case == "cancel-after" and attempt == 2:
+                # The retry reached the provider. Hold its response until the
+                # host has durably accepted the stop, so "cancel after the
+                # next request was dispatched" is deterministic instead of a
+                # race against the backoff timer.
+                state["second_request"].set()
+                state["release_second"].wait(60)
+                return
             limited = (case == "twice-429" and attempt <= 2 or case == "after-tool-429" and attempt in {2, 3}
-                       or case in {"too-long-429", "cancel-429", "mixed-429-transport"} and attempt == 1)
+                       or case in {"too-long-429", "cancel-before", "cancel-after", "mixed-429-transport"} and attempt == 1)
             if limited or case.startswith("http-") or case.startswith("once-") and attempt == 1:
                 status = 429 if limited else int(case.split("-")[1])
                 payload = json.dumps({"error": {"type": "synthetic", "message": "private-provider-diagnostic"}}).encode()
@@ -40,11 +49,14 @@ def recovery_provider():
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 if status == 429:
-                    self.send_header("Retry-After", "31" if case == "too-long-429" else "1")
+                    # The stop must land well inside this backoff, proving the
+                    # retry request is never dispatched for "cancel-before".
+                    self.send_header("Retry-After", "31" if case == "too-long-429" else
+                                     "20" if case == "cancel-before" else "1")
                 self.end_headers()
                 self.wfile.write(payload)
                 return
-            failed = (case in {"first", "cancel", "partial"} and attempt == 1
+            failed = (case in {"first", "partial"} and attempt == 1
                       or case == "always" or case in {"after-tool", "mixed-429-transport"} and attempt == 2
                       or case == "two-steps" and attempt in {1, 3})
             if failed and case != "partial":
@@ -90,19 +102,28 @@ def recovery_provider():
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     yield f"http://127.0.0.1:{server.server_port}/v1", state
+    # Never leave a held retry handler blocking teardown if the test failed
+    # before it could release the response.
+    state["release_second"].set()
     server.shutdown()
     server.server_close()
     worker.join(2)
 
 
+# Cancellation during a retry wait has two windows. The product cannot un-send
+# an HTTP request, so each window is pinned separately: "cancel-before" stops
+# inside a long Retry-After (the retry is never dispatched) and "cancel-after"
+# proves the retry reached the provider, then stops it. A single case cannot
+# assert both without racing the backoff timer. The transport retry path itself
+# stays covered by "first"; rate-limit retries by "once-429"/"twice-429".
 @pytest.mark.parametrize("case,expected_status,expected_requests", [
     ("first", "succeeded", 2), ("after-tool", "succeeded", 3),
     ("always", "failed", 2), ("two-steps", "failed", 3),
-    ("partial", "failed", 1), ("cancel", "cancelled", 1),
+    ("partial", "failed", 1), ("cancel-before", "cancelled", 1),
     ("http-401", "failed", 1), ("http-403", "failed", 1), ("http-429", "failed", 4),
     ("once-429", "succeeded", 2), ("once-503", "succeeded", 2), ("once-timeout", "succeeded", 2),
     ("twice-429", "succeeded", 3), ("after-tool-429", "succeeded", 4),
-    ("too-long-429", "failed", 1), ("cancel-429", "cancelled", 1), ("mixed-429-transport", "failed", 2),
+    ("too-long-429", "failed", 1), ("cancel-after", "cancelled", 2), ("mixed-429-transport", "failed", 2),
 ])
 def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_cancel(
     tmp_path, monkeypatch, recovery_provider, case, expected_status, expected_requests,
@@ -144,12 +165,26 @@ def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_ca
         assistant = service.save_assistant({"name": "Recovery fixture", "knowledge_base_ids": [kb["id"]]}, user=user)
         cid = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()["id"]
         run_id = send(client, cid, "Query the P-900 business record", "request-recovery")["run_id"]
-        if case in {"cancel", "cancel-429"}:
+        if case in {"cancel-before", "cancel-after"}:
             deadline = time.monotonic() + 30
             while not any(e["type"] == "model.retry" for e in service.db.events(run_id, 0)):
                 assert time.monotonic() < deadline, "retry backoff never started"
                 time.sleep(0.01)
+            if case == "cancel-after":
+                # Prove the retry request left the host before the stop, so the
+                # two cancellation windows are asserted separately and without
+                # a timing race.
+                assert state["second_request"].wait(60), "retry request was never dispatched"
+                deadline = time.monotonic() + 30
+                while True:
+                    receipt = json.loads(service.require("runs", run_id)["usage"] or "{}")
+                    if len(receipt.get("token_accounting", {}).get("stages", [])) >= 2:
+                        break
+                    assert time.monotonic() < deadline, "retry usage receipt was never observed"
+                    time.sleep(0.01)
             assert client.post(f"/api/v1/runs/{run_id}/cancel").status_code == 200
+            if case == "cancel-after":
+                state["release_second"].set()
         result = wait_run(client, run_id)
         assert result["status"] == expected_status, result
         assert len(state["requests"]) == expected_requests
@@ -161,16 +196,21 @@ def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_ca
         events = service.db.events(run_id, 0)
         retries = [e["data"] for e in events if e["type"] == "model.retry"]
         expected_retries = {"http-429": 3, "twice-429": 2, "after-tool-429": 2,
-                            "too-long-429": 0}.get(case, 1 if expected_requests > 1 or case in {"cancel", "cancel-429"} else 0)
+                            "too-long-429": 0, "cancel-before": 1,
+                            "cancel-after": 1}.get(case, 1 if expected_requests > 1 else 0)
         assert len(retries) == expected_retries
-        rate_limited = "429" in case
+        rate_limited = "429" in case or case in {"cancel-before", "cancel-after"}
         code = ("MODEL_REQUEST_TIMEOUT" if case == "once-timeout" else
                 "MODEL_RATE_LIMITED" if rate_limited else
                 "MODEL_PROVIDER_ERROR" if case == "once-503" else "MODEL_TRANSPORT_ERROR")
         for index, event in enumerate(retries, 1):
             assert event["retry"] == index and event["max_retries"] == (3 if rate_limited else 1)
             assert event["code"] == code
-            assert event["delay_ms"] == 1000 if rate_limited else 1800 <= event["delay_ms"] <= 2200
+            if rate_limited:
+                # A long Retry-After is honoured verbatim; the stop lands inside it.
+                assert event["delay_ms"] == (20000 if case == "cancel-before" else 1000)
+            else:
+                assert 1800 <= event["delay_ms"] <= 2200
         tool_events = [e for e in events if e["type"] == "tool.completed"]
         assert len(tool_events) == (1 if case in {"after-tool", "after-tool-429", "two-steps"} else 0)
         if tool_events:

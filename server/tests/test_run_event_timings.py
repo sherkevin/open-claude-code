@@ -116,3 +116,42 @@ def test_legacy_timings_are_preserved_but_not_reused_as_new_metrics(system, monk
     monkeypatch.setattr("app.runtime.elapsed_ms", lambda _: 20)
     actor._emit(run["id"], "run.stage", {"stage": "initializing"})
     assert timings(system) == {**legacy, "first_server_progress_ms": 20}
+
+
+def test_late_model_text_is_dropped_once_stop_is_durable(system):
+    """A retry response dispatched before the stop must not surface text.
+
+    Cancellation is committed as ``cancelling`` before the runtime is
+    interrupted. A ``message.delta`` that arrives afterwards describes a turn
+    the user already stopped: it must not be appended to the message row or
+    emitted as a run event, and it must not create a timing boundary.
+    """
+    service, actor, run = system
+    service.db.execute("UPDATE runs SET status='cancelling' WHERE id=?", (run["id"],))
+    actor._emit(run["id"], "message.delta", {
+        "message_id": run["assistant_message_id"], "text": "迟到的重试回答"})
+    assert service.require("messages", run["assistant_message_id"])["text"] == ""
+    assert [event for event in service.db.events(run["id"], 0)
+            if event["type"] == "message.delta"] == []
+    assert timings(system) == {}
+    for status in ("cancelled", "failed", "interrupted", "succeeded"):
+        service.db.execute("UPDATE runs SET status=? WHERE id=?", (status, run["id"]))
+        actor._emit(run["id"], "message.delta", {
+            "message_id": run["assistant_message_id"], "text": "仍然迟到"})
+    assert service.require("messages", run["assistant_message_id"])["text"] == ""
+    assert [event for event in service.db.events(run["id"], 0)
+            if event["type"] == "message.delta"] == []
+
+
+def test_queued_or_running_text_is_still_recorded(system, monkeypatch):
+    """The stop guard must not suppress normal in-flight text."""
+    service, actor, run = system
+    monkeypatch.setattr("app.runtime.elapsed_ms", lambda _: 20)
+    actor._emit(run["id"], "message.delta", {
+        "message_id": run["assistant_message_id"], "text": "queued"})
+    service.db.execute("UPDATE runs SET status='running' WHERE id=?", (run["id"],))
+    actor._emit(run["id"], "message.delta", {
+        "message_id": run["assistant_message_id"], "text": " running"})
+    assert service.require("messages", run["assistant_message_id"])["text"] == "queued running"
+    assert len([event for event in service.db.events(run["id"], 0)
+                if event["type"] == "message.delta"]) == 2

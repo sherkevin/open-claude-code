@@ -1032,6 +1032,13 @@ class SessionActor:
         with self.service.db.transaction():
             run = self.service.require("runs", run_id)
             data = dict(data)
+            if kind == "message.delta" and (run["status"] in TERMINAL or run["status"] == "cancelling"):
+                # A retry response may already be in flight when the user stops
+                # the run. Once cancellation is durable, its late text must not
+                # reach the customer as if the stopped turn had answered; the
+                # turn itself is never replayed. Dropping it here also keeps a
+                # cancelled run's visible text and message row consistent.
+                return
             expected = data.pop("_expected_run_id", None)
             guarded_call_id = data.pop("_expected_tool_call_id", None)
             if kind == "tool.completed" and guarded_call_id is not None:
