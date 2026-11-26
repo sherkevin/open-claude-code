@@ -336,6 +336,8 @@ class SyncResult:
     rejected_remote: int
     cleanup_pending: int
     errors: tuple[str, ...]
+    unconfirmed_writes: int = 0
+    deferred_documents: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -349,6 +351,8 @@ class SyncResult:
             "rejected_remote": self.rejected_remote,
             "cleanup_pending": self.cleanup_pending,
             "errors": list(self.errors),
+            "unconfirmed_writes": self.unconfirmed_writes,
+            "deferred_documents": self.deferred_documents,
         }
 
 
@@ -633,6 +637,7 @@ class Mem0DerivedIndex:
             existing_ids = {self._row_id(row) for row in rows}
             acknowledged_ids: set[str] = set()
             added = 0
+            unconfirmed_writes = 0
             errors: list[str] = []
 
             def require_current() -> None:
@@ -660,12 +665,16 @@ class Mem0DerivedIndex:
                         raise
                     except Exception as exc:
                         errors.append(f"add:{type(exc).__name__}")
+                        unconfirmed_writes = 1
                         require_current()
-                        continue
+                        break
                     added_rows = self._rows(response, "add")
                     accepted = [row for row in added_rows if isinstance(row, Mapping) and self._row_id(row)]
-                    if not accepted:
-                        errors.append("add:no_result")
+                    if len(accepted) != 1 or len(added_rows) != 1:
+                        errors.append("add:unconfirmed_result")
+                        unconfirmed_writes = 1
+                        require_current()
+                        break
                     else:
                         added += 1
                         for row in accepted:
@@ -678,7 +687,14 @@ class Mem0DerivedIndex:
 
                 deleted = 0
                 kept_ids = {self._row_id(row) for row in kept.values()}
-                for memory_id in sorted(set(stale_ids) - acknowledged_ids - kept_ids):
+                pending_stale_ids = set(stale_ids) - acknowledged_ids - kept_ids
+                if unconfirmed_writes:
+                    # The write may have committed. Do not send more writes or
+                    # discard prior generations until a new authorized full
+                    # enumeration can reconcile the actual backend state.
+                    cleanup_pending += len(pending_stale_ids)
+                    pending_stale_ids = set()
+                for memory_id in sorted(pending_stale_ids):
                     require_current()
                     try:
                         self.backend.delete(memory_id)  # type: ignore[union-attr]
@@ -709,6 +725,8 @@ class Mem0DerivedIndex:
                 rejected_remote=rejected,
                 cleanup_pending=cleanup_pending,
                 errors=tuple(errors),
+                unconfirmed_writes=unconfirmed_writes,
+                deferred_documents=max(0, len(documents)-len(kept)-added-unconfirmed_writes),
             )
 
     def search(self, query: str, *, scope: TrustedScope) -> SearchResult:

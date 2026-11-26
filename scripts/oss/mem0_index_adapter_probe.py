@@ -144,6 +144,31 @@ def main():
                 assert not backend.get_all(filters=filters)["results"]
                 assert len(other_adapter.search("fixture",scope=other).hits)==2
                 checks.append("revocation stops next SDK write and rolls back acknowledged row")
+                # Simulate a lost host receipt after a real local SDK commit.
+                # A later explicit, authorized sync must enumerate before
+                # sending another write, not repeat the committed document.
+                lost_scope=scope(5,user="synthetic-lost-receipt")
+                lost_filters={"user_id":lost_scope.user_id,"agent_id":adapter.config.agent_id,"run_id":lost_scope.conversation_id}
+                lost_reader=Reader(docs(5)[:2])
+                class LoseReceipt:
+                    count=0
+                    def __getattr__(self,name):
+                        return getattr(backend,name)
+                    def add(self,*args,**kwargs):
+                        response=backend.add(*args,**kwargs)
+                        self.count+=1
+                        if self.count==1:
+                            raise RuntimeError("synthetic lost host receipt")
+                        return response
+                lost_backend=LoseReceipt()
+                lost_adapter=Mem0DerivedIndex(Mem0IndexConfig(enabled=True),lost_backend,lost_reader)
+                partial=lost_adapter.sync(lost_scope)
+                assert partial.status=="partial" and partial.unconfirmed_writes==1 and partial.deferred_documents==1
+                assert lost_backend.count==1 and len(backend.get_all(filters=lost_filters)["results"])==1
+                recovered=lost_adapter.sync(lost_scope)
+                assert recovered.status=="indexed" and recovered.added==1 and recovered.unchanged==1
+                assert lost_backend.count==2 and len(backend.get_all(filters=lost_filters)["results"])==2
+                checks.append("lost host receipt after real SDK commit; explicit enumeration avoids duplicate add")
                 # Fixed transport policy: no automatic SDK retry of a
                 # failed request; a stalled response holds the host slot
                 # until the actual synchronous request returns.

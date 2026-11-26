@@ -335,6 +335,44 @@ def test_backend_failures_raise_instead_of_looking_like_empty_memory():
     assert any(error.startswith("add:") for error in partial.errors)
 
 
+@pytest.mark.parametrize("lost_response", ["exception", "empty"])
+def test_unconfirmed_add_stops_batch_and_preserves_old_generation(lost_response):
+    class LostReceiptBackend(FakeMem0):
+        lose = False
+        def add(self, *args, **kwargs):
+            result = super().add(*args, **kwargs)
+            if self.lose:
+                self.lose = False
+                if lost_response == "exception":
+                    raise RuntimeError("synthetic lost receipt after commit")
+                return {"results": []}
+            return result
+
+    backend = LostReceiptBackend()
+    reader = FakeReader([make_document("a.md", "old fact")])
+    adapter = enabled_index(backend, reader)
+    adapter.sync(make_scope(revision=1))
+    old_ids = set(backend.rows)
+    reader.documents = [make_document("a.md", "new fact"), make_document("b.md", "second fact")]
+    scope = make_scope(revision=2)
+    backend.lose = True
+    partial = adapter.sync(scope)
+    assert partial.status == "partial" and partial.added == 0
+    assert partial.unconfirmed_writes == 1 and partial.deferred_documents == 1
+    assert partial.cleanup_pending == 1 and partial.deleted == 0
+    assert len(backend.rows) == 2 and old_ids <= set(backend.rows)
+    assert len(add_calls(backend)) == 2  # initial generation and one uncertain write
+    assert not any(call[0] == "delete" for call in backend.calls)
+    assert partial.as_dict()["unconfirmed_writes"] == 1
+    # A new explicit sync is authorized and enumerates first. It recognizes
+    # the committed row, adds only the missing document, and then cleans stale.
+    recovered = adapter.sync(scope)
+    assert recovered.status == "indexed" and recovered.added == 1 and recovered.unchanged == 1
+    assert recovered.deleted == 1 and recovered.unconfirmed_writes == 0
+    assert recovered.deferred_documents == 0 and len(backend.rows) == 2
+    assert len(add_calls(backend)) == 3
+
+
 def test_delete_failure_is_reported_and_stale_rows_never_enter_context():
     backend = FakeMem0()
     reader = FakeReader([make_document(text="old approved fact")])

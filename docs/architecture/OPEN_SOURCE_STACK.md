@@ -203,3 +203,5 @@ Mem0 2.2.1 原生接口派生索引默认关闭候选完成真实 SDK 100 份文
 固定 Mem0 2.2.1 / OpenAI 3.59.0 / Qdrant client 1.20.0 的本地派生索引 pilot 已补传输超时及禁止 SDK 自动重试；真实 SDK 8/8、宿主回归 50/50。仅验证本地 Qdrant 与显式 OpenAI-compatible provider，不是端到端硬预算、远端取消或生产接线。详见 [I/O 验收](../evidence/KAIWU_MEM0_PROVIDER_IO_2026-11-26.md)。
 
 固定 Mem0 SDK 自有资源关闭、关闭后拒绝调用及本地 Qdrant 持久库重开已独立验收（53/53 后端、9/9 真实 SDK）；详见 [资源关闭验收](../evidence/KAIWU_MEM0_RESOURCE_CLOSE_2026-11-26.md)。未接正式产品生命周期。
+
+固定 Mem0 SDK 已提交但宿主回执丢失的隔离对账验收（55/55 后端、10/10 真实 SDK）；未确认立即停止后续写入及旧代次删除，后续显式授权完整枚举补缺，不自动重放。详见 [未确认回执验收](../evidence/KAIWU_MEM0_UNCONFIRMED_WRITE_2026-11-26.md)。无持久队列或撤权删除权限。
