@@ -241,6 +241,16 @@ class Settings:
     # Public key only. The Edge private key must live in the Edge signing
     # service, never in this application process.
     kaiwu_control_edge_public_key: str = field(default_factory=lambda: os.getenv("AGENT_KAIWU_CONTROL_EDGE_PUBLIC_KEY", "").strip())
+    # Opt-in product API for the derived Mem0 semantic index. Disabled by
+    # default. Turning the route on does NOT import the Mem0 SDK, choose a
+    # provider or grant data egress: an operator must explicitly inject a
+    # backend/scoped factory. The authoritative NativeMemory snapshot stays the
+    # only source of truth and is revalidated on every lookup/sync.
+    mem0_product_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_MEM0_PRODUCT_ENABLED", "false").lower() == "true")
+    mem0_agent_id: str = field(default_factory=lambda: os.getenv("AGENT_MEM0_AGENT_ID", "kaiwu-memory-index-v1").strip())
+    mem0_top_k: int = field(default_factory=lambda: int(os.getenv("AGENT_MEM0_TOP_K", "5")))
+    mem0_threshold: float = field(default_factory=lambda: float(os.getenv("AGENT_MEM0_THRESHOLD", "0.0")))
+    mem0_max_context_bytes: int = field(default_factory=lambda: int(os.getenv("AGENT_MEM0_MAX_CONTEXT_BYTES", "16384")))
 
     def __post_init__(self) -> None:
         if self.kaiwu_assist_control_origin:
@@ -314,6 +324,17 @@ class Settings:
             for tenant in self.kaiwu_device_export_tenants
         ):
             raise ValueError("AGENT_KAIWU_DEVICE_EXPORT_TENANTS must be a comma-separated list of tenant IDs")
+        if type(self.mem0_product_enabled) is not bool:
+            raise ValueError("AGENT_MEM0_PRODUCT_ENABLED must be a boolean")
+        if not isinstance(self.mem0_agent_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.mem0_agent_id) is None:
+            raise ValueError("AGENT_MEM0_AGENT_ID must be 1-128 characters from [A-Za-z0-9_-]")
+        if type(self.mem0_top_k) is not int or not 1 <= self.mem0_top_k <= 50:
+            raise ValueError("AGENT_MEM0_TOP_K must be an integer from 1 to 50")
+        if type(self.mem0_threshold) is bool or not isinstance(self.mem0_threshold, (int, float)) or not 0.0 <= float(self.mem0_threshold) <= 1.0:
+            raise ValueError("AGENT_MEM0_THRESHOLD must be between 0 and 1")
+        self.mem0_threshold = float(self.mem0_threshold)
+        if type(self.mem0_max_context_bytes) is not int or not 1 <= self.mem0_max_context_bytes <= 131072:
+            raise ValueError("AGENT_MEM0_MAX_CONTEXT_BYTES must be an integer from 1 to 131072")
 
     def deployment_policy(self) -> DeploymentPolicy:
         return DeploymentPolicy(self.deployment_mode, self.trial_capabilities)

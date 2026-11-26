@@ -246,6 +246,11 @@ def create_app(settings: Settings | None = None, runtime_factory=None) -> FastAP
     app.include_router(create_business_data_router(svc, authenticated))
     from .memory import create_memory_router
     app.include_router(create_memory_router(svc, authenticated))
+    from .mem0_product import create_mem0_router
+    # Stable route shapes are always mounted so a disabled deployment is
+    # auditable (403) instead of falling through; no SDK or provider is
+    # installed when AGENT_MEM0_PRODUCT_ENABLED is false (the default).
+    app.include_router(create_mem0_router(svc, authenticated, enabled=settings.mem0_product_enabled))
     from .message_queue import create_message_queue_router
     app.include_router(create_message_queue_router(svc, authenticated))
     from .context import create_context_router

@@ -139,6 +139,10 @@ class Service:
         self.manager = None
         from .memory import NativeMemory
         self.memory = NativeMemory(self)
+        # Default-disabled product facade. No backend/SDK until an operator
+        # explicitly calls ``configure``; reads never create or write a scope.
+        from .mem0_product import Mem0ProductService
+        self.mem0_product = Mem0ProductService(self)
         from .evidence import EvidenceService
         from .knowledge import KnowledgeService
         self.evidence = EvidenceService(self)
