@@ -14,7 +14,10 @@ from app.security import AppError
 @pytest.fixture
 def memory_app(tmp_path):
     # These contracts exercise Claude's native mutable directory and refresh.
-    app = create_app(Settings(data_dir=tmp_path, provider_settings="", model="test", runtime_type="claude"))
+    def forbidden_model_runtime(*args, **kwargs):
+        raise AssertionError("native memory contract tests must not invoke a model")
+    app = create_app(Settings(data_dir=tmp_path, provider_settings="", model="test", runtime_type="claude"),
+                     runtime_factory=forbidden_model_runtime)
     with TestClient(app) as client:
         service = app.state.service
         user = service.create_user({"username": "owner", "display_name": "Owner", "password": "test-password-123", "role": "admin"})

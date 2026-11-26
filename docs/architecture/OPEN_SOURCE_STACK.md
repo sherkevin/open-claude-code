@@ -217,3 +217,5 @@ Mem0 2.2.1 原生接口派生索引默认关闭候选完成真实 SDK 100 份文
 固定 Mem0 2.2.1 / Qdrant 1.20.0 逻辑退役准入复用既有原生清空回执与 SQLite 事务，后端 72/72、真实 SDK 隔离 6/6；详见 [退役准入验收](../evidence/KAIWU_MEM0_RETIREMENT_ADMISSION_2026-11-26.md)。不删除字节，正式删除许可、新代次与产品接线待验收。
 
 Mem0 独立作用域可选宿主工厂复用既有 Mem0Host 与 ScopeStore，75/75 后端和真实 SDK/合成 authority 4/4；详见 [生命周期验收](../evidence/KAIWU_MEM0_SCOPED_HOST_2026-11-26.md)。无实际产品调用或生产启用。
+
+D3 默认关闭的产品 API 已独立验收：复用 Mem0 2.2.1 adapter、Mem0Host、ScopeStore 和原权威 SQLite 快照，显式注入隔离工厂，不选默认供应方；产品及权限 40/40、最终分组回归 183/183。见 [D3 验收](../evidence/KAIWU_MEM0_PRODUCT_2026-11-26.md)。真实 SDK 与 Service 同进程、生产配置、UI 和质量/硬预算尚未验收。

@@ -96,3 +96,10 @@ TMPDIR=/media/data3/dengkw/tmp-mem0-product \
 主线已为 b445307（客户限流修复已合入）；本候选仍基于 c90b204，未合入。初测 2 failed / 10 errors，全部由测试 app 要求真实模型凭据导致；以显式禁止模型调用的 synthetic runtime factory 修正夹具，并修正测试客户端参数、模拟历史文件，第二次真实 FastAPI/SQLite + synthetic Mem0 后端 12/12，退出 0（controller-product-v2.log）。
 
 随后审查收紧产品边界：只允许独立 scoped factory、已配置 host 不允许替换，显式 config 不得覆盖部署开关；查询词改为 POST JSON 请求体，不放 URL 或响应回显（不声称所有日志均脱敏）。新增两项测试，14 项产品测试和现有 deployment policy 组合复验正在执行（controller-product-v3.log/.exit）；本次改动尚未验收。真实 SDK/真实供应商、实际模型上下文、硬预算和删除专用授权仍待，不启用生产。
+
+
+## 9. 总控最终验收与合并条件（2026-11-26）
+
+工程师已实际退出 0；任务书和原始 JSONL、模型及退出回执留存在 /media/data3/dengkw/acceptance/kaiwu-mem0-product-20261126/。总控将代码提交并基于 b445307 复验。先前产品与权限策略组合 40/40（controller-product-v3.log）。最终扩展组合包括产品 API、派生索引、作用域存储、部署权限、原生记忆及快照崩溃恢复：初次 173 项通过、10 项旧 Claude 记忆测试失败（controller-merged.log）。未包含本次产品接线的主线 b445307 独立复现 MODEL_UNAVAILABLE（controller-memory-baseline.log）。仅修正 tests/test_memory.py 夹具，显式注入禁止模型调用的 runtime factory，不改变生产配置或权限；失败组 10/10 重跑通过（controller-memory-fixed.log）。因此最终分组验收 183/183，不是声称一次全量执行通过。保留全部原始失败与复验日志及既有告警。
+
+交付范围仅为默认关闭、显式隔离工厂注入的 owner-scoped 产品 API。实际生产供应商、真实 SDK 与 Service 同进程、UI、模型上下文自动注入、硬费用预算及独立删除授权仍未完成；未上线、未启用、无客户数据或外部模型请求。下一独立任务详见验收目录 NEXT_TASK.md。合并后只有在远端提交核验、工人退出、工作树干净及证据保留时才清理本任务分支；清理结果由 controller-acceptance.json 实际记录。
