@@ -74,7 +74,10 @@ def main():
                     finally:
                         backend.close()
             checks.append("new host object reopens both persisted SDK stores with isolated histories")
-            s.retire(a)
+            proof = "b" * 64
+            assert s._retire_with_clear_proof(a, proof) == proof
+            assert ScopeStore(root, cfg)._retire_with_clear_proof(a, proof) == proof
+            checks.append("logical receipt durable across new scope store object; no SDK invocation")
             try:
                 with ScopeStore(root, cfg).lease(a):
                     raise AssertionError("retired scope opened")
@@ -90,6 +93,10 @@ def main():
                 finally:
                     backend.close()
             checks.append("other scope remains usable after retirement")
+            # Confirm retained bytes are not presented as physically erased.
+            target = s.root / s._key(a)
+            assert (target / "history.sqlite").stat().st_size > 0
+            checks.append("retired target history remains; no physical deletion claimed")
             assert calls == {"embedding": 2, "extraction": 0}
             print(json.dumps({"passed": len(checks), "checks": checks,
                               "loopback_requests": calls, "physical_deletion_verified": False,

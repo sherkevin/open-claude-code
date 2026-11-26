@@ -1081,3 +1081,109 @@ def test_host_clear_never_reports_unverified_delete_as_complete(native_store):
     with pytest.raises(Mem0IndexScopeInvalid):
         host.clear_committed(user["id"],cid,"clear-current")
     assert backend.calls == []
+
+
+def test_scope_retirement_requires_exact_committed_clear(native_store):
+    from app.mem0_scope_store import ScopeStore
+    from app.mem0_retirement import retire_committed_clear
+    service, user, cid = native_store
+    uid = user["id"]
+    reader = NativeMemorySourceReader(service.memory)
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic fact","edit")
+    first = reader.current_scope(uid,cid)
+    cfg = Mem0IndexConfig(enabled=True)
+    store = ScopeStore(service.settings.data_dir,cfg)
+    store.provision(first)
+    with store.lease(first) as paths:
+        paths.history.write_text("synthetic derived body")
+    with pytest.raises(Mem0IndexError):
+        retire_committed_clear(service,store,uid,cid,"edit")
+    service.memory.edit(user,cid,1,operation_id="clear")
+    with pytest.raises(Mem0IndexError):
+        retire_committed_clear(service,store,uid,cid,"wrong")
+    with store.lease(first):
+        with pytest.raises(Mem0IndexUnavailable):
+            retire_committed_clear(service,store,uid,cid,"clear")
+    receipt = retire_committed_clear(service,store,uid,cid,"clear")
+    assert receipt.state == "retired" and receipt.cleanup_status == "not_performed"
+    assert paths.history.read_text() == "synthetic derived body"
+    assert retire_committed_clear(service,ScopeStore(service.settings.data_dir,cfg),uid,cid,"clear") == receipt
+    with pytest.raises(Mem0IndexUnavailable), store.lease(first):
+        pass
+    service.memory.edit(user,cid,2,operation_id="clear-new")
+    with pytest.raises(Mem0IndexError):
+        retire_committed_clear(service,store,uid,cid,"clear")
+    with pytest.raises(Mem0IndexUnavailable):
+        retire_committed_clear(service,store,uid,cid,"clear-new")
+
+
+def test_scope_retirement_rejects_revoked_and_unproven_state(native_store):
+    from app.mem0_scope_store import ScopeStore
+    from app.mem0_retirement import retire_committed_clear
+    service,user,cid = native_store
+    uid = user["id"]
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic fact","edit")
+    scope = NativeMemorySourceReader(service.memory).current_scope(uid,cid)
+    store = ScopeStore(service.settings.data_dir,Mem0IndexConfig(enabled=True))
+    store.provision(scope)
+    service.memory.edit(user,cid,1,operation_id="clear")
+    service.db.execute("UPDATE users SET enabled=0 WHERE id=?",(uid,))
+    with pytest.raises(Mem0IndexError):
+        retire_committed_clear(service,store,uid,cid,"clear")
+    service.db.execute("UPDATE users SET enabled=1 WHERE id=?",(uid,))
+    with store.lease(scope):
+        pass
+    store.retire(scope)
+    with pytest.raises(Mem0IndexUnavailable):
+        retire_committed_clear(service,store,uid,cid,"clear")
+
+
+def test_scope_retirement_uncertain_receipt_is_not_replayed(native_store, monkeypatch):
+    from app.mem0_scope_store import ScopeStore
+    from app.mem0_retirement import retire_committed_clear
+    service,user,cid = native_store
+    uid = user["id"]
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic fact","edit")
+    scope = NativeMemorySourceReader(service.memory).current_scope(uid,cid)
+    store = ScopeStore(service.settings.data_dir,Mem0IndexConfig(enabled=True))
+    store.provision(scope)
+    service.memory.edit(user,cid,1,operation_id="clear")
+    original = store._write
+    def lost_receipt(*args):
+        original(*args)
+        raise OSError("synthetic lost receipt after durable transition")
+    monkeypatch.setattr(store,"_write",lost_receipt)
+    with pytest.raises(Mem0IndexUnavailable):
+        retire_committed_clear(service,store,uid,cid,"clear")
+    with pytest.raises(Mem0IndexUnavailable), store.lease(scope):
+        pass
+    def no_write(*args):
+        raise AssertionError("unexpected replay")
+    monkeypatch.setattr(store,"_write",no_write)
+    assert retire_committed_clear(service,store,uid,cid,"clear").cleanup_status == "not_performed"
+
+
+def test_scope_retirement_holds_authoritative_database_write_reservation(native_store, monkeypatch):
+    import sqlite3
+    from app.mem0_scope_store import ScopeStore
+    from app.mem0_retirement import retire_committed_clear
+    service,user,cid = native_store
+    uid = user["id"]
+    service.memory.edit(user,cid,0,"MEMORY.md","synthetic fact","edit")
+    scope = NativeMemorySourceReader(service.memory).current_scope(uid,cid)
+    store = ScopeStore(service.settings.data_dir,Mem0IndexConfig(enabled=True))
+    store.provision(scope)
+    service.memory.edit(user,cid,1,operation_id="clear")
+    path = service.db.conn.execute("PRAGMA database_list").fetchone()[2]
+    original = store._write
+    with sqlite3.connect(path, timeout=0, isolation_level=None) as competing:
+        def assert_reserved(*args):
+            with pytest.raises(sqlite3.OperationalError,match="locked"):
+                competing.execute("UPDATE users SET enabled=0 WHERE id=?",(uid,))
+            original(*args)
+        monkeypatch.setattr(store,"_write",assert_reserved)
+        receipt = retire_committed_clear(service,store,uid,cid,"clear")
+        assert receipt.state == "retired"
+        competing.execute("UPDATE users SET enabled=0 WHERE id=?",(uid,))
+        with pytest.raises(Mem0IndexError):
+            retire_committed_clear(service,store,uid,cid,"clear")

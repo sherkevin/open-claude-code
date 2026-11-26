@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import uuid
@@ -96,9 +97,13 @@ class ScopeStore:
                 item = json.loads(raw)
             except (ValueError, UnicodeError):
                 raise Mem0IndexUnavailable("invalid scope binding") from None
-            if (type(item) is not dict or set(item) != {"key", "state", "dev", "ino"}
+            if (type(item) is not dict or set(item) not in ({"key", "state", "dev", "ino"},
+                                         {"key", "state", "dev", "ino", "clear_proof"})
                     or item["key"] != key or item["state"] not in ("active", "retired")
-                    or type(item["dev"]) is not int or type(item["ino"]) is not int):
+                    or type(item["dev"]) is not int or type(item["ino"]) is not int
+                    or ("clear_proof" in item and (item["state"] != "retired"
+                        or type(item["clear_proof"]) is not str
+                        or re.fullmatch(r"[0-9a-f]{64}", item["clear_proof"]) is None))):
                 raise Mem0IndexUnavailable("invalid scope binding")
             return item
         finally:
@@ -190,3 +195,30 @@ class ScopeStore:
                 return
             self._paths(fd, key, item)
             self._write(fd, key, {**item, "state": "retired"})
+
+
+    def _retire_with_clear_proof(self, scope: TrustedScope, proof: str) -> str:
+        """Internal transition; caller must hold a current authority transaction.
+
+        Persist the admission proof in the same atomic marker as retirement.
+        No SDK access or removal of bytes. An older unproven retirement cannot
+        be upgraded into an authorized receipt after the fact.
+        """
+        if type(proof) is not str or re.fullmatch(r"[0-9a-f]{64}", proof) is None:
+            raise Mem0IndexUnavailable("invalid retirement proof")
+        key = self._key(scope)
+        with self._locked() as fd:
+            item = self._read(fd, key)
+            if item is not None and item["state"] == "retired":
+                if item.get("clear_proof") != proof:
+                    raise Mem0IndexUnavailable("retirement proof mismatch")
+                # Recover a lost acknowledgment only after confirming the
+                # observed marker is durable, including the directory entry.
+                os.fsync(fd)
+                return proof
+            self._paths(fd, key, item)
+            self._write(fd, key, {**item, "state": "retired", "clear_proof": proof})
+            observed = self._read(fd, key)
+            if observed != {**item, "state": "retired", "clear_proof": proof}:
+                raise Mem0IndexUnavailable("retirement receipt unconfirmed")
+            return proof
