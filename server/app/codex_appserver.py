@@ -40,6 +40,7 @@ MAX_STATE_BYTES = 1048576
 MAX_FRAME_CHARS = 1048576
 MAX_TURN_NOTIFICATIONS = 8192
 RECENT_REQUESTS = 8
+MAX_ADMITTED_REQUESTS = 1024
 RECENT_TEXT_CHARS = 4096
 
 APPROVAL_METHODS = frozenset({
@@ -785,6 +786,13 @@ class CodexHost:
                 target.flush()
                 os.fsync(target.fileno())
             os.replace(temporary, path)
+            # Persist the rename as well as the file contents before granting
+            # a request that may cross a process/network boundary.
+            directory_fd = os.open(layout.state, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except OSError:
             raise CodexHostUnavailable("app-server binding could not be saved") from None
         finally:
@@ -864,6 +872,18 @@ class CodexHost:
             raise CodexHostUnavailable("app-server binding text invalid")
         if value.get("last_status") is not None and not isinstance(value["last_status"], str):
             raise CodexHostUnavailable("app-server binding status invalid")
+        admitted = value.get("admitted_requests")
+        if (not isinstance(admitted, dict) or len(admitted) > MAX_ADMITTED_REQUESTS
+                or any(not isinstance(k, str) or not REQUEST_ID.fullmatch(k)
+                       or not isinstance(v, str) or not SHA256_HEX.fullmatch(v)
+                       for k, v in admitted.items())):
+            raise CodexHostUnavailable("app-server admitted request ledger invalid")
+        for name, digest_name in (("active_request_id", "active_text_digest"),
+                                  ("uncertain_request_id", "uncertain_text_digest"),
+                                  ("last_request_id", "last_text_digest")):
+            request = value.get(name)
+            if request is not None and (request not in admitted or admitted[request] != value.get(digest_name)):
+                raise CodexHostUnavailable("app-server request ledger mismatch")
         recent = value.get("recent_requests", [])
         if not isinstance(recent, list) or len(recent) > RECENT_REQUESTS * 2:
             raise CodexHostUnavailable("app-server binding request history invalid")
@@ -875,7 +895,8 @@ class CodexHost:
                     or not _valid_id(entry.get("turn_id"))
                     or not isinstance(entry.get("status"), str)
                     or not isinstance(entry.get("text", ""), str)
-                    or not isinstance(entry.get("text_truncated", False), bool)):
+                    or not isinstance(entry.get("text_truncated", False), bool)
+                    or admitted.get(entry["request_id"]) != entry["text_digest"]):
                 raise CodexHostUnavailable("app-server binding request history invalid")
 
     @staticmethod
@@ -902,6 +923,7 @@ class CodexHost:
             "last_text_digest": None,
             "last_rejected_server_requests": 0,
             "recent_requests": [],
+            "admitted_requests": {},
             "reconciled_at": None,
         }
 
@@ -1067,6 +1089,10 @@ class CodexHost:
             replayed = self._recent_receipt(binding, request_id, digest)
             if replayed is not None:
                 return replayed
+            if request_id in binding["admitted_requests"]:
+                raise CodexHostConflict("Codex request was already admitted; receipt is not retained")
+            if len(binding["admitted_requests"]) >= MAX_ADMITTED_REQUESTS:
+                raise CodexHostConflict("Codex thread request ledger is full; prepare a new conversation")
             # Verify the pinned executable before creating the process so a
             # digest rejection cannot leak a launched child.
             self._verify_executable()
@@ -1074,34 +1100,30 @@ class CodexHost:
             try:
                 session.initialize()
                 session.resume_thread(binding["thread_id"], workspace)
-                try:
-                    turn_id = session.start_turn(binding["thread_id"], text)
-                except CodexHostError:
-                    # The server may have accepted the turn before the reply was
-                    # lost.  Never guess: fence this owner until reconcile.
-                    with self._state_lock(key):
-                        current = self._load(key)
-                        if current is not None:
-                            current["uncertain_request_id"] = request_id
-                            current["uncertain_text_digest"] = digest
-                            self._save(key, current)
-                    raise
-                try:
-                    # Register before the durable active marker so an interrupt
-                    # that observes the marker can also reach this process.
-                    self._register(key, session)
-                except CodexHostError:
-                    with self._state_lock(key):
-                        current = self._load(key)
-                        if current is not None:
-                            current["uncertain_request_id"] = request_id
-                            current["uncertain_text_digest"] = digest
-                            self._save(key, current)
-                    raise
+                # Commit the exact request before turn/start. A hard crash,
+                # transport failure or lost response cannot make it look unsent.
                 with self._state_lock(key):
                     current = self._load(key)
                     if current is None:
                         raise CodexHostUnavailable("Codex thread binding disappeared")
+                    self._validate_binding(current, user_id, conversation_id, workspace)
+                    if current != binding:
+                        raise CodexHostConflict("Codex thread binding changed before admission")
+                    current["admitted_requests"][request_id] = digest
+                    current["uncertain_request_id"] = request_id
+                    current["uncertain_text_digest"] = digest
+                    self._save(key, current)
+                turn_id = session.start_turn(binding["thread_id"], text)
+                # Register before the durable active marker so an interrupt
+                # that observes the marker can also reach this process.
+                self._register(key, session)
+                with self._state_lock(key):
+                    current = self._load(key)
+                    if current is None:
+                        raise CodexHostUnavailable("Codex thread binding disappeared")
+                    if (current.get("uncertain_request_id") != request_id
+                            or current.get("uncertain_text_digest") != digest):
+                        raise CodexHostConflict("Codex request admission changed")
                     current.update(
                         active_turn_id=turn_id,
                         active_request_id=request_id,
@@ -1127,7 +1149,12 @@ class CodexHost:
                         "status": outcome["status"],
                         "text": outcome["text"][:RECENT_TEXT_CHARS],
                         "text_truncated": len(outcome["text"]) > RECENT_TEXT_CHARS,
+                        "rejected_server_requests": outcome["rejected_server_requests"],
                     })
+                    if (current.get("active_turn_id") != turn_id
+                            or current.get("active_request_id") != request_id
+                            or current.get("active_text_digest") != digest):
+                        raise CodexHostConflict("Codex active receipt identity changed")
                     current.update(
                         active_turn_id=None,
                         active_request_id=None,
@@ -1197,36 +1224,45 @@ class CodexHost:
             uncertain = binding.get("uncertain_request_id")
             if not active and not uncertain:
                 return self._view(binding)
+            if not active:
+                # The pinned protocol does not prove which turn belongs to a
+                # request that lost its start receipt. Never guess by position
+                # in thread history or interrupt an unrelated turn.
+                raise CodexHostConflict("Codex turn ID is unconfirmed; independent reconciliation is required")
             with self._open_session(workspace) as session:
                 session.initialize()
                 session.resume_thread(binding["thread_id"], workspace)
                 turns = self._turns(session.read_thread(binding["thread_id"], True))
                 target = active
-                if target is None:
-                    in_progress = [turn for turn in turns
-                                   if str(turn["status"] or "").lower()
-                                   not in TERMINAL_TURN_STATUSES]
-                    target = in_progress[-1]["id"] if in_progress else None
-                status = None
-                if target is not None:
-                    for turn in turns:
-                        if turn["id"] == target:
-                            status = str(turn["status"] or "").lower()
-                            break
-                    if status not in TERMINAL_TURN_STATUSES:
-                        session.interrupt_turn(binding["thread_id"], target)
+                matches = [turn for turn in turns if turn["id"] == target]
+                if len(matches) != 1:
+                    raise CodexHostUnavailable("Codex exact turn is absent or ambiguous; reconcile again")
+                status = str(matches[0]["status"] or "").lower()
+                if status not in TERMINAL_TURN_STATUSES:
+                    session.interrupt_turn(binding["thread_id"], target)
                     deadline = time.monotonic() + self.config.reconcile_timeout_seconds
-                    observed = self._poll_terminal(session, binding["thread_id"], target,
-                                                   deadline)
+                    observed = self._poll_terminal(session, binding["thread_id"], target, deadline)
                     if observed is None:
-                        raise CodexHostUnavailable(
-                            "Codex turn state is still uncertain; reconcile again")
+                        raise CodexHostUnavailable("Codex turn state is still uncertain; reconcile again")
                     status = observed
             with self._state_lock(key):
                 current = self._load(key)
                 if current is None:
                     raise CodexHostUnavailable("Codex thread binding disappeared")
+                if (current.get("active_turn_id") != target
+                        or current.get("active_request_id") != binding.get("active_request_id")
+                        or current.get("active_text_digest") != binding.get("active_text_digest")):
+                    raise CodexHostConflict("Codex recovery receipt identity changed")
+                # Reconciliation confirms terminal state, not the missing
+                # answer or approval count. Never reuse a prior answer.
                 current.update(
+                    last_request_id=current["active_request_id"],
+                    last_text_digest=current["active_text_digest"],
+                    last_turn_id=target,
+                    last_status=status,
+                    last_text="",
+                    last_text_truncated=True,
+                    last_rejected_server_requests=None,
                     active_turn_id=None,
                     active_request_id=None,
                     active_text_digest=None,
@@ -1234,8 +1270,6 @@ class CodexHost:
                     interrupt_requested_at=None,
                     uncertain_request_id=None,
                     uncertain_text_digest=None,
-                    last_turn_id=target or current.get("last_turn_id"),
-                    last_status=status or "unconfirmed",
                     reconciled_at=_now(),
                 )
                 self._save(key, current)
@@ -1254,8 +1288,7 @@ class CodexHost:
                 "text": entry.get("text", ""),
                 "text_truncated": bool(entry.get("text_truncated")),
                 "replayed": True,
-                "rejected_server_requests": int(
-                    binding.get("last_rejected_server_requests") or 0),
+                "rejected_server_requests": entry.get("rejected_server_requests"),
             }
         return None
 
@@ -1267,6 +1300,5 @@ class CodexHost:
             "text": binding.get("last_text", ""),
             "text_truncated": bool(binding.get("last_text_truncated")),
             "replayed": replayed,
-            "rejected_server_requests": int(
-                binding.get("last_rejected_server_requests") or 0),
+            "rejected_server_requests": binding.get("last_rejected_server_requests"),
         }

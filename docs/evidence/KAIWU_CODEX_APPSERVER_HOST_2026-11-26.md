@@ -1,6 +1,6 @@
-# 2026-11-26｜E2.2 Codex App Server 产品宿主适配切片（默认关闭，未执行测试）
+# 2026-11-26｜E2.2 Codex App Server 产品宿主适配切片（默认关闭，已完成隔离验收）
 
-工作树 `/media/data3/dengkw/projects/kaiwu-codex-host-20261126`，基线 HEAD `c90b204`。本轮只新增默认关闭的 Codex App Server 产品宿主模块、产品 API、synthetic stdio peer 测试与复验探针；没有启动真实 Codex 二进制、没有模型 ID、没有外网模型请求、没有真实登录态/Codex token/配置、没有终端或业务工具、没有审批放行。**本轮代码和测试由实现工程师写入，但实现环境只有受控文件工具，不能运行 shell，因此以下测试与探针均未执行；表中的预期结果不是已通过证据。**
+工作树 `/media/data3/dengkw/projects/kaiwu-codex-host-20261126`，基线 HEAD `c90b204`。本轮只新增默认关闭的 Codex App Server 产品宿主模块、产品 API、synthetic stdio peer 测试与复验探针；没有启动真实 Codex 二进制、没有模型 ID、没有外网模型请求、没有真实登录态/Codex token/配置、没有终端或业务工具、没有审批放行。**工程师交付阶段未执行测试，以下为原始交付记录；以末尾总控复验与修正后的边界为准。**
 
 ## 1. 复用与边界
 
@@ -127,3 +127,10 @@ cd /media/data3/dengkw/projects/kaiwu-codex-host-20261126
 ## 8. 结论
 
 本切片交付了默认可关闭、owner 绑定、可测试的 Codex App Server 产品宿主适配代码，覆盖线程准备/恢复、实际消息轮次回执、精确取消、审批拒绝和不确定状态恢复边界。**没有执行测试，没有真实二进制 turn，没有生产接线或上线**；现有 4/4 仅是本地无外网元数据证据，不能当作真实 provider 或产品验收。下一步由总控按第 5 节复验，并另行授权真实模型 turn。
+
+
+## 9. 总控独立复验与修正（2026-11-26）
+
+工程师实际退出 0，基于最新 main 4be2518 同步，无合并冲突。首轮 19/20 通过，1 项因测试将日志路径当作事件列表而失败，修正测试调用。独立审查还发现原版在 turn/start 发出后才持久化不确定状态、有限回执缓存淘汰后允许旧请求重放、恢复时可能选取错误 turn 或复用上一轮文本。总控将请求摘要准入标记和目录 fsync 提前到真实请求发送之前，持久保留每线程最多 1024 项已准入请求摘要；旧回执淘汰后拒绝重发。丢失确切 turn ID 时保持不确定并拒绝自动猜测，已确认 ID 的恢复仅核验该轮次终态，不伪造丢失文本和审批次数。回执计数跟随各自请求。普通配置开关不能直接启动尚未通过租户隔离及 provider 验证的真实执行器，显式注入隔离 host 的产品 API 仍可用于验证。
+
+最终测试：Codex 宿主/产品 API、既有部署权限与 Mem0 产品回归共 63/63 通过（controller-codex-fixed.log/.exit），独立 synthetic stdio 探针 8/8 通过（controller-codex-probe.json/.exit）。保留既有 Starlette/httpx 与重复 OpenAPI operation ID 警告。证据目录 /media/data3/dengkw/acceptance/kaiwu-codex-host-20261126/。未使用真实 Codex 模型、供应商凭据、客户数据或生产服务；未实现可证明的真实执行器隔离、统一运行队列及费用预算。后续必须以明确授权的真实隔离 executor、实际 model ID/provider 和主产品运行/审批接线为验收目标，不把本切片当作完整 Codex 功能。

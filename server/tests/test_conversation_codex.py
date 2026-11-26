@@ -168,3 +168,7 @@ def test_feature_errors_are_not_leaked(codex_env):
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "CODEX_CONFLICT"
     assert "app-server" not in response.text
+
+def test_ordinary_feature_switch_cannot_launch_unreviewed_real_host(tmp_path):
+    with pytest.raises(ValueError, match="explicitly provisioned isolated host"):
+        create_app(settings_for(tmp_path), runtime_factory=FakeRuntime)

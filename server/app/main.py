@@ -288,10 +288,12 @@ def create_app(settings: Settings | None = None, runtime_factory=None,
                 from .conversation_goal_execution import create_goal_execution_router
                 app.include_router(create_goal_execution_router(svc, authenticated))
         if settings.codex_appserver_enabled:
-            from .codex_appserver import CodexHost, CodexHostConfig
             from .conversation_codex import create_codex_router
-            codex_host = (codex_host_factory(settings) if codex_host_factory is not None
-                          else CodexHost(CodexHostConfig.from_settings(settings)))
+            # This pilot has no approved provider or tenant-isolated real
+            # executor yet. An ordinary environment switch cannot enable it.
+            if codex_host_factory is None:
+                raise ValueError("Codex pilot requires an explicitly provisioned isolated host")
+            codex_host = codex_host_factory(settings)
             app.state.codex_host = codex_host
             app.include_router(create_codex_router(svc, authenticated, codex_host))
     from .workflows import create_workflow_router

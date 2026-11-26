@@ -226,6 +226,11 @@ def test_crash_then_reconcile_terminal_turn(tmp_path):
                for event in events if event.get("event") == "request")
     assert requests(events, "thread/resume")[0]["params"]["threadId"] == thread_id
     assert requests(events, "thread/read")[0]["params"]["includeTurns"] is True
+    replay = recovered.run_turn(USER, CID, "request-0001", "合成请求")
+    assert replay["replayed"] is True and replay["turn_id"] == active
+    assert replay["text"] == "" and replay["text_truncated"] is True
+    assert replay["rejected_server_requests"] is None
+    assert requests(log_events(log), "turn/start") == []
 
 
 def test_reconcile_in_progress_interrupts_exact_turn(tmp_path):
@@ -257,7 +262,7 @@ def test_restart_resumes_the_same_thread(tmp_path):
     events = wait_for_log(second_log, lambda items: len(requests(items, "thread/resume")) == 1)
     assert requests(events, "thread/resume")[0]["params"]["threadId"] == thread_id
     assert requests(events, "thread/start") == []
-    assert len(requests(first_log, "thread/start")) == 1
+    assert len(requests(log_events(first_log), "thread/start")) == 1
 
 
 def test_pinned_digest_rejects_before_launch(tmp_path):
@@ -351,3 +356,40 @@ def test_config_requires_absolute_pinned_launch(tmp_path):
                         expected_executable_sha256="ABC")
     with pytest.raises(ValueError):
         CodexHostConfig(enabled=False, data_dir="relative")
+
+def test_start_receipt_lost_is_fenced_before_send(tmp_path, monkeypatch):
+    from app.codex_appserver import _Session
+    host, log = make_host(tmp_path)
+    host.ensure_thread(USER, CID)
+    original = _Session.start_turn
+    def lose_receipt(session, thread_id, text):
+        # The actual peer receives the request, but the host dies before
+        # installing a known turn ID. The admission must already be durable.
+        original(session, thread_id, text)
+        raise SystemExit("synthetic hard failure after send")
+    monkeypatch.setattr(_Session, "start_turn", lose_receipt)
+    with pytest.raises(SystemExit):
+        host.run_turn(USER, CID, "request-0001", "合成请求")
+    restarted, restarted_log = make_host(tmp_path)
+    assert restarted.status(USER, CID)["recovery_required"] is True
+    with pytest.raises(CodexHostConflict):
+        restarted.reconcile(USER, CID)
+    with pytest.raises(CodexHostConflict):
+        restarted.run_turn(USER, CID, "request-0001", "合成请求")
+    assert not requests(log_events(restarted_log), "turn/start")
+    assert len(requests(log_events(log), "turn/start")) == 1
+
+
+def test_expired_receipt_cannot_repeat_admitted_request(tmp_path, monkeypatch):
+    import app.codex_appserver as module
+    monkeypatch.setattr(module, "RECENT_REQUESTS", 2)
+    monkeypatch.setattr(module, "MAX_ADMITTED_REQUESTS", 3)
+    host, log = make_host(tmp_path)
+    host.ensure_thread(USER, CID)
+    for i in range(1, 4):
+        host.run_turn(USER, CID, f"request-000{i}", f"合成 {i}")
+    with pytest.raises(CodexHostConflict):
+        host.run_turn(USER, CID, "request-0001", "合成 1")
+    with pytest.raises(CodexHostConflict):
+        host.run_turn(USER, CID, "request-0004", "合成 4")
+    assert len(requests(log_events(log), "turn/start")) == 3
