@@ -14,6 +14,15 @@ describe('execution metrics boundaries',()=>{
     expect(live([retry],'cancelling')).toContain('已请求停止');
     expect(runStagePresentation(retry.data).confirmed).toBe(false);
   });
+  it('reports bounded rate-limit retries without presenting a business result',()=>{
+    const data={stage:'model_retry',code:'MODEL_RATE_LIMITED',retry:2,max_retries:3,delay_ms:1250};
+    const event:StreamEvent={id:11,run_id:'run',type:'run.stage',created_at:run.created_at,data};
+    const html=renderToStaticMarkup(<LiveActivity run={{...run,status:'running'}} events={[event]} stage="model_retry" connectionState="connected"/>);
+    expect(html).toContain('模型服务繁忙，正在自动重试');
+    expect(html).toContain('第 2/3 次重试');
+    expect(html).toContain('等待约 2 秒');
+    expect(runStagePresentation(data).confirmed).toBe(false);
+  });
   it('labels product metadata answers as a model information query with zero model usage',()=>{
     const html=renderToStaticMarkup(<RunMetrics run={{...run,execution_kind:'product_metadata',identity_source:'run_selection',model_call_count:0,usage:{source:'product_metadata',input_tokens:0,output_tokens:0,cache_read_input_tokens:0,estimated_cost_usd:0}}}/>);
     expect(html).toContain('模型信息查询');expect(html).toContain('未调用模型');expect(html).toContain('<dt>输入 Token</dt><dd>0</dd>');expect(html).toContain('<dt>输出 Token</dt><dd>0</dd>');expect(html).toContain('$0.0000');expect(html).not.toContain('未提供');

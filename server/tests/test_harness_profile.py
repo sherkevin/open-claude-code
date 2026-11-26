@@ -52,9 +52,10 @@ def test_profile_has_no_inherited_bundles_or_native_tools(arguments):
     assert next(entry for entry in entries if entry["id"] == "workspace-host")["config"]["usageEndpoint"] == "http://127.0.0.1:9/v1/messages"
     assert provider["apiKeyEnv"] == "WORKSPACE_MODEL_API_KEY"
     assert provider["models"][0]["inputModalities"] == ["text", "image"]
-    assert provider["retryPolicy"] == {"mode": "normal", "maxRetries": 1,
+    assert provider["retryPolicy"] == {"mode": "normal", "maxRetries": 3,
         "retryableCodes": ["TRANSPORT", "RATE_LIMIT", "SERVER", "TIMEOUT"],
-        "backoff": {"initialDelayMs": 500, "maxDelayMs": 10000, "jitterRatio": 0}}
+        "backoff": {"initialDelayMs": 2000, "maxDelayMs": 30000, "jitterRatio": 0.1}}
+    assert next(entry for entry in entries if entry["id"] == "workspace-host")["config"]["requestRateLimitRetries"] == 3
     assert next(entry for entry in entries if entry["id"] == "workspace-compaction")["config"]["auto"] is True
     attachments = next(entry for entry in entries if entry["id"] == "attachments")["config"]
     assert attachments["dshHome"] == str(arguments["profile_root"])
@@ -214,6 +215,9 @@ export class HarnessSdkJsonRpcServer {
   async shutdown() { return {} }
 }
 """,
+        "packages/llm/llm/src/message.ts": """
+export function createUserMessage(input) { return {id:'fixture-message', ...input} }
+""",
         "packages/core/tools/src/json-schema.ts": """
 export function assertObjectJsonSchema(schema) {
   if (schema.type !== 'object') throw new Error('invalid schema')
@@ -352,7 +356,8 @@ for (const block of [
   {...image,data:'YR=='}, {...image,data:'YWJj\\n'}, {...image,name:'../secret'},
   {...image,name:'bad\\\\name'}, {...image,data:''},
 ]) await assert.rejects(transport.handle('session/prompt',{sessionId:'only-session',contentBlocks:[block]}), /encoded raster/)
-await assert.rejects(transport.handle('session/prompt',{sessionId:'only-session',contentBlocks:Array(11).fill(image)}), /encoded raster/)
+assert.equal((await transport.handle('session/prompt',{sessionId:'only-session',contentBlocks:Array(20).fill(image)})).method,'session/prompt')
+await assert.rejects(transport.handle('session/prompt',{sessionId:'only-session',contentBlocks:Array(21).fill(image)}), /encoded raster/)
 """)
 
 

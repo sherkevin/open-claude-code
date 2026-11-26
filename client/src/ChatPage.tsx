@@ -836,7 +836,7 @@ export function LiveActivity({ run, events, stage, connectionState, inlineSubage
   } else if (run.status === 'cancelling') {
     title = '已请求停止'; detail = '正在确认可停止的步骤；已发出的远端操作可能仍在执行。'; icon = <Square size={15}/>;
   } else if (stage === 'model_retry' && latestStage?.data.stage === 'model_retry') {
-    title = '模型连接中断，正在重试'; detail = '已取得的业务数据会保留，你仍可以停止本次任务。';
+    const presentation = runStagePresentation(latestStage.data); title = presentation.label; detail = presentation.detail;
   } else if (latestCompaction && latestCompaction.type === 'context.compaction_started') {
     title = '正在整理上下文'; detail = '原生上下文压缩已开始，完成后会继续当前任务。'; icon = <Minimize2 size={16}/>;
   } else if (pendingTool) {
@@ -915,7 +915,15 @@ export const runStagePresentation = (data: Record<string, unknown>): { label: st
   const stage = String(data.stage || '');
   if (stage === 'scoping') return { label: '记录调用范围', detail: '调用前阶段记录；实际筛选范围以工具返回为准。', confirmed: false };
   if (stage === 'routing') return { label: '记录工具选择', detail: '调用前阶段记录；不代表已完成业务路由或知识检索。', confirmed: false };
-  if (stage === 'model_retry') return { label: '模型连接中断，正在重试', detail: '已取得的业务数据会保留，你仍可以停止本次任务。', confirmed: false };
+  if (stage === 'model_retry') {
+    const limited = data.code === 'MODEL_RATE_LIMITED';
+    const retry = typeof data.retry === 'number' && Number.isInteger(data.retry) && data.retry > 0 ? data.retry : null;
+    const maximum = typeof data.max_retries === 'number' && Number.isInteger(data.max_retries) && data.max_retries >= (retry ?? 1) ? data.max_retries : null;
+    const delay = typeof data.delay_ms === 'number' && Number.isFinite(data.delay_ms) && data.delay_ms >= 0 ? data.delay_ms : null;
+    const progress = retry !== null && maximum !== null ? `第 ${retry}/${maximum} 次重试。` : '';
+    const waiting = delay !== null ? `等待约 ${Math.ceil(delay / 1000)} 秒后重试。` : '';
+    return { label: limited ? '模型服务繁忙，正在自动重试' : '模型连接中断，正在重试', detail: progress + waiting + '已取得的业务数据会保留，你仍可以停止本次任务。', confirmed: false };
+  }
   if (stage === 'preparing_attachments') return { label: '正在准备附件', detail: '检查原件并转换模型可读内容。', confirmed: false };
   if (stage === 'delivering_attachments') return { label: '正在载入附件', detail: '模型开始处理后会在这里显示进度。', confirmed: false };
   if (stage === 'evidence') {

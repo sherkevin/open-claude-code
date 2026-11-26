@@ -104,7 +104,7 @@ def local_mcp_server():
 def local_model_server():
     """Stream selected calls through actual Harness model HTTP handling."""
     actions, requests = {}, []
-    faults = {"disconnect_after_result": False, "overflow_after_result": False}
+    faults = {"disconnect_after_result": False, "overflow_after_result": False, "rate_limit_after_result": 0}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -121,6 +121,16 @@ def local_model_server():
             result = next((item for item in blocks if item["type"] == "tool_result"), None)
             text = " ".join(item.get("text", "") for item in blocks)
             action = next((value for case, value in actions.items() if case in text), None)
+            if result and not action and faults["rate_limit_after_result"] > 0:
+                faults["rate_limit_after_result"] -= 1
+                payload = json.dumps({"error": {"type": "rate_limit_error", "message": "synthetic model rate limit"}}).encode()
+                self.send_response(429)
+                self.send_header("Retry-After", "1")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             if result and not action and faults["overflow_after_result"]:
                 payload = json.dumps({"error": {"type": "invalid_request_error", "code": "context_length_exceeded",
                     "message": "This model maximum context length is 128000 tokens; your input exceeds that limit."}}).encode()

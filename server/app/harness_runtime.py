@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from .run_steering import settle as settle_steer
 from .security import AppError
 from .token_savings import TokenAccounting
 from .workspace_tools import DELEGATE_TASKS_GUIDANCE
+from harness.profile import MODEL_RATE_LIMIT_RETRIES, MODEL_RETRY_MAX_DELAY_MS
 
 PINNED_COMMIT = "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"
 MODEL_FAILURES = {
@@ -615,7 +617,7 @@ class HarnessRuntime(WorkspaceRuntime):
         await offload_write(self.service.db.execute, "UPDATE conversations SET context_usage=NULL WHERE id=?", (self.conversation_id,))
         receipt = await asyncio.to_thread(attachments.dispatch, client, self.session_id, prompt)
         accepted, finish, model_started = False, None, False
-        failure, model_attempts = None, 0
+        failure, model_attempts, model_retries = None, 0, 0
         incomplete_stream = False
         streams, committed, active_step = {}, set(), None
         published_steps = set()
@@ -656,10 +658,13 @@ class HarnessRuntime(WorkspaceRuntime):
                         cause = MODEL_FAILURES.get((data.get("failure") or {}).get("code"))
                         if cause:
                             delay = data.get("delayMs")
-                            await self.emit("model.retry", {"retry": 1, "max_retries": 1,
-                                "delay_ms": delay if type(delay) is int and 0 <= delay <= 10_000 else None,
-                                "code": cause[1]})
-                            await self.emit("run.stage", {"stage": "model_retry"})
+                            model_retries += 1
+                            retry = {"retry": model_retries,
+                                "max_retries": MODEL_RATE_LIMIT_RETRIES if cause[1] == "MODEL_RATE_LIMITED" else 1,
+                                "delay_ms": math.ceil(delay) if type(delay) in (int, float) and math.isfinite(delay) and 0 <= delay <= MODEL_RETRY_MAX_DELAY_MS else None,
+                                "code": cause[1]}
+                            await self.emit("model.retry", retry)
+                            await self.emit("run.stage", {"stage": "model_retry", **retry})
                     elif kind == "compaction/start" and data.get("sourceCommandId") is None:
                         await self.emit("context.compaction_started", {"trigger": "auto"})
                     elif kind in {"assistant/message", "assistant/attempt"}:

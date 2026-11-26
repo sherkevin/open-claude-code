@@ -116,7 +116,10 @@ export async function apply(ctx: any, config: any): Promise<void> {
   const streamFinishes = new Map<string, boolean>()
   const streamRequests = new Map<string, string>()
   const requestVisibleText = new Map<string, boolean>()
-  const recoveryTurns = new Set<number>()
+  const recoveryTurns = new Map<number, { count: number, rateLimitOnly: boolean }>()
+  const rateLimitRetries = config.requestRateLimitRetries ?? 1
+  if (!Number.isSafeInteger(rateLimitRetries) || rateLimitRetries < 1 || rateLimitRetries > 3)
+    throw new Error('Invalid bounded rate-limit recovery policy')
   let currentTurn: number | undefined
   let turnWithTool: number | undefined
   let turnWithVisibleText: number | undefined
@@ -246,12 +249,17 @@ export async function apply(ctx: any, config: any): Promise<void> {
   // this request preserves earlier tool results; resending the whole turn does not.
   ctx.on('agent/request-error', async ({ agent, turn, step, failure, signal }: any, next: any) => {
     const overflow = failure?.code === 'CONTEXT_WINDOW_EXCEEDED'
+    const rateLimited = failure?.code === 'RATE_LIMIT'
+    const previous = recoveryTurns.get(turn)
     if (!owned(agent) || signal.aborted || lifetime.signal.aborted
-        || (!overflow && !(config.requestRetryCodes ?? ['TRANSPORT']).includes(failure?.code)) || recoveryTurns.has(turn)
+        || (!overflow && !(config.requestRetryCodes ?? ['TRANSPORT']).includes(failure?.code))
+        || (previous && (!rateLimited || !previous.rateLimitOnly || previous.count >= rateLimitRetries))
         || (overflow && (turn === turnWithTool || turn === turnWithVisibleText))
         || requestVisibleText.get(`${turn}:${step}`) !== false) return
     const result = await next()
-    if (result?.kind === 'retry') recoveryTurns.add(turn)
+    if (result?.kind === 'retry') recoveryTurns.set(turn, {
+      count: (previous?.count ?? 0) + 1, rateLimitOnly: rateLimited,
+    })
     return result
   }, { prepend: true })
   ctx.on('workspace/compaction-result', (agent: any, result: any) => {
