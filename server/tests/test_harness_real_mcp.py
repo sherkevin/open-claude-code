@@ -149,6 +149,21 @@ def decide(env, row, decision):
     return response.json()
 
 
+def test_rate_limit_recovery_after_actual_mcp_write_does_not_replay(mcp_app):
+    env = mcp_app
+    env.model.faults["rate_limit_after_result"] = 2
+    run_id = env.run("RATE_LIMIT_WRITE_CASE", "update_asset", WRITE_ARGUMENTS)
+    decide(env, approval(env, run_id, "update_asset"), "allow")
+    completed(env, run_id)
+    assert env.mcp.calls == [{"tool": "update_asset", "arguments": WRITE_ARGUMENTS}]
+    retries = tool_events(env, run_id, "model.retry")
+    assert [r["retry"] for r in retries] == [1, 2]
+    assert all(r["code"] == "MODEL_RATE_LIMITED" and r["max_retries"] == 3 for r in retries)
+    assert len(env.model.requests) == 4
+    assert all(r["messages"] == env.model.requests[1]["messages"] for r in env.model.requests[2:])
+    assert len(tool_events(env, run_id, "tool.dispatched")) == 1
+
+
 def test_recovery_after_successful_write_does_not_replay(mcp_app):
     env = mcp_app
     env.model.faults["disconnect_after_result"] = True

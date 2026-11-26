@@ -52,9 +52,10 @@ def test_profile_has_no_inherited_bundles_or_native_tools(arguments):
     assert next(entry for entry in entries if entry["id"] == "workspace-host")["config"]["usageEndpoint"] == "http://127.0.0.1:9/v1/messages"
     assert provider["apiKeyEnv"] == "WORKSPACE_MODEL_API_KEY"
     assert provider["models"][0]["inputModalities"] == ["text", "image"]
-    assert provider["retryPolicy"] == {"mode": "normal", "maxRetries": 1,
+    assert provider["retryPolicy"] == {"mode": "normal", "maxRetries": 3,
         "retryableCodes": ["TRANSPORT", "RATE_LIMIT", "SERVER", "TIMEOUT"],
-        "backoff": {"initialDelayMs": 500, "maxDelayMs": 10000, "jitterRatio": 0}}
+        "backoff": {"initialDelayMs": 2000, "maxDelayMs": 30000, "jitterRatio": 0.1}}
+    assert next(entry for entry in entries if entry["id"] == "workspace-host")["config"]["requestRateLimitRetries"] == 3
     assert next(entry for entry in entries if entry["id"] == "workspace-compaction")["config"]["auto"] is True
     attachments = next(entry for entry in entries if entry["id"] == "attachments")["config"]
     assert attachments["dshHome"] == str(arguments["profile_root"])

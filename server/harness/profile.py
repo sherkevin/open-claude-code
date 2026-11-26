@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 PINNED_COMMIT = "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"
 PROFILE_NAME = "workspace"
 MODEL_RECOVERY_CODES = ("TRANSPORT", "RATE_LIMIT", "SERVER", "TIMEOUT")
+MODEL_RATE_LIMIT_RETRIES = 3
+MODEL_RETRY_MAX_DELAY_MS = 30_000
 TOOL_NAMES = frozenset({
     "knowledge_search", "knowledge_read", "web_search", "web_read",
     "generate_xlsx", "generate_image",
@@ -217,12 +219,12 @@ def write_profile(
                 "models": [{"id": model, "inputModalities": ["text", "image"]}],
                 "reasoningEffort": effort, "thinking": "disabled" if effort == "off" else "enabled",
                 "streamIdleTimeoutMs": 120_000,
-                # Recover only the failed model request, never replay a turn.
-                # The host bridge additionally rejects retries after visible text
-                # and limits the entire turn to one recovery attempt.
-                "retryPolicy": {"mode": "normal", "maxRetries": 1,
+                # Reuse the official cancellable request retry and Retry-After
+                # handling. Host gate permits up to three rate-limit-only retries
+                # per turn, one for other transient failures, never a turn replay.
+                "retryPolicy": {"mode": "normal", "maxRetries": MODEL_RATE_LIMIT_RETRIES,
                     "retryableCodes": list(MODEL_RECOVERY_CODES),
-                    "backoff": {"initialDelayMs": 500, "maxDelayMs": 10_000, "jitterRatio": 0}},
+                    "backoff": {"initialDelayMs": 2000, "maxDelayMs": MODEL_RETRY_MAX_DELAY_MS, "jitterRatio": 0.1}},
                 **({"maxTokens": provider["maxTokens"]} if "maxTokens" in provider else {}),
                 **({"defaultContextWindow": provider["contextWindow"]} if "contextWindow" in provider else {}),
             }
@@ -241,6 +243,7 @@ def write_profile(
         "config": {
             "sourceDir": str(source), "sessionId": session_id, "cwd": str(workspace), "profileRoot": str(root),
             "requestRetryCodes": list(MODEL_RECOVERY_CODES),
+            "requestRateLimitRetries": MODEL_RATE_LIMIT_RETRIES,
             "usageEndpoint": endpoint.rstrip("/") + ("" if parsed.path.rstrip("/").endswith("/v1") else "/v1") + "/messages",
             "model": model, "tools": definitions, "maxSteps": max_steps,
             "toolTimeoutMs": tool_timeout_ms, "sourceCommit": PINNED_COMMIT,

@@ -31,19 +31,21 @@ def recovery_provider():
             if case == "once-timeout" and attempt == 1:
                 time.sleep(0.6)
                 return
-            if case.startswith("http-") or case.startswith("once-") and attempt == 1:
-                status = int(case.split("-")[1])
+            limited = (case == "twice-429" and attempt <= 2 or case == "after-tool-429" and attempt in {2, 3}
+                       or case in {"too-long-429", "cancel-429", "mixed-429-transport"} and attempt == 1)
+            if limited or case.startswith("http-") or case.startswith("once-") and attempt == 1:
+                status = 429 if limited else int(case.split("-")[1])
                 payload = json.dumps({"error": {"type": "synthetic", "message": "private-provider-diagnostic"}}).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 if status == 429:
-                    self.send_header("Retry-After", "1")
+                    self.send_header("Retry-After", "31" if case == "too-long-429" else "1")
                 self.end_headers()
                 self.wfile.write(payload)
                 return
             failed = (case in {"first", "cancel", "partial"} and attempt == 1
-                      or case == "always" or case == "after-tool" and attempt == 2
+                      or case == "always" or case in {"after-tool", "mixed-429-transport"} and attempt == 2
                       or case == "two-steps" and attempt in {1, 3})
             if failed and case != "partial":
                 self.close_connection = True
@@ -66,7 +68,7 @@ def recovery_provider():
                 event("message_start", {"message": {"id": f"msg-{attempt}", "type": "message", "role": "assistant", "model": "fixture",
                     "content": [], "stop_reason": None, "stop_sequence": None,
                     "usage": {"input_tokens": 12, "output_tokens": 0}}})
-                wants_tool = case == "after-tool" and attempt == 1 or case == "two-steps" and attempt == 2
+                wants_tool = case in {"after-tool", "after-tool-429"} and attempt == 1 or case == "two-steps" and attempt == 2
                 if wants_tool:
                     event("content_block_start", {"index": 0, "content_block": {"type": "tool_use", "id": "only-tool-call", "name": "knowledge_search", "input": {}}})
                     event("content_block_delta", {"index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps({"query": "P-900 pressure", "limit": 3})}})
@@ -97,8 +99,10 @@ def recovery_provider():
     ("first", "succeeded", 2), ("after-tool", "succeeded", 3),
     ("always", "failed", 2), ("two-steps", "failed", 3),
     ("partial", "failed", 1), ("cancel", "cancelled", 1),
-    ("http-401", "failed", 1), ("http-403", "failed", 1), ("http-429", "failed", 2),
+    ("http-401", "failed", 1), ("http-403", "failed", 1), ("http-429", "failed", 4),
     ("once-429", "succeeded", 2), ("once-503", "succeeded", 2), ("once-timeout", "succeeded", 2),
+    ("twice-429", "succeeded", 3), ("after-tool-429", "succeeded", 4),
+    ("too-long-429", "failed", 1), ("cancel-429", "cancelled", 1), ("mixed-429-transport", "failed", 2),
 ])
 def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_cancel(
     tmp_path, monkeypatch, recovery_provider, case, expected_status, expected_requests,
@@ -140,7 +144,7 @@ def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_ca
         assistant = service.save_assistant({"name": "Recovery fixture", "knowledge_base_ids": [kb["id"]]}, user=user)
         cid = client.post("/api/v1/conversations", json={"assistant_id": assistant["id"]}).json()["id"]
         run_id = send(client, cid, "Query the P-900 business record", "request-recovery")["run_id"]
-        if case == "cancel":
+        if case in {"cancel", "cancel-429"}:
             deadline = time.monotonic() + 30
             while not any(e["type"] == "model.retry" for e in service.db.events(run_id, 0)):
                 assert time.monotonic() < deadline, "retry backoff never started"
@@ -156,25 +160,34 @@ def test_bounded_request_recovery_preserves_tools_and_respects_visibility_and_ca
         assert len({stage['attempt_id'] for stage in usage['token_accounting']['stages']}) == expected_requests
         events = service.db.events(run_id, 0)
         retries = [e["data"] for e in events if e["type"] == "model.retry"]
-        expected_retries = 1 if expected_requests > 1 or case == "cancel" else 0
+        expected_retries = {"http-429": 3, "twice-429": 2, "after-tool-429": 2,
+                            "too-long-429": 0}.get(case, 1 if expected_requests > 1 or case in {"cancel", "cancel-429"} else 0)
         assert len(retries) == expected_retries
+        rate_limited = "429" in case
         code = ("MODEL_REQUEST_TIMEOUT" if case == "once-timeout" else
-                {"429": "MODEL_RATE_LIMITED", "503": "MODEL_PROVIDER_ERROR"}.get(case[-3:], "MODEL_TRANSPORT_ERROR"))
-        assert all(e == {"retry": 1, "max_retries": 1, "delay_ms": 1000 if case.endswith("429") else 500, "code": code} for e in retries)
+                "MODEL_RATE_LIMITED" if rate_limited else
+                "MODEL_PROVIDER_ERROR" if case == "once-503" else "MODEL_TRANSPORT_ERROR")
+        for index, event in enumerate(retries, 1):
+            assert event["retry"] == index and event["max_retries"] == (3 if rate_limited else 1)
+            assert event["code"] == code
+            assert event["delay_ms"] == 1000 if rate_limited else 1800 <= event["delay_ms"] <= 2200
         tool_events = [e for e in events if e["type"] == "tool.completed"]
-        assert len(tool_events) == (1 if case in {"after-tool", "two-steps"} else 0)
+        assert len(tool_events) == (1 if case in {"after-tool", "after-tool-429", "two-steps"} else 0)
         if tool_events:
             assert tool_events[0]["data"]["success"] is True
-        if case == "after-tool":
-            assert state["requests"][1]["messages"] == state["requests"][2]["messages"]
+        if case in {"after-tool", "after-tool-429"}:
+            assert all(request["messages"] == state["requests"][1]["messages"] for request in state["requests"][2:])
         if case in {"first", "after-tool"}:
             # Known recovered usage cannot erase an earlier unknown contribution.
             usage = json.loads(service.require("runs", run_id)["usage"])
             assert usage["input_tokens"] is None
             assert usage["token_accounting"]["provider_usage_complete"] is False
             assert usage["token_accounting"]["known_subtotals"]["input_tokens"] > 0
-        if expected_status == "failed" and not case.startswith("http-"):
-            assert result["error_code"] == "MODEL_TRANSPORT_ERROR"
+        if expected_status == "failed":
+            if case in {"http-429", "too-long-429"}:
+                assert result["error_code"] == "MODEL_RATE_LIMITED"
+            elif not case.startswith("http-"):
+                assert result["error_code"] == "MODEL_TRANSPORT_ERROR"
         visible = "".join(e["data"]["text"] for e in events if e["type"] == "message.delta")
         assert visible.count("恢复完成") == (1 if expected_status == "succeeded" else 0)
         if case == "partial":
