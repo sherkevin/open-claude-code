@@ -9,15 +9,36 @@ import os
 import sys
 import tempfile
 import threading
+import time
+from types import SimpleNamespace
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from importlib.metadata import version
 from mem0_probe import LocalProvider, calls
+from openai import APIStatusError, APITimeoutError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]/"server"))
 from app.mem0_index import (TrustedScope, SourceDocument, SourceSnapshot,
     Mem0DerivedIndex, Mem0IndexConfig, Mem0IndexUnavailable, Mem0IndexScopeInvalid,
     load_mem0_backend, text_digest, MAX_ENUMERATION_ROWS)
+
+
+class FaultProvider(LocalProvider):
+    mode = "ok"
+    fault_calls = 0
+    started = threading.Event()
+    release = threading.Event()
+
+    def do_POST(self):
+        if type(self).mode == "ok":
+            return super().do_POST()
+        self.rfile.read(int(self.headers["Content-Length"]))
+        type(self).fault_calls += 1
+        if type(self).mode == "stall":
+            type(self).started.set()
+            type(self).release.wait(10)
+            return
+        self.send_error(503)
 
 
 class Reader:
@@ -37,7 +58,7 @@ def docs(revision):
 
 def main():
     assert version("mem0ai")=="2.2.1"
-    server=ThreadingHTTPServer(("127.0.0.1",0),LocalProvider)
+    server=ThreadingHTTPServer(("127.0.0.1",0),FaultProvider)
     worker=threading.Thread(target=server.serve_forever,daemon=True)
     worker.start()
     try:
@@ -51,7 +72,7 @@ def main():
                 "llm":{"provider":"openai","config":{"model":"fixture-llm","api_key":"synthetic-test-only","openai_base_url":url}},
                 "history_db_path":str(root/"history.sqlite"),
             }
-            backend=load_mem0_backend(config)
+            backend=load_mem0_backend(config, io_timeout_seconds=1.0)
             checks=[]
             try:
                 reader=Reader(docs(1))
@@ -123,6 +144,57 @@ def main():
                 assert not backend.get_all(filters=filters)["results"]
                 assert len(other_adapter.search("fixture",scope=other).hits)==2
                 checks.append("revocation stops next SDK write and rolls back acknowledged row")
+                # Fixed transport policy: no automatic SDK retry of a
+                # failed request; a stalled response holds the host slot
+                # until the actual synchronous request returns.
+                from app.mem0_host import Mem0Host
+                for provider in (backend.memory.embedding_model, backend.memory.llm):
+                    assert provider.client.timeout == 1.0
+                    assert provider.client.max_retries == 0
+                FaultProvider.mode="error"
+                try:
+                    backend.add("synthetic failure", user_id=a.user_id,
+                                agent_id=adapter.config.agent_id, run_id=a.conversation_id,
+                                metadata={}, infer=False)
+                except APIStatusError as exc:
+                    assert exc.status_code==503
+                else:
+                    raise AssertionError("provider error must be surfaced")
+                assert FaultProvider.fault_calls==1
+                assert not backend.get_all(filters=filters)["results"]
+                checks.append("503 on real SDK add makes exactly one embedding request")
+                FaultProvider.mode="stall"
+                host=Mem0Host(SimpleNamespace(settings=SimpleNamespace(data_dir=root)),
+                              Mem0IndexConfig(enabled=True), backend=backend)
+                outcome=[]
+                def lookup_stall():
+                    started=time.monotonic()
+                    try:
+                        with host._slot():
+                            backend.search("synthetic stall", filters=filters,
+                                           top_k=1, threshold=0)
+                    except Exception as exc:
+                        outcome.append((type(exc).__name__, time.monotonic()-started))
+                stalled=threading.Thread(target=lookup_stall)
+                stalled.start()
+                try:
+                    assert FaultProvider.started.wait(3)
+                    try:
+                        with host._slot():
+                            raise AssertionError("slot released before I/O returned")
+                    except Mem0IndexUnavailable:
+                        pass
+                    stalled.join(5)
+                    assert not stalled.is_alive()
+                    assert len(outcome)==1 and outcome[0][0]==APITimeoutError.__name__,outcome
+                    assert 0.5 <= outcome[0][1] < 5,outcome
+                    assert FaultProvider.fault_calls==2
+                    with host._slot():
+                        pass
+                finally:
+                    FaultProvider.release.set()
+                    stalled.join(5)
+                checks.append("real stalled read times out without retry; slot held until return")
                 assert calls["extraction"]==0
                 print(json.dumps({"sdk":version("mem0ai"),"passed":len(checks),"checks":checks,"loopback_requests":calls,"enumeration_sentinel":MAX_ENUMERATION_ROWS,"quality_evaluation":False}))
             finally:

@@ -40,6 +40,8 @@ MAX_TOTAL_BYTES = 1024 * 1024
 MAX_QUERY_CHARS = 4000
 MAX_METADATA_BYTES = 4096
 MEM0_SDK_VERSION = "2.2.1"
+MEM0_OPENAI_VERSION = "3.59.0"
+MEM0_QDRANT_VERSION = "1.20.0"
 
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -819,35 +821,83 @@ class Mem0SdkBackend:
         return close() if callable(close) else None
 
 
-def load_mem0_backend(config: Mapping[str, Any]) -> Mem0SdkBackend:
-    """Load mem0ai 2.2.1 with telemetry disabled and no provider defaults.
+def load_mem0_backend(config: Mapping[str, Any], *, io_timeout_seconds: float = 10.0) -> Mem0SdkBackend:
+    """Load the validated local-Qdrant/OpenAI-compatible pilot only.
 
-    The caller must pass an explicit self-hosted config containing
-    ``vector_store``, ``embedder`` and ``llm``. This function performs no
-    network requests itself; constructing the SDK may initialize the configured
-    local store and provider client.
+    The fixed OpenAI SDK exposes request timeout and max_retries on its
+    client. Set them before any embedding/LLM requests. This is a transport
+    inactivity timeout, NOT a whole-operation deadline or remote cancellation.
+    Keep host locking synchronous until the SDK call actually returns.
+    Other providers require independent verification before admission.
     """
+    if (type(io_timeout_seconds) not in (int, float)
+            or not 0.1 <= io_timeout_seconds <= 60):
+        raise Mem0IndexUnavailable("Mem0 I/O 超时配置无效")
     if not isinstance(config, Mapping) or not {"vector_store", "embedder", "llm"} <= set(config):
         raise Mem0IndexUnavailable("必须显式配置 vector_store、embedder 和 llm，禁止默认供应方")
+    vector = config["vector_store"]
+    if (not isinstance(vector, Mapping) or vector.get("provider") != "qdrant"
+            or not isinstance(vector.get("config"), Mapping)):
+        raise Mem0IndexUnavailable("Mem0 I/O 目前仅验证本地 Qdrant")
+    vc = vector["config"]
+    if (not isinstance(vc.get("path"), str) or not os.path.isabs(vc["path"])
+            or any(vc.get(k) is not None for k in ("client", "host", "port", "url", "api_key", "https"))):
+        raise Mem0IndexUnavailable("Mem0 I/O 目前仅验证显式本地 Qdrant 路径")
+    for name in ("embedder", "llm"):
+        provider = config[name]
+        if (not isinstance(provider, Mapping) or provider.get("provider") != "openai"
+                or not isinstance(provider.get("config"), Mapping)):
+            raise Mem0IndexUnavailable("Mem0 I/O 目前仅验证 OpenAI 兼容供应商")
+        pc = provider["config"]
+        if not all(isinstance(pc.get(k), str) and pc[k].strip()
+                   for k in ("model", "api_key", "openai_base_url")):
+            raise Mem0IndexUnavailable("Mem0 供应商必须显式配置")
+    if config.get("reranker") is not None or "OPENROUTER_API_KEY" in os.environ:
+        raise Mem0IndexUnavailable("Mem0 未验证额外供应商路由")
     os.environ["MEM0_TELEMETRY"] = "false"
     try:
         from importlib.metadata import version as package_version
-        installed = package_version("mem0ai")
+        versions = tuple(package_version(p) for p in ("mem0ai", "openai", "qdrant-client"))
     except Exception as exc:
-        raise Mem0IndexUnavailable("Mem0 SDK 2.2.1 未安装") from exc
-    if installed != MEM0_SDK_VERSION:
-        raise Mem0IndexUnavailable(f"Mem0 SDK 版本必须为 {MEM0_SDK_VERSION}")
+        raise Mem0IndexUnavailable("Mem0 固定 SDK 依赖未安装") from exc
+    if versions != (MEM0_SDK_VERSION, MEM0_OPENAI_VERSION, MEM0_QDRANT_VERSION):
+        raise Mem0IndexUnavailable("Mem0 I/O 固定依赖版本不匹配")
     try:
         from mem0 import Memory
         from mem0.memory import telemetry
+        from mem0.embeddings.openai import OpenAIEmbedding
+        from mem0.llms.openai import OpenAILLM
+        from openai import OpenAI
     except Exception as exc:
         raise Mem0IndexUnavailable("Mem0 SDK 导入失败") from exc
     if getattr(telemetry, "MEM0_TELEMETRY", None) is not False:
         raise Mem0IndexUnavailable("Mem0 遥测状态未能确认关闭")
+    memory = None
     try:
         memory = Memory.from_config(dict(config))
-    except Exception as exc:
-        raise Mem0IndexUnavailable("Mem0 初始化失败") from exc
+        if (type(memory.embedding_model) is not OpenAIEmbedding
+                or type(memory.llm) is not OpenAILLM
+                or memory.vector_store.is_local is not True):
+            raise ValueError("unexpected provider")
+        for provider in (memory.embedding_model, memory.llm):
+            client = provider.client
+            if type(client) is not OpenAI:
+                raise ValueError("unexpected transport")
+            client.timeout = float(io_timeout_seconds)
+            client.max_retries = 0
+    except Exception:
+        if memory is not None:
+            # Initialization failed before the adapter was handed to a caller.
+            # Close only the newly created resources, never a caller's client.
+            for resource in (getattr(getattr(memory, "embedding_model", None), "client", None),
+                             getattr(getattr(memory, "llm", None), "client", None),
+                             getattr(getattr(memory, "vector_store", None), "client", None), memory):
+                try:
+                    if resource is not None:
+                        resource.close()
+                except Exception:
+                    pass
+        raise Mem0IndexUnavailable("Mem0 有界 I/O 初始化失败") from None
     return Mem0SdkBackend(memory)
 
 

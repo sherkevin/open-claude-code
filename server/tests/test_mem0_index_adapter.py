@@ -500,6 +500,29 @@ def test_sdk_loader_requires_explicit_providers_before_any_import():
         load_mem0_backend({"vector_store": {}, "embedder": {}})
 
 
+@pytest.mark.parametrize("timeout", [0, True, float("nan"), float("inf"), 61, "10"])
+def test_sdk_loader_rejects_invalid_io_timeout_before_import(timeout):
+    with pytest.raises(Mem0IndexUnavailable, match="超时"):
+        load_mem0_backend({}, io_timeout_seconds=timeout)
+
+
+def test_sdk_loader_refuses_unverified_provider_routes_before_import(tmp_path):
+    config = {
+        "vector_store": {"provider": "qdrant", "config": {"path": str(tmp_path)}},
+        "embedder": {"provider": "openai", "config": {"model": "fixture", "api_key": "synthetic",
+                                                       "openai_base_url": "http://127.0.0.1:1/v1"}},
+        "llm": {"provider": "openai", "config": {"model": "fixture", "api_key": "synthetic",
+                                                 "openai_base_url": "http://127.0.0.1:1/v1"}},
+    }
+    config["vector_store"]["config"]["url"] = "http://127.0.0.1:1"
+    with pytest.raises(Mem0IndexUnavailable, match="本地"):
+        load_mem0_backend(config)
+    del config["vector_store"]["config"]["url"]
+    config["embedder"]["provider"] = "other"
+    with pytest.raises(Mem0IndexUnavailable, match="兼容供应商"):
+        load_mem0_backend(config)
+
+
 @pytest.fixture
 def native_store(tmp_path, monkeypatch):
     from app.config import Settings

@@ -199,3 +199,5 @@ flowchart LR
 ### 2026-11-26 Mem0 复用记录
 
 Mem0 2.2.1 原生接口派生索引默认关闭候选完成真实 SDK 100 份文件/代次替换/隔离验收 5/5，最新主线组合回归 76/76；详见 [验收记录](../evidence/KAIWU_MEM0_INDEX_ADAPTER_2026-11-25.md)。正式宿主接线、质量与生产验收仍待做。
+
+固定 Mem0 2.2.1 / OpenAI 3.59.0 / Qdrant client 1.20.0 的本地派生索引 pilot 已补传输超时及禁止 SDK 自动重试；真实 SDK 8/8、宿主回归 50/50。仅验证本地 Qdrant 与显式 OpenAI-compatible provider，不是端到端硬预算、远端取消或生产接线。详见 [I/O 验收](../evidence/KAIWU_MEM0_PROVIDER_IO_2026-11-26.md)。
