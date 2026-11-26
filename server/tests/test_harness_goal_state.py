@@ -130,7 +130,10 @@ def test_real_native_goal_authorization_does_not_run_driver(tmp_path,model_serve
         reply=client.post(path+"/execution",json=payload)
         assert reply.status_code==200,reply.text
         assert reply.json()["authorization"]["status"]=="active"
-        assert reply.json()["driver_integrated"] is False
+        # The official driver seam is integrated, but authorization alone never
+        # starts a round: execution requires the explicit per-round endpoint.
+        assert reply.json()["driver_integrated"] is True
+        assert reply.json()["single_round_per_run"] is True
         assert client.get(path).json()["goal"]["activation"]=="disarmed"
         paused=client.post(path,json={"action":"pause","ref":ref(goal)})
         assert paused.status_code==200,paused.text

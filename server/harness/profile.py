@@ -79,6 +79,55 @@ KERNEL_MODULES = (
 )
 
 
+GOAL_ROUND_KEYS = frozenset({
+    "goal_id", "pre_arm_revision", "expected_goal_revision", "arm_action",
+    "round_index", "native_rounds_before", "max_goal_rounds", "objective_sha256",
+    "lease_id", "run_id", "session_id",
+})
+GOAL_ID = re.compile(r"^goal-[a-f0-9-]{36}$")
+ROUND_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+SHA256 = re.compile(r"^[a-f0-9]{64}$")
+
+
+def _validate_goal_execution(value: dict, session_id: str) -> dict:
+    """Validate the frozen one-round host reservation crossing into Node.
+
+    Only IDs, revisions, the objective digest and the arm action are allowed.
+    The goal text, model output, credentials and business data never enter the
+    profile. A mismatched revision plan fails before a profile is written.
+    """
+    if not isinstance(value, dict) or set(value) != GOAL_ROUND_KEYS:
+        raise ValueError("Goal round configuration is incomplete")
+    goal_id = value["goal_id"]
+    if not isinstance(goal_id, str) or GOAL_ID.fullmatch(goal_id) is None:
+        raise ValueError("Invalid Goal round goal id")
+    if value["session_id"] != session_id:
+        raise ValueError("Goal round session does not match the profile")
+    action = value["arm_action"]
+    if action not in {"pause_resume", "resume"}:
+        raise ValueError("Invalid Goal arm action")
+    for key in ("pre_arm_revision", "expected_goal_revision"):
+        if type(value[key]) is not int or not 1 <= value[key] <= 10**9:
+            raise ValueError(f"Invalid Goal {key}")
+    offset = 2 if action == "pause_resume" else 1
+    if value["expected_goal_revision"] != value["pre_arm_revision"] + offset:
+        raise ValueError("Goal arm revision plan is inconsistent")
+    if type(value["round_index"]) is not int or not 1 <= value["round_index"] <= 32:
+        raise ValueError("Invalid Goal round index")
+    if type(value["native_rounds_before"]) is not int or not 0 <= value["native_rounds_before"] <= 31:
+        raise ValueError("Invalid Goal native round baseline")
+    if type(value["max_goal_rounds"]) is not int or not 1 <= value["max_goal_rounds"] <= 32:
+        raise ValueError("Invalid Goal round cap")
+    if value["native_rounds_before"] >= value["max_goal_rounds"]:
+        raise ValueError("Goal round cap already exhausted")
+    if not isinstance(value["objective_sha256"], str) or SHA256.fullmatch(value["objective_sha256"]) is None:
+        raise ValueError("Invalid Goal objective digest")
+    for key in ("lease_id", "run_id"):
+        if not isinstance(value[key], str) or ROUND_ID.fullmatch(value[key]) is None:
+            raise ValueError(f"Invalid Goal {key}")
+    return dict(value)
+
+
 def _write_private(path: Path, value: object) -> None:
     """Atomic private JSON, also valid YAML, with no executable YAML tags."""
     descriptor, temporary = tempfile.mkstemp(prefix=".workspace-", dir=path.parent)
@@ -98,6 +147,7 @@ def write_profile(
     tool_timeout_ms: int = 660_000,
     delegation_timeout_ms: int | None = None,
     team_state: bool = False,
+    goal_execution: dict | None = None,
 ) -> dict:
     """Write one locked profile and return dsh arguments and SDK initialize data.
 
@@ -170,6 +220,8 @@ def write_profile(
         names.add(tool_name)
         definitions.append(definition)
 
+    goal_round = _validate_goal_execution(goal_execution, session_id) if goal_execution is not None else None
+
     profile_dir = root / "profiles" / PROFILE_NAME
     profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     root.chmod(0o700)
@@ -183,7 +235,15 @@ def write_profile(
     entries = []
     if type(team_state) is not bool:
         raise ValueError("Team state switch must be boolean")
-    modules = KERNEL_MODULES + ((
+    modules = list(KERNEL_MODULES)
+    if goal_round is not None:
+        # The official round driver must be mounted before sdk-app-startup
+        # creates or resumes the agent. It stays disarmed until the host calls
+        # the single-round arm RPC through the official Goal service.
+        startup = next(index for index, (identifier, _) in enumerate(modules)
+                       if identifier == "sdk-app-startup")
+        modules.insert(startup, ("goal-round-driver", "goal/goal-round-driver"))
+    modules += ((
         ("team-subagent-service", "subagent/subagent"),
         ("team-state-service", "team/agent-team"),
     ) if team_state else ())
@@ -199,7 +259,8 @@ def write_profile(
         elif identifier == "sessions":
             entry["config"] = {"root": str(root / "sessions"), "compression": "none"}
         elif identifier == "goals":
-            # State only: no model tools, command-goal or round driver.
+            # Native state service. The round driver is a separate review-gated
+            # entry present only for an explicitly reserved Goal round.
             entry["config"] = {"defaultMaxGoalRounds": 8}
         elif identifier == "team-state-service":
             entry["config"] = {"defaultEnabled": False, "maxTasks": 256}
@@ -249,6 +310,18 @@ def write_profile(
             "toolTimeoutMs": tool_timeout_ms, "sourceCommit": PINNED_COMMIT,
             **({"teamState": True} if team_state else {}),
             **({"delegationTimeoutMs": delegation_timeout_ms} if delegation_timeout_ms is not None else {}),
+            **({"goalRound": {
+                "goalId": goal_round["goal_id"],
+                "preArmRevision": goal_round["pre_arm_revision"],
+                "expectedRevision": goal_round["expected_goal_revision"],
+                "armAction": goal_round["arm_action"],
+                "roundIndex": goal_round["round_index"],
+                "nativeRoundsBefore": goal_round["native_rounds_before"],
+                "maxGoalRounds": goal_round["max_goal_rounds"],
+                "objectiveSha256": goal_round["objective_sha256"],
+                "leaseId": goal_round["lease_id"],
+                "runId": goal_round["run_id"],
+            }} if goal_round is not None else {}),
         },
     })
     _write_private(profile_dir / "package.json", {

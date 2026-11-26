@@ -1326,11 +1326,12 @@ class SessionActor:
                 try:
                     message = await offload(self.service.require, "messages", run["message_id"])
                     metadata = json.loads(run.get("execution_meta") or "{}")
-                    # This milestone has no mounted official round driver.
-                    # A prepared continuation must not run through a generic
-                    # actor submission, even with a valid host lease.
+                    # A Goal continuation may only execute against the exact
+                    # host reservation created by the explicit start API. This
+                    # runs before any Harness process, prompt or model request.
                     if metadata.get("goal_continuation") is True:
-                        raise AppError(409,"GOAL_DRIVER_NOT_INTEGRATED","持续目标自动驱动尚未接入，不执行续行任务")
+                        from .goal_execution import require_goal_round_start
+                        await offload(require_goal_round_start, self.service, run_id)
                     selection = metadata.get("selection") or {}
                     identity = identity_reply_for_message(
                         message["text"], public_model_id=selection.get("model_id", ""),
@@ -1653,6 +1654,24 @@ class RunManager:
     def maintenance_busy(self, conversation_id):
         return conversation_id in self.context_requests or conversation_id in self.fork_requests or conversation_id in self.goal_requests
 
+    async def submit_goal_round(self, run_id):
+        """Submit a reserved Goal round only while its lease is still pending.
+
+        A stop or permission change between reservation and submission must not
+        enqueue a run that could later arm the goal. The actor repeats the same
+        check before opening a Harness process; this earlier check also avoids
+        leaving an unusable run queued forever.
+        """
+        from .goal_execution import require_goal_round_start
+        try:
+            await offload(require_goal_round_start, self.service, run_id)
+        except AppError as error:
+            await self.finish_async(run_id, "cancelled", error.message,
+                                    error_code=error.code)
+            return False
+        await self.ensure_submitted(run_id)
+        return True
+
     async def goal_state(self,conversation_id,request,user,*,authorization=None):
         from .conversation_goal import require_goal_session
         row=await offload(require_goal_session,self.service,conversation_id,user)
@@ -1786,17 +1805,21 @@ class RunManager:
         self.service.db.execute("UPDATE conversations SET active_run_id=NULL,updated_at=? WHERE id=? AND active_run_id=?", (now(), run["conversation_id"], run_id))
         self.service.db.execute("UPDATE approvals SET status='expired',decided_at=COALESCE(decided_at,?),decided_by=NULL,decision_source=COALESCE(decision_source,?) WHERE run_id=? AND status='pending'", (now(), approval_source, run_id))
         self.service.db.event(run_id, "run.completed", {"status": status, "message_id": run["assistant_message_id"], "error": error, "error_code": error_code, "usage": json.loads(run["usage"]) if run["usage"] else None, "timings": timings})
-        # A failed, cancelled or interrupted continuation must never be
-        # replayed. A successful round leaves the lease for explicit
-        # settlement and the next admission; restart is handled as one
-        # service-level recovery with the service_restarted reason.
-        if (approval_source != "restart" and status in {"cancelled", "failed", "interrupted"}
-                and run.get("kind", "chat") == "chat"
-                and json.loads(run.get("execution_meta") or "{}").get("goal_continuation") is True
+        # A Goal round settles from this run's authoritative usage receipt. A
+        # failed, cancelled, interrupted or never-admitted round aborts the
+        # lease and revokes the approval inside the same terminal transaction,
+        # so it can never be replayed. Restart recovery keeps its own reason.
+        if (run.get("kind", "chat") == "chat"
                 and self.service.settings.harness_goal_state_enabled
                 and self.service.settings.harness_goal_execution_enabled):
-            from .goal_execution import stop_goal_execution_locked
-            stop_goal_execution_locked(self.service, run["conversation_id"], f"run_{status}")
+            try:
+                metadata = json.loads(run.get("execution_meta") or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            if isinstance(metadata, dict) and metadata.get("goal_continuation") is True:
+                from .goal_execution import finish_goal_round_locked
+                finish_goal_round_locked(self.service, run_id, status,
+                                         approval_source=approval_source)
 
     async def cancel(self, run_id):
         def mark_cancelling():

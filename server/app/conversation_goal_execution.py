@@ -1,8 +1,11 @@
-"""Feature-gated owner API for Goal execution budgets and lease status.
+"""Feature-gated owner API for Goal execution rounds, budgets and leases.
 
-No endpoint on this router starts, resumes or replays a Goal round. The POST
-records explicit approval; the DELETE stops future continuation. Host
-admission and settlement remain internal calls for the future official driver.
+``POST /execution`` records explicit approval. ``POST /execution/rounds``
+reserves exactly one real host run for the next approved native Goal round; the
+run still goes through the existing RunManager/FIFO, approvals and usage path,
+and the pinned official driver must pass host admission inside that run before
+a model request is made. ``DELETE`` stops future continuation. No endpoint
+replays a round or arms a native goal outside the official seam.
 """
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ from .db import offload, offload_write
 from .goal_execution import (
     MAX_COST_MICROS, MAX_ROUNDS, MAX_TIME_SECONDS, MAX_TOKENS,
     goal_execution_view, require_goal_execution_enabled,
-    require_goal_owner, stop_goal_execution,
+    require_goal_owner, start_goal_round, stop_goal_execution,
 )
 from .models import InputModel
 from .security import AppError
@@ -30,6 +33,12 @@ class GoalExecutionAuthorization(InputModel):
     token_budget: int = Field(strict=True, ge=1, le=MAX_TOKENS)
     cost_budget_micros: int = Field(strict=True, ge=1, le=MAX_COST_MICROS)
     time_budget_seconds: int = Field(strict=True, ge=60, le=MAX_TIME_SECONDS)
+    confirm: Literal[True]
+
+
+class GoalRoundStart(InputModel):
+    goal_id: str = Field(pattern=r"^goal-[a-f0-9-]{36}$")
+    goal_revision: int = Field(strict=True, ge=1)
     confirm: Literal[True]
 
 
@@ -56,6 +65,33 @@ def create_goal_execution_router(svc, authenticated):
         # written; this call does not run a model turn.
         return await service.manager.goal_state(conversation_id, {"action": "get"}, user,
                                                 authorization=body.model_dump())
+
+    @router.post("/rounds")
+    async def start_round(conversation_id: str, body: GoalRoundStart,
+                          response: Response, service=Depends(svc), user=Depends(authenticated)):
+        """Reserve and submit one explicitly confirmed Goal round.
+
+        The native snapshot is read through the same serialized Goal actor as
+        state management. The run itself is then created by the normal
+        ``Service.prepare_run`` path and submitted to the existing FIFO. This
+        call never arms the goal or calls a model.
+        """
+        response.headers["Cache-Control"] = "no-store"
+        require_goal_execution_enabled(service)
+        row = await offload(require_goal_session, service, conversation_id, user)
+        view = await service.manager.goal_state(conversation_id, {"action": "get"}, user)
+        goal = view.get("goal") if isinstance(view, dict) else None
+        if not isinstance(goal, dict):
+            raise AppError(409, "GOAL_NOT_FOUND", "请先创建目标再启动执行")
+        if goal.get("id") != body.goal_id or goal.get("revision") != body.goal_revision:
+            raise AppError(409, "GOAL_STALE_REVISION", "目标已变化，请刷新后重新确认")
+        result = await offload_write(start_goal_round, service, conversation_id, user,
+                                     goal, row["harness_session_id"])
+        if not result.get("replayed"):
+            result["submitted"] = await service.manager.submit_goal_round(result["run_id"])
+        else:
+            result["submitted"] = True
+        return result
 
     @router.delete("")
     async def revoke(conversation_id: str, response: Response,

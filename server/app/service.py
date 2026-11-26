@@ -1153,6 +1153,7 @@ class Service:
                 raise AppError(403, "SKILL_UNAVAILABLE", "所选 Skill 已停用或不再配置给此助手，请重新选择")
             versions.append(("skill", skill["id"], skill["revision"], current["enabled"], current["scope"], current["owner_id"]))
         memory_binding = None
+        goal_execution = None
         if runtime_type == "harness":
             memory_binding = self.memory.snapshot_for_run(user["id"], conversation_id, run["id"] if run else None)
             if run and json.loads(run.get("execution_meta") or "{}").get("memory_binding") != memory_binding:
@@ -1160,11 +1161,17 @@ class Service:
             versions.append(("memory", memory_binding))
             # Snapshot import may rotate an old native session.
             conversation = self.require("conversations", conversation_id)
+            if run:
+                from .goal_execution import goal_execution_runtime_config
+                goal_execution = goal_execution_runtime_config(self, run)
         else:
             versions.append(("memory", conversation_id, self.memory.revision(user["id"], conversation_id)["revision"]))
         memory = self.memory.root(user["id"], conversation_id)
         versions.append(("model", selection))
         versions.append(("runtime", runtime_type))
+        if goal_execution is not None:
+            versions.append(("goal_execution", goal_execution["lease_id"],
+                             goal_execution["expected_goal_revision"]))
         if recovery_only:
             versions.append(("recovery", "answer_only"))
         if runtime_type == "harness":
@@ -1177,6 +1184,7 @@ class Service:
         return {"conversation": runtime_conversation, "runtime_type": runtime_type, "native_session_id": native_session_id(conversation), "memory_binding": memory_binding, "instructions": assistant_snapshot["instructions"], "mcp_servers": servers, "mcp_inventory": inventory, "mcp_unavailable": unavailable, "fingerprint": dump(versions), "memory_dir": str(memory), "assistant_snapshot": assistant_snapshot, "skill_snapshots": skill_snapshots, "user": user_view(user),
                 "selection": selection, "public_model_id": selection["model_id"], "public_model_label": selection["model_label"],
                 "reasoning_level": selection["reasoning_level"], "upstream_model": selection["upstream_model"], "upstream_effort": selection["upstream_effort"], "recovery_only": recovery_only,
+                "goal_execution": goal_execution,
                 "provider_env": provider_env}
 
     @staticmethod

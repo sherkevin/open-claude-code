@@ -2,6 +2,7 @@
  * No tool performs business I/O in Node. The host authorizes and executes it.
  * Upstream source imports deliberately share dsh's source resolver/instances.
  */
+import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { installUsageObserver } from './usage_observer.ts'
@@ -29,6 +30,66 @@ const MAX_RESULT_BYTES = 2_097_152
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
+
+interface GoalRoundConfig {
+  readonly goalId: string
+  readonly preArmRevision: number
+  readonly expectedRevision: number
+  readonly armAction: 'pause_resume' | 'resume'
+  readonly roundIndex: number
+  readonly nativeRoundsBefore: number
+  readonly maxGoalRounds: number
+  readonly objectiveSha256: string
+  readonly leaseId: string
+  readonly runId: string
+}
+
+const GOAL_ROUND_KEYS = 'armAction,expectedRevision,goalId,leaseId,maxGoalRounds,nativeRoundsBefore,' +
+  'objectiveSha256,preArmRevision,roundIndex,runId'
+const GOAL_ID = /^goal-[a-f0-9-]{36}$/u
+const ROUND_ID = /^[A-Za-z0-9_-]{1,128}$/u
+const SHA256 = /^[a-f0-9]{64}$/u
+const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms))
+const boundedInt = (value: unknown, min: number, max: number): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max
+
+/** Parse the frozen one-round reservation written by harness/profile.py. */
+function parseGoalRound(value: unknown): GoalRoundConfig | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value) || Object.keys(value).sort().join(',') !== GOAL_ROUND_KEYS) {
+    throw new Error('Invalid Goal round configuration')
+  }
+  if (typeof value.goalId !== 'string' || !GOAL_ID.test(value.goalId)
+      || (value.armAction !== 'pause_resume' && value.armAction !== 'resume')
+      || !boundedInt(value.preArmRevision, 1, 10 ** 9)
+      || !boundedInt(value.expectedRevision, 1, 10 ** 9)
+      || value.expectedRevision !== value.preArmRevision + (value.armAction === 'pause_resume' ? 2 : 1)
+      || !boundedInt(value.roundIndex, 1, 32)
+      || !boundedInt(value.nativeRoundsBefore, 0, 31)
+      || !boundedInt(value.maxGoalRounds, 1, 32)
+      || value.nativeRoundsBefore >= value.maxGoalRounds
+      || typeof value.objectiveSha256 !== 'string' || !SHA256.test(value.objectiveSha256)
+      || typeof value.leaseId !== 'string' || !ROUND_ID.test(value.leaseId)
+      || typeof value.runId !== 'string' || !ROUND_ID.test(value.runId)) {
+    throw new Error('Invalid Goal round configuration')
+  }
+  // The guard chain above proves each type; explicit casts keep the parser
+  // valid under the pinned TypeScript compiler without trusting the input.
+  return {
+    goalId: value.goalId as string,
+    preArmRevision: value.preArmRevision as number,
+    expectedRevision: value.expectedRevision as number,
+    armAction: value.armAction as 'pause_resume' | 'resume',
+    roundIndex: value.roundIndex as number,
+    nativeRoundsBefore: value.nativeRoundsBefore as number,
+    maxGoalRounds: value.maxGoalRounds as number,
+    objectiveSha256: value.objectiveSha256 as string,
+    leaseId: value.leaseId as string, runId: value.runId as string,
+  }
+}
+
+const objectiveDigest = (value: unknown): string =>
+  typeof value === 'string' ? createHash('sha256').update(value, 'utf8').digest('hex') : ''
 
 /** Read only the bound, already-restored session; no prompt or request assembly. */
 export function readWorkspaceContext(ctx: any, config: any, params: unknown, initialized: boolean): unknown {
@@ -135,6 +196,38 @@ export async function apply(ctx: any, config: any): Promise<void> {
   let acceptingSteer = false
   const steerMessages = new Map<string, string>()
   const steerRequests = new Set<string>()
+  // Exactly one official positive Goal round may enter this host run. The
+  // driver is mounted by the profile; this fence is registered downstream of
+  // it and asks the Python host before any goal-sourced message reaches
+  // history or the model.
+  const goalRound = parseGoalRound(config.goalRound)
+  type GoalRoundState = 'idle' | 'arming' | 'armed' | 'admitted' | 'finished' | 'rejected' | 'failed'
+  let goalRoundState: GoalRoundState = 'idle'
+  const goalSource = (messages: any[]): any | undefined => {
+    if (!Array.isArray(messages)) return undefined
+    const positive = messages.filter((message: any) => message?.source?.kind === 'goal'
+      && Number.isSafeInteger(message.source.round) && message.source.round > 0)
+    if (positive.length === 0) return undefined
+    // Later host runs resume the same native session, so the pre-step batch may
+    // still contain earlier committed goal messages. Prefer the exact next
+    // positive round. If none matches, return the last goal message so the
+    // revision/round fence below still rejects it before history or a model
+    // request instead of silently passing an unexpected round.
+    return positive.find((message: any) => goalRound !== undefined
+      && message.source.round === goalRound.nativeRoundsBefore + 1)
+      ?? positive[positive.length - 1]
+  }
+  const notifyGoalRound = (payload: Record<string, unknown>): void => {
+    if (initialized) transport.notify('workspace.goal_round', { sessionId: config.sessionId, ...payload })
+  }
+  const rejectGoalRound = (code: string, round: unknown): void => {
+    goalRoundState = 'rejected'
+    notifyGoalRound({ state: 'rejected', code, round })
+  }
+  const failGoalRound = (code: string): void => {
+    goalRoundState = 'failed'
+    notifyGoalRound({ state: 'failed', code })
+  }
   ctx.on('session/event', (session: any, event: any) => {
     if (session.id !== config.sessionId) return
     if (event.type === 'turn/end') acceptingSteer = false
@@ -225,6 +318,65 @@ export async function apply(ctx: any, config: any): Promise<void> {
     }
     return next()
   })
+  // Registered after the official driver and after the generic step fence, so
+  // a veto here is observed by the driver as a rejected pre-step and no goal
+  // message enters native history. One host run admits exactly one round.
+  ctx.on('agent/pre-step', async ({ agent, messages }: any, next: any) => {
+    const submitted = goalSource(messages)
+    if (submitted === undefined) return next()
+    if (goalRound === undefined) return { kind: 'reject' as const }
+    if (!initialized || !owned(agent)) return { kind: 'reject' as const }
+    const source = submitted.source
+    if (goalRoundState === 'admitted' || goalRoundState === 'finished') {
+      // The round already entered history. A later automatic round is the
+      // expected one-round-per-run veto; it must not fail the admitted round.
+      return { kind: 'reject' as const }
+    }
+    if (goalRoundState !== 'armed' && goalRoundState !== 'arming') {
+      rejectGoalRound('GOAL_ROUND_NOT_ARMED', source.round)
+      return { kind: 'reject' as const }
+    }
+    if (source.goalId !== goalRound.goalId || source.revision !== goalRound.expectedRevision
+        || source.round !== goalRound.nativeRoundsBefore + 1) {
+      rejectGoalRound('GOAL_ROUND_FENCE_MISMATCH', source.round)
+      return { kind: 'reject' as const }
+    }
+    let admission: any
+    try {
+      admission = await transport.request('workspace/goal-admission', {
+        schema: 'workspace-goal-admission/v1', sessionId: config.sessionId,
+        runId: goalRound.runId, leaseId: goalRound.leaseId,
+        goalId: source.goalId, goalRevision: source.revision, round: source.round,
+        roundsStarted: source.round - 1, maxGoalRounds: goalRound.maxGoalRounds,
+        phase: 'active', activation: 'armed',
+      }, AbortSignal.timeout(30_000))
+    } catch {
+      admission = { admitted: false, code: 'GOAL_ADMISSION_UNAVAILABLE' }
+    }
+    if (!isRecord(admission) || admission.admitted !== true
+        || admission.leaseId !== goalRound.leaseId || admission.round !== source.round) {
+      const code = isRecord(admission) && typeof admission.code === 'string' && admission.code.length > 0
+        ? admission.code.slice(0, 64) : 'GOAL_ADMISSION_INVALID'
+      rejectGoalRound(code, source.round)
+      return { kind: 'reject' as const }
+    }
+    let downstream: any
+    try {
+      downstream = await next()
+    } catch (error) {
+      // The host lease is already armed. Report the step failure immediately
+      // instead of leaving the host to wait for a turn that never ends.
+      failGoalRound('GOAL_STEP_ENTER_FAILED')
+      throw error
+    }
+    if (downstream?.kind === 'enter') {
+      goalRoundState = 'admitted'
+      notifyGoalRound({ state: 'admitted', round: source.round, goalRevision: source.revision })
+    } else {
+      rejectGoalRound('GOAL_STEP_NOT_ENTERED', source.round)
+    }
+    return downstream
+  })
   ctx.on('agent/assistant-stream', ({ agent, frame }: any) => {
     if (!owned(agent)) return
     const common = { sessionId: config.sessionId, stepId: frame.attemptId, revision: frame.revision }
@@ -275,6 +427,99 @@ export async function apply(ctx: any, config: any): Promise<void> {
       transport.notify('workspace.compaction', { sessionId: config.sessionId, ...result })
     }
   })
+  // The goal round's turn is the only turn this profile is allowed to run.
+  // Report the official projection after it settles so the host can verify the
+  // authoritative native round count before settling usage.
+  ctx.on('session/event', async (session: any, event: any) => {
+    if (goalRound === undefined || session.id !== config.sessionId) return
+    if (event?.type !== 'turn/end' || goalRoundState !== 'admitted') return
+    const target = goalRound.nativeRoundsBefore + 1
+    const agent = ctx.agents.get(config.sessionId)
+    let view: any
+    try {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        view = ctx.goals.get(agent)
+        if (view?.roundsStarted === target) break
+        await sleep(25)
+      }
+    } catch {
+      view = undefined
+    }
+    goalRoundState = 'finished'
+    const reason = event.data?.reason
+    notifyGoalRound({
+      state: 'finished', round: target,
+      roundsStarted: Number.isSafeInteger(view?.roundsStarted) ? view.roundsStarted : null,
+      observed: view?.roundsStarted === target,
+      goalRevision: Number.isSafeInteger(view?.revision) ? view.revision : null,
+      phase: view?.phase ?? null,
+      outcomeKind: typeof reason?.kind === 'string' ? reason.kind : 'unknown',
+      errorCode: typeof reason?.error?.code === 'string' ? reason.error.code : null,
+    })
+  })
+  const armGoalRound = async (params: any): Promise<unknown> => {
+    if (goalRound === undefined || !initialized || !isRecord(params)
+        || Object.keys(params).join(',') !== 'sessionId' || params.sessionId !== config.sessionId) {
+      throw new Error('Unauthorized Goal round request')
+    }
+    if (goalRoundState !== 'idle') throw new Error('Goal round is already prepared')
+    const agent = ctx.agents.get(config.sessionId)
+    if (!agent || !owned(agent)) throw new Error('Goal session unavailable')
+    for (let attempt = 0; attempt < 200 && agent.status !== 'idle'; attempt += 1) await sleep(25)
+    if (agent.status !== 'idle') {
+      failGoalRound('GOAL_SESSION_BUSY')
+      throw new Error('Goal session is not idle')
+    }
+    goalRoundState = 'arming'
+    let view: any
+    try {
+      view = ctx.goals.get(agent)
+      if (!view || view.id !== goalRound.goalId || view.revision !== goalRound.preArmRevision
+          || view.roundsStarted !== goalRound.nativeRoundsBefore
+          || view.maxGoalRounds !== goalRound.maxGoalRounds || view.activation !== 'disarmed') {
+        failGoalRound('GOAL_ARM_PRECHECK_FAILED')
+        throw new Error('Goal arm precheck failed')
+      }
+      if (objectiveDigest(view.objective) !== goalRound.objectiveSha256) {
+        failGoalRound('GOAL_OBJECTIVE_CHANGED')
+        throw new Error('Goal objective changed')
+      }
+      if (goalRound.armAction === 'pause_resume') {
+        const paused = ctx.goals.pause(agent, { id: view.id, revision: view.revision })
+        if (!paused || paused.id !== goalRound.goalId || paused.phase !== 'paused'
+            || paused.revision !== goalRound.preArmRevision + 1
+            || objectiveDigest(paused.objective) !== goalRound.objectiveSha256) {
+          failGoalRound('GOAL_PAUSE_FAILED')
+          throw new Error('Goal pause failed')
+        }
+        view = paused
+      }
+      // The driver may reserve the round synchronously from resume(). The
+      // fence must already consider this host run armed; the admission RPC
+      // still verifies the exact resulting revision and round.
+      goalRoundState = 'armed'
+      view = ctx.goals.resume(agent, { id: view.id, revision: view.revision })
+    } catch (error) {
+      if (goalRoundState !== 'failed') failGoalRound('GOAL_ARM_FAILED')
+      throw error
+    }
+    if (!view || view.id !== goalRound.goalId || view.revision !== goalRound.expectedRevision
+        || view.phase !== 'active' || view.activation !== 'armed'
+        || view.roundsStarted !== goalRound.nativeRoundsBefore
+        || view.maxGoalRounds !== goalRound.maxGoalRounds
+        || objectiveDigest(view.objective) !== goalRound.objectiveSha256) {
+      failGoalRound('GOAL_ARM_MISMATCH')
+      throw new Error('Goal arm mismatch')
+    }
+    goalRoundState = 'armed'
+    return {
+      schema: 'workspace-goal-round/v1', sourceCommit: SOURCE_COMMIT,
+      sessionId: config.sessionId, goalId: view.id, revision: view.revision,
+      roundsStarted: view.roundsStarted, maxGoalRounds: view.maxGoalRounds,
+      phase: view.phase, activation: view.activation,
+      round: goalRound.nativeRoundsBefore + 1, armed: true,
+    }
+  }
 
   let closing: Promise<void> | undefined
   const close = (): Promise<void> => closing ??= (async () => {
@@ -320,13 +565,19 @@ export async function apply(ctx: any, config: any): Promise<void> {
       return result
     }
     if (method === 'workspace/context') return readWorkspaceContext(ctx, config, params, initialized)
-    if (method === 'workspace/goal-state') return goalStateRequest(ctx, config, params, initialized)
+    if (method === 'workspace/goal-state') {
+      // State maintenance would disarm and race the one-round driver.
+      if (goalRound !== undefined) throw new Error('Goal state maintenance is closed during a goal round')
+      return goalStateRequest(ctx, config, params, initialized)
+    }
+    if (method === 'workspace/goal-round') return armGoalRound(params)
     if (method === 'workspace/team-state') {
       if (config.teamState !== true || !teamContext) throw new Error('Team state disabled')
       return teamStateRequest(teamContext, config, params, initialized)
     }
     if (method === 'workspace/fork' && initialized) return forkWorkspaceSession(ctx, config, params)
     if (method === 'workspace/steer') {
+      if (goalRound !== undefined) throw new Error('Goal round runs do not accept steering')
       if (!initialized || !isRecord(params) || Object.keys(params).sort().join(',') !== 'requestId,sessionId,text'
           || params.sessionId !== config.sessionId || typeof params.requestId !== 'string' || !/^[a-f0-9]{32}$/u.test(params.requestId)
           || typeof params.text !== 'string' || params.text.length > 8000 || !params.text.trim()) {
@@ -342,6 +593,7 @@ export async function apply(ctx: any, config: any): Promise<void> {
       return { accepted: true }
     }
     if (method === 'workspace/compact') {
+      if (goalRound !== undefined) throw new Error('Goal round runs do not accept compaction')
       if (!initialized || !isRecord(params)
           || Object.keys(params).sort().join(',') !== 'instructions,sessionId'
           || params.sessionId !== config.sessionId || typeof params.instructions !== 'string'
@@ -363,6 +615,7 @@ export async function apply(ctx: any, config: any): Promise<void> {
       throw new Error('Unsupported or unauthorized workspace RPC request')
     }
     if (method === 'session/prompt') {
+      if (goalRound !== undefined) throw new Error('Goal round runs are not prompt-driven')
       let imageCount = 0, imageBytes = 0
       const valid = Array.isArray(params.contentBlocks) && params.contentBlocks.length > 0
         && params.contentBlocks.length <= 41 && params.contentBlocks.every((block: any) => {

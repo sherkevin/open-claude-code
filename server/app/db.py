@@ -543,6 +543,7 @@ CREATE TABLE IF NOT EXISTS goal_execution_authorizations(
     user_id TEXT NOT NULL REFERENCES users(id),
     goal_id TEXT NOT NULL,
     goal_revision INTEGER NOT NULL,
+    objective_sha256 TEXT,
     harness_session_id TEXT NOT NULL,
     native_rounds_started INTEGER NOT NULL,
     native_max_rounds INTEGER NOT NULL,
@@ -578,8 +579,18 @@ CREATE TABLE IF NOT EXISTS goal_execution_leases(
     usage_status TEXT CHECK(usage_status IS NULL OR usage_status IN ('complete','unknown')),
     total_tokens INTEGER,
     cost_micros INTEGER,
+    usage_source TEXT,
+    cost_authoritative INTEGER,
     abort_reason TEXT,
     error_code TEXT,
+    -- One host run carries at most one official positive Goal round. A lease is
+    -- created when the run is reserved (armed_at IS NULL) and becomes a real
+    -- admission only after the Node seam verified and armed the exact revision.
+    expected_goal_revision INTEGER,
+    armed_goal_revision INTEGER,
+    native_rounds_before INTEGER,
+    arm_action TEXT,
+    armed_at TEXT,
     UNIQUE(authorization_id,round_index)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS goal_execution_leases_active
@@ -1057,6 +1068,31 @@ COMMIT;""")
             # configuration; revision 0 fails closed until the owner re-approves.
             self.conn.execute("ALTER TABLE goal_execution_authorizations "
                               "ADD COLUMN assistant_revision INTEGER NOT NULL DEFAULT 0")
+        if "objective_sha256" not in goal_columns:
+            # An approval that predates content binding cannot prove which goal
+            # text was approved. NULL fails closed at the next start.
+            self.conn.execute("ALTER TABLE goal_execution_authorizations "
+                              "ADD COLUMN objective_sha256 TEXT")
+        lease_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(goal_execution_leases)")}
+        added_lease_columns = set()
+        for column, declaration in (
+            ("expected_goal_revision", "INTEGER"),
+            ("armed_goal_revision", "INTEGER"),
+            ("native_rounds_before", "INTEGER"),
+            ("arm_action", "TEXT"),
+            ("armed_at", "TEXT"),
+            ("usage_source", "TEXT"),
+            ("cost_authoritative", "INTEGER"),
+        ):
+            if column not in lease_columns:
+                self.conn.execute(f"ALTER TABLE goal_execution_leases ADD COLUMN {column} {declaration}")
+                added_lease_columns.add(column)
+        if "armed_at" in added_lease_columns:
+            # Before B2.4 a lease row could only be written by a real admission,
+            # so every existing row is an already-armed round. This backfill is
+            # one-time: new unarmed reservations keep armed_at NULL.
+            self.conn.execute("UPDATE goal_execution_leases SET armed_at=admitted_at")
+            self.conn.execute("UPDATE goal_execution_leases SET armed_goal_revision=goal_revision")
 
     def one(self, query, values=()):
         with self.lock:

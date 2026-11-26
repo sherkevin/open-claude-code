@@ -184,7 +184,8 @@ def test_owner_authorizes_and_other_user_is_denied(goal_env):
     assert body["budget"]["usage_complete"] is True
     assert body["budget"]["tokens_used"] == 0
     assert body["continuation_driver"] is False and body["unattended_execution"] is False
-    assert body["driver_integrated"] is False
+    assert body["driver_integrated"] is True
+    assert body["single_round_per_run"] is True
     # Authorization is a host record, not a run, approval or model call.
     assert service.db.one("SELECT count(*) n FROM runs WHERE conversation_id=?", (cid,))["n"] == 0
     assert service.db.one("SELECT count(*) n FROM approvals")["n"] == 0
@@ -713,7 +714,7 @@ def test_admin_downgrade_stops_full_permission_continuation(goal_env):
     assert view["permission_matches"] is False
 
 
-def test_generic_actor_cannot_execute_unintegrated_driver(goal_env):
+def test_generic_actor_cannot_execute_an_already_armed_continuation(goal_env):
     client, service = goal_env
     cid = setup_conversation(client, service)
     authorize_ok(client, cid)
@@ -723,6 +724,6 @@ def test_generic_actor_cannot_execute_unintegrated_driver(goal_env):
     client.portal.call(service.manager.ensure_submitted, run_id)
     run = poll(client, run_id)
     assert run["status"] == "failed"
-    assert run["error_code"] == "GOAL_DRIVER_NOT_INTEGRATED"
+    assert run["error_code"] == "GOAL_ROUND_ALREADY_ARMED"
     assert GoalRuntime.connects == before
     assert service.db.one("SELECT state FROM goal_execution_leases WHERE id=?", (lease["id"],))["state"] == "aborted"

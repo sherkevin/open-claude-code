@@ -8,6 +8,7 @@ import math
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -67,6 +68,38 @@ class _GoalReceipt(BaseModel):
     goal: _GoalView | None
     error: str | None
     continuationDriver: Literal[False]
+
+
+class _GoalRoundReceipt(BaseModel):
+    """Arm receipt from the official driver seam inside the run's process."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schema_: Literal["workspace-goal-round/v1"] = Field(alias="schema")
+    sourceCommit: Literal["fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159"]
+    sessionId: str
+    goalId: str
+    revision: int = Field(ge=1, le=10**9)
+    roundsStarted: int = Field(ge=0, le=32)
+    maxGoalRounds: int = Field(ge=1, le=32)
+    phase: Literal["active"]
+    activation: Literal["armed"]
+    round: int = Field(ge=1, le=32)
+    armed: Literal[True]
+
+
+class _GoalAdmissionRequest(BaseModel):
+    """Downstream pre-step admission request; never accepted from a public API."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schema_: Literal["workspace-goal-admission/v1"] = Field(alias="schema")
+    sessionId: str
+    runId: str
+    leaseId: str
+    goalId: str = Field(pattern=r"^goal-[a-f0-9-]{36}$")
+    goalRevision: int = Field(ge=1, le=10**9)
+    round: int = Field(ge=1, le=32)
+    roundsStarted: int = Field(ge=0, le=32)
+    maxGoalRounds: int = Field(ge=1, le=32)
+    phase: Literal["active"]
+    activation: Literal["armed"]
 
 
 class _TeamTask(BaseModel):
@@ -464,6 +497,7 @@ class HarnessRuntime(WorkspaceRuntime):
             tool_timeout_ms=(settings.approval_seconds + 60) * 1000,
             delegation_timeout_ms=(self.service.subagents.delegation_timeout() * 1000
                                    if "delegate_tasks" in tool_names else None),
+            goal_execution=self.config.get("goal_execution"),
         )
         launcher = write_launcher(private, node, source, root)
         self.client = cls(config_cls(dsh_bin=str(launcher), profile=profile["profile"],
@@ -502,6 +536,8 @@ class HarnessRuntime(WorkspaceRuntime):
                             await asyncio.to_thread(client.respond_error, request.id, code=-32800, message="Workspace operation cancelled")
                         finally:
                             self.tool_task, self.tool_call_id, self.tool_name = None, None, None
+                    elif request.method == "workspace/goal-admission":
+                        await self._goal_admission(client, request)
                     elif request.method == "approval/request":
                         await asyncio.to_thread(client.respond, request.id, {"outcome": "rejected"})
                     else:
@@ -524,6 +560,41 @@ class HarnessRuntime(WorkspaceRuntime):
             await self._run_with_usage(run, lambda: self._execute_owned(run, message))
         finally:
             self.accepting_subagent_plans = False
+
+    async def _goal_admission(self, client, request):
+        """Answer the Node pre-step fence from the host's authoritative lease.
+
+        The Node side sees the exact native goal revision and next round; the
+        host revalidates its own reservation, permissions, budgets and usage
+        before the positive round is allowed to enter native history.
+        """
+        response = {"schema": "workspace-goal-admission-result/v1", "admitted": False,
+                    "code": "GOAL_ADMISSION_UNAVAILABLE"}
+        run_id = (self.current_run or {}).get("id")
+        try:
+            value = _GoalAdmissionRequest.model_validate(request.payload)
+            if value.sessionId != self.session_id or run_id is None or value.runId != run_id:
+                response["code"] = "GOAL_ADMISSION_SESSION_MISMATCH"
+            else:
+                from .goal_execution import admit_goal_round_armed
+                admitted = await offload_write(
+                    admit_goal_round_armed, self.service, value.leaseId, value.runId,
+                    {"id": value.goalId, "revision": value.goalRevision,
+                     "phase": value.phase, "roundsStarted": value.roundsStarted,
+                     "maxGoalRounds": value.maxGoalRounds,
+                     "activation": value.activation},
+                    self.session_id, value.round)
+                response = {"schema": "workspace-goal-admission-result/v1",
+                            "admitted": True, "leaseId": admitted["lease"]["id"],
+                            "round": value.round}
+        except AppError as error:
+            response["code"] = error.code
+        except Exception:
+            response["code"] = "GOAL_ADMISSION_UNAVAILABLE"
+        try:
+            await asyncio.to_thread(client.respond, request.id, response)
+        except Exception:
+            pass
 
     async def steer(self, run_id, request_id, text):
         client = self.client
@@ -632,6 +703,16 @@ class HarnessRuntime(WorkspaceRuntime):
             finally:
                 self.current_run = None
             return
+        try:
+            metadata = json.loads(run.get("execution_meta") or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if isinstance(metadata, dict) and metadata.get("goal_continuation") is True:
+            try:
+                await self._execute_goal_round(run, message)
+            finally:
+                self.current_run = None
+            return
         operation = watcher = None
         try:
             attached = bool(json.loads(message.get("file_ids") or "[]"))
@@ -660,6 +741,98 @@ class HarnessRuntime(WorkspaceRuntime):
                     task.cancel()
             await asyncio.gather(*(task for task in (watcher, operation) if task is not None), return_exceptions=True)
             self.current_run = None
+
+    async def _execute_goal_round(self, run, message):
+        """Run exactly one official positive Goal round for one host run.
+
+        The pinned driver owns the native round and prompt. This method only
+        arms the exact host-reserved revision through the official service,
+        waits for the downstream pre-step host admission, relays visible text
+        and verifies the native round count before the run can succeed.
+        """
+        goal = self.config.get("goal_execution")
+        if not isinstance(goal, dict) or goal.get("run_id") != run["id"]:
+            raise AppError(409, "GOAL_ROUND_NOT_RESERVED", "目标轮次没有宿主预留，拒绝执行")
+        client = self.client
+        if client is None:
+            raise AppError(503, "HARNESS_NOT_CONFIGURED", "执行引擎不可用")
+        expected_round = goal["native_rounds_before"] + 1
+        await self.emit("run.stage", {"stage": "goal_arming"})
+        try:
+            receipt = await asyncio.to_thread(
+                client.request, "workspace/goal-round", {"sessionId": self.session_id},
+                response_model=_GoalRoundReceipt, timeout_seconds=30)
+        except Exception:
+            raise AppError(502, "GOAL_ARM_FAILED",
+                           "目标轮次准备回执未确认，可能已启动；停止本轮且不自动重放") from None
+        if (receipt.sessionId != self.session_id or receipt.goalId != goal["goal_id"]
+                or receipt.revision != goal["expected_goal_revision"]
+                or receipt.roundsStarted != goal["native_rounds_before"]
+                or receipt.round != expected_round
+                or receipt.maxGoalRounds != goal["max_goal_rounds"]):
+            raise AppError(502, "GOAL_ARM_RECEIPT_INVALID",
+                           "目标轮次准备回执与宿主预留不一致，停止本轮且不自动重放")
+        await self.emit("run.stage", {"stage": "goal_armed"})
+        timeout = max(300, self.service.settings.approval_seconds + 60)
+        finished_at = time.monotonic()
+        while True:
+            if time.monotonic() - finished_at > timeout:
+                raise AppError(504, "GOAL_ROUND_TIMEOUT", "目标轮次长时间没有结束，已停止等待")
+            try:
+                notification = await self._next_chat_notification(client, timeout)
+            except TimeoutError:
+                raise AppError(504, "GOAL_ROUND_TIMEOUT",
+                               "目标轮次长时间没有结束，已停止等待") from None
+            payload = notification.payload if isinstance(notification.payload, dict) else {}
+            if payload.get("sessionId") != self.session_id:
+                continue
+            if notification.method == "workspace.stream":
+                if payload.get("event") == "text_delta":
+                    text = payload.get("text")
+                    if isinstance(text, str) and text:
+                        await self.emit("message.delta", {
+                            "message_id": run["assistant_message_id"], "text": text})
+                continue
+            if notification.method != "workspace.goal_round":
+                continue
+            state = payload.get("state")
+            if state == "admitted":
+                await self.emit("run.stage", {"stage": "goal_round_admitted"})
+                continue
+            if state in {"rejected", "failed"}:
+                code = payload.get("code")
+                if not isinstance(code, str) or not code or len(code) > 64:
+                    code = "GOAL_ROUND_REJECTED"
+                raise AppError(409, code, "目标轮次未获准执行，未继续模型请求")
+            if state != "finished":
+                continue
+            if payload.get("observed") is not True:
+                raise AppError(502, "GOAL_ROUND_UNVERIFIED",
+                               "原生目标回执未能确认本轮已进入历史")
+            if (payload.get("roundsStarted") != expected_round
+                    or payload.get("round") != expected_round):
+                raise AppError(409, "GOAL_ROUND_FENCE_MISMATCH",
+                               "原生轮次与宿主预留不一致")
+            if payload.get("phase") not in {"active", "blocked"}:
+                raise AppError(409, "GOAL_GOAL_NOT_ACTIVE", "原生目标状态不允许结束本轮")
+            if payload.get("outcomeKind") == "error":
+                mapped = MODEL_FAILURES.get(payload.get("errorCode"))
+                if mapped:
+                    raise AppError(mapped[0], mapped[1], mapped[2])
+                raise AppError(502, "MODEL_PROVIDER_ERROR", "模型服务暂时不可用，本轮未完成")
+            stored = await offload(self.service.require, "runs", run["id"])
+            metadata = json.loads(stored.get("execution_meta") or "{}")
+            metadata["goal_round_result"] = {
+                "round": expected_round,
+                "rounds_started": payload.get("roundsStarted"),
+                "goal_revision": payload.get("goalRevision"),
+                "phase": payload.get("phase"),
+                "outcome": payload.get("outcomeKind"),
+            }
+            await offload_write(self.service.db.execute,
+                                "UPDATE runs SET execution_meta=? WHERE id=?",
+                                (dump(metadata), run["id"]))
+            return
 
     async def _next_chat_notification(self, client, timeout):
         # Keep the normal idle deadline unless the host is actually waiting

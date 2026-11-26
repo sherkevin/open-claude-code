@@ -660,7 +660,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
         {!trial && <>
           <ConversationFeedback ref={feedbackRef} conversationId={conversation.id} runId={run?.id} messages={messages}/>
           <ConversationExport conversationId={conversation.id}/>
-          {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived}/>}
+          {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived} executionEnabled={config.harness_goal_execution===true}/>}
           <button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={() => setInspectionView('trajectory')}><ListTree size={17}/></button>
           <button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={() => setShowMemory(true)}><BookOpen size={17}/></button>
         </>}

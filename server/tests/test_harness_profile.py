@@ -1,4 +1,5 @@
 """Composition boundary checks; these never import or start a model runtime."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -239,10 +240,20 @@ export function validateJsonSchemaValue() {
 import assert from 'node:assert/strict'
 import { pathToFileURL } from 'node:url'
 const { apply } = await import(pathToFileURL(process.argv[2]).href)
-const events = new Map(), tools = [], guards = []
+const events = new Map(), handlers = new Map(), tools = [], guards = []
+const agent = {session:{id:'only-session'},status:'idle'}
 const ctx = {
   tools: { register: tool => tools.push(tool), definitions: () => tools, guard: guard => guards.push(guard) },
-  on: (name, handler) => events.set(name, handler),
+  // The first registration keeps the historic single-handler test contract;
+  // `handlers` preserves the real ordered middleware chain for Goal tests.
+  on: (name, handler) => {
+    if (!events.has(name)) events.set(name, handler)
+    const list = handlers.get(name) ?? []
+    list.push(handler)
+    handlers.set(name, list)
+  },
+  agents: new Map([['only-session', agent]]),
+  goals: { get: () => globalThis.goalView, pause: () => undefined, resume: () => undefined },
   effect: callback => callback(), loader: { await: async () => {} },
   root: { fiber: { dispose: async () => {} } },
 }
@@ -253,7 +264,7 @@ const config = {
   tools: [{ name:'knowledge_search', description:'synthetic', input_schema:{type:'object'} }],
 }
 globalThis.hostResult = {content:[{type:'text',text:'authorized result'}]}
-const agent = {session:{id:'only-session'}}
+globalThis.handlers = handlers
 """
 
     def run(body, *, configure="", start=True):
@@ -449,6 +460,171 @@ process.stdout.write('PASS\\n')
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout == "PASS\n"
+
+
+def goal_round_config(session_id="harness-session-1", **overrides):
+    value = {
+        "goal_id": "goal-00000000-0000-4000-8000-000000000001",
+        "pre_arm_revision": 3, "expected_goal_revision": 5,
+        "arm_action": "pause_resume", "round_index": 1,
+        "native_rounds_before": 0, "max_goal_rounds": 8,
+        "objective_sha256": "a" * 64, "lease_id": "lease-0001",
+        "run_id": "run-0001", "session_id": session_id,
+    }
+    value.update(overrides)
+    return value
+
+
+def goal_round_fixture(arguments):
+    module = arguments["source_dir"] / "packages/goal/goal-round-driver/src/index.ts"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text("// module path fixture; never executed\n")
+    return module
+
+
+def test_goal_round_profile_mounts_the_official_driver_before_startup(arguments):
+    goal_round_fixture(arguments)
+    result = write_profile(**arguments, goal_execution=goal_round_config())
+    entries = json.loads((Path(result["profile_dir"]) / "cordis.patch.yml").read_text())[0]["insert"]
+    identifiers = [entry["id"] for entry in entries]
+    assert identifiers.count("goal-round-driver") == 1
+    assert identifiers.index("goal-round-driver") < identifiers.index("sdk-app-startup")
+    assert identifiers.index("goal-round-driver") > identifiers.index("goals")
+    driver = next(entry for entry in entries if entry["id"] == "goal-round-driver")
+    assert driver["name"].endswith("packages/goal/goal-round-driver/src/index.ts")
+    host = next(entry for entry in entries if entry["id"] == "workspace-host")["config"]
+    assert host["goalRound"] == {
+        "goalId": "goal-00000000-0000-4000-8000-000000000001",
+        "preArmRevision": 3, "expectedRevision": 5, "armAction": "pause_resume",
+        "roundIndex": 1, "nativeRoundsBefore": 0, "maxGoalRounds": 8,
+        "objectiveSha256": "a" * 64, "leaseId": "lease-0001", "runId": "run-0001",
+    }
+    # The goal text never crosses the profile boundary, only its digest.
+    assert "synthetic continuation objective" not in json.dumps(entries)
+
+
+def test_goal_round_profile_is_absent_in_an_ordinary_run(arguments):
+    result = write_profile(**arguments)
+    entries = json.loads((Path(result["profile_dir"]) / "cordis.patch.yml").read_text())[0]["insert"]
+    assert "goal-round-driver" not in [entry["id"] for entry in entries]
+    assert "goalRound" not in next(entry for entry in entries if entry["id"] == "workspace-host")["config"]
+
+
+def test_goal_round_resume_action_uses_one_revision_edge(arguments):
+    goal_round_fixture(arguments)
+    result = write_profile(**arguments, goal_execution=goal_round_config(
+        arm_action="resume", pre_arm_revision=4, expected_goal_revision=5))
+    entries = json.loads((Path(result["profile_dir"]) / "cordis.patch.yml").read_text())[0]["insert"]
+    assert next(entry for entry in entries if entry["id"] == "workspace-host")["config"]["goalRound"]["armAction"] == "resume"
+
+
+@pytest.mark.parametrize("change", [
+    {"expected_goal_revision": 4},
+    {"expected_goal_revision": 6},
+    {"arm_action": "disarm"},
+    {"objective_sha256": "not-a-digest"},
+    {"objective_sha256": "a" * 63},
+    {"goal_id": "goal-not-a-uuid"},
+    {"round_index": 0}, {"round_index": 33},
+    {"native_rounds_before": 8},
+    {"max_goal_rounds": True},
+    {"lease_id": "has space"}, {"run_id": ""},
+    {"session_id": "other-session"},
+    {"objective": "plain text must never enter the profile"},
+])
+def test_goal_round_profile_rejects_an_inconsistent_reservation(arguments, change):
+    goal_round_fixture(arguments)
+    with pytest.raises(ValueError):
+        write_profile(**arguments, goal_execution=goal_round_config(**change))
+    assert not arguments["profile_root"].exists()
+
+
+def test_goal_round_profile_requires_the_pinned_driver_module(arguments):
+    with pytest.raises(ValueError, match="goal/goal-round-driver"):
+        write_profile(**arguments, goal_execution=goal_round_config())
+    # The private home may already exist, but no executable profile was written.
+    assert not (arguments["profile_root"] / "profiles/workspace/cordis.patch.yml").exists()
+
+
+GOAL_ROUND_ID = "goal-" + "a" * 36
+GOAL_OBJECTIVE = "fixture objective"
+
+
+def goal_round_plugin_config():
+    return {
+        "goalId": GOAL_ROUND_ID, "preArmRevision": 3, "expectedRevision": 5,
+        "armAction": "pause_resume", "roundIndex": 1, "nativeRoundsBefore": 0,
+        "maxGoalRounds": 8,
+        "objectiveSha256": hashlib.sha256(GOAL_OBJECTIVE.encode()).hexdigest(),
+        "leaseId": "lease-1", "runId": "run-1",
+    }
+
+
+GOAL_VIEW_JS = (
+    "globalThis.goalView={id:'" + GOAL_ROUND_ID + "',revision:3,roundsStarted:0,"
+    "maxGoalRounds:8,phase:'active',activation:'disarmed',objective:'" + GOAL_OBJECTIVE + "'}\n"
+)
+
+
+def test_plugin_arms_only_the_reserved_native_revision(plugin_runner):
+    plugin_runner(GOAL_VIEW_JS + """
+globalThis.pauses=0;globalThis.resumes=0
+ctx.goals.pause=(agent,ref)=>{globalThis.pauses+=1;globalThis.goalView={...globalThis.goalView,phase:'paused',revision:ref.revision+1};return globalThis.goalView}
+ctx.goals.resume=(agent,ref)=>{globalThis.resumes+=1;globalThis.goalView={...globalThis.goalView,phase:'active',revision:ref.revision+1,activation:'armed'};return globalThis.goalView}
+const receipt=await transport.handle('workspace/goal-round',{sessionId:'only-session'})
+assert.equal(receipt.schema,'workspace-goal-round/v1')
+assert.equal(receipt.goalId,'""" + GOAL_ROUND_ID + """')
+assert.equal(receipt.revision,5)
+assert.equal(receipt.roundsStarted,0)
+assert.equal(receipt.round,1)
+assert.equal(receipt.armed,true)
+assert.equal(globalThis.pauses,1)
+assert.equal(globalThis.resumes,1)
+assert.equal(globalThis.goalView.revision,5)
+await assert.rejects(transport.handle('workspace/goal-round',{sessionId:'only-session'}),/already prepared/)
+""", configure="config.goalRound=" + json.dumps(goal_round_plugin_config()) + "\n")
+
+
+def test_plugin_goal_pre_step_rejects_an_unarmed_goal_message(plugin_runner):
+    plugin_runner(GOAL_VIEW_JS + """
+const fence=globalThis.handlers.get('agent/pre-step')[1]
+assert.equal(typeof fence,'function')
+let entered=0
+const next=async()=>{entered+=1;return{kind:'enter'}}
+const message={source:{kind:'goal',goalId:'""" + GOAL_ROUND_ID + """',revision:5,round:1}}
+assert.deepEqual(await fence({agent,messages:[message]},next),{kind:'reject'})
+assert.equal(entered,0)
+assert.equal(transport.notifications.at(-1).method,'workspace.goal_round')
+assert.equal(transport.notifications.at(-1).params.code,'GOAL_ROUND_NOT_ARMED')
+""", configure="config.goalRound=" + json.dumps(goal_round_plugin_config()) + "\n")
+
+
+def test_plugin_goal_pre_step_requires_host_admission_and_one_round(plugin_runner):
+    plugin_runner(GOAL_VIEW_JS + """
+ctx.goals.pause=(agent,ref)=>{globalThis.goalView={...globalThis.goalView,phase:'paused',revision:ref.revision+1};return globalThis.goalView}
+ctx.goals.resume=(agent,ref)=>{globalThis.goalView={...globalThis.goalView,phase:'active',revision:ref.revision+1,activation:'armed'};return globalThis.goalView}
+await transport.handle('workspace/goal-round',{sessionId:'only-session'})
+const fence=globalThis.handlers.get('agent/pre-step')[1]
+assert.equal(typeof fence,'function')
+const message={source:{kind:'goal',goalId:'""" + GOAL_ROUND_ID + """',revision:5,round:1}}
+let entered=0
+const next=async()=>{entered+=1;return{kind:'enter'}}
+globalThis.hostResult={admitted:true,leaseId:'lease-1',round:1}
+assert.deepEqual(await fence({agent,messages:[message]},next),{kind:'enter'})
+assert.equal(entered,1)
+assert.equal(transport.requests.at(-1).method,'workspace/goal-admission')
+assert.deepEqual(transport.requests.at(-1).params,{
+  schema:'workspace-goal-admission/v1',sessionId:'only-session',runId:'run-1',leaseId:'lease-1',
+  goalId:'""" + GOAL_ROUND_ID + """',goalRevision:5,round:1,roundsStarted:0,maxGoalRounds:8,
+  phase:'active',activation:'armed',
+})
+assert.equal(transport.notifications.at(-1).params.state,'admitted')
+// A second goal round in the same host run is vetoed without another RPC.
+const second={source:{kind:'goal',goalId:'""" + GOAL_ROUND_ID + """',revision:5,round:2}}
+assert.deepEqual(await fence({agent,messages:[second]},next),{kind:'reject'})
+assert.equal(entered,1)
+assert.equal(transport.requests.length,1)
+""", configure="config.goalRound=" + json.dumps(goal_round_plugin_config()) + "\n")
 
 
 def test_team_profile_mounts_only_read_only_services(arguments):
