@@ -148,6 +148,7 @@ def write_profile(
     delegation_timeout_ms: int | None = None,
     team_state: bool = False,
     goal_execution: dict | None = None,
+    goal_attempt_endpoint: str | None = None,
     team_tasks: bool = False,
 ) -> dict:
     """Write one locked profile and return dsh arguments and SDK initialize data.
@@ -183,6 +184,10 @@ def write_profile(
     if (parsed is None or parsed.scheme not in {"http", "https"} or not parsed.hostname
             or parsed.username or parsed.password or parsed.query or parsed.fragment):
         raise ValueError("Provider requires a credential-free HTTP(S) baseURL")
+    messages_endpoint = endpoint.rstrip("/") + ("" if parsed.path.rstrip("/").endswith("/v1") else "/v1") + "/messages"
+    if goal_attempt_endpoint is not None and (goal_attempt_endpoint != messages_endpoint
+            or parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}):
+        raise ValueError("Goal billing requires the bound loopback Messages endpoint")
     model = provider.get("model")
     if not isinstance(model, str) or not model.strip() or len(model) > 256:
         raise ValueError("Provider model is required")
@@ -312,7 +317,8 @@ def write_profile(
             "sourceDir": str(source), "sessionId": session_id, "cwd": str(workspace), "profileRoot": str(root),
             "requestRetryCodes": list(MODEL_RECOVERY_CODES),
             "requestRateLimitRetries": MODEL_RATE_LIMIT_RETRIES,
-            "usageEndpoint": endpoint.rstrip("/") + ("" if parsed.path.rstrip("/").endswith("/v1") else "/v1") + "/messages",
+            "usageEndpoint": messages_endpoint,
+            **({"goalAttemptBudget": True} if goal_attempt_endpoint is not None else {}),
             "model": model, "tools": definitions, "maxSteps": max_steps,
             "toolTimeoutMs": tool_timeout_ms, "sourceCommit": PINNED_COMMIT,
             **({"teamState": True} if team_state else {}),

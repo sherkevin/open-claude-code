@@ -244,6 +244,12 @@ export async function apply(ctx: any, config: any): Promise<void> {
     }
   })
   const usage = installUsageObserver({ endpoint: config.usageEndpoint, sessionId: config.sessionId,
+    exchange: config.goalAttemptBudget === true ? async message => {
+      const reply = await transport.request('workspace/goal-attempt',
+        { ...message, sessionId: config.sessionId }, AbortSignal.timeout(30_000))
+      if (!isRecord(reply) || reply.accepted !== true || reply.attemptId !== message.attemptId)
+        throw new Error('Goal budget reservation or invoice not acknowledged')
+    } : undefined,
     onReceipt: receipt => transport.notify('workspace.usage', receipt) })
   ctx.effect(() => () => usage.restore())
 

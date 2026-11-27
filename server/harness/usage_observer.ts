@@ -1,3 +1,5 @@
+import { goalAttemptBudget, type AttemptExchange } from './goal_attempt_budget.ts'
+
 /** Product-owned raw Messages usage observer; never creates or retries a request.
  * The pinned adapter defaults absent input/output to zero. Observe the exact SSE
  * bytes before translation, retaining explicit zero and unknown independently.
@@ -138,6 +140,7 @@ class UsageFrames {
 export function installUsageObserver(config: {
   endpoint: string
   sessionId: string
+  exchange?: AttemptExchange
   onReceipt?: (receipt: UsageReceipt) => void | Promise<void>
 }): UsageObserver {
   let endpoint: URL
@@ -146,6 +149,7 @@ export function installUsageObserver(config: {
       || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !identifier(config.sessionId)) {
     throw new Error('Invalid usage observer binding')
   }
+  const budget = config.exchange ? goalAttemptBudget(config.exchange) : undefined
   const expectedUrl = endpoint.href
   const sessionId = config.sessionId
   const previousFetch = globalThis.fetch
@@ -178,9 +182,14 @@ export function installUsageObserver(config: {
 
   const wrappedFetch: typeof fetch = async (input, init) => {
     const match = !disposed && runId !== null ? matching(input, init) : undefined
-    if (!match) return Reflect.apply(previousFetch, globalThis, [input, init])
+    if (!match) {
+      if (budget) throw new Error('Goal budget does not cover this endpoint or session')
+      return Reflect.apply(previousFetch, globalThis, [input, init])
+    }
+    const attemptId = globalThis.crypto.randomUUID()
+    const reserved = budget ? await budget.reserve(runId!, attemptId, init) : undefined
     const receipt: UsageReceipt = { schema: 'workspace-usage/v1', sessionId, runId: runId!,
-      attemptId: globalThis.crypto.randomUUID(), revision: 1, purpose: match.purpose, phase: 'started', outcome: 'pending',
+      attemptId, revision: 1, purpose: match.purpose, phase: 'started', outcome: 'pending',
       httpStatus: null, terminalObserved: false, usage: emptyUsage() }
     let finished = false
     let limited = false
@@ -249,8 +258,16 @@ export function installUsageObserver(config: {
     }, () => { limited = true })
 
     let response: Response
-    try { response = await Reflect.apply(previousFetch, globalThis, [input, init]) }
-    catch (error) { finish(match.signal?.aborted ? 'cancelled' : 'transport_error'); throw error }
+    try { response = await Reflect.apply(previousFetch, globalThis, [input, reserved?.init ?? init]) }
+    catch (error) {
+      finish(match.signal?.aborted ? 'cancelled' : 'transport_error')
+      await reserved?.transportError()
+      throw error
+    }
+    if (reserved) {
+      try { await reserved.settle(response) }
+      catch (error) { finish('incomplete'); throw error }
+    }
     if (finished) return response
     receipt.httpStatus = response.status
     if (!response.ok) { finish('http_error'); return response }

@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -513,6 +514,19 @@ class HarnessRuntime(WorkspaceRuntime):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         cls, config_cls = await asyncio.to_thread(official_client, source)
         tools = self.bridge.definitions()
+        goal_run = self.config.get("parent_goal_run_id") or (self.config.get("goal_execution") or {}).get("run_id")
+        self.goal_meter_run_id = None
+        budget_endpoint = None
+        if goal_run:
+            from .goal_round_cost import goal_attempt_endpoint
+            budget_endpoint = await offload(goal_attempt_endpoint, self.service, goal_run)
+            if budget_endpoint is not None:
+                self.goal_meter_run_id = goal_run
+        self.goal_meter_attempts = set()
+        if budget_endpoint is not None:
+            # Only the reviewed parent/child Messages path is covered by the
+            # loopback price contract. External tools could charge separately.
+            tools = [tool for tool in tools if tool["name"] == "delegate_tasks"]
         tool_names = {tool["name"] for tool in tools}
         self.mounted_tools = {tool["name"]: tool for tool in tools}
         system_prompt = self.model_system_prompt()
@@ -535,6 +549,7 @@ class HarnessRuntime(WorkspaceRuntime):
             delegation_timeout_ms=(self.service.subagents.delegation_timeout() * 1000
                                    if "delegate_tasks" in tool_names else None),
             goal_execution=self.config.get("goal_execution"),
+            goal_attempt_endpoint=budget_endpoint,
         )
         launcher = write_launcher(private, node, source, root)
         self.client = cls(config_cls(dsh_bin=str(launcher), profile=profile["profile"],
@@ -573,6 +588,8 @@ class HarnessRuntime(WorkspaceRuntime):
                             await asyncio.to_thread(client.respond_error, request.id, code=-32800, message="Workspace operation cancelled")
                         finally:
                             self.tool_task, self.tool_call_id, self.tool_name = None, None, None
+                    elif request.method == "workspace/goal-attempt":
+                        await self._goal_attempt(client, request)
                     elif request.method == "workspace/goal-admission":
                         await self._goal_admission(client, request)
                     elif request.method == "approval/request":
@@ -597,6 +614,37 @@ class HarnessRuntime(WorkspaceRuntime):
             await self._run_with_usage(run, lambda: self._execute_owned(run, message))
         finally:
             self.accepting_subagent_plans = False
+
+    async def _goal_attempt(self, client, request):
+        """Bind the native usage attempt to this runtime's parent run and child."""
+        from .goal_round_cost import begin_goal_attempt, mark_goal_attempt_retryable, settle_goal_attempt
+
+        p = request.payload
+        run_id = getattr(self, "goal_meter_run_id", None)
+        attempt = p.get("attemptId")
+        retry_of = p.get("retryOf")
+        wire_run = self.subagent_child_id or run_id
+        if (not run_id or run_id != (self.current_run or {}).get("id")
+                or p.get("runId") != wire_run or p.get("sessionId") != self.session_id
+                or not isinstance(attempt, str) or not re.fullmatch(r"[a-f0-9-]{36}", attempt)):
+            raise AppError(409, "GOAL_ATTEMPT_MISMATCH", "费用回执与模型请求不符")
+        if p.get("action") == "reserve":
+            if self.interrupted:
+                raise AppError(409, "GOAL_ROUND_INACTIVE", "目标执行已停止")
+            kind = "retry" if retry_of is not None else "child" if self.subagent_child_id else "parent"
+            await offload_write(partial(begin_goal_attempt, self.service, run_id, attempt, kind,
+                                        child_id=self.subagent_child_id, retry_of=retry_of))
+            self.goal_meter_attempts.add(attempt)
+        elif attempt not in self.goal_meter_attempts:
+            raise AppError(409, "GOAL_ATTEMPT_MISMATCH", "当前会话没有预留此笔请求")
+        elif p.get("action") == "settle":
+            await offload_write(partial(settle_goal_attempt, self.service, run_id, attempt,
+                                        p.get("costMicros"), retryable=p.get("retryable") is True))
+        elif p.get("action") == "retryable":
+            await offload_write(mark_goal_attempt_retryable, self.service, run_id, attempt)
+        else:
+            raise AppError(422, "GOAL_ATTEMPT_INVALID", "未知费用操作")
+        await asyncio.to_thread(client.respond, request.id, {"attemptId": attempt, "accepted": True})
 
     async def _goal_admission(self, client, request):
         """Answer the Node pre-step fence from the host's authoritative lease.

@@ -268,3 +268,79 @@ test('restore never overwrites a newer fetch wrapper and finishes pending accoun
   assert.equal(receipt().outcome, 'incomplete')
   await reader.cancel()
 })
+
+function budgetFixture(serve, exchange = async () => {}) {
+  const entries = []
+  const sends = []
+  globalThis.fetch = async (_input, init) => {
+    const id = init.headers.get('x-kaiwu-attempt-id')
+    sends.push(id)
+    assert.equal(init.redirect, 'error')
+    assert.equal(entries.at(-1)?.action, 'reserve')
+    assert.equal(entries.at(-1)?.attemptId, id)
+    return serve(id, sends.length)
+  }
+  observer = installUsageObserver({ endpoint, sessionId, exchange: async message => {
+    entries.push(message)
+    await exchange(message)
+  } })
+  return { entries, sends }
+}
+
+test('budgeted requests reserve before network; a zero-billed 429 and its retry have distinct identities', async () => {
+  const { entries, sends } = budgetFixture((id, n) => response('', {
+    status: n === 1 ? 429 : 200,
+    headers: { 'x-kaiwu-attempt-id': id, 'x-kaiwu-cost-micros': n === 1 ? '0' : '7' },
+  }))
+  await assert.rejects(post({ body: '{}' }))
+  observer.begin('run-1')
+  await assert.rejects(fetch('https://other.invalid', { method: 'POST' }))
+  await assert.rejects(post({ headers: {}, body: '{}' }))
+  assert.equal(sends.length, 0)
+  assert.equal((await post({ body: '{}' })).status, 429)
+  await assert.rejects(post({ body: '{"other":1}' }))
+  assert.equal((await post({ body: '{}' })).status, 200)
+  assert.deepEqual(entries.map(e => e.action), ['reserve', 'settle', 'reserve', 'settle'])
+  assert.equal(entries[1].costMicros, 0)
+  assert.equal(entries[2].retryOf, sends[0])
+  assert.equal(entries[3].costMicros, 7)
+  assert.equal(new Set(sends).size, 2)
+  assert.deepEqual(observer.snapshot('run-1').receipts.map(r => r.attemptId), sends)
+})
+
+test('rejected reservation never sends, including a later retry', async () => {
+  const { sends } = budgetFixture(() => { throw new Error('unexpected network') },
+    async () => { throw new Error('no slots') })
+  observer.begin('run-1')
+  await assert.rejects(post({ body: '{}' }), /no slots/)
+  await assert.rejects(post({ body: '{}' }))
+  assert.equal(sends.length, 0)
+  assert.deepEqual(observer.snapshot('run-1').receipts, [])
+})
+
+for (const bill of ['absent', 'wrong-id', 'estimate', 'noncanonical']) {
+  test('invalid budget invoice leaves a hold and prevents resend: ' + bill, async () => {
+    const { sends, entries } = budgetFixture(id => response('', { headers: {
+      'x-kaiwu-attempt-id': bill === 'wrong-id' ? id + '-wrong' : id,
+      ...(bill === 'absent' ? {} : { 'x-kaiwu-cost-micros': bill === 'estimate' ? '0.1' : bill === 'noncanonical' ? '00' : '0' }),
+    } }))
+    observer.begin('run-1')
+    await assert.rejects(post({ body: '{}' }))
+    await assert.rejects(post({ body: '{}' }))
+    assert.equal(sends.length, 1)
+    assert.deepEqual(entries.map(e => e.action), ['reserve'])
+  })
+}
+
+test('a transport failure keeps the original amount unknown on retry', async () => {
+  const { entries, sends } = budgetFixture((id, n) => {
+    if (n === 1) throw new Error('connection closed')
+    return response('', { headers: { 'x-kaiwu-attempt-id': id, 'x-kaiwu-cost-micros': '1' } })
+  })
+  observer.begin('run-1')
+  await assert.rejects(post({ body: '{}' }))
+  await post({ body: '{}' })
+  assert.deepEqual(entries.map(e => e.action), ['reserve', 'retryable', 'reserve', 'settle'])
+  assert.equal(entries[2].retryOf, sends[0])
+  assert.equal(entries[3].costMicros, 1)
+})

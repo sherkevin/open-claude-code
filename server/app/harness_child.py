@@ -20,6 +20,7 @@ class HarnessChild(HarnessRuntime):
             # The parent owns the reserved Goal round. Each child runs a normal
             # prompted turn in its own session under the parent tool grants.
             "goal_execution": None,
+            "parent_goal_run_id": (parent_runtime.config.get("goal_execution") or {}).get("run_id"),
             "subagent_child_id": child["child_id"],
             "worker_max_output_tokens": min(800, service.settings.harness_max_output_tokens),
             "worker_max_steps": min(HARNESS_CHILD_MAX_STEPS, service.settings.max_turns),
