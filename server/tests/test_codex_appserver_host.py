@@ -191,7 +191,8 @@ def test_receipt_history_reads_one_durable_window_without_launch_or_write(tmp_pa
         request_id = f"history-{index}"
         turn = host.run_turn(USER, CID, request_id, f"合成任务 {index}", prepare_if_needed=True)
         submitted.append({"request_id": request_id, "turn_id": turn["turn_id"],
-                          "status": "completed", "text": "合成", "text_truncated": True})
+                          "status": "completed", "text": "合成", "text_truncated": True,
+                          "file_reads": {"succeeded": 0, "failed": 0, "unconfirmed": 0}})
     submitted[-1].update(text="合成回复", text_truncated=False)
 
     before = state_path(tmp_path, USER, CID).read_bytes()
@@ -497,12 +498,12 @@ def test_first_explicit_request_has_one_process_and_live_owner_feedback(tmp_path
         assert resume.wait(10)
         return initialize(session)
 
-    def hold_first_output(session, thread_id, turn_id, *, first_output):
+    def hold_first_output(session, thread_id, turn_id, *, first_output, first_read):
         def display(text):
             first_output(text)
             displaying.set()
             assert finish.wait(10)
-        return wait(session, thread_id, turn_id, first_output=display)
+        return wait(session, thread_id, turn_id, first_output=display, first_read=first_read)
 
     monkeypatch.setattr(_Session, "initialize", pause_initialize)
     monkeypatch.setattr(_Session, "wait_turn", hold_first_output)

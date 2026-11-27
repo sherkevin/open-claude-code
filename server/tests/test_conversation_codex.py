@@ -221,7 +221,8 @@ def test_owner_finds_older_receipt_without_input_or_replay(codex_env, monkeypatc
         assert result.json() == {
             "state": "recorded", "request_id": "first-request",
             "turn": {"request_id": "first-request", "turn_id": first["turn_id"],
-                     "text": first["text"], "text_truncated": False, "status": "completed"}}
+                     "text": first["text"], "text_truncated": False, "status": "completed",
+                     "file_reads": {"succeeded": 0, "failed": 0, "unconfirmed": 0}}}
         assert client.get(base).json()["last_turn"]["request_id"] == "second-request"
         other = conversation(client)["id"]
         assert client.get(f"/api/v1/conversations/{other}/codex/requests/first-request").json()["state"] == "not_found"
@@ -243,7 +244,8 @@ def test_history_reopens_without_request_ids_messages_runs_or_native_calls(codex
         assert response.status_code == 200, response.text
         turn = response.json()
         expected.insert(0, {"request_id": req, "turn_id": turn["turn_id"], "text": "合成回复",
-                            "text_truncated": False, "status": "completed"})
+                            "text_truncated": False, "status": "completed",
+                            "file_reads": {"succeeded": 0, "failed": 0, "unconfirmed": 0}})
 
     other = conversation(client)["id"]
     monkeypatch.setattr(codex_appserver.subprocess, "Popen", lambda *a, **kw: pytest.fail("native launch"))
