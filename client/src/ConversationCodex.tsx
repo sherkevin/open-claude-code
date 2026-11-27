@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SquareTerminal } from 'lucide-react';
 import { api, clientRequestId, errorText, post } from './api';
 import { Button, ErrorNotice, Field, Loader, Modal } from './components';
 
-export type CodexTurn = { turn_id: string; request_id?: string; status: string; text?: string; text_truncated: boolean; text_withheld?: boolean };
-type Operation = { request_id: string | null; phase: 'preparing' | 'thread_ready' | 'running' | 'output'; text?: string };
+type FileReads = { succeeded: number; failed: number; unconfirmed: number };
+export type CodexTurn = { file_reads?: FileReads; turn_id: string; request_id?: string; status: string; text?: string; text_truncated: boolean; text_withheld?: boolean };
+type Operation = { request_id: string | null; phase: 'preparing' | 'thread_ready' | 'running' | 'output'; file_read_started?: boolean; text?: string };
 export type CodexThread = {
   bound: boolean;
   active_turn: { turn_id: string; request_id?: string; can_interrupt?: boolean; interrupt_requested: boolean } | null;
@@ -62,9 +63,17 @@ export function originalRequestResolved(receipt: CodexReceipt | null) {
   return receipt?.state === 'recorded' || receipt?.state === 'admitted_without_receipt';
 }
 
+function FileReadResult({ reads }: { reads?: FileReads }) {
+  if (!reads) return null;
+  const { succeeded, failed, unconfirmed } = reads;
+  if (succeeded + failed + unconfirmed === 0) return <p>本轮未记录可辨认的文件读取命令。</p>;
+  return <p>文件读取命令成功 {succeeded} 次，失败 {failed} 次{unconfirmed > 0 && `，结果未确认 ${unconfirmed} 次`}。</p>;
+}
+
 export function CodexTurnResult({ turn }: { turn: CodexTurn }) {
   return <>
     <p><strong>{statusLabels[turn.status] || turn.status}</strong></p>
+    <FileReadResult reads={turn.file_reads}/>
     {turn.text_withheld ? <p className="section-help">正文含宿主路径或凭据标记，已隐藏。{turn.text_truncated && '留存的正文已截断。'}</p> : <>
       {turn.text && <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{turn.text}</p>}
       {turn.text_truncated && <p className="section-help">{turn.text ? '仅显示此请求留存的部分正文。' : '仅留存轮次状态，正文未保存。'}</p>}
@@ -114,16 +123,18 @@ export function CodexStatus({ thread, sending, preparing, pending, requestId }: 
     : thread.bound ? '可以发送任务' : '尚未准备会话';
   return <div role="status" className="section-help">
     <strong>{status}</strong>
+    {!terminal && operation?.file_read_started && <p>原生执行器已报告文件读取命令。</p>}
     {!terminal && operation?.phase === 'output' && operation.text && <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{operation.text}</p>}
     {!terminal && pending && !sending && !operation && !active && !thread.recovery_required &&
       <p>刷新状态可核对进度。如需重试，请使用原任务内容和原请求编号。</p>}
-    {!terminal && outstanding && last && (last.text || last.text_truncated) && <p>上一轮结果</p>}
+    {!terminal && outstanding && last && (last.text || last.text_truncated || last.file_reads) && <p>上一轮结果</p>}
+    {last && <FileReadResult reads={last.file_reads}/>}
     {last?.text && <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{last.text}</p>}
     {last?.text_truncated && <p>{last.text ? '仅显示已保存的部分结果。' : '仅恢复了轮次状态，正文未保存。'}</p>}
   </div>;
 }
 
-function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: string; ownerId: string; onClose: () => void }) {
+function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { conversationId: string; ownerId: string; chatAttachments?: ReactNode; onClose: () => void }) {
   const path = '/conversations/' + encodeURIComponent(conversationId) + '/codex';
   const storageKey = codexRequestKey(ownerId, conversationId);
   const [thread, setThread] = useState<CodexThread | null>(null);
@@ -252,6 +263,7 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
         <CodexStatus thread={thread} sending={sending} pending={Boolean(pending && !visibleReceipt)} requestId={sendingId || pending} preparing={action === '/thread'}/>
       </section>}
       {pending && memoryOnly && <p className="section-help">浏览器仅在当前页面保留请求编号；刷新后可读取服务端最新任务状态。</p>}
+      {chatAttachments}
       <Field label="任务内容">
         <textarea rows={4} maxLength={20000} value={draft} disabled={sending || Boolean(operation?.request_id) || Boolean(active) || Boolean(thread?.recovery_required)}
           onChange={e => setDraft(e.target.value)}/>
@@ -271,11 +283,11 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
   </Modal>;
 }
 
-export default function ConversationCodex({ conversationId, ownerId, unavailable }: { conversationId: string; ownerId: string; unavailable: boolean }) {
+export default function ConversationCodex({ conversationId, ownerId, unavailable, chatAttachments }: { conversationId: string; ownerId: string; unavailable: boolean; chatAttachments?: ReactNode }) {
   const [open, setOpen] = useState(false);
   return <>
     <button type="button" className="icon-button" title="Codex 工程任务" aria-label="Codex 工程任务"
       disabled={unavailable} onClick={() => setOpen(true)}><SquareTerminal size={17}/></button>
-    {open && <CodexDialog conversationId={conversationId} ownerId={ownerId} onClose={() => setOpen(false)}/>}
+    {open && <CodexDialog conversationId={conversationId} ownerId={ownerId} chatAttachments={chatAttachments} onClose={() => setOpen(false)}/>}
   </>;
 }

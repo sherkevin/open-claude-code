@@ -199,6 +199,17 @@ class _Layout:
     data: Path
 
 
+def _file_read_fields(counts):
+    """Only expose counts from an observed turn. Older and recovered turns lack them."""
+    if counts is None:
+        return {}
+    if (not isinstance(counts, dict) or counts.keys() != {"succeeded", "failed", "unconfirmed"}
+            or any(type(n) is not int or n < 0 for n in counts.values())
+            or sum(counts.values()) > MAX_TURN_NOTIFICATIONS):
+        raise CodexHostUnavailable("app-server file read counts invalid")
+    return {"file_reads": counts}
+
+
 class _Session:
     """One isolated app-server process with a bounded, identity-checked reader."""
 
@@ -313,6 +324,21 @@ class _Session:
                 self._fail("invalid_notification")
                 return
             record.update(turnId=turn_id, delta=delta)
+        elif method in {"item/started", "item/completed"}:
+            item = params.get("item")
+            if isinstance(item, dict) and item.get("type") == "commandExecution":
+                actions = item.get("commandActions")
+                if (isinstance(actions, list) and len(actions) == 1 and isinstance(actions[0], dict)
+                        and actions[0].get("type") == "read" and _valid_id(item.get("id"))
+                        and _valid_id(thread_id) and _valid_id(params.get("turnId"))):
+                    state = "unconfirmed"
+                    code = item.get("exitCode")
+                    if method == "item/completed":
+                        if item.get("status") == "completed" and type(code) is int and code == 0:
+                            state = "succeeded"
+                        elif item.get("status") in ("failed", "declined") or (type(code) is int and code != 0):
+                            state = "failed"
+                    record.update(turnId=params.get("turnId"), read_id=item["id"], read_state=state)
         elif method in {"turn/started", "turn/completed"}:
             turn = params.get("turn")
             if not isinstance(turn, dict):
@@ -500,11 +526,12 @@ class _Session:
             "turnId": turn_id,
         }, self.config.response_timeout_seconds)
 
-    def wait_turn(self, thread_id: str, turn_id: str, *, first_output=None) -> dict:
+    def wait_turn(self, thread_id: str, turn_id: str, *, first_output=None, first_read=None) -> dict:
         """Wait for the exact bound turn; never forward another identity."""
         deadline = time.monotonic() + self.config.turn_timeout_seconds
         text: list[str] = []
         size = 0
+        reads: dict[str, str] = {}
         events = 0
         while True:
             if self._failure is not None:
@@ -536,6 +563,16 @@ class _Session:
                     raise CodexHostUnavailable("notification thread identity mismatch")
             elif seen_thread is not None and seen_thread != thread_id:
                 raise CodexHostUnavailable("notification thread identity mismatch")
+            if "read_id" in record and seen_thread == thread_id and record.get("turnId") == turn_id:
+                item_id = record["read_id"]
+                if first_read is not None:
+                    first_read()
+                    first_read = None
+                # Start/completion pairs and repeated notifications describe one command.
+                previous = reads.setdefault(item_id, "unconfirmed")
+                state = record["read_state"]
+                if state != "unconfirmed" and previous != state:
+                    reads[item_id] = state if previous == "unconfirmed" else "conflicting"
             if method == "item/agentMessage/delta":
                 if record.get("turnId") != turn_id:
                     raise CodexHostUnavailable("notification turn identity mismatch")
@@ -556,7 +593,11 @@ class _Session:
                 status = str(record["turn"].get("status") or "").lower()
                 if status not in TERMINAL_TURN_STATUSES:
                     raise CodexHostUnavailable("turn completion status invalid")
+                succeeded = sum(state == "succeeded" for state in reads.values())
+                failed = sum(state == "failed" for state in reads.values())
                 return {"status": status, "text": "".join(text), "events": events,
+                        "file_reads": {"succeeded": succeeded, "failed": failed,
+                                       "unconfirmed": len(reads) - succeeded - failed},
                         "rejected_server_requests": self.rejected_server_requests}
 
     def close(self) -> None:
@@ -833,8 +874,13 @@ class CodexHost:
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                     or stat.S_IMODE(info.st_mode) != 0o600):
                 raise CodexHostUnavailable("app-server turn lock identity invalid")
-            def publish(phase, text=None):
-                data = {"request_id": request_id, "phase": phase}
+            data = {"request_id": request_id}
+            def publish(phase=None, text=None, *, file_read_started=False):
+                if phase is not None:
+                    data["phase"] = phase
+                    data.pop("text", None)
+                if file_read_started:
+                    data["file_read_started"] = True
                 if text is not None:
                     data["text"] = text
                 payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -884,7 +930,8 @@ class CodexHost:
                         value = json.loads(raw)
                     except (ValueError, UnicodeError):
                         raise CodexHostUnavailable("Codex operation state invalid") from None
-                    if (not isinstance(value, dict) or set(value) - {"request_id", "phase", "text"}
+                    if (not isinstance(value, dict) or set(value) - {"request_id", "phase", "text", "file_read_started"}
+                            or ("file_read_started" in value and value["file_read_started"] is not True)
                             or value.get("phase") not in ("preparing", "thread_ready", "running", "output")
                             or (value.get("request_id") is not None and not _valid_id(value["request_id"]))
                             or ("text" in value and (not isinstance(value["text"], str)
@@ -1162,6 +1209,7 @@ class CodexHost:
             view["operation"] = operation
         if view["last_turn"]:
             view["last_turn"]["text"] = binding.get("last_text", "")
+            view["last_turn"].update(_file_read_fields(binding.get("last_file_reads")))
         if view["active_turn"]:
             view["active_turn"]["can_interrupt"] = self._session_for(key) is not None
         return view
@@ -1173,7 +1221,7 @@ class CodexHost:
             receipt = self._recent_receipt(binding, request_id, binding["admitted_requests"][request_id])
         if receipt is None:
             return None
-        return {"request_id": request_id, **{
+        return {"request_id": request_id, **_file_read_fields(receipt.get("file_reads")), **{
             field: receipt[field] for field in ("turn_id", "status", "text", "text_truncated")}}
 
     def receipt_history(self, user_id: str, conversation_id: str) -> dict:
@@ -1361,7 +1409,8 @@ class CodexHost:
                     self._save(key, current)
                 publish("running")
                 outcome = session.wait_turn(binding["thread_id"], turn_id,
-                    first_output=lambda text: publish("output", text))
+                    first_output=lambda text: publish("output", text),
+                    first_read=lambda: publish(file_read_started=True))
                 stored_text = outcome["text"][:self.config.max_receipt_chars]
                 with self._state_lock(key):
                     current = self._load(key)
@@ -1377,6 +1426,7 @@ class CodexHost:
                         "text": outcome["text"][:RECENT_TEXT_CHARS],
                         "text_truncated": len(outcome["text"]) > RECENT_TEXT_CHARS,
                         "rejected_server_requests": outcome["rejected_server_requests"],
+                        **_file_read_fields(outcome["file_reads"]),
                     })
                     if (current.get("active_turn_id") != turn_id
                             or current.get("active_request_id") != request_id
@@ -1397,6 +1447,7 @@ class CodexHost:
                         last_text_truncated=len(outcome["text"]) > len(stored_text),
                         last_text_digest=digest,
                         last_rejected_server_requests=outcome["rejected_server_requests"],
+                        last_file_reads=outcome["file_reads"],
                         recent_requests=recent[-RECENT_REQUESTS:],
                     )
                     self._save(key, current)
@@ -1493,6 +1544,7 @@ class CodexHost:
                     last_text="",
                     last_text_truncated=True,
                     last_rejected_server_requests=None,
+                    last_file_reads=None,
                     active_turn_id=None,
                     active_request_id=None,
                     active_text_digest=None,
@@ -1519,6 +1571,7 @@ class CodexHost:
                 "text_truncated": bool(entry.get("text_truncated")),
                 "replayed": True,
                 "rejected_server_requests": entry.get("rejected_server_requests"),
+                **_file_read_fields(entry.get("file_reads")),
             }
         return None
 
@@ -1531,4 +1584,5 @@ class CodexHost:
             "text_truncated": bool(binding.get("last_text_truncated")),
             "replayed": replayed,
             "rejected_server_requests": binding.get("last_rejected_server_requests"),
+            **_file_read_fields(binding.get("last_file_reads")),
         }
