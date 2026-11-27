@@ -219,3 +219,5 @@ Mem0 2.2.1 原生接口派生索引默认关闭候选完成真实 SDK 100 份文
 Mem0 独立作用域可选宿主工厂复用既有 Mem0Host 与 ScopeStore，75/75 后端和真实 SDK/合成 authority 4/4；详见 [生命周期验收](../evidence/KAIWU_MEM0_SCOPED_HOST_2026-11-26.md)。无实际产品调用或生产启用。
 
 D3 默认关闭的产品 API 已独立验收：复用 Mem0 2.2.1 adapter、Mem0Host、ScopeStore 和原权威 SQLite 快照，显式注入隔离工厂，不选默认供应方；产品及权限 40/40、最终分组回归 183/183。见 [D3 验收](../evidence/KAIWU_MEM0_PRODUCT_2026-11-26.md)。真实 SDK 与 Service 同进程、生产配置、UI 和质量/硬预算尚未验收。
+
+固定 Codex CLI 0.165.0 的 App Server 已复用于当前工程轮的文本补充。宿主通过原生 turn/steer 校验线程及活动轮次，只处理权限、幂等和用户可读回执，保留独立停止后另问路径。隔离样本同一轮有 2 次模型收件，供应商费用未测。开发证据见[工程轮次补充条件](../evidence/KAIWU_ENGINEERING_TURN_STEER_2026-11-28.md)，生产仍沿原试点发布。
