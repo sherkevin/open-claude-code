@@ -55,3 +55,9 @@ VIP 根目录为 `/media/data3/dengkw/acceptance/kaiwu-l3-codex-browser-20261127
 | 控制器独立复核 | `controller/fixed-schema.json`、`controller/comparison.json`、`controller/controller-acceptance.json` | 原生版本协议、从原始日志重新计算的对照，以及经过开发主线与远端校验的接收记录 |
 
 生产按原权限发布。P2-002a 承接跨模式准入；P2-003a 的普通附件勾选至工程任务仍须在产品提供完整入口后，沿原题核验两处文件原文。
+
+## 补充已经送达，回答尚未写完时关窗
+
+在同一产品版本另跑 2 场在途回访。提供方确实收到含补充条件的第二个请求后，测试暂缓输出最终答案，彻底关闭 Chromium，再从普通首页选回。工程窗显示“执行中，已收到首段输出”，保留首段原文和属于当前轮的同号送达回执。从关窗到重开工程窗，工程写请求维持 2 次，原生启动 1 次、补充 1 次、模型收件 2 次，轮次终态 0 个。放行后，原轮给出上个月的日期范围；再次冷开只有 1 条已完成历史。
+
+第二场在选回会话前单独等待首页状态请求。列表首次渲染时显示标题、助手和时间；随后状态读取返回 HTTP 200，同一行在首次可见后 73.9 毫秒显示“工程任务已有输出”。该时差仅对应 1 个隔离页面样本。原始截图、时钟与计数在 `review/active-return/verified-active.json`、`review/active-return/sample-home/verified-home.json`，两场浏览器与独立检查均退出 0。
