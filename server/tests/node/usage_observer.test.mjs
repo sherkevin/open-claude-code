@@ -344,3 +344,18 @@ test('a transport failure keeps the original amount unknown on retry', async () 
   assert.equal(entries[2].retryOf, sends[0])
   assert.equal(entries[3].costMicros, 1)
 })
+
+test('a billed 200 with a broken body retains its charge and binds the approved native retry', async () => {
+  const { entries, sends } = budgetFixture((id, n) => new Response(n === 1
+    ? new ReadableStream({ pull(c) { c.error(new Error('lost response stream')) } }) : null,
+  { headers: { 'content-type': 'text/event-stream', 'x-kaiwu-attempt-id': id, 'x-kaiwu-cost-micros': '2' } }))
+  observer.begin('run-1')
+  await assert.rejects((await post({ body: '{}' })).text())
+  await observer.authorizeRetry()
+  await post({ body: '{}' })
+  assert.deepEqual(entries.map(e => e.action), ['reserve', 'settle', 'retryable', 'reserve', 'settle'])
+  assert.equal(entries[1].costMicros, 2)
+  assert.equal(entries[2].attemptId, sends[0])
+  assert.equal(entries[3].retryOf, sends[0])
+  assert.equal(entries[4].costMicros, 2)
+})

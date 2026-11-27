@@ -427,9 +427,10 @@ export async function apply(ctx: any, config: any): Promise<void> {
         || (overflow && (turn === turnWithTool || turn === turnWithVisibleText))
         || requestVisibleText.get(`${turn}:${step}`) !== false) return
     const result = await next()
-    if (result?.kind === 'retry') recoveryTurns.set(turn, {
-      count: (previous?.count ?? 0) + 1, rateLimitOnly: rateLimited,
-    })
+    if (result?.kind === 'retry') {
+      if (config.goalAttemptBudget === true) await usage.authorizeRetry()
+      recoveryTurns.set(turn, { count: (previous?.count ?? 0) + 1, rateLimitOnly: rateLimited })
+    }
     return result
   }, { prepend: true })
   ctx.on('workspace/compaction-result', (agent: any, result: any) => {

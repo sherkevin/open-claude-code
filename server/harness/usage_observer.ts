@@ -35,6 +35,7 @@ export interface UsageSnapshot {
 export interface UsageObserver {
   begin(runId: string): void
   snapshot(runId: string): UsageSnapshot
+  authorizeRetry(): Promise<void>
   restore(): void
 }
 
@@ -261,7 +262,7 @@ export function installUsageObserver(config: {
     try { response = await Reflect.apply(previousFetch, globalThis, [input, reserved?.init ?? init]) }
     catch (error) {
       finish(match.signal?.aborted ? 'cancelled' : 'transport_error')
-      await reserved?.transportError()
+      await reserved?.transportError(match.signal?.aborted === true)
       throw error
     }
     if (reserved) {
@@ -306,6 +307,7 @@ export function installUsageObserver(config: {
   }
   globalThis.fetch = wrappedFetch
   return {
+    async authorizeRetry() { await budget?.authorizeRetry() },
     begin(nextRunId) {
       if (disposed || !identifier(nextRunId) || active !== 0) throw new Error('Usage observer run binding unavailable')
       if (runId === nextRunId) return

@@ -15,10 +15,21 @@ export type AttemptExchange = (message: {
 
 export function goalAttemptBudget(exchange: AttemptExchange) {
   let failed: { id: string, digest: string } | null = null
+  let last: { id: string, digest: string, runId: string } | null = null
   let blocked = false
   let awaitingHeaders = false
 
   return {
+    async authorizeRetry() {
+      if (blocked || awaitingHeaders || !last) throw new Error('Goal retry has no bound request')
+      if (failed?.id === last.id) return
+      // A stream can fail after its headers already settled the charge. Keep
+      // that bill and bind the approved native retry to its original attempt.
+      try {
+        await exchange({ action: 'retryable', runId: last.runId, attemptId: last.id })
+        failed = last
+      } catch (error) { blocked = true; throw error }
+    },
     async reserve(runId: string, attemptId: string, init?: RequestInit) {
       if (blocked || awaitingHeaders || typeof init?.body !== 'string') {
         throw new Error('Goal request has no eligible budget reservation')
@@ -33,11 +44,13 @@ export function goalAttemptBudget(exchange: AttemptExchange) {
         throw error
       }
       failed = null
+      last = { id: attemptId, digest, runId }
       const headers = new Headers(init.headers)
       headers.set('x-kaiwu-attempt-id', attemptId)
       return {
         init: { ...init, headers, redirect: 'error' as const },
-        async transportError() {
+        async transportError(aborted: boolean) {
+          if (aborted) { blocked = true; awaitingHeaders = false; return }
           // Delivery is uncertain, so the held amount stays reserved.
           failed = { id: attemptId, digest }
           try { await exchange({ action: 'retryable', runId, attemptId }) }
