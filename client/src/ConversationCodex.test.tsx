@@ -51,6 +51,25 @@ describe('Codex first request and recovery', () => {
     expect(view({ ...thread, operation: null })).toContain('已完成');
   });
 
+  it('prevents preparing twice after reopening a manual operation without a request id', () => {
+    const manual: CodexThread = { ...idle, operation: { phase: 'preparing', request_id: null } };
+    expect(codexControls(manual)).toEqual({ send: false, prepare: false, reconcile: false });
+  });
+
+  it('shows the final receipt once while the same operation still owns the host', () => {
+    const thread: CodexThread = { ...idle, bound: true, last_turn: {
+      turn_id: 'finished', request_id: 'request-001', status: 'completed', text: '最终正文', text_truncated: false,
+    }, operation: { phase: 'output', request_id: 'request-001', text: '首段预览' } };
+    const html = view(thread, true, true);
+    expect(html).toContain('已完成');
+    expect(html.match(/最终正文/g)).toHaveLength(1);
+    expect(html).not.toMatch(/上一轮结果|执行中|首段预览/);
+    expect(codexControls(thread).send).toBe(false);
+    const settled = renderToStaticMarkup(<CodexStatus thread={{ ...thread, operation: null }} requestId="request-001" sending pending={false} preparing={false}/>);
+    expect(settled).toContain('已完成');
+    expect(settled).not.toContain('正在提交');
+  });
+
   it('allows recovery only after the live operation is gone', () => {
     const abandoned: CodexThread = { ...idle, bound: true, recovery_required: true,
       active_turn: { turn_id: 'turn-id', can_interrupt: false, interrupt_requested: false } };
