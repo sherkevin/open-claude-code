@@ -83,14 +83,15 @@ export function CodexTurnResult({ turn }: { turn: CodexTurn }) {
   </>;
 }
 
-export function OriginalCodexReceipt({ receipt }: { receipt: CodexReceipt }) {
+export function OriginalCodexReceipt({ receipt, hasRetrySnapshot = false }: { receipt: CodexReceipt; hasRetrySnapshot?: boolean }) {
   const { state, turn } = receipt;
   return <section aria-label="原请求回执" className="section-help">
     <strong>原请求回执</strong>
     <p>请求编号 <code>{receipt.request_id}</code></p>
     {state === 'recorded' && turn && <CodexTurnResult turn={turn}/>}
     {state === 'admitted_without_receipt' && <p>开物曾登记此请求，已无可读回执，无法找回正文或确认最终状态。可以另行发送新任务。</p>}
-    {state === 'not_found' && <p>暂时查不到这个编号，执行结果仍未确认。可刷新状态，或输入原内容后用原编号重试。</p>}
+    {state === 'not_found' && <p>暂时查不到这个编号，执行结果仍未确认。{hasRetrySnapshot
+      ? '已从本浏览器找回提交原文，可刷新核对或用原编号重试。' : '可刷新状态，或输入原内容后用原编号重试。'}</p>}
     {state === 'pending' && <p>开物已登记此请求，最终回执仍待确认。</p>}
   </section>;
 }
@@ -359,7 +360,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   return <Modal title="Codex 工程任务" onClose={onClose}>
     <div className="modal-body">
       <ErrorNotice message={readError || error}/>
-      {visibleReceipt && <OriginalCodexReceipt receipt={visibleReceipt}/>}
+      {visibleReceipt && <OriginalCodexReceipt receipt={visibleReceipt} hasRetrySnapshot={Boolean(retrySnapshot)}/>}
       {thread && <section aria-label="最新任务状态">
         {visibleReceipt && <><strong>最新任务状态</strong>{latestId && <p>请求编号 <code>{latestId}</code></p>}</>}
         <CodexStatus thread={thread} sending={sending} pending={Boolean(pending && !visibleReceipt)} requestId={sendingId || pending} preparing={action === '/thread'}/>
@@ -385,6 +386,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
         <textarea rows={4} maxLength={20000} value={input} disabled={!saved.ready || (busyWithTurn && !editingNext)}
           onChange={e => editDraft(e.target.value)}/>
       </Field>
+      {saved.submitFailed && <p role="alert">未能保存这次提交的编号，本次没有发送。草稿仍在，可再次提交。</p>}
       {saved.conflict && <p className="section-help">另一窗口已更新草稿，请核对最新内容。</p>}
       <div className="task-sidebar-actions">
         {saved.text !== '' && <Button variant="secondary" onClick={() => editDraft('')}>清空草稿</Button>}

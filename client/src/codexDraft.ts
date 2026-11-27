@@ -29,7 +29,8 @@ function accountStamp(owner: string) {
   try { return localStorage.getItem(logoutKey(owner)) ?? ''; } catch { return ''; }
 }
 
-async function access(owner: string, conversation: string, stamp: string, op?: Change) {
+async function access(owner: string, conversation: string, stamp: string, op?: Change,
+  repair?: { base: string; draft: Draft }) {
   const db = await open();
   return new Promise<{ draft: Draft; changed: boolean }>((resolve, reject) => {
     const tx = db.transaction(storeName, op ? 'readwrite' : 'readonly');
@@ -41,8 +42,12 @@ async function access(owner: string, conversation: string, stamp: string, op?: C
     get.onsuccess = () => {
       if (accountStamp(owner) !== stamp) { draft = empty(); return; }
       const previous: Draft = get.result && (get.result.stamp ?? '') === stamp ? get.result : empty();
-      draft = op ? changeCodexDraft(previous, op) : previous;
-      changed = previous !== draft;
+      // An earlier edit may have survived only in memory. Preserve it only if
+      // the durable version still matches the one read before storage failed.
+      if (repair && repair.base !== previous.revision) { draft = previous; return; }
+      const source = repair ? { ...previous, text: repair.draft.text, revision: repair.draft.revision } : previous;
+      draft = op ? changeCodexDraft(source, op) : source;
+      changed = source !== draft;
       if (changed) store.put({ ...draft, stamp }, key);
     };
     tx.oncomplete = () => resolve({ draft, changed });
@@ -54,13 +59,15 @@ const signal = 'kaiwu:engineering-draft-change';
 function broadcast(scope: string) {
   try { localStorage.setItem(signal, JSON.stringify([scope, clientRequestId()])); } catch { /* Reads on focus still synchronize. */ }
 }
-type Snapshot = Draft & { ready: boolean; memoryOnly: boolean; conflict: boolean; revoked: boolean };
+type Snapshot = Draft & { ready: boolean; memoryOnly: boolean; conflict: boolean; revoked: boolean; submitFailed: boolean };
 function createStore(owner: string, conversation: string) {
   const scope = composerScope(owner, conversation);
   const stamp = accountStamp(owner);
   const listeners = new Set<() => void>();
-  let state: Snapshot = { ...empty(), ready: false, memoryOnly: false, conflict: false, revoked: false };
+  let state: Snapshot = { ...empty(), ready: false, memoryOnly: false, conflict: false, revoked: false, submitFailed: false };
   let fallback = empty();
+  let durableRevision: string | null = null;
+  let failedClaim: { optimistic: string; actual: string } | undefined;
   let queue: Promise<unknown> = Promise.resolve();
   let writes = 0;
   let sequence = 0;
@@ -80,7 +87,7 @@ function createStore(owner: string, conversation: string) {
     const generation = ++sequence;
     try {
       const { draft } = await access(owner, conversation, stamp);
-      if (generation === sequence) { fallback = draft; publish({ ...draft, ready: true }); }
+      if (generation === sequence) { fallback = draft; durableRevision = draft.revision; publish({ ...draft, ready: true }); }
     } catch {
       if (generation === sequence) publish({ ready: true, memoryOnly: true });
     }
@@ -91,26 +98,42 @@ function createStore(owner: string, conversation: string) {
     if (predicted === state) return Promise.resolve(false);
     sequence++;
     writes++;
-    publish({ ...predicted, conflict: false });
+    publish({ ...predicted, conflict: false, ...(op.kind === 'settle' ? {} : { submitFailed: false }) });
     const task = queue.then(async () => {
       let changed = false;
+      let submitFailed = false;
+      const change = op.kind !== 'settle' && failedClaim?.optimistic === op.base ? { ...op, base: failedClaim.actual } : op;
       if (sessionCurrent()) {
-        if (!state.memoryOnly) {
+        let useMemory = state.memoryOnly && durableRevision === null;
+        if (!useMemory) {
           try {
-            const result = await access(owner, conversation, stamp, op);
+            const repair = state.memoryOnly && durableRevision !== null ? { base: durableRevision, draft: fallback } : undefined;
+            const result = await access(owner, conversation, stamp, change, repair);
             fallback = result.draft;
+            durableRevision = result.draft.revision;
             changed = result.changed;
+            publish({ memoryOnly: false });
             if (changed) broadcast(scope);
-          } catch { publish({ memoryOnly: true }); }
+          } catch {
+            if (change.kind === 'submit' && durableRevision !== null) {
+              // No POST may escape while the disk still describes this text as unsent.
+              submitFailed = true;
+              failedClaim = { optimistic: change.revision, actual: fallback.revision };
+              publish({ submitFailed: true });
+            } else {
+              useMemory = true;
+              publish({ memoryOnly: true });
+            }
+          }
         }
-        if (state.memoryOnly) {
-          const next = changeCodexDraft(fallback, op);
+        if (useMemory) {
+          const next = changeCodexDraft(fallback, change);
           changed = next !== fallback;
           fallback = next;
         }
       }
       writes--;
-      if (!writes) publish({ ...fallback, conflict: !changed && op.kind !== 'settle' });
+      if (!writes) publish({ ...fallback, conflict: !changed && !submitFailed && op.kind !== 'settle' });
       return sessionCurrent() && changed;
     });
     queue = task;

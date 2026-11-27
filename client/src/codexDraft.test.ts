@@ -1,3 +1,6 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { OriginalCodexReceipt, type CodexReceipt } from './ConversationCodex';
 import { describe, expect, it } from 'vitest';
 import { changeCodexDraft, type DraftAttempt } from './codexDraft';
 
@@ -36,5 +39,12 @@ describe('工程草稿与已尝试提交的原文', () => {
     const claimed = changeCodexDraft(initial, submit);
     const next = changeCodexDraft(claimed, { kind: 'edit', base: 'claimed', revision: 'next', text });
     expect(changeCodexDraft(next, { ...submit, base: 'next', attempt: { ...attempt, id: 'new-id' } })).toBe(next);
+  });
+  it('requires the old text only when a missing receipt has no saved original', () => {
+    const receipt: CodexReceipt = { state: 'not_found', request_id: 'unknown', turn: null };
+    const current = renderToStaticMarkup(createElement(OriginalCodexReceipt, { receipt, hasRetrySnapshot: true }));
+    expect(current).toContain('已从本浏览器找回提交原文');
+    expect(current).not.toContain('输入原内容');
+    expect(renderToStaticMarkup(createElement(OriginalCodexReceipt, { receipt }))).toContain('输入原内容');
   });
 });
