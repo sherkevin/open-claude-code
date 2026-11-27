@@ -19,6 +19,10 @@ _OBJECTS = {
     "密码": "password", "验证码": "captcha", "邮件": "邮箱 email", "消息": "message messages",
     "通知": "notification notifications", "任务": "task tasks", "会话": "对话 session sessions",
     "日志": "log logs", "缓存": "cache", "配置": "设置 configuration settings",
+    "数据库": "database sql sqlite postgresql", "索引": "index indexes", "服务": "service services",
+    "连接": "connection connections", "网络": "network", "磁盘": "disk", "进程": "process processes",
+    "队列": "queue queues", "容器": "container docker", "版本": "version versions",
+    "定时任务": "定时计划 schedule scheduler", "权限组": "角色 role roles",
 }
 _ACTIONS = {
     "导出": "export exporting", "导入": "import importing", "预览": "preview",
@@ -28,9 +32,28 @@ _ACTIONS = {
     "复制": "拷贝 copy", "粘贴": "paste", "重命名": "改名 rename", "分享": "共享 share",
     "发送": "send", "接收": "receive", "同步": "sync", "刷新": "refresh", "加载": "load loading",
     "登录": "登陆 login", "注册": "register", "重置": "reset", "验证": "校验 verify validation",
-    "审批": "审核 approval", "提交": "submit", "撤销": "撤回 undo", "恢复": "restore",
+    "审批": "审核 approval", "提交": "submit", "撤销": "撤回 undo",
     "播放": "play", "裁剪": "裁切 crop", "压缩": "compress", "解压": "unzip",
+    # Lifecycle operations are independent of the component they act on.
+    "启动": "start", "停止": "stop", "重启": "restart", "重试": "retry",
+    "取消": "cancel", "归档": "archive", "解档": "取消归档 unarchive", "备份": "backup",
+    "恢复": "还原 找回 restore", "回滚": "rollback", "迁移": "migration migrate",
+    "清理": "清除 cleanup", "部署": "deploy", "升级": "upgrade", "重建": "rebuild",
+    "授权": "赋权 grant", "撤权": "撤销授权 revoke", "订阅": "subscribe",
 }
+
+
+# When a question describes what is wrong rather than naming an operation,
+# a fixed diagnostic purpose can qualify the component instead.
+_PURPOSES = (
+    ("性能", re.compile(r"性能|耗时|延迟|超时|很慢|太慢|卡顿|latency|timeout|performance", re.I)),
+    ("容量", re.compile(r"容量|占用|不足|剩余空间|磁盘空间|capacity|disk space", re.I)),
+    ("状态核对", re.compile(r"核实|核对|确认是否|是否(?:成功|完成|生效)|有没有(?:成功|完成|生效)|verify whether", re.I)),
+    ("重复", re.compile(r"重复|多次出现|duplicat", re.I)),
+    ("缺失", re.compile(r"丢失|缺失|消失|找不到|漏掉|missing", re.I)),
+    ("内容异常", re.compile(r"空白|白屏|乱码|错位|显示不全|blank screen", re.I)),
+    ("无响应", re.compile(r"没(?:有)?反应|无响应|卡住|不动|unresponsive", re.I)),
+)
 
 
 def _public_terms():
@@ -83,8 +106,15 @@ def engineering_subject(text: str, category: str) -> str:
             previous = kind, label, match.end()
     if best_pair:
         return best_pair
-    detail = first_object or first_action
-    if detail and category in {"工程咨询", "错误排查", "测试与验证", "代码重构"}:
-        return f"{detail} · {category}"
-    return category
+    purpose = next((label for label, pattern in _PURPOSES if pattern.search(positive_text)), None)
+    broad = category in {"工程咨询", "错误排查", "测试与验证", "代码重构"}
+    # A technical category can itself be the component. A bare operation
+    # is still informative for it even when no separate object was matched.
+    primary = first_object or (first_action if broad else None) or category
+    qualifier = (first_action if primary != first_action else None) or purpose
+    if not qualifier and primary != category:
+        qualifier = category
+    if qualifier and primary != qualifier and qualifier not in primary:
+        return f"{primary} · {qualifier}"
+    return primary
 
