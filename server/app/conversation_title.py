@@ -2,6 +2,8 @@
 
 import re
 
+from .engineering_subject import engineering_subject
+
 
 DEFAULT_TITLE = "新对话"
 
@@ -46,5 +48,6 @@ def first_message_title(text: str, *, engineering: bool = False) -> str:
         return ""
     spaced = text[:500]
     topics = _ENGINEERING_TOPICS + _TOPICS if engineering else _TOPICS
-    return next((title for pattern, title in topics if pattern.search(sample) or pattern.search(spaced)),
-                "工程咨询" if engineering else "业务咨询")
+    category = next((title for pattern, title in topics if pattern.search(sample) or pattern.search(spaced)),
+                    "工程咨询" if engineering else "业务咨询")
+    return engineering_subject(spaced, category) if engineering else category
