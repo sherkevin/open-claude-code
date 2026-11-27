@@ -51,8 +51,8 @@ _NAMES, _MATCH = _public_terms()
 # as the feature under discussion. Output remains allowlisted in every case.
 _OPAQUE = re.compile(r"\x60[^\x60]*\x60|(?:https?://|[A-Za-z]:[\\/]|\\\\|/)[^\s，。！？；、,;]*"
                      r"|[\w.+-]+@[\w.-]+\.[a-zA-Z]+|[\w.-]+=[^\s，。！？；,;]+")
-_CLAUSE = re.compile(r"[,，。！？!?；;\n]")
-_RESTRICTION = re.compile(r"不要|请勿|无需|不必|不用|禁止|\b(?:do not|don't|without)\b", re.I)
+_SENTENCE = re.compile(r"[。！？.!?；;\n]")
+_RESTRICTION = re.compile(r"(?:不要|请勿|无需|不必|不用|禁止|\b(?:do not|don't|without)\b)[^,，。！？.!?；;\n]*", re.I)
 
 
 def engineering_subject(text: str, category: str) -> str:
@@ -60,8 +60,10 @@ def engineering_subject(text: str, category: str) -> str:
     best_pair = None
     closest = 25
     first_object = first_action = None
-    for clause in _CLAUSE.split(_OPAQUE.sub(" ", text[:500])):
-        positive = _RESTRICTION.split(clause, maxsplit=1)[0]
+    # A comma can separate a feature from the action failing on it. A new
+    # sentence or a negative instruction ends that association.
+    positive_text = _RESTRICTION.sub("。", _OPAQUE.sub(" ", text[:500]))
+    for positive in _SENTENCE.split(positive_text):
         previous = None
         for match in _MATCH.finditer(positive):
             kind, label = _NAMES[match.group().lower()]
