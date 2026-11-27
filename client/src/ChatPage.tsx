@@ -10,6 +10,7 @@ import { compactionLabel } from './ContextDialog';
 import SessionTrajectory, { type InspectionView } from './SessionTrajectory';
 import ConversationExport from './ConversationExport';
 import ConversationCodex, { codexRequestKey } from './ConversationCodex';
+import CodexChatAttachments from './CodexChatAttachments';
 import CodexReceiptHistory from './CodexReceiptHistory';
 import ModelSelector from './ModelSelector';
 import { ModelRoutingControl, ModelSettingsDisclosure, RunModelIdentity } from './ModelRouting';
@@ -667,7 +668,10 @@ export default function ChatPage({ conversation, assistant, config, models, mode
         {!trial && <>
           <ConversationFeedback ref={feedbackRef} conversationId={conversation.id} runId={run?.id} messages={messages}/>
           <ConversationExport conversationId={conversation.id}/>
-          {config.codex_appserver && draftOwnerId && <ConversationCodex key={conversation.id} ownerId={draftOwnerId} conversationId={conversation.id} unavailable={active || archived}/>}
+          {config.codex_appserver && draftOwnerId && <ConversationCodex key={conversation.id} ownerId={draftOwnerId}
+            conversationId={conversation.id} unavailable={active || archived}
+            chatAttachments={canUseAttachments && files.length > 0
+              ? <CodexChatAttachments files={files} onPreview={setPreview}/> : undefined}/>}
           {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived} executionEnabled={config.harness_goal_execution===true} onRoundStarted={selectAcceptedRun}/>}
           {config.harness_team_tasks&&conversation.runtime_type==="harness"&&<ConversationTeam conversationId={conversation.id} unavailable={active||archived}/>}
           <button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={() => setInspectionView('trajectory')}><ListTree size={17}/></button>
