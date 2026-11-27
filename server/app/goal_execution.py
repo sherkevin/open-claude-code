@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 import sqlite3
 from collections.abc import Mapping
@@ -207,9 +206,24 @@ def _authorization_row(service, conversation_id: str):
 
 
 def _lease_rows(service, authorization_id: str) -> list[dict]:
-    return service.db.all(
-        "SELECT * FROM goal_execution_leases WHERE authorization_id=? ORDER BY round_index",
-        (authorization_id,))
+    # Older versions marked amounts with no billing provenance as complete.
+    # Recheck completed receipts at the common read/admission boundary so an
+    # existing approval (or a change out of test mode) cannot reuse them.
+    rows = service.db.all(
+        "SELECT l.*,r.usage FROM goal_execution_leases l LEFT JOIN runs r "
+        "ON r.id=l.run_id AND ? AND l.usage_status='complete' AND l.cost_authoritative=0 "
+        "WHERE l.authorization_id=? ORDER BY l.round_index",
+        (service.settings.provider_test_mode, authorization_id))
+    for row in rows:
+        if row["usage_status"] == "complete":
+            tokens, cost, status, _, source, _ = _run_usage_detail(
+                row, synthetic_allowed=service.settings.provider_test_mode)
+            if (status != "complete" or row["cost_authoritative"] != 0
+                    or (tokens, cost, source) != (row["total_tokens"], row["cost_micros"], row["usage_source"])):
+                row.update(usage_status="unknown", total_tokens=None, cost_micros=None,
+                           cost_authoritative=None, error_code="USAGE_COST_NOT_AUTHORITATIVE")
+        row.pop("usage")
+    return rows
 
 
 def _active_lease(service, conversation_id: str):
@@ -1032,32 +1046,30 @@ def _run_usage_detail(run: Mapping, *, synthetic_allowed: bool = False
             tokens = (sum(buckets) if complete and buckets
                       and all(_integer(value, 0, MAX_TOKENS * 1000) for value in buckets)
                       else None)
-    cost = usage.get("cost_micros")
-    if not _integer(cost, 0, MAX_COST_MICROS * 1000):
-        cost = ledger.get("cost_micros")
-    if not _integer(cost, 0, MAX_COST_MICROS * 1000):
-        cost = None
-        usd, estimate = usage.get("estimated_cost_usd"), usage.get("cost_is_estimate")
-        if usd is None:
-            usd, estimate = ledger.get("estimated_cost_usd"), ledger.get("cost_is_estimate")
-        # An explicitly estimated amount is not a settled cost. Only a
-        # non-estimate numeric amount can satisfy the monetary budget.
-        if (type(usd) in {int, float} and math.isfinite(usd) and usd >= 0
-                and estimate is False):
-            micros = int(round(float(usd) * 1_000_000))
-            cost = micros if _integer(micros, 0, MAX_COST_MICROS * 1000) else None
-    source = usage.get("cost_source") or usage.get("source") or ledger.get("source")
+    # The fixed Harness has no monetary receipt writer. Only an explicitly
+    # identified loopback amount can exercise the budget in provider test mode.
+    # The source and its amount must come from the same part of the receipt.
+    amounts = [part for part in (usage, ledger) if any(
+        part.get(field) is not None for field in ("cost_micros", "estimated_cost_usd"))]
+    amount = amounts[0] if len(amounts) == 1 else {}
+    source = amount.get("cost_source", amount.get("source")) if amounts else usage.get("source")
     if not isinstance(source, str) or not source or len(source) > 64:
         source = "unknown"
-    synthetic = source in SYNTHETIC_COST_SOURCES
-    authoritative = bool(complete and tokens is not None and cost is not None and not synthetic)
-    if synthetic and not synthetic_allowed:
-        # A synthetic receipt is not production billing. Without the explicit
-        # provider test boundary it remains unknown rather than becoming zero.
-        return None, None, "unknown", "USAGE_COST_NOT_AUTHORITATIVE", source, False
-    if not complete or tokens is None or cost is None:
+    if not complete or tokens is None or not amounts:
         return None, None, "unknown", ("USAGE_INCOMPLETE" if complete else "USAGE_CAPTURE_INCOMPLETE"), source, False
-    return tokens, cost, "complete", None, source, authoritative
+    if (not synthetic_allowed or source not in SYNTHETIC_COST_SOURCES
+            or amount.get("currency", "USD") != "USD"
+            or any(part.get("cost_is_estimate", False) is not False for part in (usage, ledger))):
+        return None, None, "unknown", "USAGE_COST_NOT_AUTHORITATIVE", source, False
+    cost = amount.get("cost_micros")
+    if cost is None:
+        usd = amount.get("estimated_cost_usd")
+        if (amount.get("cost_is_estimate") is False
+                and type(usd) in (int, float) and 0 <= usd <= MAX_COST_MICROS / 1000):
+            cost = int(round(usd * 1_000_000))
+    if not _integer(cost, 0, MAX_COST_MICROS * 1000):
+        return None, None, "unknown", "USAGE_INCOMPLETE", source, False
+    return tokens, cost, "complete", None, source, False
 
 
 def _run_usage(run: Mapping) -> tuple[int | None, int | None, str, str | None]:
@@ -1076,9 +1088,10 @@ def _settle_goal_round_locked(service, lease_id: str, outcome: str) -> dict:
             authorization = service.db.one(
                 "SELECT * FROM goal_execution_authorizations WHERE id=?",
                 (lease["authorization_id"],))
-            return {"lease": _lease_view(lease),
-                    "budget": _budget_view(authorization,
-                                           _lease_rows(service, authorization["id"])),
+            rows = _lease_rows(service, authorization["id"])
+            checked = next(row for row in rows if row["id"] == lease_id)
+            return {"lease": _lease_view(checked),
+                    "budget": _budget_view(authorization, rows),
                     "execution_started": False, "continuation_driver": False}
         raise AppError(409, "GOAL_LEASE_SETTLED", "目标轮次已结算，结果不能改写")
     if lease["state"] not in {"admitted", "aborted"}:

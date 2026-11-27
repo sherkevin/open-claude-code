@@ -36,7 +36,7 @@ GOAL = {"id": GOAL_ID, "revision": 3, "objective": "synthetic goal objective",
         "phase": "active", "maxGoalRounds": 8, "roundsStarted": 0,
         "createdAt": 1, "updatedAt": 2, "activation": "disarmed"}
 COMPLETE_USAGE = {"capture_complete": True, "total_input_tokens": 100,
-                  "output_tokens": 50, "cost_micros": 25}
+                  "output_tokens": 50, "cost_micros": 25, "cost_source": "synthetic_fixture"}
 
 
 class GoalRuntime(FakeRuntime):
@@ -64,7 +64,7 @@ class GoalRuntime(FakeRuntime):
 def settings_for(tmp_path, *, state=True, execution=True):
     return Settings(data_dir=tmp_path, provider_settings="", origins=("http://testserver",),
                     mcp_hosts=("localhost", "127.0.0.1"), idle_seconds=60, approval_seconds=3,
-                    runtime_type="harness", harness_goal_state_enabled=state,
+                    runtime_type="harness", provider_test_mode=True, harness_goal_state_enabled=state,
                     harness_goal_execution_enabled=execution)
 
 
@@ -313,9 +313,85 @@ def test_nested_harness_receipt_is_read_and_missing_cost_stays_unknown(goal_env)
     second_lease = admit(service, cid, second)["lease"]
     close_run(service, second, usage={**nested, "cost_micros": 17})
     settled = settle_goal_round(service, second_lease["id"], "succeeded")
-    assert settled["lease"]["usage_status"] == "complete"
-    assert settled["lease"]["total_tokens"] == 150
-    assert settled["lease"]["cost_micros"] == 17
+    # An injected integer on a token/estimate receipt is still unverified.
+    assert settled["lease"]["usage_status"] == "unknown"
+    assert settled["lease"]["error_code"] == "USAGE_COST_NOT_AUTHORITATIVE"
+    assert settled["lease"]["cost_micros"] is None
+
+
+@pytest.mark.parametrize(("cost_fields", "test_mode", "expected_cost"), [
+    ({"cost_micros": 17}, True, None),
+    ({"source": "harness_provider", "cost_micros": 0}, False, None),
+    ({"cost_source": "unregistered", "cost_micros": 17}, True, None),
+    ({"cost_source": "synthetic_fixture", "cost_micros": 17}, False, None),
+    ({"cost_source": "synthetic_fixture", "cost_micros": 17, "cost_is_estimate": True}, True, None),
+    ({"cost_source": "synthetic_fixture"}, True, None),
+    ({"cost_source": "synthetic_fixture", "cost_micros": 0}, True, 0),
+    ({"cost_source": "synthetic_fixture", "cost_micros": 17, "currency": "CNY"}, True, None),
+    ({"token_accounting": {"source": "loopback_test", "cost_micros": 17}}, True, 17),
+    ({"source": "product_metadata", "estimated_cost_usd": 0, "cost_is_estimate": False}, False, None),
+    ({"cost_source": "synthetic_fixture", "token_accounting": {"cost_micros": 17}}, True, None),
+])
+def test_goal_settlement_requires_verified_cost_source(goal_env, cost_fields, test_mode, expected_cost):
+    client, service = goal_env
+    service.settings.provider_test_mode = test_mode
+    cid = setup_conversation(client, service)
+    authorize_ok(client, cid, max_rounds=4)
+    user = user_row(service, client)
+    run_id = make_run(service, cid, user)
+    lease = admit(service, cid, run_id)["lease"]
+    usage = {"capture_complete": True, "total_input_tokens": 100, "output_tokens": 50, **cost_fields}
+    close_run(service, run_id, usage=usage)
+    settled = settle_goal_round(service, lease["id"], "succeeded")
+    assert settled["lease"]["cost_micros"] == expected_cost
+    view = client.get(path(cid)).json()
+    assert view["can_start"] is (expected_cost is not None)
+    if expected_cost is None:
+        assert settled["lease"]["usage_status"] == "unknown"
+        assert view["budget"]["cost_micros_remaining"] is None
+        second = make_run(service, cid, user)
+        with pytest.raises(AppError) as error:
+            admit(service, cid, second)
+        assert_code(error, "GOAL_USAGE_UNVERIFIED")
+    else:
+        assert settled["lease"]["cost_authoritative"] is False
+        assert view["budget"]["synthetic_rounds"] == 1
+
+
+@pytest.mark.parametrize("legacy_case", ["unverified", "estimated_fixture", "test_mode_disabled"])
+def test_historical_complete_amount_cannot_admit_another_round(goal_env, legacy_case):
+    client, service = goal_env
+    cid = setup_conversation(client, service)
+    authorize_ok(client, cid, max_rounds=4)
+    user = user_row(service, client)
+    run_id = make_run(service, cid, user)
+    lease = admit(service, cid, run_id)["lease"]
+    usage = dict(COMPLETE_USAGE)
+    if legacy_case == "unverified":
+        usage["cost_source"] = "unknown"
+    elif legacy_case == "estimated_fixture":
+        usage["cost_is_estimate"] = True
+    close_run(service, run_id, usage=usage)
+    # Prior hosts accepted these rows. Preserve the stored audit trail while
+    # checking the original run receipt under today's admission policy.
+    service.db.execute(
+        "UPDATE goal_execution_leases SET state='settled',outcome='succeeded',usage_status='complete',"
+        "total_tokens=150,cost_micros=25,usage_source=?,cost_authoritative=? WHERE id=?",
+        (usage["cost_source"], int(legacy_case == "unverified"), lease["id"]))
+    service.settings.provider_test_mode = legacy_case != "test_mode_disabled"
+
+    view = client.get(path(cid)).json()
+    assert view["can_start"] is False
+    assert view["rounds"][0]["usage_status"] == "unknown"
+    assert view["budget"]["cost_micros_remaining"] is None
+    repeated = settle_goal_round(service, lease["id"], "succeeded")
+    assert repeated["lease"]["cost_micros"] is None
+    second = make_run(service, cid, user)
+    with pytest.raises(AppError) as error:
+        admit(service, cid, second)
+    assert_code(error, "GOAL_USAGE_UNVERIFIED")
+    assert service.db.one("SELECT cost_micros FROM goal_execution_leases WHERE id=?",
+                          (lease["id"],))["cost_micros"] == 25
 
 
 def test_plain_user_run_is_not_admissible(goal_env):
