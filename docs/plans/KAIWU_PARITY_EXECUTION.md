@@ -218,3 +218,5 @@ Goal 官方 driver 工人仍有实际开发时，总控在独立工作树实现�
 独立工作同时验收 [Mem0 与产品 Service 同进程](../evidence/KAIWU_MEM0_PRODUCT_REAL_SDK_2026-11-27.md)、[固定 Codex 跨进程执行及恢复](../evidence/KAIWU_CODEX_NATIVE_TURN_2026-11-27.md)、[Codex 浏览器入口](../evidence/KAIWU_CODEX_BROWSER_2026-11-27.md)。三条旧回归已收回，华微现场由 L2 跟进。本轮全部使用隔离工作台；生产签发、外部费用和真实客户效果仍受原闸门约束。
 
 下一项沿原排序验证有权威计量的轮次续作与单轮硬预算；无真实费用回执时保持显式拒绝。[记忆面板实测](../evidence/KAIWU_MEM0_CONVERSATION_PANEL_2026-11-27.md)已从会话内的原生文件编辑器执行；固定回环向量验证来源及工作流，中文语义质量仍待。使用同一个 L2/L3 接续任务和 VIP 验收队列。
+
+B 续轮费用来源已进一步验收：旧版无依据的数值或零可能被当成可结算金额；新旧租约均须复核原始回执。独占完整组合 66/66。真实 Harness 尚无权威金额；不自动续轮。下一项是父、子、重试逐笔账单与执行前额度预留，另保留首次准备 Codex 会话并发超时的反例。见[续轮费用准入及性能记录](../evidence/KAIWU_GOAL_COST_PROVENANCE_2026-11-27.md)。
