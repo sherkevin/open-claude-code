@@ -16,6 +16,7 @@ the fixed ``read-only`` sandbox and ``never`` approval policy for the thread.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -943,6 +944,9 @@ class CodexHost:
                        or not isinstance(v, str) or not SHA256_HEX.fullmatch(v)
                        for k, v in admitted.items())):
             raise CodexHostUnavailable("app-server admitted request ledger invalid")
+        first_request = value.get("first_turn_request_id")
+        if first_request is not None and (not isinstance(first_request, str) or first_request not in admitted):
+            raise CodexHostUnavailable("app-server first request ledger mismatch")
         for name, digest_name in (("active_request_id", "active_text_digest"),
                                   ("uncertain_request_id", "uncertain_text_digest"),
                                   ("last_request_id", "last_text_digest")):
@@ -1168,7 +1172,8 @@ class CodexHost:
             return saved
 
     def run_turn(self, user_id: str, conversation_id: str, request_id: str,
-                 text: str, prepare_if_needed: bool = False) -> dict:
+                 text: str, prepare_if_needed: bool = False, *,
+                 on_first_receipt: Callable[[], None] | None = None) -> dict:
         """Run exactly one explicit owner turn and return its bound receipt.
 
         The caller is responsible for model/provider authorization.  This host
@@ -1197,9 +1202,14 @@ class CodexHost:
                 if binding.get("last_request_id") == request_id:
                     if binding.get("last_text_digest") != digest:
                         raise CodexHostConflict("Codex request identity was reused")
-                    return self._receipt(binding, replayed=True)
-                replayed = self._recent_receipt(binding, request_id, digest)
+                    replayed = self._receipt(binding, replayed=True)
+                else:
+                    replayed = self._recent_receipt(binding, request_id, digest)
                 if replayed is not None:
+                    # Exact original replays can repair a previously unavailable
+                    # conversation database. Older bindings have no such marker.
+                    if on_first_receipt and binding.get("first_turn_request_id") == request_id:
+                        on_first_receipt()
                     return replayed
                 if request_id in binding["admitted_requests"]:
                     raise CodexHostConflict("Codex request was already admitted; receipt is not retained")
@@ -1249,6 +1259,9 @@ class CodexHost:
                         uncertain_request_id=None,
                         uncertain_text_digest=None,
                     )
+                    first_turn = not binding["admitted_requests"]
+                    if first_turn:
+                        current["first_turn_request_id"] = request_id
                     self._save(key, current)
                 publish("running")
                 outcome = session.wait_turn(binding["thread_id"], turn_id,
@@ -1291,6 +1304,10 @@ class CodexHost:
                         recent_requests=recent[-RECENT_REQUESTS:],
                     )
                     self._save(key, current)
+                # Publish output and persist the terminal receipt before a
+                # workbench metadata write can contend for the SQLite writer.
+                if first_turn and on_first_receipt:
+                    on_first_receipt()
                 return self._receipt(current, replayed=False)
             finally:
                 self._unregister(key, session)

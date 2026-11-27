@@ -178,6 +178,12 @@ export default function App() {
     if(workspaceRequest.current===controller)workspaceRequest.current=null;
   },[user]);
   useEffect(()=>{void refresh();return()=>{workspaceRequest.current?.abort();};},[refresh]);
+  const atWorkspaceHome = view === 'workspace' && !routeConversationId && !selected;
+  const wasAtWorkspaceHome = useRef(atWorkspaceHome);
+  useEffect(() => {
+    if (atWorkspaceHome && !wasAtWorkspaceHome.current) void refresh();
+    wasAtWorkspaceHome.current = atWorkspaceHome;
+  }, [atWorkspaceHome, refresh]);
   const refreshModels=useCallback(async()=>{if(!user)return;setModelsLoading(true);setModelsError('');try{setModels(await api<ModelOption[]>('/models'));}catch(e){setModelsError(errorText(e));}finally{setModelsLoading(false);}},[user]);useEffect(()=>{void refreshModels();},[refreshModels]);
   const protectMemory=(action:()=>void)=>{if(memorySavingRef.current){setError('会话记忆正在保存，请稍候再离开。');return;}if(savingRef.current){setError('助手配置正在保存，请稍候再离开。');return;}if(assistantDirty||memoryDirty){setPendingKind(assistantDirty?'assistant':'memory');setPendingNavigation(()=>action);}else action();};
   const snapshotAssistant=(assistant:Assistant)=>{setAssistantDetail(assistant);setAssistants(previous=>previous.map(item=>item.id===assistant.id?assistant:item));};

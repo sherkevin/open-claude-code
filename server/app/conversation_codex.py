@@ -9,6 +9,9 @@ here; this surface is an isolated engineering-executor pilot.
 """
 from __future__ import annotations
 
+import logging
+import sqlite3
+
 from fastapi import APIRouter, Depends, Response
 from pydantic import Field
 
@@ -16,7 +19,8 @@ from .codex_appserver import (
     CodexHost, CodexHostBusy, CodexHostConflict, CodexHostDisabled,
     CodexHostError, CodexHostRejected, CodexHostUnavailable,
 )
-from .db import offload
+from .conversation_title import first_message_title
+from .db import now, offload
 from .models import InputModel
 from .security import AppError
 
@@ -70,6 +74,33 @@ async def _call(fn, *args):
         raise _app_error(exc) from None
 
 
+def _run_owner_turn(host, service, conversation, user_id, body):
+    retry_title = False
+
+    def set_first_title():
+        nonlocal retry_title
+        try:
+            service.db.execute(
+                "UPDATE conversations SET title=?,auto_title_pending=0,updated_at=? "
+                "WHERE id=? AND user_id=? AND auto_title_pending=1",
+                (first_message_title(body.text, engineering=True), now(), conversation["id"], user_id),
+            )
+            retry_title = False
+        except sqlite3.Error:
+            # The native receipt is durable. Its outcome must survive a failing
+            # workbench projection, including a disconnect from the HTTP client.
+            retry_title = True
+            logging.getLogger(__name__).warning("Could not persist the Codex conversation topic", exc_info=True)
+
+    try:
+        return host.run_turn(user_id, conversation["id"], body.client_request_id, body.text,
+                             body.prepare_if_needed,
+                             on_first_receipt=set_first_title if conversation["auto_title_pending"] else None)
+    finally:
+        if retry_title:
+            set_first_title()
+
+
 def create_codex_router(svc, authenticated, host: CodexHost):
     router = APIRouter(prefix="/api/v1/conversations/{conversation_id}/codex")
 
@@ -98,9 +129,8 @@ def create_codex_router(svc, authenticated, host: CodexHost):
     async def turn(conversation_id: str, body: CodexTurnRequest, response: Response,
                    service=Depends(svc), user=Depends(authenticated)):
         response.headers["Cache-Control"] = "no-store"
-        require_codex_conversation(service, conversation_id, user)
-        return await _call(host.run_turn, user["id"], conversation_id,
-                           body.client_request_id, body.text, body.prepare_if_needed)
+        conversation = require_codex_conversation(service, conversation_id, user)
+        return await _call(_run_owner_turn, host, service, conversation, user["id"], body)
 
     @router.post("/interrupt")
     async def interrupt(conversation_id: str, response: Response,
