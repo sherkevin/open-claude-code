@@ -1,17 +1,14 @@
+import { composerOwnerPrefix, composerScope } from './browserDraftStorage';
 import { useState, useSyncExternalStore } from 'react';
+import { clearCodexDrafts } from './codexDraft';
 import type { StoredFile } from './types';
 
-const prefix = 'kaiwu:composer:';
 export type Submission = { signature: string; id: string; queued: boolean };
 export type DraftAttachment = StoredFile & { selectionOrder?: number };
 type Draft = { text: string; files: DraftAttachment[]; skills: string[]; preview?: StoredFile; submission?: Submission };
 type DraftValue<T> = T | ((previous: T) => T);
 type DraftStore = ReturnType<typeof makeStore>;
 const drafts = new Map<string, DraftStore>();
-
-function ownerPrefix(owner: string) {
-  return prefix + encodeURIComponent(owner) + ':';
-}
 
 function readDraft(key: string | null, text: string, initialSubmission?: Submission): Draft {
   const empty = { text, files: [], skills: [], submission: initialSubmission };
@@ -37,7 +34,8 @@ function readDraft(key: string | null, text: string, initialSubmission?: Submiss
 }
 
 export function clearComposerDrafts(owner: string) {
-  const start = ownerPrefix(owner);
+  clearCodexDrafts(owner);
+  const start = composerOwnerPrefix(owner);
   for (const [key, store] of drafts) {
     if (key.startsWith(start)) {
       store.dispose();
@@ -97,7 +95,7 @@ function makeStore(key: string | null, initial: string, initialSubmission?: Subm
 export function useComposerDraft(owner: string | undefined, conversationId: string, initialText: string, initialSubmission?: Submission) {
   const [store] = useState(() => {
     if (!owner) return makeStore(null, initialText, initialSubmission);
-    const key = ownerPrefix(owner) + encodeURIComponent(conversationId);
+    const key = composerScope(owner, conversationId);
     const existing = drafts.get(key);
     if (existing) return existing;
     const created = makeStore(key, initialText, initialSubmission);

@@ -89,17 +89,17 @@ export function useCodexSteers(path: string, scope: string, allowed: boolean, de
     return () => { version.current++; };
   }, [refresh]);
 
-  async function submit(turn: string, draft: string, onAttempt: (id: SteerId) => void) {
+  async function submit(turn: string, draft: string, onAttempt: (id: SteerId) => Promise<boolean>) {
     const text = draft.trim();
     if (!allowed || !text || inFlight.current) return;
     inFlight.current = true;
     version.current++;
     const id = { client_request_id: clientRequestId(), turn_id: turn };
-    rememberSteer(scope, id);
     setSubmitting(id.client_request_id);
-    setUnconfirmed(pendingSteers(scope));
-    onAttempt(id);
     try {
+      if (!await onAttempt(id)) return;
+      rememberSteer(scope, id);
+      setUnconfirmed(pendingSteers(scope));
       const receipt = await post<SteerReceipt>(path + '/steer', { ...id, text });
       if (!sameSteer(id, receipt) || !Object.hasOwn(labels, receipt.state)) throw new Error('补充回执不匹配');
       version.current++;

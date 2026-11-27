@@ -1,29 +1,17 @@
+import { browserDraftDatabase } from './browserDraftStorage';
+
 export type StoredUpload = {
   owner: string; scope: string; id: string; file: File; binary: boolean; receivedAt: number; order?: number; error?: string;
 };
 
 const storeName = 'uploads';
 const retention = 7 * 24 * 60 * 60 * 1000;
-let opening: Promise<IDBDatabase> | undefined;
-
-function open() {
-  if (!opening) {
-    opening = new Promise((resolve, reject) => {
-      const request = indexedDB.open('kaiwu-composer-uploads', 1);
-      request.onupgradeneeded = () => {
-        const store = request.result.createObjectStore(storeName, { keyPath: ['scope', 'id'] });
-        store.createIndex('scope', 'scope');
-        store.createIndex('owner', 'owner');
-        store.createIndex('receivedAt', 'receivedAt');
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-      request.onblocked = () => reject(new Error('Browser upload storage is busy'));
-    });
-    void opening.catch(() => { opening = undefined; });
-  }
-  return opening;
-}
+const open = browserDraftDatabase('kaiwu-composer-uploads', db => {
+  const store = db.createObjectStore(storeName, { keyPath: ['scope', 'id'] });
+  store.createIndex('scope', 'scope');
+  store.createIndex('owner', 'owner');
+  store.createIndex('receivedAt', 'receivedAt');
+}, 'Browser upload storage is busy');
 
 async function transact<T>(mode: IDBTransactionMode, read: (store: IDBObjectStore) => IDBRequest<T>) {
   const database = await open();
