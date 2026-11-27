@@ -9,7 +9,8 @@ import { compactionStatus, compactionStatusLabel, toolLabel } from './display';
 import { compactionLabel } from './ContextDialog';
 import SessionTrajectory, { type InspectionView } from './SessionTrajectory';
 import ConversationExport from './ConversationExport';
-import ConversationCodex from './ConversationCodex';
+import ConversationCodex, { codexRequestKey } from './ConversationCodex';
+import CodexReceiptHistory from './CodexReceiptHistory';
 import ModelSelector from './ModelSelector';
 import { ModelRoutingControl, ModelSettingsDisclosure, RunModelIdentity } from './ModelRouting';
 import SessionPermissionMode, { MCPAvailabilityNotice } from './SessionPermissionMode';
@@ -682,7 +683,13 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       </div>
     </header>
     <div className="chat-proof-bar" aria-label="会话能力状态"><span><FileText size={14}/>业务会话</span><span>{assistant?.connections.length||0} 个已配置 MCP</span><span className="run-status-pill" data-state={run?.status || 'idle'}>{run?.status === 'succeeded' ? <CheckCircle2 size={14}/> : run?.status === 'failed' ? <XCircle size={14}/> : run?.status === 'awaiting_approval' ? <ShieldCheck size={14}/> : <Clock3 size={14}/>} {run?statusLabels[run.status]:'等待开始'}</span>{run&&<RunModelIdentity run={run} models={models}/>}{connectionState === 'reconnecting' && <strong>连接恢复中</strong>}</div>
-    <div className="chat-layout"><section className="conversation-column"><div className="message-scroll" ref={scroll} onScroll={() => { const el = scroll.current; if (!el) return; shouldFollow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; setShowScroll(!shouldFollow.current); }}>
+    <div className="chat-layout"><section className="conversation-column">
+      {!trial && config.codex_appserver && draftOwnerId &&
+        <CodexReceiptHistory key={codexRequestKey(draftOwnerId, conversation.id)} conversationId={conversation.id}
+          unavailableReason={archived ? '会话已归档，恢复会话后可查看工程回执。'
+            : active || sending ? '请在当前业务请求结束后查看工程回执。'
+            : loading ? '正在读取会话状态…' : undefined}/>}
+      <div className="message-scroll" ref={scroll} onScroll={() => { const el = scroll.current; if (!el) return; shouldFollow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; setShowScroll(!shouldFollow.current); }}>
       {loading ? <Loader text="正在恢复会话…"/> : messages.length === 0 && !liveText && !showThinking ? <div className="chat-intro"><AiIdentity size="large"/><h2>向{assistant?.name || '业务助手'}提问</h2><p>{assistant?.description || '描述你的问题或目标，也可以上传相关资料。'}</p><div className="chat-intro-note"><ShieldCheck size={16}/>调用需审批的业务工具时，你会先看到操作内容。</div></div> : <div className="messages">{history.page.before && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('older')}>加载更早消息</Button></div>}{messages.filter(m => !(active && m.role === 'assistant' && m.run_id === run?.id) && (m.role !== 'assistant' || !!m.text || m.file_ids.length > 0 || historyResultIds.has(m.id))).map(message => {
         const subagentRunId = trial ? null : subagentRunForQuestion(message, liveSubagentQuestion, run?.id);
         return <Fragment key={message.id}>

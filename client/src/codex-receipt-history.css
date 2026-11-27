@@ -1,0 +1,25 @@
+.codex-receipt-history {
+  flex: none;
+  border-bottom: 1px solid var(--line);
+  padding: 0 clamp(16px, 3vw, 32px);
+  background: var(--white);
+}
+
+.codex-receipt-history summary {
+  padding: 8px 0;
+  width: fit-content;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.codex-receipt-panel {
+  max-height: min(36dvh, 24rem);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding-bottom: 12px;
+}
+
+.codex-receipt-panel ol { list-style: none; padding: 0; }
+.codex-receipt-panel li { border-top: 1px solid var(--line); padding: 10px 0; }
+.codex-receipt-panel p { margin: 4px 0 8px; }

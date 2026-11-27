@@ -92,6 +92,8 @@ def test_disabled_host_does_nothing(tmp_path):
         host.status(USER, CID)
     with pytest.raises(CodexHostDisabled):
         host.ensure_thread(USER, CID)
+    with pytest.raises(CodexHostDisabled):
+        host.receipt_history(USER, CID)
     assert not (tmp_path / "codex-appserver").exists()
 
 
@@ -176,6 +178,41 @@ def test_turn_receipt_identity_and_idempotent_replay(tmp_path):
     assert len(requests(log_events(log), "turn/start")) == 2
 
 
+def test_receipt_history_reads_one_durable_window_without_launch_or_write(tmp_path, monkeypatch):
+    import app.codex_appserver as module
+
+    monkeypatch.setattr(module, "RECENT_TEXT_CHARS", 2)
+    host, log = make_host(tmp_path)
+    empty = {"recent_limit": 8, "receipts": [], "pending": False, "unavailable_count": 0}
+    assert host.receipt_history(USER, CID) == empty
+    assert not (tmp_path / "codex-appserver").exists()
+    submitted = []
+    for index in range(9):
+        request_id = f"history-{index}"
+        turn = host.run_turn(USER, CID, request_id, f"合成任务 {index}", prepare_if_needed=True)
+        submitted.append({"request_id": request_id, "turn_id": turn["turn_id"],
+                          "status": "completed", "text": "合成", "text_truncated": True})
+    submitted[-1].update(text="合成回复", text_truncated=False)
+
+    before = state_path(tmp_path, USER, CID).read_bytes()
+    events = log_events(log)
+    restarted = CodexHost(host.config)
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *a, **kw: pytest.fail("history spawned a process"))
+    for reader in (host, restarted):
+        assert reader.receipt_history(USER, CID) == {
+            **empty, "receipts": list(reversed(submitted[1:])), "unavailable_count": 1}
+        assert reader.receipt_history(OTHER, CID) == empty
+        assert reader.receipt_history(USER, "other-conversation") == empty
+    for entry in (submitted[1], submitted[-1]):
+        assert restarted.request_status(USER, CID, entry["request_id"]) == {
+            "state": "recorded", "request_id": entry["request_id"], "turn": entry}
+    assert restarted.request_status(USER, CID, "history-0") == {
+        "state": "admitted_without_receipt", "request_id": "history-0", "turn": None}
+    assert state_path(tmp_path, USER, CID).read_bytes() == before
+    assert log_events(log) == events
+    assert len(requests(events, "turn/start")) == 9
+
+
 def test_server_requests_are_always_rejected(tmp_path):
     for scenario, request_id in (("approval", 900), ("unknown_request", 901)):
         root = tmp_path / scenario
@@ -233,6 +270,9 @@ def test_crash_then_reconcile_terminal_turn(tmp_path):
     assert view["recovery_required"] is False
     assert view["last_turn"]["turn_id"] == active
     assert view["last_turn"]["status"] == "completed"
+    assert recovered.receipt_history(USER, CID)["receipts"] == [{
+        "request_id": "request-0001", "turn_id": active, "status": "completed",
+        "text": "", "text_truncated": True}]
     events = wait_for_log(log, lambda items: len(requests(items, "thread/read")) >= 1)
     assert all(event.get("method") != "turn/start"
                for event in events if event.get("event") == "request")
@@ -301,6 +341,36 @@ def test_owner_binding_tamper_fails_closed(tmp_path):
     path.chmod(0o600)
     with pytest.raises(CodexHostUnavailable):
         host.status(USER, CID)
+    with pytest.raises(CodexHostUnavailable):
+        host.receipt_history(USER, CID)
+
+
+def test_history_rejects_an_incomplete_or_invalid_terminal_receipt(tmp_path):
+    host, _ = make_host(tmp_path)
+    host.run_turn(USER, CID, "history-a", "合成", prepare_if_needed=True)
+    key = host._key(USER, CID)
+    binding = host._load(key)
+    for change in ({"last_request_id": None}, {"last_status": "unknown"}):
+        host._save(key, {**binding, **change})
+        with pytest.raises(CodexHostUnavailable):
+            host.receipt_history(USER, CID)
+
+
+def test_history_withholds_sensitive_native_text_in_latest_and_older_receipts(tmp_path):
+    host, _ = make_host(tmp_path)
+    for req in ("history-a", "history-b"):
+        host.run_turn(USER, CID, req, "合成", prepare_if_needed=True)
+    key = host._key(USER, CID)
+    binding = host._load(key)
+    binding["recent_requests"][0]["text"] = f"合成工作路径 {binding['workspace']}/input.txt"
+    binding["last_text"] = "Authorization: Bearer synthetic-test-value"
+    host._save(key, binding)
+    history = host.receipt_history(USER, CID)
+    assert [r["request_id"] for r in history["receipts"]] == ["history-b", "history-a"]
+    assert all(r["text"] == "" and r["text_withheld"] and not r["text_truncated"]
+               for r in history["receipts"])
+    assert str(tmp_path) not in str(history) and "synthetic-test-value" not in str(history)
+    assert host._load(key)["last_text"] == binding["last_text"]
 
 
 def test_input_and_request_budgets_are_enforced(tmp_path):
@@ -387,6 +457,8 @@ def test_start_receipt_lost_is_fenced_before_send(tmp_path, monkeypatch):
         host.run_turn(USER, CID, "request-0001", "合成请求")
     restarted, restarted_log = make_host(tmp_path)
     assert restarted.status(USER, CID)["recovery_required"] is True
+    assert restarted.receipt_history(USER, CID) == {
+        "receipts": [], "recent_limit": 8, "unavailable_count": 0, "pending": True}
     with pytest.raises(CodexHostConflict):
         restarted.reconcile(USER, CID)
     with pytest.raises(CodexHostConflict):

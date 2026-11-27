@@ -64,6 +64,7 @@ def test_codex_disabled_by_default(tmp_path):
         login(client)
         cid = conversation(client)["id"]
         assert client.get(f"/api/v1/conversations/{cid}/codex").status_code == 404
+        assert client.get(f"/api/v1/conversations/{cid}/codex/history").status_code == 404
         assert "codex_appserver" not in client.get("/api/v1/config").json()
     assert hosts == []
 
@@ -74,6 +75,9 @@ def test_trial_mode_does_not_expose_codex_router(tmp_path):
         response = client.get("/api/v1/conversations/anything/codex")
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "FEATURE_DISABLED"
+        history = client.get("/api/v1/conversations/anything/codex/history")
+        assert history.status_code == 403
+        assert history.json()["error"]["code"] == "FEATURE_DISABLED"
     assert hosts == []
 
 
@@ -130,11 +134,15 @@ def test_other_owner_cannot_read_or_use_the_binding(codex_env):
     client, service, _host = codex_env
     cid = conversation(client)["id"]
     base = f"/api/v1/conversations/{cid}/codex"
-    assert client.post(base + "/thread").status_code == 200
+    assert client.post(base + "/turn", json={
+        "client_request_id": "owner-private", "text": "合成", "prepare_if_needed": True}).status_code == 200
     service.create_user({"username": "other", "display_name": "other",
                          "password": PASSWORD, "role": "member"})
     login(client, "other")
     assert client.get(base).status_code == 404
+    denied = client.get(base + "/history")
+    assert denied.status_code == 404
+    assert "owner-private" not in denied.text and "合成回复" not in denied.text
     assert client.post(base + "/thread").status_code == 404
     assert client.post(base + "/turn", json={
         "client_request_id": "request-0001", "text": "合成"}).status_code == 404
@@ -155,9 +163,11 @@ def test_busy_conversation_and_active_run_are_refused(codex_env):
     service.db.execute("UPDATE conversations SET active_run_id='synthetic-run' WHERE id=?",
                        (cid,))
     assert client.get(base).status_code == 409
+    assert client.get(base + "/history").json()["error"]["code"] == "CODEX_SESSION_BUSY"
     service.db.execute("UPDATE conversations SET active_run_id=NULL, archived=1 WHERE id=?",
                        (cid,))
     assert client.get(base).status_code == 409
+    assert client.get(base + "/history").json()["error"]["code"] == "CODEX_SESSION_BUSY"
 
 
 def test_feature_errors_are_not_leaked(codex_env):
@@ -218,3 +228,38 @@ def test_owner_finds_older_receipt_without_input_or_replay(codex_env, monkeypatc
     assert client.post(base + "/turn", json={"client_request_id": "third-request", "text": "合成"}).status_code == 200
     assert client.get(base + "/requests/first-request").json() == {
         "state": "admitted_without_receipt", "request_id": "first-request", "turn": None}
+
+
+def test_history_reopens_without_request_ids_messages_runs_or_native_calls(codex_env, monkeypatch):
+    from app import codex_appserver
+
+    client, service, host = codex_env
+    cid = conversation(client)["id"]
+    base = f"/api/v1/conversations/{cid}"
+    expected = []
+    for req in ("receipt-alpha", "receipt-omega"):
+        response = client.post(base + "/codex/turn", json={
+            "client_request_id": req, "text": "合成", "prepare_if_needed": True})
+        assert response.status_code == 200, response.text
+        turn = response.json()
+        expected.insert(0, {"request_id": req, "turn_id": turn["turn_id"], "text": "合成回复",
+                            "text_truncated": False, "status": "completed"})
+
+    other = conversation(client)["id"]
+    monkeypatch.setattr(codex_appserver.subprocess, "Popen", lambda *a, **kw: pytest.fail("native launch"))
+    for _ in range(2):
+        response = client.get(base + "/codex/history")
+        assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+        assert response.json() == {"recent_limit": 8, "receipts": expected,
+                                   "unavailable_count": 0, "pending": False}
+    window = client.get(base + "/messages", params={"limit": 20}).json()
+    assert window["messages"] == [] and window["latest_run_id"] is None
+    assert service.db.one("SELECT COUNT(*) AS n FROM runs WHERE conversation_id=?", (cid,))["n"] == 0
+    assert client.get(f"/api/v1/conversations/{other}/codex/history").json()["receipts"] == []
+
+    def unavailable(*args):
+        raise codex_appserver.CodexHostUnavailable("/private/host/path synthetic-private-value")
+    monkeypatch.setattr(host, "_load", unavailable)
+    failed = client.get(base + "/codex/history")
+    assert failed.status_code == 503 and failed.json()["error"]["code"] == "CODEX_UNAVAILABLE"
+    assert "/private" not in failed.text and "synthetic-private-value" not in failed.text
