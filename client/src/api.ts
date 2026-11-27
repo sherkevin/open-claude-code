@@ -58,7 +58,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const message = body.error?.message || (typeof body.detail === 'string' ? body.detail : undefined) || `请求未完成（${response.status}），请重试。`;
-    if (response.status === 401 && path !== '/auth/login' && path !== '/auth/me') window.dispatchEvent(new Event('session-expired'));
+    if (response.status === 401 && !init.signal?.aborted && path !== '/auth/login' && path !== '/auth/me') window.dispatchEvent(new Event('session-expired'));
     throw new ApiError(message, response.status, body.error?.code || 'REQUEST_FAILED');
   }
   if (response.status === 204) return undefined as T;
@@ -66,7 +66,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return text ? JSON.parse(text) as T : undefined as T;
 }
 
-export const post = <T>(path: string, body?: unknown) => api<T>(path, { method: 'POST', ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+export const post = <T>(path: string, body?: unknown, signal?: AbortSignal) => api<T>(path, { method: 'POST', ...(signal ? { signal } : {}), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 export const patch = <T>(path: string, body: unknown) => api<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
 export const chatMessagePayload = (input: { requestId: string; text: string; fileIds: string[]; skillIds: string[]; trial: boolean; autoModelRouting: boolean }) => ({
   client_request_id: input.requestId,
@@ -75,8 +75,8 @@ export const chatMessagePayload = (input: { requestId: string; text: string; fil
   skill_ids: input.skillIds,
   auto_route: !input.trial && input.autoModelRouting,
 });
-export const sendChatMessage = (conversationId: string, payload: ReturnType<typeof chatMessagePayload> | { client_request_id: string; recovery_run_id: string }) =>
-  post<{ message: Message; run_id: string }>(`/conversations/${encodeURIComponent(conversationId)}/messages`, payload);
+export const sendChatMessage = (conversationId: string, payload: ReturnType<typeof chatMessagePayload> | { client_request_id: string; recovery_run_id: string }, signal?: AbortSignal) =>
+  post<{ message: Message; run_id: string }>(`/conversations/${encodeURIComponent(conversationId)}/messages`, payload, signal);
 export const remove = (path: string) => api<void>(path, { method: 'DELETE' });
 export const errorText = (error: unknown) => error instanceof Error ? error.message : '操作未完成，请重试。';
 export const fileURL = (id: string) => apiURL(`/files/${encodeURIComponent(id)}/content`);

@@ -144,6 +144,8 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, hasChatSkills, 
   const storageKey = codexRequestKey(ownerId, conversationId);
   const [thread, setThread] = useState<CodexThread | null>(null);
   const [attemptInEditor, setAttemptInEditor] = useState<string | null>(null);
+  const [checkingEntry, setCheckingEntry] = useState(Boolean(entry?.text));
+  const entryChecked = useCallback(() => setCheckingEntry(false), []);
   const [pending, setPending] = useState(() => readRequest(storageKey));
   const [receipt, setReceipt] = useState<CodexReceipt | null>(null);
   const [memoryOnly, setMemoryOnly] = useState(false);
@@ -342,6 +344,8 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, hasChatSkills, 
   const unresolvedImport = Boolean((pending && !resolved) || saved.attempts.some(attempt =>
     attempt.kind === 'turn' ? attempt.id !== confirmedTurn :
       !steers.receipts.some(row => row.client_request_id === attempt.id && row.turn_id === attempt.turn && row.state !== 'uncertain')));
+  const waitingForImport = checkingEntry && !entry?.ordinaryPending && !(saved.ready &&
+    (saved.attempts.length || pending || busyWithTurn || (saved.text && saved.text !== entry?.text)));
   function attemptLabel(attempt: DraftAttempt) {
     if (attempt.kind === 'turn') {
       return attempt.id === active?.request_id ? '本轮已提交的原文' : '任务已尝试提交，结果待核对';
@@ -381,7 +385,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, hasChatSkills, 
       </section>}
       {chatAttachments}
       {hasChatSkills && <p className="section-help">已选 Skill 保留在普通聊天中。工程任务只发送文字。</p>}
-      {entry && <CodexDraftImport entry={entry} ready={saved.ready && !readError && !offline}
+      {entry && <CodexDraftImport entry={entry} ready={saved.ready} onChecked={entryChecked}
         occupied={Boolean(saved.attempts.length || pending || busyWithTurn)}
         canEdit={!readError && !offline && !saved.revoked && !unresolvedImport && !thread.recovery_required}
         revision={saved.revision} text={saved.text} edit={store.edit}/>}
@@ -389,18 +393,18 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, hasChatSkills, 
         <summary>查看本轮已发送的要求</summary>
         <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{sentText.current}</p>
       </details>}
-      <Field label={steerTarget && editingNext ? '补充要求或下一轮任务内容' : editingNext && busyWithTurn ? '下一轮任务内容' : '任务内容'}
+      {waitingForImport ? <Loader text="正在核对并带入工程草稿…"/> : <Field label={steerTarget && editingNext ? '补充要求或下一轮任务内容' : editingNext && busyWithTurn ? '下一轮任务内容' : '任务内容'}
         hint={saved.memoryOnly ? '此浏览器暂时无法保存草稿。当前编辑仅在本页保留。'
           : steerTarget && editingNext ? '草稿保存在本浏览器。点击「补充到当前任务」交给本轮执行，或等本轮结束后另行发送。'
           : retrySnapshot ? '用原编号重试会提交上方的原文。新写的草稿单独保留。' : '未发送的草稿保存在本浏览器，仅在本人此会话中恢复。'}>
         <textarea rows={4} maxLength={20000} value={input} disabled={!saved.ready || (busyWithTurn && !editingNext)}
           onChange={e => editDraft(e.target.value)}/>
-      </Field>
+      </Field>}
       {saved.submitFailed && <p role="alert">未能保存这次提交的编号，本次没有发送。草稿仍在，可再次提交。</p>}
       {saved.conflict && <p className="section-help">另一窗口已更新草稿，请核对最新内容。</p>}
       <div className="task-sidebar-actions">
         {saved.text !== '' && <Button variant="secondary" onClick={() => editDraft('')}>清空草稿</Button>}
-        <Button busy={sending && !editingNext} disabled={!canSend} onClick={() => void send()}>{sameRequestRetry && !sending && controls?.send ? '用原编号重试' : '发送任务'}</Button>
+        <Button busy={sending && !editingNext} disabled={checkingEntry || !canSend} onClick={() => void send()}>{sameRequestRetry && !sending && controls?.send ? '用原编号重试' : '发送任务'}</Button>
         {steerTarget && editingNext && <Button variant="secondary" disabled={!saved.text.trim() || Boolean(steers.submitting)}
           onClick={submitSteer}>补充到当前任务</Button>}
         {controls?.prepare && !sending && <Button variant="secondary"

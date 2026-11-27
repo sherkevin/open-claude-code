@@ -10,9 +10,9 @@ export function appendEngineeringText(existing: string, incoming: string) {
 
 type Props = {
   entry: ChatEngineeringEntry; ready: boolean; occupied: boolean; canEdit: boolean; revision: string; text: string;
-  edit: (revision: string, text: string) => Promise<boolean>;
+  edit: (revision: string, text: string) => Promise<boolean>; onChecked: () => void;
 };
-export function CodexDraftImport({ entry, ready, occupied, canEdit, revision, text, edit }: Props) {
+export function CodexDraftImport({ entry, ready, occupied, canEdit, revision, text, edit, onChecked }: Props) {
   const [done, setDone] = useState(false);
   const [applying, setApplying] = useState(false);
   const attemptedAuto = useRef(false);
@@ -20,16 +20,18 @@ export function CodexDraftImport({ entry, ready, occupied, canEdit, revision, te
   useEffect(() => {
     if (attemptedAuto.current || !ready) return;
     attemptedAuto.current = true;
-    if (!entry.text || entry.ordinaryPending || occupied || !canEdit || entry.text.length > limit) return;
-    if (text === entry.text) { setDone(true); return; }
-    if (text) return;
+    if (!entry.text || entry.ordinaryPending || occupied || !canEdit || entry.text.length > limit || text) {
+      if (!occupied && text === entry.text && !entry.ordinaryPending) setDone(true);
+      onChecked();
+      return;
+    }
     writing.current = true;
     setApplying(true);
     void edit(revision, entry.text).then(accepted => { if (accepted) setDone(true); })
-      .finally(() => { writing.current = false; setApplying(false); });
-  }, [ready, occupied, canEdit, entry, text, revision, edit]);
+      .finally(() => { writing.current = false; setApplying(false); onChecked(); });
+  }, [ready, occupied, canEdit, entry, text, revision, edit, onChecked]);
 
-  if (done || !entry.text || !ready) return null;
+  if (done || !entry.text || !ready || applying) return null;
   if (entry.ordinaryPending) return <p className="section-help">普通聊天有待核对的提交。原文保留在普通输入框中，请先核对普通聊天的结果。</p>;
   const combined = appendEngineeringText(text, entry.text);
   async function append() {

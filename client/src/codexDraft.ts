@@ -25,7 +25,7 @@ const open = browserDraftDatabase('kaiwu-engineering-drafts', db => { db.createO
 
 // A single read/write transaction compares the editor's base revision with other tabs.
 const logoutKey = (owner: string) => composerOwnerPrefix(owner) + 'engineering-logout';
-function accountStamp(owner: string) {
+export function engineeringAccountStamp(owner: string) {
   try { return localStorage.getItem(logoutKey(owner)) ?? ''; } catch { return ''; }
 }
 
@@ -40,7 +40,7 @@ async function access(owner: string, conversation: string, stamp: string, op?: C
     let draft: Draft;
     let changed = false;
     get.onsuccess = () => {
-      if (accountStamp(owner) !== stamp) { draft = empty(); return; }
+      if (engineeringAccountStamp(owner) !== stamp) { draft = empty(); return; }
       const previous: Draft = get.result && (get.result.stamp ?? '') === stamp ? get.result : empty();
       // An earlier edit may have survived only in memory. Preserve it only if
       // the durable version still matches the one read before storage failed.
@@ -62,7 +62,7 @@ function broadcast(scope: string) {
 type Snapshot = Draft & { ready: boolean; memoryOnly: boolean; conflict: boolean; revoked: boolean; submitFailed: boolean };
 function createStore(owner: string, conversation: string) {
   const scope = composerScope(owner, conversation);
-  const stamp = accountStamp(owner);
+  const stamp = engineeringAccountStamp(owner);
   const listeners = new Set<() => void>();
   let state: Snapshot = { ...empty(), ready: false, memoryOnly: false, conflict: false, revoked: false, submitFailed: false };
   let fallback = empty();
@@ -79,7 +79,7 @@ function createStore(owner: string, conversation: string) {
   };
   function dispose() { publish({ ...empty(), ready: false, revoked: true }); closed = true; listeners.clear(); }
   function sessionCurrent() {
-    if (!closed && accountStamp(owner) !== stamp) dispose();
+    if (!closed && engineeringAccountStamp(owner) !== stamp) dispose();
     return !closed;
   }
   async function reload() {

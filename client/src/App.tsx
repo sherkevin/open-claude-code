@@ -16,6 +16,7 @@ import './sidebar-controls.css';
 import { Login, FeishuLogin } from './AuthPages';
 import { connectionTrialSession, type ConnectionSetupContext } from './connectionHandoff';
 import { kaiwuHandoffCode } from './KaiwuHandoffDialog';
+import { engineeringAccountStamp } from './codexDraft';
 import { clearComposerDrafts } from './composerDraft';
 import { clearComposerUploads } from './composerUploads';
 import { useWorkbenchUpdate } from './workbenchRelease';
@@ -105,8 +106,21 @@ export default function App() {
   const resetWorkspace=useCallback(()=>{workspaceRequest.current?.abort();workspaceRequest.current=null;setAssistants([]);setConversations([]);setAssistantsRead(pendingWorkspaceRead);setConversationsRead(pendingWorkspaceRead);},[]);
   const [selected,setSelected]=useState<Conversation|null>(null);const [assistantDetail,setAssistantDetail]=useState<Assistant|null>(null);const [sidebarOpen,setSidebarOpen]=useState(false);const [newSession,setNewSession]=useState<{assistant?:Assistant;question?:string;project?:string;selection?:ModelSelection;connectionSetup?:Readonly<ConnectionSetupContext>}|null>(null);
   const [initialDraft,setInitialDraft]=useState<{conversationId:string;text:string;requestId?:string;engineering?:boolean}|null>(null);
-  const quickStart = useRef(false);
+  const quickStart = useRef<AbortController | null>(null);
+  const quickStartAccount = useRef<{ owner: string | null; stamp: string }>({ owner: null, stamp: '' });
   const [startingQuestion, setStartingQuestion] = useState<'chat' | 'engineering' | null>(null);
+  const switchQuickStartAccount = useCallback((owner: string | null) => {
+    quickStart.current?.abort();
+    quickStart.current = null;
+    setStartingQuestion(null);
+    const generation = { owner, stamp: owner ? engineeringAccountStamp(owner) : '' };
+    quickStartAccount.current = generation;
+    return generation;
+  }, []);
+  const applySessionUser = useCallback((next: User | null) => {
+    switchQuickStartAccount(next?.id ?? null);
+    setUser(next);
+  }, [switchQuickStartAccount]);
   const [routeConversationId, setRouteConversationId] = useState(conversationFromLocation);
   const [targetMessageId, setTargetMessageId] = useState(messageFromLocation);
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -156,8 +170,8 @@ export default function App() {
   const changeMemorySaving=useCallback((saving:boolean)=>{memorySavingRef.current=saving;},[]);
   const changeAssistantSaving=useCallback((saving:boolean)=>{savingRef.current=saving;setAssistantSaving(saving);},[]);
   useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(memoryDirty||assistantDirty||savingRef.current||memorySavingRef.current){event.preventDefault();event.returnValue='';}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard);},[memoryDirty,assistantDirty]);
-  const initialize=useCallback(async()=>{setInitializing(true);setInitialError('');setFeishuError('');try{const conf=await api<AppConfig>('/config');setConfig(conf);document.title=conf.brand_name;try{setUser(await api<User>('/auth/me'));}catch(e){if(!(e&&typeof e==='object'&&'status'in e&&e.status===401))throw e;setUser(null);if(feishuEmbed&&!feishuFallback){if(!conf.feishu_h5?.enabled){setFeishuError('服务端还没有开启飞书网页应用，请先完成应用凭据和白名单配置。');}else{setFeishuAuth('authorizing');try{const code=await requestFeishuCode(conf.feishu_h5.app_id);setUser(await post<User>('/feishu/h5/login',{code}));setFeishuAuth('idle');}catch(authError){setFeishuAuth('idle');setFeishuError(errorText(authError));}}}}}catch(e){setInitialError(errorText(e));}finally{setInitializing(false);}},[feishuEmbed,feishuFallback]);
-  useEffect(()=>{void initialize();const expired=()=>{setSessionExpired(true);setUser(null);setSelected(null);setInitialDraft(null);setConnectionSetup(null);resetWorkspace();setNewSession(null);setAssistantDetail(null);setPendingNavigation(null);setMemoryDirty(false);setAssistantDirty(false);setAssistantSaving(false);savingRef.current=false;memorySavingRef.current=false;setView('workspace');};window.addEventListener('session-expired',expired);return()=>window.removeEventListener('session-expired',expired);},[initialize,resetWorkspace]);
+  const initialize=useCallback(async()=>{setInitializing(true);setInitialError('');setFeishuError('');try{const conf=await api<AppConfig>('/config');setConfig(conf);document.title=conf.brand_name;try{applySessionUser(await api<User>('/auth/me'));}catch(e){if(!(e&&typeof e==='object'&&'status'in e&&e.status===401))throw e;applySessionUser(null);if(feishuEmbed&&!feishuFallback){if(!conf.feishu_h5?.enabled){setFeishuError('服务端还没有开启飞书网页应用，请先完成应用凭据和白名单配置。');}else{setFeishuAuth('authorizing');try{const code=await requestFeishuCode(conf.feishu_h5.app_id);applySessionUser(await post<User>('/feishu/h5/login',{code}));setFeishuAuth('idle');}catch(authError){setFeishuAuth('idle');setFeishuError(errorText(authError));}}}}}catch(e){setInitialError(errorText(e));}finally{setInitializing(false);}},[feishuEmbed,feishuFallback,applySessionUser]);
+  useEffect(()=>{void initialize();const expired=()=>{setSessionExpired(true);applySessionUser(null);setSelected(null);setInitialDraft(null);setConnectionSetup(null);resetWorkspace();setNewSession(null);setAssistantDetail(null);setPendingNavigation(null);setMemoryDirty(false);setAssistantDirty(false);setAssistantSaving(false);savingRef.current=false;memorySavingRef.current=false;setView('workspace');};window.addEventListener('session-expired',expired);return()=>window.removeEventListener('session-expired',expired);},[initialize,resetWorkspace,applySessionUser]);
   const refresh=useCallback(async()=>{
     if(!user)return;
     workspaceRequest.current?.abort();
@@ -190,26 +204,41 @@ export default function App() {
   const showView=(next:View)=>{if(next!=='assistants'&&next!=='connections')setConnectionSetup(null);if(next!=='workspace')navigateConversation(null);setView(next);setSidebarOpen(false);setError('');};const navigate=(next:View)=>{if(next==='workspace'){protectMemory(()=>{setSelected(null);navigateConversation(null);showView('workspace');});return;}if(next===view){setSidebarOpen(false);return;}protectMemory(()=>showView(next));};
   const newChat=(assistant?:Assistant,question?:string,project?:string,selection?:ModelSelection)=>protectMemory(()=>{setNewSession({assistant,question,project,selection});setSidebarOpen(false);});
   const startQuestion = async (question: string, assistant: Assistant, intent: 'chat' | 'engineering' = 'chat') => {
-    if (quickStart.current || !configAllows(config, 'conversations.write')) return;
+    const account = quickStartAccount.current;
+    if (!user || account.owner !== user.id || quickStart.current || !configAllows(config, 'conversations.write')) return;
+    if (engineeringAccountStamp(user.id) !== account.stamp) {
+      setError('登录状态已改变，请刷新页面后再创建会话。');
+      return;
+    }
     const engineering = intent === 'engineering';
     if (engineering ? !config.codex_appserver || config.deployment_mode === 'trial' : !configAllows(config, 'messages.send')) return;
-    quickStart.current = true;
+    const request = new AbortController();
+    quickStart.current = request;
+    const stillOwnsRequest = () => quickStartAccount.current === account && quickStart.current === request;
+    const sameLogin = () => account.stamp === engineeringAccountStamp(user.id);
+    const current = () => stillOwnsRequest() && sameLogin() && !request.signal.aborted;
+    const onStorage = () => {
+      if (stillOwnsRequest() && !sameLogin()) switchQuickStartAccount(null);
+    };
+    window.addEventListener('storage', onStorage);
     setStartingQuestion(intent);
     setError('');
     const trial = config.deployment_mode === 'trial';
     try {
-      const conversation = await post<Conversation>('/conversations', { assistant_id: assistant.id, auto_model_routing: !trial });
+      const conversation = await post<Conversation>('/conversations', { assistant_id: assistant.id, auto_model_routing: !trial }, request.signal);
+      if (!current()) return;
       let sendError = '';
       if (engineering) {
         setInitialDraft({ conversationId: conversation.id, text: question, engineering: true });
       } else {
         const requestId = clientRequestId();
         try {
-          await sendChatMessage(conversation.id, chatMessagePayload({ requestId, text: question, fileIds: [], skillIds: [], trial, autoModelRouting: Boolean(conversation.auto_model_routing) }));
+          await sendChatMessage(conversation.id, chatMessagePayload({ requestId, text: question, fileIds: [], skillIds: [], trial, autoModelRouting: Boolean(conversation.auto_model_routing) }), request.signal);
         } catch (error) {
           if (error instanceof ApiError && error.status === 401) return;
           sendError = errorText(error);
         }
+        if (!current()) return;
         setInitialDraft(sendError ? { conversationId: conversation.id, text: question, requestId } : null);
       }
       setSelected(conversation);
@@ -218,10 +247,14 @@ export default function App() {
       if (sendError) setError(`首条消息未确认发送，草稿已保留。${sendError}`);
       void refresh();
     } catch (error) {
-      if (!(error instanceof ApiError && error.status === 401)) setError(errorText(error));
+      if (current() && !(error instanceof ApiError && error.status === 401)) setError(errorText(error));
     } finally {
-      quickStart.current = false;
-      setStartingQuestion(null);
+      window.removeEventListener('storage', onStorage);
+      onStorage();
+      if (current()) {
+        quickStart.current = null;
+        setStartingQuestion(null);
+      }
     }
   };
   const startConnectionAssistant=(assistant:Assistant,connection:Readonly<ConnectionSetupContext>,question?:string)=>protectMemory(()=>{setAssistants(previous=>previous.some(item=>item.id===assistant.id)?previous.map(item=>item.id===assistant.id?assistant:item):[...previous,assistant]);setNewSession({...connectionTrialSession(assistant,connection),...(question?{question}: {})});setSidebarOpen(false);});
@@ -229,10 +262,24 @@ export default function App() {
   const startConfiguredAssistant=(assistant:Assistant)=>{if(!connectionSetup){setError('本次连接信息已失效，请返回连接页重新开始。');return;}startConnectionAssistant(assistant,connectionSetup);};
   const openConversation=(conversation:Conversation,messageId?:string)=>protectMemory(()=>{setInitialDraft(null);setSelected(conversation);navigateConversation(conversation.id,false,messageId);showView('workspace');});
   const openAssistant=(assistant:Assistant)=>protectMemory(()=>{setAssistantDetail(assistant);showView('assistant-detail');});
-  const logout=async()=>{try{await post('/auth/logout');if(user){clearComposerUploads(user.id);clearComposerDrafts(user.id);}navigateConversation(null,true);setSessionExpired(false);setUser(null);setSelected(null);setInitialDraft(null);setConnectionSetup(null);resetWorkspace();setView('workspace');}catch(e){setError(errorText(e));}};
+  const logout = async () => {
+    const ending = switchQuickStartAccount(null);
+    try {
+      await post('/auth/logout');
+      if (user) { clearComposerUploads(user.id); clearComposerDrafts(user.id); }
+      if (ending !== quickStartAccount.current) return;
+      navigateConversation(null,true); setSessionExpired(false); applySessionUser(null); setSelected(null);
+      setInitialDraft(null); setConnectionSetup(null); resetWorkspace(); setView('workspace');
+    } catch (cause) {
+      if (ending === quickStartAccount.current) {
+        switchQuickStartAccount(user?.id ?? null);
+        setError(errorText(cause));
+      }
+    }
+  };
   if(initializing)return <div className="boot zhixing-theme"><Brand name={config.brand_name}/><Loader text="正在连接工作台…"/></div>;
   if(initialError)return <div className="boot zhixing-theme"><Brand name={config.brand_name}/><ErrorNotice message={initialError}/><Button onClick={()=>void initialize()}><RefreshCw size={16}/>重新连接</Button></div>;
-  if(!user){if(feishuEmbed&&!feishuFallback)return <FeishuLogin config={config} busy={feishuAuth==='authorizing'} error={feishuError} onRetry={()=>void initialize()} onPassword={()=>{setFeishuFallback(true);setFeishuError('');}}/>;return <Login config={config} sessionExpired={sessionExpired} onLogin={value=>{setUser(value);setSessionExpired(false);if(handoffCode){navigateConversation(null,true);setView('connections');}}}/>;}
+  if(!user){if(feishuEmbed&&!feishuFallback)return <FeishuLogin config={config} busy={feishuAuth==='authorizing'} error={feishuError} onRetry={()=>void initialize()} onPassword={()=>{setFeishuFallback(true);setFeishuError('');}}/>;return <Login config={config} sessionExpired={sessionExpired} onLogin={value=>{applySessionUser(value);setSessionExpired(false);if(handoffCode){navigateConversation(null,true);setView('connections');}}}/>;}
   const admin=user.role==='admin';
   const canCreateConversation=configAllows(config,'conversations.write');
   const canManageAssistants=configAllows(config,'assistants.write');

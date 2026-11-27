@@ -14,7 +14,7 @@ const assistant: Assistant = {
 const incoming = '  第二条要求\n  保留两端空格  ';
 const existing = '  工程稿的第一条\n';
 const entry = { text: incoming, ordinaryPending: false };
-const props = { entry, ready: true, occupied: true, canEdit: true, revision: 'original', text: existing, edit: vi.fn() };
+const props = { entry, ready: true, occupied: true, canEdit: true, revision: 'original', text: existing, edit: vi.fn(), onChecked: vi.fn() };
 describe('普通输入框打开工程任务', () => {
   it('preserves both editable documents verbatim when a user explicitly appends', () => {
     expect(appendEngineeringText(existing, incoming)).toBe(existing + '\n' + incoming);
