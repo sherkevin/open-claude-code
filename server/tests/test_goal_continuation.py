@@ -566,3 +566,34 @@ def test_cancelling_active_goal_also_cancels_delegated_work(real_goal_round):
     view = client.get(goal_path + "/execution").json()
     assert view["authorization"]["status"] == "revoked" and view["active_lease"] is None
     assert view["can_start"] is False and len(view["rounds"]) == 1
+
+
+@pytest.mark.parametrize("decision", ["deny", "allow"])
+def test_goal_tool_decision_controls_downloadable_workbook(real_goal_round, decision):
+    from io import BytesIO
+    from xml.etree import ElementTree
+    from zipfile import ZipFile
+
+    client, cid, _, requests, baseline, start = real_goal_round
+    _, run_id = start("CASE_XLSX produce a fixture workbook")
+    pending = wait_run(client, run_id, {"awaiting_approval"})
+    approval, = pending["approvals"]
+    assert approval["tool_name"] == "mcp__workspace__generate_xlsx"
+    messages = f"/api/v1/conversations/{cid}/messages"
+    assert not client.get(messages).json()[-1]["file_ids"]
+    response = client.post(f"/api/v1/approvals/{approval['id']}/decision", json={"decision": decision})
+    assert response.status_code == 200, response.text
+    assert wait_run(client, run_id)["status"] == "succeeded"
+    answer = client.get(messages).json()[-1]
+    assert len(requests) - baseline == 2
+    if decision == "deny":
+        assert not answer["file_ids"] and "工具已拒绝" in answer["text"]
+    else:
+        file_id, = answer["file_ids"]
+        download = client.get(f"/api/v1/files/{file_id}/content")
+        assert download.status_code == 200
+        with ZipFile(BytesIO(download.content)) as book:
+            sheet = ElementTree.fromstring(book.read("xl/worksheets/sheet1.xml"))
+            rows = [["".join(cell.itertext()) for cell in row.findall("{*}c")]
+                    for row in sheet.findall(".//{*}row")]
+        assert rows == [["列 A", "列 B"], ["项目", "数值"], ["压力", "7"]]
