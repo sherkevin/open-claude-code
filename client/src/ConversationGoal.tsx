@@ -214,7 +214,7 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onRoundStarted,
               <Button busy={busy} disabled={busy||unavailable||!goal||!execution.can_start} onClick={()=>void startExecution()}>开始一轮</Button>
               <Button variant="danger" disabled={busy} onClick={()=>void stopExecution()}>停止执行</Button>
             </div>
-            {!execution.can_start&&<p className="section-help">当前不能开始新一轮：请检查用量是否完整、预算是否用完、目标是否暂停或已有轮次在运行。</p>}
+            {!execution.can_start&&!execution.round_cost_block&&<p className="section-help">当前不能开始新一轮：请检查用量是否完整、预算是否用完、目标是否暂停或已有轮次在运行。</p>}
           </>}
         </>}
         {executionEnabled&&!execution&&!execError&&<p className="section-help">正在读取目标执行状态…</p>}

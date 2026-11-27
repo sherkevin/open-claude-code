@@ -391,7 +391,7 @@ def goal_execution_view(service, conversation_id: str, user) -> dict:
     result["permission_matches"] = (_permission_still_valid(conversation, authorization)
                                     and _assistant_matches(service, conversation, authorization))
     result["can_start"] = bool(
-        authorization["status"] == "active" and active is None
+        authorization["status"] == "active" and active is None and result["round_cost_block"] is None
         and result["session_matches"] and result["permission_matches"]
         and totals["usage_complete"] and totals["rounds_used"] < authorization["max_rounds"]
         and (_time_remaining(authorization) or 0) > 0
