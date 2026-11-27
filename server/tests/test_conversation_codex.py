@@ -187,3 +187,34 @@ def test_first_turn_requires_explicit_preparation_consent(codex_env):
     result = client.post(base + "/turn", json={**body, "prepare_if_needed": True})
     assert result.status_code == 200, result.text
     assert client.get(base).json()["last_turn"]["turn_id"] == result.json()["turn_id"]
+
+
+def test_owner_finds_older_receipt_without_input_or_replay(codex_env, monkeypatch):
+    from app import codex_appserver
+
+    client, _, host = codex_env
+    cid = conversation(client)["id"]
+    base = f"/api/v1/conversations/{cid}/codex"
+    assert client.get(base + "/requests/first-request").json()["state"] == "not_found"
+    monkeypatch.setattr(codex_appserver, "RECENT_REQUESTS", 2)
+    for req in ("first-request", "second-request"):
+        result = client.post(base + "/turn", json={
+            "client_request_id": req, "text": "合成短任务", "prepare_if_needed": True})
+        assert result.status_code == 200
+        if req == "first-request":
+            first = result.json()
+    # No native operation is needed to recover a previously completed result.
+    with monkeypatch.context() as patch:
+        patch.setattr(host, "_verify_executable", lambda: pytest.fail("unexpected native operation"))
+        result = client.get(base + "/requests/first-request")
+        assert result.headers["cache-control"] == "no-store"
+        assert result.json() == {
+            "state": "recorded", "request_id": "first-request",
+            "turn": {"request_id": "first-request", "turn_id": first["turn_id"],
+                     "text": first["text"], "text_truncated": False, "status": "completed"}}
+        assert client.get(base).json()["last_turn"]["request_id"] == "second-request"
+        other = conversation(client)["id"]
+        assert client.get(f"/api/v1/conversations/{other}/codex/requests/first-request").json()["state"] == "not_found"
+    assert client.post(base + "/turn", json={"client_request_id": "third-request", "text": "合成"}).status_code == 200
+    assert client.get(base + "/requests/first-request").json() == {
+        "state": "admitted_without_receipt", "request_id": "first-request", "turn": None}

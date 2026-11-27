@@ -1102,6 +1102,36 @@ class CodexHost:
             view["active_turn"]["can_interrupt"] = self._session_for(key) is not None
         return view
 
+    def request_status(self, user_id: str, conversation_id: str, request_id: str) -> dict:
+        """Look up an owner's request without submitting, recovering or resuming it."""
+        self.require_enabled()
+        if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id):
+            raise CodexHostRejected("invalid Codex request identity")
+        key = self._key(user_id, conversation_id)
+        binding = self._load(key)
+        result = {"request_id": request_id, "state": "not_found", "turn": None}
+        if binding is not None:
+            self._validate_binding(binding, user_id, conversation_id,
+                                   self._workspace_path(user_id, conversation_id))
+            receipt = None
+            if binding.get("last_request_id") == request_id:
+                receipt = self._receipt(binding, replayed=False)
+            elif request_id in binding["admitted_requests"]:
+                digest = binding["admitted_requests"][request_id]
+                receipt = self._recent_receipt(binding, request_id, digest)
+                result["state"] = "admitted_without_receipt"
+            if receipt:
+                result["state"] = "recorded"
+                result["turn"] = {"request_id": request_id, **{
+                    field: receipt[field] for field in ("turn_id", "status", "text", "text_truncated")}}
+                return result
+            if request_id in (binding.get("active_request_id"), binding.get("uncertain_request_id")):
+                result["state"] = "pending"
+        operation = self._operation(key)
+        if operation and operation["request_id"] == request_id:
+            result["state"] = "pending"
+        return result
+
     def ensure_thread(self, user_id: str, conversation_id: str) -> dict:
         """Start or resume the one thread bound to this owner conversation."""
         self.require_enabled()

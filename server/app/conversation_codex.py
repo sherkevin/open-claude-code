@@ -80,6 +80,13 @@ def create_codex_router(svc, authenticated, host: CodexHost):
         require_codex_conversation(service, conversation_id, user)
         return await _call(host.status, user["id"], conversation_id)
 
+    @router.get("/requests/{request_id}")
+    async def request_status(conversation_id: str, request_id: str, response: Response,
+                             service=Depends(svc), user=Depends(authenticated)):
+        response.headers["Cache-Control"] = "no-store"
+        require_codex_conversation(service, conversation_id, user)
+        return await _call(host.request_status, user["id"], conversation_id, request_id)
+
     @router.post("/thread")
     async def prepare(conversation_id: str, response: Response,
                       service=Depends(svc), user=Depends(authenticated)):
