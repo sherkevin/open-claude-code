@@ -56,6 +56,12 @@ def codex_env(tmp_path):
         yield client, service, hosts[0]
 
 
+def assert_steering_denied(client, base, status):
+    body = {"client_request_id": "steer-private-01", "turn_id": "turn-other", "text": "只看上个月"}
+    assert client.post(base + "/steer", json=body).status_code == status
+    assert client.get(base + "/steers").status_code == status
+
+
 def test_codex_disabled_by_default(tmp_path):
     app, hosts = build(tmp_path, enabled=False)
     with TestClient(app) as client:
@@ -65,6 +71,7 @@ def test_codex_disabled_by_default(tmp_path):
         cid = conversation(client)["id"]
         assert client.get(f"/api/v1/conversations/{cid}/codex").status_code == 404
         assert client.get(f"/api/v1/conversations/{cid}/codex/history").status_code == 404
+        assert_steering_denied(client, f"/api/v1/conversations/{cid}/codex", 404)
         assert "codex_appserver" not in client.get("/api/v1/config").json()
     assert hosts == []
 
@@ -78,6 +85,7 @@ def test_trial_mode_does_not_expose_codex_router(tmp_path):
         history = client.get("/api/v1/conversations/anything/codex/history")
         assert history.status_code == 403
         assert history.json()["error"]["code"] == "FEATURE_DISABLED"
+        assert_steering_denied(client, "/api/v1/conversations/anything/codex", 403)
     assert hosts == []
 
 
@@ -140,6 +148,7 @@ def test_other_owner_cannot_read_or_use_the_binding(codex_env):
                          "password": PASSWORD, "role": "member"})
     login(client, "other")
     assert client.get(base).status_code == 404
+    assert_steering_denied(client, base, 404)
     denied = client.get(base + "/history")
     assert denied.status_code == 404
     assert "owner-private" not in denied.text and "合成回复" not in denied.text
@@ -164,10 +173,33 @@ def test_busy_conversation_and_active_run_are_refused(codex_env):
                        (cid,))
     assert client.get(base).status_code == 409
     assert client.get(base + "/history").json()["error"]["code"] == "CODEX_SESSION_BUSY"
+    assert_steering_denied(client, base, 409)
     service.db.execute("UPDATE conversations SET active_run_id=NULL, archived=1 WHERE id=?",
                        (cid,))
     assert client.get(base).status_code == 409
     assert client.get(base + "/history").json()["error"]["code"] == "CODEX_SESSION_BUSY"
+    assert_steering_denied(client, base, 409)
+
+
+def test_steering_requires_explicit_text_and_original_turn(codex_env):
+    client, _, _ = codex_env
+    cid = conversation(client)["id"]
+    base = f"/api/v1/conversations/{cid}/codex"
+    turn = client.post(base + "/turn", json={
+        "client_request_id": "original-001", "text": "原题", "prepare_if_needed": True}).json()
+    body = {"client_request_id": "adjustment-01", "turn_id": turn["turn_id"], "text": "只看上个月"}
+    for extra in ({"file_ids": ["ordinary-upload"]}, {"prepare_if_needed": True}, {"model": "another-model"}):
+        assert client.post(base + "/steer", json={**body, **extra}).status_code == 422
+    assert client.post(base + "/steer", json={k: v for k, v in body.items() if k != "turn_id"}).status_code == 422
+    assert client.get(base + "/steers").json() == {"receipts": []}
+    late = client.post(base + "/steer", json=body)
+    assert late.status_code == 200
+    expected = {"turn_id": turn["turn_id"], "client_request_id": "adjustment-01", "state": "closed"}
+    assert late.json() == expected
+    history = client.get(base + "/steers")
+    assert history.headers["cache-control"] == late.headers["cache-control"] == "no-store"
+    assert history.json() == {"receipts": [expected]}
+    assert client.get(base).json()["last_turn"]["turn_id"] == turn["turn_id"]
 
 
 def test_feature_errors_are_not_leaked(codex_env):

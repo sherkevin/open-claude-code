@@ -33,6 +33,13 @@ class CodexTurnRequest(InputModel):
     prepare_if_needed: bool = Field(default=False, strict=True)
 
 
+class CodexSteerRequest(InputModel):
+    turn_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+    client_request_id: str = Field(
+        min_length=8, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
+    text: str = Field(min_length=1, max_length=20000)
+
+
 class CodexInterruptRequest(InputModel):
     turn_id: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -193,6 +200,21 @@ def create_codex_router(svc, authenticated, host: CodexHost):
         response.headers["Cache-Control"] = "no-store"
         conversation = require_codex_conversation(service, conversation_id, user)
         return await _call(_run_owner_turn, host, service, conversation, user["id"], body)
+
+    @router.get("/steers")
+    async def steer_history(conversation_id: str, response: Response,
+                            service=Depends(svc), user=Depends(authenticated)):
+        response.headers["Cache-Control"] = "no-store"
+        require_codex_conversation(service, conversation_id, user)
+        return await _call(host.steer_history, user["id"], conversation_id)
+
+    @router.post("/steer")
+    async def steer(conversation_id: str, body: CodexSteerRequest, response: Response,
+                    service=Depends(svc), user=Depends(authenticated)):
+        response.headers["Cache-Control"] = "no-store"
+        require_codex_conversation(service, conversation_id, user)
+        return await _call(host.steer, user["id"], conversation_id, body.turn_id,
+                           body.client_request_id, body.text)
 
     @router.post("/interrupt")
     async def interrupt(conversation_id: str, response: Response,
