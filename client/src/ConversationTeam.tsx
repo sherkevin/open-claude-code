@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Users } from 'lucide-react';
-import { api, clientRequestId, errorText, post } from './api';
+import { ApiError, api, clientRequestId, errorText, post } from './api';
 import { Button, ErrorNotice, Field, Loader, Modal, SuccessNotice } from './components';
+import { waitForRead } from './runReadback';
 import './team-collaboration.css';
 
 export type NativeTeamTask = {
@@ -130,6 +131,22 @@ export function TeamBoardView({ board }: { board: TeamBoard }) {
   </div>;
 }
 
+async function readNativeBoard(path: string, signal: AbortSignal): Promise<TeamBoard> {
+  // An earlier native read can still own the actor after its browser tab closes.
+  const delays = [400, 1000, 2000, 3500];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const value = await api<TeamRead>(path, { signal, cache: 'no-store' });
+      if (value.execution_enabled !== false) throw new Error('任务板回执不匹配，请刷新。');
+      return value.board;
+    } catch (error) {
+      if (signal.aborted || !(error instanceof ApiError) || error.code !== 'TEAM_SESSION_BUSY'
+          || attempt === delays.length) throw error;
+      await waitForRead(delays[attempt], signal);
+    }
+  }
+}
+
 function TeamDialog({ conversationId, unavailable, onClose }:
   { conversationId: string; unavailable: boolean; onClose: () => void }) {
   const base = `/conversations/${encodeURIComponent(conversationId)}/team`;
@@ -159,10 +176,7 @@ function TeamDialog({ conversationId, unavailable, onClose }:
           || value.task_execution_enabled !== false) throw new Error('协作授权回执不匹配，请刷新。');
       return value;
     });
-    const boardRead = unavailable ? Promise.resolve(null) : api<TeamRead>(base, options).then(value => {
-      if (value.execution_enabled !== false) throw new Error('任务板回执不匹配，请刷新。');
-      return value.board;
-    });
+    const boardRead = unavailable ? Promise.resolve(null) : readNativeBoard(base, controller.signal);
     void Promise.allSettled([collaborationRead, boardRead]).then(([collaboration, read]) => {
       if (controller.signal.aborted) return;
       const errors = [];
