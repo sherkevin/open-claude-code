@@ -52,7 +52,10 @@ _NAMES, _MATCH = _public_terms()
 _OPAQUE = re.compile(r"\x60[^\x60]*\x60|(?:https?://|[A-Za-z]:[\\/]|\\\\|/)[^\s，。！？；、,;]*"
                      r"|[\w.+-]+@[\w.-]+\.[a-zA-Z]+|[\w.-]+=[^\s，。！？；,;]+")
 _SENTENCE = re.compile(r"[。！？.!?；;\n]")
-_RESTRICTION = re.compile(r"(?:不要|请勿|无需|不必|不用|禁止|\b(?:do not|don't|without)\b)[^,，。！？.!?；;\n]*", re.I)
+_RESTRICTION = re.compile(
+    r"(?:不要|请勿|无需|无须|不必|不用|不需要|不希望|禁止|(?:请|先|千万)别|(?<![\u3400-\u9fff])别"
+    r"|\b(?:do not|don't|without)\b)[^,，。！？.!?；;\n]*", re.I,
+)
 
 
 def engineering_subject(text: str, category: str) -> str:
