@@ -26,6 +26,16 @@ describe('native goal state UI',()=>{
     expect(()=>goalExecutionAuthorization(goal,'workspace-session-fixture',{maxRounds:1,tokenBudget:0,costBudgetMicros:1,timeBudgetSeconds:60})).toThrow();
     expect(()=>goalExecutionAuthorization(null,'workspace-session-fixture',{maxRounds:1,tokenBudget:1,costBudgetMicros:1,timeBudgetSeconds:60})).toThrow();
   });
+  it('sends the per-round cap only when entered and never above the total',()=>{
+    const limits={maxRounds:3,tokenBudget:10,costBudgetMicros:50,timeBudgetSeconds:60};
+    expect(goalExecutionAuthorization(goal,'fixture',limits)).not.toHaveProperty('round_cost_budget_micros');
+    for(const cap of [1,50]){
+      expect(goalExecutionAuthorization(goal,'fixture',{...limits,roundCostBudgetMicros:cap}).round_cost_budget_micros).toBe(cap);
+    }
+    for(const cap of [0,-1,1.5,51,NaN]){
+      expect(()=>goalExecutionAuthorization(goal,'fixture',{...limits,roundCostBudgetMicros:cap})).toThrow('单轮费用上限');
+    }
+  });
   it('shows synthetic and unknown billing without claiming production cost',()=>{
     const execution:GoalExecution={harness_session_id:'workspace-session-fixture',authorization:{id:'auth-1',goal_id:goal.id,goal_revision:3,harness_session_id:'workspace-session-fixture',max_rounds:2,token_budget:10000,cost_budget_micros:10000,time_budget_seconds:3600,status:'active',expires_at:null},budget:{rounds_used:1,rounds_executed:1,usage_complete:false,cost_authoritative:false,tokens_used:null,cost_micros_used:null,synthetic_rounds:1,unknown_rounds:[1],rounds_remaining:1,tokens_remaining:null,cost_micros_remaining:null,time_remaining_seconds:3600},active_lease:null,rounds:[{id:'lease-1',round_index:1,state:'settled',armed:true,usage_status:'unknown',usage_source:'synthetic_fixture',cost_authoritative:false,total_tokens:null,cost_micros:null,run_id:'run-1',assistant_message_id:'message-1',error_code:'USAGE_INCOMPLETE'}],can_start:false,driver_integrated:true,single_round_per_run:true,unattended_execution:false,continuation_driver:false};
     const html=renderToStaticMarkup(<GoalExecutionView execution={execution} goal={goal}/>);
@@ -33,5 +43,26 @@ describe('native goal state UI',()=>{
     expect(html).toContain('回环合成计费');
     expect(html).toContain('第 1 轮：settled');
     expect(html).not.toContain('费用来自权威回执');
+    expect(html).not.toContain('逐笔费用');
+    const reservation={
+      source:'loopback_test', reserved_micros:15, settled_micros:null,
+      attempts:[
+        {attempt_id:'a',kind:'parent',parent_attempt_id:null,reserved_micros:5,settled_micros:0,state:'settled'},
+        {attempt_id:'b',kind:'child',parent_attempt_id:'a',reserved_micros:7,settled_micros:1,state:'settled'},
+        {attempt_id:'c',kind:'retry',parent_attempt_id:'a',reserved_micros:3,settled_micros:null,state:'reserved'},
+      ],
+    } as const;
+    const recorded:GoalExecution={...execution,
+      authorization:{...execution.authorization!,round_cost_budget_micros:17},
+      rounds:[{...execution.rounds[0],cost_reservation:{...reservation,attempts:[...reservation.attempts]}}],
+    };
+    const details=renderToStaticMarkup(<GoalExecutionView execution={recorded} goal={goal}/>);
+    expect(details).toContain('已授权的单轮费用上限：17 微美元');
+    expect(details).toContain('逐笔费用 · 预留 15 微美元 · 结算 未知');
+    expect(details).toContain('隔离回环测试');
+    expect(details).toContain('主任务 · 已结算 · 预留 5 微美元 · 结算 0 微美元');
+    expect(details).toContain('子任务 · 已结算 · 预留 7 微美元 · 结算 1 微美元');
+    expect(details).toContain('重试 · 已预留 · 预留 3 微美元 · 结算 未知');
+
   });
 });

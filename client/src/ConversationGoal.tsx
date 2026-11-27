@@ -6,10 +6,19 @@ import {Button,ErrorNotice,Field,Loader,Modal} from './components';
 export type NativeGoal={id:string;revision:number;objective:string;phase:'active'|'paused'|'blocked'|'complete';maxGoalRounds:number;roundsStarted:number;createdAt:number;updatedAt:number;activation:'disarmed';blockedReason?:{code:string;message:string}};
 type Receipt={goal:NativeGoal|null;continuation_driver:false};
 type Action='create'|'edit'|'pause'|'resume'|'complete'|'clear';
-export type GoalExecutionLimits={maxRounds:number;tokenBudget:number;costBudgetMicros:number;timeBudgetSeconds:number};
-type ExecutionAuthorization={id:string;goal_id:string;goal_revision:number;harness_session_id:string;max_rounds:number;token_budget:number;cost_budget_micros:number;time_budget_seconds:number;status:'active'|'revoked';revoked_reason?:string|null;expires_at:string|null};
+export type GoalExecutionLimits={maxRounds:number;tokenBudget:number;costBudgetMicros:number;roundCostBudgetMicros?:number;timeBudgetSeconds:number};
+type ExecutionAuthorization={id:string;goal_id:string;goal_revision:number;harness_session_id:string;max_rounds:number;token_budget:number;cost_budget_micros:number;round_cost_budget_micros?:number|null;time_budget_seconds:number;status:'active'|'revoked';revoked_reason?:string|null;expires_at:string|null};
 type ExecutionBudget={rounds_used:number;rounds_executed:number;usage_complete:boolean;cost_authoritative:boolean;tokens_used:number|null;cost_micros_used:number|null;synthetic_rounds:number;unknown_rounds:number[];rounds_remaining:number|null;tokens_remaining:number|null;cost_micros_remaining:number|null;time_remaining_seconds:number|null};
-type ExecutionRound={id:string;round_index:number;state:'admitted'|'settled'|'aborted';armed:boolean;usage_status:'complete'|'unknown'|null;usage_source?:string|null;cost_authoritative:boolean|null;total_tokens:number|null;cost_micros:number|null;run_id:string;assistant_message_id:string|null;error_code?:string|null;abort_reason?:string|null};
+type CostAttempt = {
+  attempt_id: string;
+  kind: 'parent' | 'child' | 'retry';
+  parent_attempt_id: string | null;
+  reserved_micros: number;
+  settled_micros: number | null;
+  state: 'reserved' | 'started' | 'settled' | 'unused';
+};
+type CostReservation = {source:string;reserved_micros:number;settled_micros:number|null;attempts:CostAttempt[]};
+type ExecutionRound={cost_reservation?:CostReservation|null;id:string;round_index:number;state:'admitted'|'settled'|'aborted';armed:boolean;usage_status:'complete'|'unknown'|null;usage_source?:string|null;cost_authoritative:boolean|null;total_tokens:number|null;cost_micros:number|null;run_id:string;assistant_message_id:string|null;error_code?:string|null;abort_reason?:string|null};
 export type GoalExecution={harness_session_id:string|null;authorization:ExecutionAuthorization|null;budget:ExecutionBudget|null;active_lease:{id:string;round_index:number;armed:boolean}|null;rounds:ExecutionRound[];can_start:boolean;driver_integrated:boolean;single_round_per_run:true;unattended_execution:false;continuation_driver:false};
 const phases={active:'目标已记录',paused:'已暂停',blocked:'存在阻塞',complete:'已标记完成'} as const;
 const positive=(value:number,min:number,max:number)=>Number.isSafeInteger(value)&&value>=min&&value<=max;
@@ -19,7 +28,11 @@ export function goalExecutionAuthorization(goal:NativeGoal|null,sessionId:string
   if(!positive(limits.maxRounds,1,32)||!positive(limits.tokenBudget,1,1_000_000_000_000)
     ||!positive(limits.costBudgetMicros,1,1_000_000_000_000)||!positive(limits.timeBudgetSeconds,60,30*24*3600))
     throw new Error('请设置有效的轮次、token、费用和时间预算。');
+  const perRound=limits.roundCostBudgetMicros;
+  if(perRound!==undefined && !positive(perRound,1,limits.costBudgetMicros))
+    throw new Error('单轮费用上限须为正整数，且不超过总费用预算。');
   return {goal_id:goal.id,goal_revision:goal.revision,harness_session_id:sessionId,
+    ...(perRound===undefined?{}:{round_cost_budget_micros:perRound}),
     max_rounds:limits.maxRounds,token_budget:limits.tokenBudget,
     cost_budget_micros:limits.costBudgetMicros,time_budget_seconds:limits.timeBudgetSeconds,confirm:true};
 }
@@ -47,7 +60,19 @@ export function GoalStateView({goal,executionEnabled=false}:{goal:NativeGoal|nul
   </div>;
 }
 
-const micros=(value:number|null)=>value===null?'未知':`${(value/1_000_000).toFixed(4)} 美元`;
+const micros=(value:number|null|undefined)=>value==null?'未知':`${value.toLocaleString('zh-CN')} 微美元`;
+const attemptNames={parent:'主任务',child:'子任务',retry:'重试'} as const;
+const attemptStates={reserved:'已预留',started:'已开始',settled:'已结算',unused:'未使用'} as const;
+
+function RoundCosts({reservation}:{reservation:CostReservation}){
+  return <details>
+    <summary>逐笔费用 · 预留 {micros(reservation.reserved_micros)} · 结算 {micros(reservation.settled_micros)}</summary>
+    {reservation.source==='loopback_test'&&<p>计量来源：隔离回环测试。</p>}
+    <ul>{reservation.attempts.map(attempt=><li key={attempt.attempt_id}>
+      {attemptNames[attempt.kind]} · {attemptStates[attempt.state]} · 预留 {micros(attempt.reserved_micros)} · 结算 {micros(attempt.settled_micros)}
+    </li>)}</ul>
+  </details>;
+}
 /** Read-only execution accounting; synthetic and production billing stay separate. */
 export function GoalExecutionView({execution,goal}:{execution:GoalExecution;goal:NativeGoal|null}){
   const authorization=execution.authorization,budget=execution.budget;
@@ -55,11 +80,14 @@ export function GoalExecutionView({execution,goal}:{execution:GoalExecution;goal
     <strong>目标执行</strong>
     {!authorization&&<p>尚未授权执行。授权绑定当前目标内容和原生会话，只允许你逐轮明确启动。</p>}
     {authorization&&<p>{authorization.status==='active'?'执行授权生效中':'执行授权已撤销'}{authorization.revoked_reason?`（${authorization.revoked_reason}）`:''}</p>}
+    {authorization?.round_cost_budget_micros!=null&&<p>已授权的单轮费用上限：{micros(authorization.round_cost_budget_micros)}</p>}
     {budget&&<p>轮次已用 {budget.rounds_used}（已执行 {budget.rounds_executed}），剩余 {budget.rounds_remaining??'未知'}；token 已用 {budget.tokens_used??'未知'}，剩余 {budget.tokens_remaining??'未知'}；费用已用 {micros(budget.cost_micros_used)}，剩余 {micros(budget.cost_micros_remaining)}；时间剩余 {budget.time_remaining_seconds??'未知'} 秒。</p>}
     {budget&&!budget.usage_complete&&<p role="alert">前序轮次用量未完整确认。系统不会把未知当零，下一轮不能开始。</p>}
     {budget&&budget.synthetic_rounds>0&&<p>其中 {budget.synthetic_rounds} 轮为回环合成计费，不是生产权威计费。</p>}
     {budget&&budget.rounds_executed>0&&budget.usage_complete&&budget.cost_authoritative&&<p>费用来自权威回执。</p>}
-    {execution.rounds.length>0&&<ol>{execution.rounds.slice(-5).map(item=><li key={item.id}>第 {item.round_index} 轮：{item.state} · 用量 {item.usage_status??'未结算'}{item.error_code?` · ${item.error_code}`:''}</li>)}</ol>}
+    {execution.rounds.length>0&&<ol>{execution.rounds.slice(-5).map(item=><li key={item.id}>第 {item.round_index} 轮：{item.state} · 用量 {item.usage_status??'未结算'}{item.error_code?` · ${item.error_code}`:''}
+      {item.cost_reservation&&<RoundCosts reservation={item.cost_reservation}/>}
+    </li>)}</ol>}
     {goal&&<p>下一轮从原生第 {goal.roundsStarted+1} 轮开始；不会自动续跑。</p>}
   </div>;
 }
@@ -161,6 +189,11 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onRoundStarted,
             <Field label="本次授权的执行轮次上限" hint="每次开始仍需你单独确认；不会无人值守自动续跑。"><input type="number" min={1} max={32} value={limits.maxRounds} disabled={busy||unavailable||!goal} onChange={e=>setLimits({...limits,maxRounds:Number(e.target.value)})}/></Field>
             <Field label="Token 预算"><input type="number" min={1} value={limits.tokenBudget} disabled={busy||unavailable||!goal} onChange={e=>setLimits({...limits,tokenBudget:Number(e.target.value)})}/></Field>
             <Field label="费用预算（微美元）" hint="1 美元 = 1,000,000 微美元；未知用量不会被当作零。"><input type="number" min={1} value={limits.costBudgetMicros} disabled={busy||unavailable||!goal} onChange={e=>setLimits({...limits,costBudgetMicros:Number(e.target.value)})}/></Field>
+            <Field label="单轮费用上限（微美元，可选）" hint="设置后，开始前须为本轮主任务、子任务和重试取得可核验的预留金额。缺少逐笔计量或额度不足时，此轮不会启动。">
+              <input type="number" min={1} max={limits.costBudgetMicros} step={1} value={limits.roundCostBudgetMicros??''}
+                disabled={busy||unavailable||!goal}
+                onChange={e=>setLimits({...limits,roundCostBudgetMicros:e.target.value===''?undefined:Number(e.target.value)})}/>
+            </Field>
             <Field label="时间预算（秒）"><input type="number" min={60} value={limits.timeBudgetSeconds} disabled={busy||unavailable||!goal} onChange={e=>setLimits({...limits,timeBudgetSeconds:Number(e.target.value)})}/></Field>
             <div className="task-sidebar-actions">
               <Button busy={busy} disabled={busy||unavailable||!goal||!execution.harness_session_id} onClick={()=>void authorizeExecution()}>授权执行</Button>
