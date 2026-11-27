@@ -43,6 +43,8 @@ MAX_FRAME_CHARS = 1048576
 MAX_TURN_NOTIFICATIONS = 8192
 RECENT_REQUESTS = 8
 MAX_ADMITTED_REQUESTS = 1024
+MAX_STEER_REQUESTS = 256
+STEER_STATES = frozenset({"uncertain", "delivered", "closed", "rejected"})
 RECENT_TEXT_CHARS = 4096
 
 APPROVAL_METHODS = frozenset({
@@ -79,6 +81,17 @@ class CodexHostUnavailable(CodexHostError):
 
 class CodexHostRejected(CodexHostError):
     pass
+
+
+class _NativeInputRejected(CodexHostRejected):
+    """A valid native reply explicitly rejected this method or input."""
+
+
+def _is_input_rejection(message: dict) -> bool:
+    error = message.get("error")
+    return ("result" not in message and isinstance(error, dict)
+            and type(error.get("code")) is int and error["code"] in (-32600, -32601, -32602)
+            and isinstance(error.get("message"), str))
 
 
 class CodexHostBusy(CodexHostError):
@@ -219,6 +232,8 @@ class _Session:
         self._pending: dict[object, queue.Queue] = {}
         self._pending_guard = threading.Lock()
         self._write_guard = threading.Lock()
+        self._control_guard = threading.Lock()
+        self._interrupt_barriers = 0
         self._next_id = 0
         self.events: queue.Queue = queue.Queue(maxsize=config.max_buffered_notifications)
         self._overflow = False
@@ -418,7 +433,7 @@ class _Session:
                 except queue.Full:
                     pass
 
-    def request(self, method: str, params: dict, timeout: float) -> dict:
+    def _send_request(self, method: str, params: dict) -> tuple[int, queue.Queue]:
         if self._ended.is_set() or self._failure is not None or self._closed:
             raise CodexHostUnavailable("app-server is unavailable")
         waiter: queue.Queue = queue.Queue(maxsize=1)
@@ -428,16 +443,27 @@ class _Session:
             self._pending[request_id] = waiter
         try:
             self._write({"id": request_id, "method": method, "params": params})
-            try:
-                message = waiter.get(timeout=timeout)
-            except queue.Empty:
-                raise CodexHostUnavailable(f"{method} timed out") from None
+        except BaseException:
+            with self._pending_guard:
+                self._pending.pop(request_id, None)
+            raise
+        return request_id, waiter
+
+    def request(self, method: str, params: dict, timeout: float) -> dict:
+        request_id, waiter = self._send_request(method, params)
+        try:
+            message = waiter.get(timeout=timeout)
+        except queue.Empty:
+            raise CodexHostUnavailable(f"{method} timed out") from None
         finally:
             with self._pending_guard:
                 self._pending.pop(request_id, None)
         if message is None:
             raise CodexHostUnavailable(f"{method} ended")
         if "error" in message:
+            if (type(message.get("id")) is int and message["id"] == request_id
+                    and _is_input_rejection(message)):
+                raise _NativeInputRejected(f"{method} rejected")
             raise CodexHostRejected(f"{method} rejected")
         result = message.get("result")
         if result is None:
@@ -520,11 +546,47 @@ class _Session:
             raise CodexHostRejected("turn identity missing")
         return turn["id"]
 
+    def steer_turn(self, thread_id: str, turn_id: str, client_request_id: str, text: str) -> str:
+        # Serialize only the wire submission with the start of cancellation.
+        # Custody, durable idempotency and the exactly targeted turn are checked
+        # by the caller; the native precondition also covers a concurrent finish.
+        with self._control_guard:
+            if self._interrupt_barriers:
+                return "closed"
+            request_id, waiter = self._send_request("turn/steer", {
+                "threadId": thread_id,
+                "expectedTurnId": turn_id,
+                "clientUserMessageId": client_request_id,
+                "input": [{"type": "text", "text": text}],
+            })
+        try:
+            message = waiter.get(timeout=self.config.response_timeout_seconds)
+        except queue.Empty:
+            # The reader removes this waiter on a late ACK or EOF. Removing it
+            # here would make a late reply terminate the independent active turn.
+            return "uncertain"
+        if (not isinstance(message, dict) or type(message.get("id")) is not int
+                or message["id"] != request_id):
+            return "uncertain"
+        if "error" in message:
+            return "rejected" if _is_input_rejection(message) else "uncertain"
+        result = message.get("result")
+        return "delivered" if isinstance(result, dict) and result.get("turnId") == turn_id else "uncertain"
+
     def interrupt_turn(self, thread_id: str, turn_id: str) -> None:
-        self.request("turn/interrupt", {
-            "threadId": thread_id,
-            "turnId": turn_id,
-        }, self.config.response_timeout_seconds)
+        with self._control_guard:
+            self._interrupt_barriers += 1
+        try:
+            self.request("turn/interrupt", {
+                "threadId": thread_id,
+                "turnId": turn_id,
+            }, self.config.response_timeout_seconds)
+        except _NativeInputRejected:
+            # This cancel alone did not take effect. A concurrent accepted or
+            # unconfirmed cancel must still block new input on this session.
+            with self._control_guard:
+                self._interrupt_barriers -= 1
+            raise
 
     def wait_turn(self, thread_id: str, turn_id: str, *, first_output=None, first_read=None) -> dict:
         """Wait for the exact bound turn; never forward another identity."""
@@ -997,6 +1059,16 @@ class CodexHost:
                        or not isinstance(v, str) or not SHA256_HEX.fullmatch(v)
                        for k, v in admitted.items())):
             raise CodexHostUnavailable("app-server admitted request ledger invalid")
+        steers = value.get("steer_requests", {})
+        if not isinstance(steers, dict) or len(steers) > MAX_STEER_REQUESTS:
+            raise CodexHostUnavailable("app-server steer ledger invalid")
+        for request_id, entry in steers.items():
+            if (not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id)
+                    or not isinstance(entry, dict) or set(entry) != {"turn_id", "text_digest", "state"}
+                    or not _valid_id(entry["turn_id"])
+                    or not isinstance(entry["text_digest"], str) or not SHA256_HEX.fullmatch(entry["text_digest"])
+                    or not isinstance(entry["state"], str) or entry["state"] not in STEER_STATES):
+                raise CodexHostUnavailable("app-server steer receipt invalid")
         first_request = value.get("first_turn_request_id")
         if first_request is not None and (not isinstance(first_request, str) or first_request not in admitted):
             raise CodexHostUnavailable("app-server first request ledger mismatch")
@@ -1377,7 +1449,10 @@ class CodexHost:
                     if current is None:
                         raise CodexHostUnavailable("Codex thread binding disappeared")
                     self._validate_binding(current, user_id, conversation_id, workspace)
-                    if current != binding:
+                    # A late steer for a closed turn may record its own receipt
+                    # while this invocation resumes. It cannot change turn admission.
+                    if any(current.get(k) != binding.get(k) for k in current.keys() | binding.keys()
+                           if k not in ("steer_requests", "updated_at")):
                         raise CodexHostConflict("Codex thread binding changed before admission")
                     current["admitted_requests"][request_id] = digest
                     current["uncertain_request_id"] = request_id
@@ -1459,6 +1534,79 @@ class CodexHost:
             finally:
                 self._unregister(key, session)
                 session.close()
+
+    @staticmethod
+    def _steer_receipt(request_id: str, entry: dict) -> dict:
+        return {"client_request_id": request_id, "turn_id": entry["turn_id"], "state": entry["state"]}
+
+    def steer_history(self, user_id: str, conversation_id: str) -> dict:
+        """Read a bounded projection. No workspace, process or replay is needed."""
+        self.require_enabled()
+        binding = self._load(self._key(user_id, conversation_id))
+        if binding is None:
+            return {"receipts": []}
+        self._validate_binding(binding, user_id, conversation_id, self._workspace_path(user_id, conversation_id))
+        ledger = binding.get("steer_requests", {})
+        ids = list(ledger)[-RECENT_REQUESTS:]
+        return {"receipts": [self._steer_receipt(rid, ledger[rid]) for rid in reversed(ids)]}
+
+    def steer(self, user_id: str, conversation_id: str, turn_id: str,
+              client_request_id: str, text: str) -> dict:
+        """Deliver once to the local owner of the exact running turn."""
+        self.require_enabled()
+        if (not _valid_id(turn_id) or not isinstance(client_request_id, str)
+                or not REQUEST_ID.fullmatch(client_request_id)):
+            raise CodexHostRejected("invalid Codex steer identity")
+        if (not isinstance(text, str) or not text.strip() or "\x00" in text
+                or len(text) > self.config.max_input_chars):
+            raise CodexHostRejected("invalid Codex steer input")
+        key = self._key(user_id, conversation_id)
+        workspace = self._workspace_path(user_id, conversation_id)
+        digest = _digest(text)
+        with self._state_lock(key):
+            binding = self._load(key)
+            if binding is None:
+                raise CodexHostConflict("Codex thread is not prepared")
+            self._validate_binding(binding, user_id, conversation_id, workspace)
+            ledger = binding.setdefault("steer_requests", {})
+            if client_request_id in ledger:
+                prior = ledger[client_request_id]
+                if prior["turn_id"] != turn_id or prior["text_digest"] != digest:
+                    raise CodexHostConflict("Codex steer identity was reused")
+                return self._steer_receipt(client_request_id, prior)
+            if len(ledger) >= MAX_STEER_REQUESTS:
+                raise CodexHostConflict("Codex steer ledger is full")
+            session = self._session_for(key)
+            state = "uncertain"
+            if binding.get("active_turn_id") != turn_id or binding.get("interrupt_requested_at"):
+                state = "closed"
+            elif session is None:
+                state = "rejected"
+            entry = {"turn_id": turn_id, "text_digest": digest, "state": state}
+            ledger[client_request_id] = entry
+            self._save(key, binding)
+            thread_id = binding["thread_id"]
+        if state == "uncertain":
+            try:
+                state = session.steer_turn(thread_id, turn_id, client_request_id, text)
+                if state != "uncertain":
+                    with self._state_lock(key):
+                        # Reload even if the turn has already completed. Merge
+                        # only this receipt so the durable terminal is preserved.
+                        current = self._load(key)
+                        if current is None:
+                            raise CodexHostUnavailable("Codex steer binding disappeared")
+                        self._validate_binding(current, user_id, conversation_id, workspace)
+                        if (current["thread_id"] != thread_id
+                                or current.get("steer_requests", {}).get(client_request_id) != entry):
+                            raise CodexHostUnavailable("Codex steer receipt changed")
+                        current["steer_requests"][client_request_id] = {**entry, "state": state}
+                        self._save(key, current)
+            except CodexHostUnavailable:
+                # The write or ACK may have crossed the process boundary.
+                # Keep the original durable admission; never submit it again.
+                state = "uncertain"
+        return self._steer_receipt(client_request_id, {**entry, "state": state})
 
     def interrupt(self, user_id: str, conversation_id: str,
                   turn_id: str | None = None) -> dict:
