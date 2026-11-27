@@ -236,6 +236,12 @@ class HarnessToolBridge:
                 self.active(run_id)
             except AppError as exc:
                 result = self.discard(run_id, event_id, tool_name, exc)
+                # Even an error result can prompt the native model's next step.
+                # Cancellation owns transport shutdown after its children join.
+                if self.runtime.service.db.one(
+                        "SELECT 1 FROM runs WHERE id=? AND status IN ('cancelling','cancelled')",
+                        (run_id,)):
+                    return
             try:
                 bounded_respond(client, request_id, result)
             except AppError as exc:

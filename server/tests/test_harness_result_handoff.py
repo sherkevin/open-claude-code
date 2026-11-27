@@ -87,7 +87,10 @@ def test_final_rpc_rechecks_after_bridge_has_returned(env, mutation, captured_cl
         runtime.current_run = None
     client, received = captured_client
     runtime.bridge.respond(client, "rpc-1", payload, result, run_id)
-    assert received[0].get("is_error") is True
+    if mutation == "cancel":
+        assert received == []
+    else:
+        assert received[0].get("is_error") is True
     assert "synthetic-business-data" not in str(received)
     assert not runtime.bridge.response_guards
 
