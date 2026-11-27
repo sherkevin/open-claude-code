@@ -175,3 +175,15 @@ def test_feature_errors_are_not_leaked(codex_env):
 def test_ordinary_feature_switch_cannot_launch_unreviewed_real_host(tmp_path):
     with pytest.raises(ValueError, match="explicitly provisioned isolated host"):
         create_app(settings_for(tmp_path), runtime_factory=FakeRuntime)
+
+
+def test_first_turn_requires_explicit_preparation_consent(codex_env):
+    client, _, _ = codex_env
+    cid = conversation(client)["id"]
+    base = f"/api/v1/conversations/{cid}/codex"
+    body = {"client_request_id": "first-request", "text": "只读请求"}
+    assert client.post(base + "/turn", json=body).status_code == 409
+    assert not client.get(base).json()["bound"]
+    result = client.post(base + "/turn", json={**body, "prepare_if_needed": True})
+    assert result.status_code == 200, result.text
+    assert client.get(base).json()["last_turn"]["turn_id"] == result.json()["turn_id"]

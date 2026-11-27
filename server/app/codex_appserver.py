@@ -494,7 +494,7 @@ class _Session:
             "turnId": turn_id,
         }, self.config.response_timeout_seconds)
 
-    def wait_turn(self, thread_id: str, turn_id: str) -> dict:
+    def wait_turn(self, thread_id: str, turn_id: str, *, first_output=None) -> dict:
         """Wait for the exact bound turn; never forward another identity."""
         deadline = time.monotonic() + self.config.turn_timeout_seconds
         text: list[str] = []
@@ -538,6 +538,9 @@ class _Session:
                 if size > self.config.max_output_chars:
                     raise CodexHostUnavailable("turn output exceeds the host budget")
                 text.append(delta)
+                if first_output is not None and delta:
+                    first_output(delta[:1024])
+                    first_output = None
             elif method == "turn/started":
                 if record["turn"]["id"] != turn_id:
                     raise CodexHostUnavailable("turn identity mismatch")
@@ -810,7 +813,7 @@ class CodexHost:
                 pass
 
     @contextmanager
-    def _turn_lock(self, key: str):
+    def _turn_lock(self, key: str, request_id: str | None = None, *, preparing=False):
         self._layout(create=True)
         path = self._lock_path(key, "turn")
         try:
@@ -823,13 +826,67 @@ class CodexHost:
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                     or stat.S_IMODE(info.st_mode) != 0o600):
                 raise CodexHostUnavailable("app-server turn lock identity invalid")
+            def publish(phase, text=None):
+                data = {"request_id": request_id, "phase": phase}
+                if text is not None:
+                    data["text"] = text
+                payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                with self._state_lock(key):
+                    os.pwrite(descriptor, payload, 0)
+                    os.ftruncate(descriptor, len(payload))
+
+            with self._state_lock(key):
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    raise CodexHostBusy("another Codex turn owns this conversation") from None
+                os.ftruncate(descriptor, 0)
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                raise CodexHostBusy("another Codex turn owns this conversation") from None
-            yield
+                if preparing:
+                    publish("preparing")
+                yield publish
+            finally:
+                # Advisory progress exists only while the operation owns this
+                # flock. Durable admission, receipts and recovery live elsewhere.
+                with self._state_lock(key):
+                    os.ftruncate(descriptor, 0)
         finally:
             os.close(descriptor)
+
+    def _operation(self, key: str):
+        # The private owner directory has already been validated by _load.
+        try:
+            fd = os.open(self._lock_path(key, "turn"), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise CodexHostUnavailable("Codex operation state unavailable") from None
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600):
+                raise CodexHostUnavailable("Codex operation state invalid")
+            with self._state_lock(key):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raw = os.pread(fd, 16384, 0)
+                    if not raw:
+                        return None
+                    try:
+                        value = json.loads(raw)
+                    except (ValueError, UnicodeError):
+                        raise CodexHostUnavailable("Codex operation state invalid") from None
+                    if (not isinstance(value, dict) or set(value) - {"request_id", "phase", "text"}
+                            or value.get("phase") not in ("preparing", "thread_ready", "running", "output")
+                            or (value.get("request_id") is not None and not _valid_id(value["request_id"]))
+                            or ("text" in value and (not isinstance(value["text"], str)
+                                                     or len(value["text"]) > 1024))):
+                        raise CodexHostUnavailable("Codex operation state invalid")
+                    return value
+                return None
+        finally:
+            os.close(fd)
 
     @contextmanager
     def _state_lock(self, key: str):
@@ -1036,6 +1093,9 @@ class CodexHost:
             workspace = self._workspace_path(user_id, conversation_id)
             self._validate_binding(binding, user_id, conversation_id, workspace)
         view = self._view(binding)
+        operation = self._operation(key)
+        if operation is not None:
+            view["operation"] = operation
         if view["last_turn"]:
             view["last_turn"]["text"] = binding.get("last_text", "")
         if view["active_turn"]:
@@ -1046,7 +1106,7 @@ class CodexHost:
         """Start or resume the one thread bound to this owner conversation."""
         self.require_enabled()
         key = self._key(user_id, conversation_id)
-        with self._turn_lock(key):
+        with self._turn_lock(key, preparing=True) as publish:
             binding = self._load(key)
             workspace = self._workspace(user_id, conversation_id)
             if binding is not None:
@@ -1059,16 +1119,24 @@ class CodexHost:
                 return self._view(binding)
             with self._open_session(workspace) as session:
                 session.initialize()
-                thread_id = session.start_thread(workspace)
-            binding = self._new_binding(user_id, conversation_id, workspace, thread_id)
-            with self._state_lock(key):
-                if self._load(key) is not None:
-                    raise CodexHostConflict("Codex thread binding changed")
-                self._save(key, binding)
+                binding = self._start_binding(session, key, user_id, conversation_id, workspace)
+                publish("thread_ready")
             return self._view(binding)
 
+    def _start_binding(self, session, key, user_id, conversation_id, workspace):
+        thread_id = session.start_thread(workspace)
+        binding = self._new_binding(user_id, conversation_id, workspace, thread_id)
+        with self._state_lock(key):
+            if self._load(key) is not None:
+                raise CodexHostConflict("Codex thread binding changed")
+            self._save(key, binding)
+            saved = self._load(key)
+            if saved is None:
+                raise CodexHostUnavailable("Codex thread binding disappeared")
+            return saved
+
     def run_turn(self, user_id: str, conversation_id: str, request_id: str,
-                 text: str) -> dict:
+                 text: str, prepare_if_needed: bool = False) -> dict:
         """Run exactly one explicit owner turn and return its bound receipt.
 
         The caller is responsible for model/provider authorization.  This host
@@ -1085,32 +1153,37 @@ class CodexHost:
             raise CodexHostRejected("invalid Codex turn input")
         digest = _digest(text)
         key = self._key(user_id, conversation_id)
-        with self._turn_lock(key):
+        with self._turn_lock(key, request_id, preparing=True) as publish:
             binding = self._load(key)
-            if binding is None:
+            if binding is None and not prepare_if_needed:
                 raise CodexHostConflict("Codex thread is not prepared")
             workspace = self._workspace(user_id, conversation_id)
-            self._validate_binding(binding, user_id, conversation_id, workspace)
-            if binding.get("active_turn_id") or binding.get("uncertain_request_id"):
-                raise CodexHostConflict("Codex turn recovery is required first")
-            if binding.get("last_request_id") == request_id:
-                if binding.get("last_text_digest") != digest:
-                    raise CodexHostConflict("Codex request identity was reused")
-                return self._receipt(binding, replayed=True)
-            replayed = self._recent_receipt(binding, request_id, digest)
-            if replayed is not None:
-                return replayed
-            if request_id in binding["admitted_requests"]:
-                raise CodexHostConflict("Codex request was already admitted; receipt is not retained")
-            if len(binding["admitted_requests"]) >= MAX_ADMITTED_REQUESTS:
-                raise CodexHostConflict("Codex thread request ledger is full; prepare a new conversation")
+            if binding is not None:
+                self._validate_binding(binding, user_id, conversation_id, workspace)
+                if binding.get("active_turn_id") or binding.get("uncertain_request_id"):
+                    raise CodexHostConflict("Codex turn recovery is required first")
+                if binding.get("last_request_id") == request_id:
+                    if binding.get("last_text_digest") != digest:
+                        raise CodexHostConflict("Codex request identity was reused")
+                    return self._receipt(binding, replayed=True)
+                replayed = self._recent_receipt(binding, request_id, digest)
+                if replayed is not None:
+                    return replayed
+                if request_id in binding["admitted_requests"]:
+                    raise CodexHostConflict("Codex request was already admitted; receipt is not retained")
+                if len(binding["admitted_requests"]) >= MAX_ADMITTED_REQUESTS:
+                    raise CodexHostConflict("Codex thread request ledger is full; prepare a new conversation")
             # Verify the pinned executable before creating the process so a
             # digest rejection cannot leak a launched child.
             self._verify_executable()
             session = _Session(self.config, workspace, self._environment())
             try:
                 session.initialize()
-                session.resume_thread(binding["thread_id"], workspace)
+                if binding is None:
+                    binding = self._start_binding(session, key, user_id, conversation_id, workspace)
+                else:
+                    session.resume_thread(binding["thread_id"], workspace)
+                publish("thread_ready")
                 # Commit the exact request before turn/start. A hard crash,
                 # transport failure or lost response cannot make it look unsent.
                 with self._state_lock(key):
@@ -1145,7 +1218,9 @@ class CodexHost:
                         uncertain_text_digest=None,
                     )
                     self._save(key, current)
-                outcome = session.wait_turn(binding["thread_id"], turn_id)
+                publish("running")
+                outcome = session.wait_turn(binding["thread_id"], turn_id,
+                    first_output=lambda text: publish("output", text))
                 stored_text = outcome["text"][:self.config.max_receipt_chars]
                 with self._state_lock(key):
                     current = self._load(key)

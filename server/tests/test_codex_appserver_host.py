@@ -407,3 +407,58 @@ def test_expired_receipt_cannot_repeat_admitted_request(tmp_path, monkeypatch):
     with pytest.raises(CodexHostConflict):
         host.run_turn(USER, CID, "request-0004", "合成 4")
     assert len(requests(log_events(log), "turn/start")) == 3
+
+
+def test_first_explicit_request_has_one_process_and_live_owner_feedback(tmp_path, monkeypatch):
+    from app.codex_appserver import _Session
+
+    host, log = make_host(tmp_path)
+    reader, _ = make_host(tmp_path)
+    initializing, resume = threading.Event(), threading.Event()
+    displaying, finish = threading.Event(), threading.Event()
+    initialize = _Session.initialize
+    wait = _Session.wait_turn
+
+    def pause_initialize(session):
+        initializing.set()
+        assert resume.wait(10)
+        return initialize(session)
+
+    def hold_first_output(session, thread_id, turn_id, *, first_output):
+        def display(text):
+            first_output(text)
+            displaying.set()
+            assert finish.wait(10)
+        return wait(session, thread_id, turn_id, first_output=display)
+
+    monkeypatch.setattr(_Session, "initialize", pause_initialize)
+    monkeypatch.setattr(_Session, "wait_turn", hold_first_output)
+    outcomes = []
+    run = threading.Thread(target=lambda: outcomes.append(
+        host.run_turn(USER, CID, "first-request", "只读请求", True)), daemon=True)
+    run.start()
+    try:
+        assert initializing.wait(10)
+        initial = reader.status(USER, CID)
+        assert not initial["bound"]
+        assert initial["operation"] == {"request_id": "first-request", "phase": "preparing"}
+        assert reader.status(OTHER, CID).get("operation") is None
+        with pytest.raises(CodexHostBusy):
+            reader.run_turn(USER, CID, "first-request", "只读请求", True)
+        resume.set()
+        assert displaying.wait(10)
+        live = reader.status(USER, CID)
+        assert live["bound"] and live["active_turn"]["request_id"] == "first-request"
+        assert live["operation"]["phase"] == "output" and live["operation"]["text"]
+    finally:
+        resume.set()
+        finish.set()
+        run.join(10)
+    assert len(outcomes) == 1 and outcomes[0]["status"] == "completed"
+    saved = reader.status(USER, CID)
+    assert saved.get("operation") is None and saved["last_turn"]["request_id"] == "first-request"
+    assert saved["last_turn"]["turn_id"] == live["active_turn"]["turn_id"]
+    assert reader.run_turn(USER, CID, "first-request", "只读请求", True)["replayed"]
+    records = log_events(log)
+    assert len(requests(records, "initialize")) == len(requests(records, "turn/start")) == 1
+    assert not requests(records, "thread/resume")

@@ -26,6 +26,7 @@ class CodexTurnRequest(InputModel):
         min_length=8, max_length=64,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
     text: str = Field(min_length=1, max_length=20000)
+    prepare_if_needed: bool = Field(default=False, strict=True)
 
 
 class CodexInterruptRequest(InputModel):
@@ -92,7 +93,7 @@ def create_codex_router(svc, authenticated, host: CodexHost):
         response.headers["Cache-Control"] = "no-store"
         require_codex_conversation(service, conversation_id, user)
         return await _call(host.run_turn, user["id"], conversation_id,
-                           body.client_request_id, body.text)
+                           body.client_request_id, body.text, body.prepare_if_needed)
 
     @router.post("/interrupt")
     async def interrupt(conversation_id: str, response: Response,
