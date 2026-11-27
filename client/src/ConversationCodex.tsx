@@ -27,10 +27,55 @@ export function codexRequestKey(ownerId: string, conversationId: string) {
   return 'kaiwu:codex:request:' + encodeURIComponent(ownerId) + ':' + encodeURIComponent(conversationId);
 }
 
-export function keepCodexRequestId(storage: Pick<Storage, 'getItem' | 'setItem'>, key: string, pending: string | null) {
-  const id = storage.getItem(key) || pending || clientRequestId();
-  storage.setItem(key, id);
-  return id;
+type StorageAccess = () => Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+const tabRequests = new Map<string, string>();
+const browserStorage: StorageAccess = () => sessionStorage;
+
+function readRequest(key: string, storage: StorageAccess = browserStorage) {
+  if (tabRequests.has(key)) return tabRequests.get(key)!;
+  try { return storage().getItem(key); } catch { return null; }
+}
+
+export function keepCodexRequestId(key: string, previous: string | null, storage: StorageAccess = browserStorage) {
+  const id = previous || clientRequestId();
+  tabRequests.set(key, id);
+  try {
+    storage().setItem(key, id);
+    return { id, stored: true };
+  } catch {
+    return { id, stored: false };
+  }
+}
+
+function forgetRequest(key: string, id: string) {
+  if (tabRequests.get(key) === id) tabRequests.delete(key);
+  try { if (sessionStorage.getItem(key) === id) sessionStorage.removeItem(key); } catch { /* Memory-only tab. */ }
+}
+
+export type CodexReceipt = {
+  request_id: string;
+  state: 'recorded' | 'admitted_without_receipt' | 'not_found' | 'pending';
+  turn: Turn | null;
+};
+
+export function originalRequestResolved(receipt: CodexReceipt | null) {
+  return receipt?.state === 'recorded' || receipt?.state === 'admitted_without_receipt';
+}
+
+export function OriginalCodexReceipt({ receipt }: { receipt: CodexReceipt }) {
+  const { state, turn } = receipt;
+  return <section aria-label="原请求回执" className="section-help">
+    <strong>原请求回执</strong>
+    <p>请求编号 <code>{receipt.request_id}</code></p>
+    {state === 'recorded' && turn && <>
+      <p>{statusLabels[turn.status] || turn.status}</p>
+      {turn.text && <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{turn.text}</p>}
+      {turn.text_truncated && <p>{turn.text ? '仅显示此请求留存的部分正文。' : '仅留存轮次状态，正文未保存。'}</p>}
+    </>}
+    {state === 'admitted_without_receipt' && <p>开物曾登记此请求，已无可读回执，无法找回正文或确认最终状态。可以另行发送新任务。</p>}
+    {state === 'not_found' && <p>暂时查不到这个编号，执行结果仍未确认。可刷新状态，或输入原内容后用原编号重试。</p>}
+    {state === 'pending' && <p>开物已登记此请求，最终回执仍待确认。</p>}
+  </section>;
 }
 
 export function codexTurnPayload(thread: CodexThread, id: string, text: string) {
@@ -77,9 +122,10 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
   const storageKey = codexRequestKey(ownerId, conversationId);
   const [thread, setThread] = useState<CodexThread | null>(null);
   const [draft, setDraft] = useState('');
-  const [pending, setPending] = useState<string | null>(() => {
-    try { return sessionStorage.getItem(storageKey); } catch { return null; }
-  });
+  const [pending, setPending] = useState(() => readRequest(storageKey));
+  const [receipt, setReceipt] = useState<CodexReceipt | null>(null);
+  const [memoryOnly, setMemoryOnly] = useState(false);
+  const sentText = useRef<string | null>(null);
   const [sendingId, setSendingId] = useState<string | null>(null);
   const sending = Boolean(sendingId);
   const [action, setAction] = useState('');
@@ -92,13 +138,14 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
 
   const finish = useCallback((id: string) => {
     if (pendingId.current !== id) return;
-    try {
-      if (sessionStorage.getItem(storageKey) === id) sessionStorage.removeItem(storageKey);
-    } catch { /* The server receipt is authoritative. */ }
+    forgetRequest(storageKey, id);
     pendingId.current = null;
     setPending(null);
+    setReceipt(null);
     setError('');
-    setDraft('');
+    const submitted = sentText.current;
+    setDraft(current => current.trim() === submitted ? '' : current);
+    sentText.current = null;
   }, [storageKey]);
 
   const refresh = useCallback(async () => {
@@ -109,7 +156,26 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
       setThread(result);
       setReadError('');
       const id = pendingId.current;
-      if (id && result.last_turn?.request_id === id) finish(id);
+      if (!id) return;
+      if (result.last_turn?.request_id === id) { finish(id); return; }
+      if (result.operation?.request_id === id || result.active_turn?.request_id === id) {
+        setReceipt(null);
+        return;
+      }
+      const lookup = await api<CodexReceipt>(path + '/requests/' + encodeURIComponent(id), { cache: 'no-store' });
+      if (version !== generation.current || pendingId.current !== id) return;
+      if (lookup.request_id !== id || (lookup.state === 'recorded' && lookup.turn?.request_id !== id)) {
+        throw new Error('回执的请求编号不一致，请刷新核对。');
+      }
+      setReceipt(lookup);
+      if (originalRequestResolved(lookup)) {
+        setError('');
+        const submitted = sentText.current;
+        if (submitted !== null) {
+          setDraft(current => current.trim() === submitted ? '' : current);
+          sentText.current = null;
+        }
+      }
     } catch (cause) {
       if (version === generation.current) setReadError(errorText(cause));
     }
@@ -122,7 +188,9 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
 
   const active = thread?.active_turn;
   const operation = thread?.operation;
-  const poll = Boolean(sending || pending || action === '/thread' || operation || active?.can_interrupt);
+  const resolved = originalRequestResolved(receipt);
+  const waiting = Boolean(pending && (!receipt || receipt.state === 'pending'));
+  const poll = Boolean(sending || waiting || action === '/thread' || operation || active?.can_interrupt);
   useEffect(() => {
     if (!poll) return;
     let stopped = false;
@@ -146,13 +214,17 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
   }
 
   const controls = thread && codexControls(thread);
-  const canSend = controls?.send && !readError && !action && !sending && Boolean(draft.trim());
+  const visibleReceipt = sending && !resolved ? null : receipt;
+  const latestId = operation?.request_id || active?.request_id || thread?.last_turn?.request_id;
+  const sameRequestRetry = Boolean(pending && receipt?.state === 'not_found');
+  const canSend = controls?.send && (!pending || resolved || sameRequestRetry) && !readError && !action && !sending && Boolean(draft.trim());
 
   async function send() {
     if (!canSend || !thread || requestInFlight.current || actionInFlight.current) return;
-    let id: string;
-    try { id = keepCodexRequestId(sessionStorage, storageKey, pending); }
-    catch { setError('浏览器无法保存请求编号。请允许会话存储后再发送，以便刷新时核对结果。'); return; }
+    const { id, stored } = keepCodexRequestId(storageKey, sameRequestRetry ? pending : null);
+    sentText.current = draft.trim();
+    setMemoryOnly(!stored);
+    setReceipt(null);
     requestInFlight.current = true;
     pendingId.current = id;
     setPending(id);
@@ -160,7 +232,6 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
     setError('');
     try {
       await post<Turn>(path + '/turn', codexTurnPayload(thread, id, draft));
-      finish(id);
     } catch (cause) { if (pendingId.current === id) setError(errorText(cause)); }
     finally { await refresh(); requestInFlight.current = false; setSendingId(null); }
   }
@@ -169,13 +240,18 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
     <div className="modal-body">
       <ErrorNotice message={readError || error}/>
       {!thread && !readError && <Loader text="正在读取任务状态…"/>}
-      {thread && <CodexStatus thread={thread} sending={sending} pending={Boolean(pending)} requestId={sendingId || pending} preparing={action === '/thread'}/>}
+      {visibleReceipt && <OriginalCodexReceipt receipt={visibleReceipt}/>}
+      {thread && <section aria-label="最新任务状态">
+        {visibleReceipt && <><strong>最新任务状态</strong>{latestId && <p>请求编号 <code>{latestId}</code></p>}</>}
+        <CodexStatus thread={thread} sending={sending} pending={Boolean(pending && !visibleReceipt)} requestId={sendingId || pending} preparing={action === '/thread'}/>
+      </section>}
+      {pending && memoryOnly && <p className="section-help">浏览器仅在当前页面保留请求编号；刷新后可读取服务端最新任务状态。</p>}
       <Field label="任务内容">
         <textarea rows={4} maxLength={20000} value={draft} disabled={sending || Boolean(operation?.request_id) || Boolean(active) || Boolean(thread?.recovery_required)}
           onChange={e => setDraft(e.target.value)}/>
       </Field>
       <div className="task-sidebar-actions">
-        <Button busy={sending} disabled={!canSend} onClick={() => void send()}>{pending && !sending && controls?.send ? '用原编号重试' : '发送任务'}</Button>
+        <Button busy={sending} disabled={!canSend} onClick={() => void send()}>{sameRequestRetry && !sending && controls?.send ? '用原编号重试' : '发送任务'}</Button>
         {controls?.prepare && !sending && <Button variant="secondary"
           busy={action === '/thread'} disabled={Boolean(action || readError)}
           onClick={() => void perform('/thread')}>准备会话</Button>}

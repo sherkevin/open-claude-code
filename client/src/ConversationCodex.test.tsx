@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { CodexStatus, codexControls, codexRequestKey, codexTurnPayload, keepCodexRequestId, type CodexThread } from './ConversationCodex';
+import { CodexStatus, OriginalCodexReceipt, originalRequestResolved, codexControls, codexRequestKey, codexTurnPayload, keepCodexRequestId, type CodexThread } from './ConversationCodex';
 
 const idle: CodexThread = { bound: false, active_turn: null, last_turn: null, recovery_required: false };
 const view = (thread: CodexThread, pending = false, sending = false, preparing = false) =>
@@ -17,15 +17,37 @@ describe('Codex first request and recovery', () => {
 
   it('keeps only the opaque request id on refresh and reuses it for an explicit retry', () => {
     const entries = new Map<string, string>();
-    const storage = { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, id: string) => { entries.set(key, id); } };
+    const storage = () => ({ getItem: (key: string) => entries.get(key) ?? null,
+      setItem: (key: string, id: string) => { entries.set(key, id); }, removeItem: (key: string) => { entries.delete(key); } });
     const key = codexRequestKey('a:b', 'c');
-    const id = keepCodexRequestId(storage, key, null);
-    expect(keepCodexRequestId(storage, key, null)).toBe(id);
+    const { id } = keepCodexRequestId(key, null, storage);
+    expect(keepCodexRequestId(key, storage().getItem(key), storage)).toEqual({ id, stored: true });
     expect([...entries]).toEqual([[key, id]]);
     expect(codexRequestKey('a', 'b:c')).not.toBe(key);
     expect(codexRequestKey('a:b', 'd')).not.toBe(key);
-    entries.clear();
-    expect(keepCodexRequestId(storage, key, id)).toBe(id);
+    const blocked = () => { throw new Error('sessionStorage property inaccessible'); };
+    expect(keepCodexRequestId(key, id, blocked)).toEqual({ id, stored: false });
+    expect(keepCodexRequestId(key, null, blocked).id).not.toBe(id);
+  });
+
+  it('renders recorded, expired, pending and missing receipts without inferring an outcome', () => {
+    const record = { request_id: 'old-request', state: 'recorded' as const, turn: {
+      request_id: 'old-request', turn_id: 'old-turn', status: 'completed', text: '留存首段', text_truncated: true,
+    } };
+    const html = renderToStaticMarkup(<OriginalCodexReceipt receipt={record}/>);
+    expect(html).toContain('old-request');
+    expect(html).toContain('仅显示此请求留存的部分正文');
+    expect(html).toContain('留存首段');
+    for (const [state, message, resolved] of [
+      ['admitted_without_receipt', '无法找回正文或确认最终状态', true],
+      ['pending', '最终回执仍待确认', false], ['not_found', '执行结果仍未确认', false],
+    ] as const) {
+      const receipt = { request_id: 'old-request', state, turn: null };
+      expect(originalRequestResolved(receipt)).toBe(resolved);
+      const status = renderToStaticMarkup(<OriginalCodexReceipt receipt={receipt}/>);
+      expect(status).toContain(message);
+      expect(status).not.toMatch(/未执行|执行中|已完成/);
+    }
   });
 
   it('distinguishes locally sending, waiting for a receipt, live preparation, and a durable native binding', () => {
