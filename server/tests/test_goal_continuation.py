@@ -458,7 +458,11 @@ def test_execution_view_requires_owner_and_reports_rounds(goal_env):
     assert body["rounds"][0]["native_rounds_before"] == 0
 
 
-def test_real_harness_goal_round_end_to_end(tmp_path, model_server):
+@pytest.mark.parametrize(("objective", "model_calls"), [
+    ("Synthetic authorized goal", 1),
+    ("CASE_DELEGATE summarize the two fixture tasks", 4),
+], ids=["text", "two-children"])
+def test_real_harness_goal_round_end_to_end(tmp_path, model_server, objective, model_calls):
     """Pinned Node + official driver + loopback synthetic model, one real round."""
     import os
     node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
@@ -468,6 +472,8 @@ def test_real_harness_goal_round_end_to_end(tmp_path, model_server):
     settings = image_fixture_settings(tmp_path, node, source, base)
     settings.harness_goal_state_enabled = True
     settings.harness_goal_execution_enabled = True
+    settings.harness_team_state_enabled = True
+    settings.harness_team_tasks_enabled = True
     app = create_app(settings)
     with TestClient(app) as client:
         service = app.state.service
@@ -483,7 +489,7 @@ def test_real_harness_goal_round_end_to_end(tmp_path, model_server):
         baseline = len(requests)
         goal_path = f"/api/v1/conversations/{cid}/goal"
         created = client.post(goal_path, json={
-            "action": "create", "objective": "Synthetic authorized goal",
+            "action": "create", "objective": objective,
             "maxGoalRounds": 4})
         assert created.status_code == 200, created.text
         goal = created.json()["goal"]
@@ -502,8 +508,8 @@ def test_real_harness_goal_round_end_to_end(tmp_path, model_server):
         run_id = started.json()["run_id"]
         settled = wait_run(client, run_id)
         assert settled["status"] == "succeeded", settled
-        # Exactly one paid (loopback) model request; no retry, no second round.
-        assert len(requests) == baseline + 1, len(requests) - baseline
+        # Multiple model calls and child tasks may belong to one native Goal round.
+        assert len(requests) - baseline == model_calls
         view = client.get(goal_path + "/execution").json()
         assert view["budget"]["rounds_executed"] == 1
         assert view["rounds"][0]["armed"] is True
@@ -516,6 +522,10 @@ def test_real_harness_goal_round_end_to_end(tmp_path, model_server):
         assert native["activation"] == "disarmed"
         messages = client.get(f"/api/v1/conversations/{cid}/messages").json()
         assert messages[-1]["role"] == "assistant" and messages[-1]["text"].strip()
+        if model_calls > 1:
+            plan = client.get(f"/api/v1/runs/{run_id}/subagents").json()
+            assert plan["counts"]["succeeded"] == 2, plan
+            assert "子任务结果已汇总" in messages[-1]["text"]
         # The pinned usage ledger has no authoritative cost. The next round is
         # refused rather than priced as zero; no second model request is made.
         second = client.post(goal_path + "/execution/rounds", json={
@@ -523,4 +533,4 @@ def test_real_harness_goal_round_end_to_end(tmp_path, model_server):
             "confirm": True})
         assert second.status_code == 409, second.text
         assert error_code(second) == "GOAL_USAGE_UNVERIFIED"
-        assert len(requests) == baseline + 1
+        assert len(requests) == baseline + model_calls
