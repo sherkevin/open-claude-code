@@ -30,6 +30,7 @@ import re
 import signal
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -1038,6 +1039,26 @@ class CodexHost:
             yield session
         finally:
             session.close()
+
+    def prepare_runtime(self) -> None:
+        """Let the pinned native runtime initialize its private data before serving users."""
+        self.require_enabled()
+        if not self.config.expected_executable_sha256:
+            raise CodexHostUnavailable("runtime preparation requires a pinned executable")
+        layout = self._layout()
+        directory = os.open(layout.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            # Workers sharing a native home may start together on a cold install.
+            try:
+                fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                fcntl.flock(directory, fcntl.LOCK_SH)
+                return
+            with tempfile.TemporaryDirectory(dir=layout.tmp, prefix="runtime-prepare-") as temp:
+                with self._open_session(Path(temp)) as session:
+                    session.initialize()
+        finally:
+            os.close(directory)
 
     def _register(self, key: str, session: _Session) -> None:
         with self._guard:

@@ -63,6 +63,8 @@ class Settings:
     # product host only speaks the pinned native JSON-RPC stdio contract and
     # never selects a model, reads real Codex credentials or grants tools.
     codex_appserver_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_CODEX_APPSERVER_ENABLED", "false").lower() == "true")
+    codex_appserver_prepare_on_startup: bool = field(default_factory=lambda: os.getenv(
+        "AGENT_CODEX_APPSERVER_PREPARE_ON_STARTUP", "false").lower() == "true")
     codex_appserver_binary: str = field(default_factory=lambda: os.getenv("AGENT_CODEX_APPSERVER_BINARY", "").strip())
     # Local fixed candidate from the 2026-11-26 baseline. An operator installing
     # a different official build must pin its own digest explicitly.

@@ -117,9 +117,16 @@ def create_app(settings: Settings | None = None, runtime_factory=None,
         app.state.login_attempts = {}
         app.state.feishu_h5_attempts = {}
         app.state.dummy_password_hash = password_hash(secrets.token_urlsafe(32))
+        codex_host = getattr(app.state, "codex_host", None)
+        if codex_host is not None and settings.codex_appserver_prepare_on_startup:
+            from .codex_appserver import CodexHostError
+            try:
+                await offload(codex_host.prepare_runtime)
+            except (CodexHostError, OSError) as exc:
+                log.warning("Codex runtime preparation failed (%s); on-demand initialization remains available",
+                            type(exc).__name__)
         manager.start_queue_worker()
         yield
-        codex_host = getattr(app.state, "codex_host", None)
         if codex_host is not None:
             codex_host.close_all()
         await manager.close()
