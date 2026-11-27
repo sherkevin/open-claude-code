@@ -138,6 +138,7 @@ function TeamDialog({ conversationId, unavailable, onClose }:
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [readError, setReadError] = useState('');
   const [notice, setNotice] = useState('');
   const [refresh, setRefresh] = useState(0);
   const [maxOperations, setMaxOperations] = useState(20);
@@ -151,28 +152,32 @@ function TeamDialog({ conversationId, unavailable, onClose }:
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true); setError('');
-    void Promise.all([
-      api<TeamCollaboration>(base + '/collaboration', { signal: controller.signal, cache: 'no-store' }),
-      api<TeamRead>(base, { signal: controller.signal, cache: 'no-store' }),
-    ]).then(([collaboration, read]) => {
+    setLoading(true); setReadError(''); setBoard(null); setCollab(null);
+    const options = { signal: controller.signal, cache: 'no-store' } as const;
+    const collaborationRead = api<TeamCollaboration>(base + '/collaboration', options).then(value => {
+      if (value.schema !== 'team-collaboration/v1' || value.execution_enabled !== false
+          || value.task_execution_enabled !== false) throw new Error('协作授权回执不匹配，请刷新。');
+      return value;
+    });
+    const boardRead = unavailable ? Promise.resolve(null) : api<TeamRead>(base, options).then(value => {
+      if (value.execution_enabled !== false) throw new Error('任务板回执不匹配，请刷新。');
+      return value.board;
+    });
+    void Promise.allSettled([collaborationRead, boardRead]).then(([collaboration, read]) => {
       if (controller.signal.aborted) return;
-      if (collaboration.schema !== 'team-collaboration/v1' || collaboration.execution_enabled !== false
-          || collaboration.task_execution_enabled !== false) {
-        throw new Error('任务板回执不匹配，请刷新。');
-      }
-      if (read.execution_enabled !== false) throw new Error('任务板回执不匹配，请刷新。');
-      setCollab(collaboration); setBoard(read.board);
-    }).catch((reason) => {
-      if (!controller.signal.aborted) setError(errorText(reason));
-    }).finally(() => {
-      if (!controller.signal.aborted) setLoading(false);
+      const errors = [];
+      if (collaboration.status === 'fulfilled') setCollab(collaboration.value);
+      else errors.push('读取协作授权失败：' + errorText(collaboration.reason));
+      if (read.status === 'fulfilled') setBoard(read.value);
+      else errors.push('读取任务板失败：' + errorText(read.reason));
+      setReadError(errors.join(' '));
+      setLoading(false);
     });
     return () => controller.abort();
-  }, [base, refresh]);
+  }, [base, refresh, unavailable]);
 
-  async function run(action: () => Promise<string | void>) {
-    if (pending.current || unavailable) return;
+  async function run(action: () => Promise<string | void>, allowWhileBusy = false) {
+    if (pending.current || (unavailable && !allowWhileBusy)) return;
     pending.current = true; setBusy(true); setError(''); setNotice('');
     try {
       const message = await action();
@@ -200,7 +205,7 @@ function TeamDialog({ conversationId, unavailable, onClose }:
   }
 
   async function authorize() {
-    if (!confirmed) return;
+    if (!confirmed || !collab?.harness_session_id) return;
     if (!Number.isInteger(maxOperations) || maxOperations < 1 || maxOperations > 100
         || !Number.isInteger(minutes) || minutes < 1 || minutes > 10080) {
       setError('操作次数需为 1–100，有效期需为 1–10080 分钟。'); return;
@@ -222,7 +227,7 @@ function TeamDialog({ conversationId, unavailable, onClose }:
       const result = await api<TeamCollaboration>(base + '/authorization', { method: 'DELETE' });
       setCollab(result); setConfirmed(false);
       return '授权已撤销，任务板保持原状。';
-    });
+    }, true);
   }
 
   async function changeBoard(action: 'enable' | 'disable') {
@@ -281,6 +286,7 @@ function TeamDialog({ conversationId, unavailable, onClose }:
   return <Modal title="团队任务板（协作试点）" wide onClose={() => { if (!pending.current) onClose(); }}
     description="只复用官方原生任务板和持久 JSONL 投影；不启动模型、子智能体、shell 或业务写入。">
     <div className="modal-body">
+      <ErrorNotice message={readError}/>
       <ErrorNotice message={error}/>
       <SuccessNotice message={notice}/>
       {loading ? <Loader text="正在读取原生任务板…"/> : <>
@@ -318,7 +324,7 @@ function TeamDialog({ conversationId, unavailable, onClose }:
               <input type="checkbox" checked={confirmed} disabled={busy || unavailable} onChange={event => setConfirmed(event.target.checked)}/>
               我明确授权本人当前空闲会话执行限次任务板元数据操作；这不授权模型、子智能体或业务写入。
             </label>
-            <Button busy={busy} disabled={unavailable || !confirmed} onClick={() => void authorize()}>记录任务板授权</Button>
+            <Button busy={busy} disabled={busy || unavailable || !confirmed || !collab?.harness_session_id} onClick={() => void authorize()}>记录任务板授权</Button>
           </div>}
         </section>
 
@@ -365,7 +371,7 @@ function TeamDialog({ conversationId, unavailable, onClose }:
 
         <section className="team-section">
           <h3>操作历史</h3>
-          {!collab || !collab.operations.length ? <p className="section-help">尚无任务板操作记录。</p> :
+          {!collab ? <p className="section-help">操作历史暂不可读取。</p> : !collab.operations.length ? <p className="section-help">尚无任务板操作记录。</p> :
             <ul className="team-operation-list">
               {collab.operations.slice(0, 20).map(operation => <li key={operation.id} data-status={operation.status}>
                 <strong>{operationLabel(operation)}</strong>
@@ -375,7 +381,7 @@ function TeamDialog({ conversationId, unavailable, onClose }:
                   {operation.acknowledged_at ? ' · 已核对' : ''}
                 </small>
                 {operation.status === 'uncertain' && !operation.acknowledged_at &&
-                  <Button variant="secondary" disabled={busy} onClick={() => void acknowledge(operation)}>核对并确认</Button>}
+                  <Button variant="secondary" disabled={busy || unavailable || !board} onClick={() => void acknowledge(operation)}>核对并确认</Button>}
               </li>)}
             </ul>}
         </section>
@@ -393,7 +399,7 @@ export default function ConversationTeam({ conversationId, unavailable }:
   const [open, setOpen] = useState(false);
   return <>
     <button className="icon-button" type="button" title="团队任务板（协作试点）" aria-label="团队任务板"
-      disabled={unavailable} onClick={() => setOpen(true)}><Users size={17}/></button>
+      onClick={() => setOpen(true)}><Users size={17}/></button>
     {open && <TeamDialog key={conversationId} conversationId={conversationId}
       unavailable={unavailable} onClose={() => setOpen(false)}/>}
   </>;

@@ -41,7 +41,7 @@ describe('native Team task lifecycle UI helpers', () => {
     expect(html).not.toContain('已完成');
   });
 
-  it('labels uncertain operations distinctly and keeps the entry point disabled while busy', () => {
+  it('labels uncertain operations distinctly and keeps authorization history reachable while busy', () => {
     const operation: TeamOperation = {
       id: 'op-1', client_request_id: 'request-1', action: 'claim', status: 'uncertain',
       error_code: 'TEAM_TASK_UNCERTAIN', task_id: null, task_revision: null, task_status: null,
@@ -52,6 +52,6 @@ describe('native Team task lifecycle UI helpers', () => {
     expect(renderToStaticMarkup(<ConversationTeam conversationId="fixture" unavailable={false}/>))
       .toContain('团队任务板');
     expect(renderToStaticMarkup(<ConversationTeam conversationId="fixture" unavailable/>))
-      .toContain('disabled');
+      .not.toContain('disabled');
   });
 });
