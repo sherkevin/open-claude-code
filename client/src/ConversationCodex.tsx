@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SquareTerminal } from 'lucide-react';
-import { api, clientRequestId, errorText, post } from './api';
-import { CodexSteerReceipts, sameSteer, steerableTurn, useCodexSteers, type SteerId } from './CodexSteers';
+import { ApiError, api, clientRequestId, errorText, post } from './api';
+import { CodexSteerReceipts, codexAccessDenied, sameSteer, steerableTurn, useCodexSteers, type SteerId } from './CodexSteers';
 import { Button, ErrorNotice, Field, Loader, Modal } from './components';
 
 type FileReads = { succeeded: number; failed: number; unconfirmed: number };
@@ -153,6 +153,9 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   const [action, setAction] = useState('');
   const [error, setError] = useState('');
   const [readError, setReadError] = useState('');
+  const [offline, setOffline] = useState(false);
+  const [accessError, setAccessError] = useState('');
+  const denyAccess = useCallback((cause: unknown) => setAccessError(errorText(cause)), []);
   const pendingId = useRef(pending);
   const requestInFlight = useRef(false);
   const actionInFlight = useRef(false);
@@ -177,6 +180,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
       if (version !== generation.current) return;
       setThread(result);
       setReadError('');
+      setOffline(false);
       const id = pendingId.current;
       if (!id) return;
       if (result.last_turn?.request_id === id) { finish(id); return; }
@@ -199,9 +203,13 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
         }
       }
     } catch (cause) {
-      if (version === generation.current) setReadError(errorText(cause));
+      if (codexAccessDenied(cause)) denyAccess(cause);
+      if (version === generation.current) {
+        setReadError(errorText(cause));
+        setOffline(cause instanceof ApiError && cause.status === 0);
+      }
     }
-  }, [path, finish]);
+  }, [path, finish, denyAccess]);
 
   useEffect(() => {
     void refresh();
@@ -212,7 +220,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   const operation = thread?.operation;
   const resolved = originalRequestResolved(receipt);
   const waiting = Boolean(pending && (!receipt || receipt.state === 'pending'));
-  const poll = Boolean(sending || waiting || action === '/thread' || operation || active?.can_interrupt);
+  const poll = !accessError && Boolean(sending || waiting || action === '/thread' || operation || active?.can_interrupt);
   useEffect(() => {
     if (!poll) return;
     let stopped = false;
@@ -231,11 +239,11 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
     setAction(route);
     setError('');
     try { await post(path + route, payload); }
-    catch (cause) { setError(errorText(cause)); }
+    catch (cause) { if (codexAccessDenied(cause)) denyAccess(cause); else setError(errorText(cause)); }
     finally { await refresh(); actionInFlight.current = false; setAction(''); }
   }
 
-  const steers = useCodexSteers(path, storageKey, Boolean(thread && !readError));
+  const steers = useCodexSteers(path, storageKey, Boolean(thread && !readError && !accessError), denyAccess);
   const steerTarget = !action && !readError ? steerableTurn(thread) : null;
   useEffect(() => {
     const attempt = lastSteer.current;
@@ -279,9 +287,16 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
     setError('');
     try {
       await post<CodexTurn>(path + '/turn', codexTurnPayload(thread, id, text));
-    } catch (cause) { if (pendingId.current === id) setError(errorText(cause)); }
+    } catch (cause) {
+      if (codexAccessDenied(cause)) denyAccess(cause);
+      else if (pendingId.current === id) setError(errorText(cause));
+    }
     finally { await refresh(); requestInFlight.current = false; setSendingId(null); }
   }
+
+  if (accessError) return <Modal title="Codex 工程任务" onClose={onClose}>
+    <div className="modal-body"><ErrorNotice message={accessError}/></div>
+  </Modal>;
 
   return <Modal title="Codex 工程任务" onClose={onClose}>
     <div className="modal-body">
@@ -293,7 +308,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
         <CodexStatus thread={thread} sending={sending} pending={Boolean(pending && !visibleReceipt)} requestId={sendingId || pending} preparing={action === '/thread'}/>
       </section>}
       {pending && memoryOnly && <p className="section-help">浏览器仅在当前页面保留请求编号；刷新后可读取服务端最新任务状态。</p>}
-      {thread && !readError && <CodexSteerReceipts {...steers} activeTurn={active?.turn_id} lastTurn={thread.last_turn?.turn_id}/>}
+      {thread && (!readError || offline) && <CodexSteerReceipts {...steers} offline={offline} activeTurn={active?.turn_id} lastTurn={thread.last_turn?.turn_id}/>}
       {chatAttachments}
       {editingNext && active && active.request_id === sendingId && sentText.current && <details>
         <summary>查看本轮已发送的要求</summary>
@@ -311,7 +326,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
         {controls?.prepare && !sending && <Button variant="secondary"
           busy={action === '/thread'} disabled={Boolean(action || readError)}
           onClick={() => void perform('/thread')}>准备会话</Button>}
-        {active?.can_interrupt && <Button disabled={Boolean(action || steers.submitting) || active.interrupt_requested} variant="danger"
+        {active?.can_interrupt && <Button disabled={Boolean(action || steers.submitting || readError) || active.interrupt_requested} variant="danger"
           onClick={() => void perform('/interrupt', { turn_id: active.turn_id })}>
           {action === '/interrupt' ? '正在请求取消' : '取消当前任务'}</Button>}
         {controls?.reconcile && !sending && <Button busy={action === '/reconcile'}

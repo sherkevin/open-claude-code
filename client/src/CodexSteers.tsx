@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, clientRequestId, post } from './api';
+import { ApiError, api, clientRequestId, post } from './api';
 import type { CodexThread } from './ConversationCodex';
 
 export type SteerId = { client_request_id: string; turn_id: string };
@@ -8,7 +8,7 @@ const labels: Record<SteerReceipt['state'], string> = {
   delivered: '已送达目标轮次的执行器',
   uncertain: '送达结果待核对',
   closed: '目标轮次已无法接收，补充要求未送达',
-  rejected: '执行器拒绝了补充要求，未送达',
+  rejected: '补充要求被拒绝，未送达',
 };
 
 export function steerableTurn(thread: CodexThread | null) {
@@ -53,7 +53,11 @@ export function sameSteer(a: SteerId, b: SteerId) {
   return a.client_request_id === b.client_request_id && a.turn_id === b.turn_id;
 }
 
-export function useCodexSteers(path: string, scope: string, allowed: boolean) {
+export function codexAccessDenied(cause: unknown) {
+  return cause instanceof ApiError && [401, 403, 404].includes(cause.status);
+}
+
+export function useCodexSteers(path: string, scope: string, allowed: boolean, denyAccess: (cause: unknown) => void) {
   const [receipts, setReceipts] = useState<SteerReceipt[]>([]);
   const [unconfirmed, setUnconfirmed] = useState<SteerId[]>([]);
   const [submitting, setSubmitting] = useState<string | null>(null);
@@ -71,13 +75,14 @@ export function useCodexSteers(path: string, scope: string, allowed: boolean) {
       setUnconfirmed(pendingSteers(scope));
       setReceipts(data.receipts);
       setReadFailed(false);
-    } catch {
+    } catch (cause) {
+      if (codexAccessDenied(cause)) denyAccess(cause);
       if (ticket !== version.current) return;
       setReadFailed(true);
       setReceipts([]);
       setUnconfirmed(pendingSteers(scope));
     }
-  }, [allowed, path, scope]);
+  }, [allowed, path, scope, denyAccess]);
 
   useEffect(() => {
     void refresh();
@@ -102,8 +107,9 @@ export function useCodexSteers(path: string, scope: string, allowed: boolean) {
       setReceipts(previous => [receipt, ...previous.filter(item => !sameSteer(item, receipt))]);
       setUnconfirmed(pendingSteers(scope));
       setReadFailed(false);
-    } catch {
-      await refresh();
+    } catch (cause) {
+      if (codexAccessDenied(cause)) denyAccess(cause);
+      else await refresh();
     } finally {
       inFlight.current = false;
       setSubmitting(null);
@@ -115,7 +121,15 @@ export function useCodexSteers(path: string, scope: string, allowed: boolean) {
 type ViewProps = Pick<ReturnType<typeof useCodexSteers>, 'receipts' | 'unconfirmed' | 'submitting' | 'readFailed'> & {
   activeTurn?: string; lastTurn?: string;
 };
-export function CodexSteerReceipts({ receipts, unconfirmed, submitting, readFailed, activeTurn, lastTurn }: ViewProps) {
+export function CodexSteerReceipts({ receipts, unconfirmed, submitting, readFailed, activeTurn, lastTurn, offline = false }: ViewProps & { offline?: boolean }) {
+  if (offline) {
+    if (!unconfirmed.length) return null;
+    receipts = [];
+    readFailed = true;
+    submitting = null;
+    activeTurn = undefined;
+    lastTurn = undefined;
+  }
   if (!receipts.length && !unconfirmed.length && !readFailed) return null;
   const identity = (id: SteerId) => <small>
     请求编号 <code>{id.client_request_id}</code> · {id.turn_id === lastTurn ? '最近已结束轮次' : id.turn_id === activeTurn ? '当前轮次' : '所属轮次'} <code>{id.turn_id}</code>

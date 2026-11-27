@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from './api';
 import { codexRequestKey, type CodexThread } from './ConversationCodex';
-import { CodexSteerReceipts, pendingSteers, rememberSteer, sameSteer, steerableTurn, type SteerReceipt } from './CodexSteers';
+import { CodexSteerReceipts, codexAccessDenied, pendingSteers, rememberSteer, sameSteer, steerableTurn, type SteerReceipt } from './CodexSteers';
 
 const active = { turn_id: 'turn-A', request_id: 'original', can_interrupt: true, interrupt_requested: false };
 const live: CodexThread = {
@@ -66,5 +67,19 @@ describe('补充到正在执行的原生轮次', () => {
     expect(missing(true)).toContain('暂时无法读取');
     expect(missing(true)).not.toContain('查不到该次回执');
     expect(missing(false)).not.toContain('未送达');
+  });
+
+  it('shows just the local pending number while offline with no cached delivery or active-turn claim', () => {
+    const html = renderToStaticMarkup(<CodexSteerReceipts offline
+      receipts={[{ turn_id: 'older-turn', client_request_id: 'previous-server-receipt', state: 'delivered' }]}
+      unconfirmed={[baseId]} submitting={baseId.client_request_id} readFailed={false} activeTurn={baseId.turn_id}/>);
+    expect(html).toContain('送达情况未知');
+    expect(html).toContain(baseId.client_request_id);
+    expect(html).not.toMatch(/previous-server-receipt|已送达|当前轮次|查不到该次回执|正在提交补充/);
+  });
+
+  it('treats definitive access failures separately from a lost connection', () => {
+    for (const status of [401,403,404]) expect(codexAccessDenied(new ApiError('不可访问', status, 'DENIED'))).toBe(true);
+    expect(codexAccessDenied(new ApiError('无法连接', 0, 'NETWORK_ERROR'))).toBe(false);
   });
 });
