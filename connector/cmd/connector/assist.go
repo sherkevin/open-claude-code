@@ -29,11 +29,22 @@ func assistCommand(args []string) {
 	opts, listen := registerCommon(flags)
 	code := flags.String("code", "", "首次使用时的企业绑定码")
 	direct := flags.Bool("direct", false, "不使用已运行的本机界面，直接在当前进程建立协助")
+	interactive := flags.Bool("interactive", false, "在终端交互绑定设备并明确确认协助")
 	flags.Parse(args)
 	opts.NativeRelay = true
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *interactive {
+		if !*direct || strings.TrimSpace(*code) != "" || flags.NArg() != 0 {
+			fatal(fmt.Errorf("交互模式必须使用 --direct，且接入码只能在本机提示中输入"))
+		}
+		if err := runInteractiveAssist(ctx, *opts); err != nil {
+			fatal(err)
+		}
+		return
+	}
 
 	base := localAssistBase(*listen)
 	if token, err := readLocalAssistToken(ctx, base); err == nil && !*direct {

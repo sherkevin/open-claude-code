@@ -1,0 +1,12 @@
+{
+  "name": "kaiwu-assist",
+  "version": "1.5.3-npx.1",
+  "private": true,
+  "description": "Kaiwu explicitly authorized attended Linux support session",
+  "bin": { "kaiwu-assist": "start.sh" },
+  "os": ["linux"],
+  "cpu": ["x64", "arm64"],
+  "engines": { "node": ">=18", "npm": ">=9" },
+  "files": ["start.sh", "endpoints.conf", "SHA256SUMS", "bin/", "README.md", "compliance/", "BUILD_INFO.txt"],
+  "license": "UNLICENSED"
+}
