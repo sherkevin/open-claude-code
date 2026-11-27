@@ -621,6 +621,7 @@ class CodexHost:
         self.config = config
         self._guard = threading.Lock()
         self._sessions: dict[str, _Session] = {}
+        self._runtime_initialized = threading.Event()
 
     # ---- configuration and private paths ---------------------------------
 
@@ -706,8 +707,8 @@ class CodexHost:
         self._ensure_dir(target, owner)
         return target
 
-    def _environment(self) -> dict[str, str]:
-        layout = self._layout(create=True)
+    @staticmethod
+    def _environment(layout: _Layout) -> dict[str, str]:
         # Deliberately not os.environ.copy(): no provider, proxy, telemetry or
         # real Codex credential can leak from the product server.
         return {
@@ -1031,14 +1032,47 @@ class CodexHost:
 
     # ---- process ownership ------------------------------------------------
 
-    @contextmanager
-    def _open_session(self, workspace: Path):
-        self._verify_executable()
-        session = _Session(self.config, workspace, self._environment())
-        try:
-            yield session
-        finally:
-            session.close()
+    def _initialized_session(self, workspace: Path) -> _Session:
+        layout = self._layout()
+        environment = self._environment(layout)
+
+        def launch() -> _Session:
+            # Check the executable after any wait, immediately before spawning.
+            self._verify_executable()
+            session = _Session(self.config, workspace, environment)
+            try:
+                session.initialize()
+            except BaseException:
+                session.close()
+                raise
+            return session
+
+        if not self._runtime_initialized.is_set():
+            # Native processes sharing a new home can race during initialization.
+            # The state directory is private and validated by _layout().
+            # Its inode is distinct from the optional preparation's root lock.
+            try:
+                fd = os.open(layout.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except OSError:
+                raise CodexHostUnavailable("native initialization lock unavailable") from None
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                    raise CodexHostUnavailable("native initialization lock identity invalid")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                except OSError:
+                    raise CodexHostUnavailable("native initialization lock unavailable") from None
+                if not self._runtime_initialized.is_set():
+                    session = launch()
+                    self._runtime_initialized.set()
+                    return session
+            finally:
+                os.close(fd)
+
+        # A same-worker waiter releases the cold gate before starting its own
+        # warm process. Thread creation, resume and turns always run outside.
+        return launch()
 
     def prepare_runtime(self) -> None:
         """Let the pinned native runtime initialize its private data before serving users."""
@@ -1055,8 +1089,7 @@ class CodexHost:
                 fcntl.flock(directory, fcntl.LOCK_SH)
                 return
             with tempfile.TemporaryDirectory(dir=layout.tmp, prefix="runtime-prepare-") as temp:
-                with self._open_session(Path(temp)) as session:
-                    session.initialize()
+                self._initialized_session(Path(temp)).close()
         finally:
             os.close(directory)
 
@@ -1218,12 +1251,10 @@ class CodexHost:
                 self._validate_binding(binding, user_id, conversation_id, workspace)
                 if binding.get("active_turn_id") or binding.get("uncertain_request_id"):
                     raise CodexHostConflict("Codex turn recovery is required first")
-                with self._open_session(workspace) as session:
-                    session.initialize()
+                with self._initialized_session(workspace) as session:
                     session.resume_thread(binding["thread_id"], workspace)
                 return self._view(binding)
-            with self._open_session(workspace) as session:
-                session.initialize()
+            with self._initialized_session(workspace) as session:
                 binding = self._start_binding(session, key, user_id, conversation_id, workspace)
                 publish("thread_ready")
             return self._view(binding)
@@ -1284,12 +1315,8 @@ class CodexHost:
                     raise CodexHostConflict("Codex request was already admitted; receipt is not retained")
                 if len(binding["admitted_requests"]) >= MAX_ADMITTED_REQUESTS:
                     raise CodexHostConflict("Codex thread request ledger is full; prepare a new conversation")
-            # Verify the pinned executable before creating the process so a
-            # digest rejection cannot leak a launched child.
-            self._verify_executable()
-            session = _Session(self.config, workspace, self._environment())
+            session = self._initialized_session(workspace)
             try:
-                session.initialize()
                 if binding is None:
                     binding = self._start_binding(session, key, user_id, conversation_id, workspace)
                 else:
@@ -1433,8 +1460,7 @@ class CodexHost:
                 # request that lost its start receipt. Never guess by position
                 # in thread history or interrupt an unrelated turn.
                 raise CodexHostConflict("Codex turn ID is unconfirmed; independent reconciliation is required")
-            with self._open_session(workspace) as session:
-                session.initialize()
+            with self._initialized_session(workspace) as session:
                 session.resume_thread(binding["thread_id"], workspace)
                 turns = self._turns(session.read_thread(binding["thread_id"], True))
                 target = active
