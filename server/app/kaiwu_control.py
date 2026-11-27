@@ -88,6 +88,7 @@ INTEGRATION_ID_RE = re.compile(r"^int_[0-9a-f]{32}$")
 CONNECTOR_ID_RE = re.compile(r"^conn_[0-9a-f]{32}$")
 PERSISTENT_CODE_PREFIX = "kwp_"
 DEVICE_EXPORT_ACTOR_PREFIX = "device-export:"
+ENROLLMENT_TTL_MAX = 7 * 24 * 60 * 60
 INTEGRATION_TTL_MAX = 365 * 24 * 60 * 60
 log = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ class StrictModel(BaseModel):
 class EnrollmentRequest(StrictModel):
     tenant_id: str = Field(min_length=1, max_length=128)
     tenant_name: str = Field(min_length=1, max_length=128)
-    ttl_seconds: int = Field(default=900, ge=60, le=86400)
+    ttl_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=ENROLLMENT_TTL_MAX)
     persistent: bool = Field(default=False, strict=True)
     issued_to: str | None = Field(default=None, min_length=1, max_length=128)
 
@@ -139,6 +140,11 @@ class EnrollmentRequest(StrictModel):
         elif self.issued_to is not None:
             raise ValueError("issued_to requires a persistent enrollment")
         return self
+
+
+class EnrollmentExtendRequest(StrictModel):
+    tenant_id: str = Field(min_length=1, max_length=128, pattern=TENANT_RE.pattern)
+    ttl_seconds: int = Field(ge=60, le=ENROLLMENT_TTL_MAX, strict=True)
 
 
 class RedeemRequest(StrictModel):
@@ -1337,6 +1343,63 @@ def create_kaiwu_control_router(service_getter: Callable) -> APIRouter:
             "trace_id": trace_id,
             **persistent_fields,
         }
+
+    @router.post("/v1/enrollments/{enrollment_id}/extend")
+    def extend_one_time_enrollment(
+        enrollment_id: str,
+        data: EnrollmentExtendRequest,
+        response: Response,
+        admin_ctx=Depends(admin),
+        service_obj=Depends(service),
+    ):
+        """Extend an unused, unexpired one-time code from its original creation."""
+        if not ENROLLMENT_ID_RE.fullmatch(enrollment_id):
+            raise AppError(404, "ENROLLMENT_NOT_FOUND", "一次性接入码不存在")
+        db = service_obj.db
+        with db.transaction():
+            row = db.one(
+                "SELECT tenant_id,created_at,expires_at,used_at,connector_id "
+                "FROM kaiwu_enrollments WHERE id=? AND tenant_id=?",
+                (enrollment_id, data.tenant_id),
+            )
+            if not row:
+                raise AppError(404, "ENROLLMENT_NOT_FOUND", "一次性接入码不存在")
+            if row["used_at"] is not None or row["connector_id"] is not None:
+                raise AppError(409, "ENROLLMENT_INVALID", "接入码已使用")
+            previous = datetime.fromisoformat(row["expires_at"])
+            if previous <= datetime.now(timezone.utc):
+                raise AppError(409, "ENROLLMENT_EXPIRED", "接入码已过期")
+            new_expiry = datetime.fromisoformat(row["created_at"]) + timedelta(seconds=data.ttl_seconds)
+            if new_expiry < previous:
+                raise AppError(409, "ENROLLMENT_EXTENSION_INVALID", "新有效期不得短于原有效期")
+            expires_at = new_expiry.isoformat()
+            trace_id = "tr_" + uid()
+            if new_expiry > previous:
+                db.execute(
+                    "UPDATE kaiwu_enrollments SET expires_at=? "
+                    "WHERE id=? AND tenant_id=? AND used_at IS NULL AND connector_id IS NULL",
+                    (expires_at, enrollment_id, data.tenant_id),
+                )
+                _audit(
+                    db,
+                    tenant_id=data.tenant_id,
+                    connector_id=None,
+                    source_id=None,
+                    actor_type="admin",
+                    actor_id=admin_ctx["actor_id"],
+                    action="enrollment.extended",
+                    outcome="allow",
+                    trace_id=trace_id,
+                    detail={"enrollment_id": enrollment_id,
+                            "previous_expires_at": row["expires_at"],
+                            "expires_at": expires_at,
+                            "ttl_seconds": data.ttl_seconds},
+                )
+            else:
+                trace_id = None
+        response.headers["Cache-Control"] = "no-store"
+        return {"enrollment_id": enrollment_id, "expires_at": expires_at,
+                "trace_id": trace_id}
 
     @router.get("/v1/enrollments")
     def list_persistent_enrollments(
