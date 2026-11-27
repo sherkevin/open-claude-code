@@ -488,12 +488,16 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       }
     } finally { submissionPending.current = false; if (mounted.current) setSending(false); }
   };
+  function selectAcceptedRun(runId: string) {
+    if (!mounted.current) return;
+    setRun(current => current?.id === runId || current && isActive(current.status) ? current : pendingRun(runId, conversation.id));
+  }
   const queueReadVersion = useRef(0);
   const queue = useMessageQueue(conversation.id, canSend && !loading && !active && !sending && !savingModel && !showContext && !archived && !refreshingRun && modelReady, `${run?.id || ''}:${run?.status || ''}`, async runId => {
     const version = ++queueReadVersion.current;
     // Select an accepted task immediately. Later HTTP reads use the same
     // terminal-state guard as normal sends and cannot revive a finished run.
-    setRun(current => current?.id === runId || current && isActive(current.status) ? current : { id: runId, conversation_id: conversation.id, status: 'queued', assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null });
+    selectAcceptedRun(runId);
     const [next, nextMessages] = await Promise.all([api<Run>(`/runs/${runId}`), readChatHistory(conversation.id)]);
     if (!mounted.current || version !== queueReadVersion.current) return;
     history.reconcileLatest(nextMessages); applyRunReadback(next); onChangedRef.current();
@@ -661,7 +665,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
         {!trial && <>
           <ConversationFeedback ref={feedbackRef} conversationId={conversation.id} runId={run?.id} messages={messages}/>
           <ConversationExport conversationId={conversation.id}/>
-          {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived} executionEnabled={config.harness_goal_execution===true}/>}
+          {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived} executionEnabled={config.harness_goal_execution===true} onRoundStarted={selectAcceptedRun}/>}
           {config.harness_team_tasks&&conversation.runtime_type==="harness"&&<ConversationTeam conversationId={conversation.id} unavailable={active||archived}/>}
           <button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={() => setInspectionView('trajectory')}><ListTree size={17}/></button>
           <button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={() => setShowMemory(true)}><BookOpen size={17}/></button>

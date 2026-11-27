@@ -64,7 +64,9 @@ export function GoalExecutionView({execution,goal}:{execution:GoalExecution;goal
   </div>;
 }
 
-function GoalDialog({conversationId,unavailable,executionEnabled,onClose}:{conversationId:string;unavailable:boolean;executionEnabled:boolean;onClose:()=>void}){
+function GoalDialog({conversationId,unavailable,executionEnabled,onRoundStarted,onClose}:{
+  conversationId:string;unavailable:boolean;executionEnabled:boolean;onRoundStarted?:(runId:string)=>void;onClose:()=>void
+}){
   const path='/conversations/'+encodeURIComponent(conversationId)+'/goal';
   const execPath=path+'/execution';
   const [receipt,setReceipt]=useState<Receipt|null>(null),[objective,setObjective]=useState(''),[rounds,setRounds]=useState(8);
@@ -86,12 +88,13 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onClose}:{conve
   useEffect(()=>{
     const controller=new AbortController();
     setLoading(true);setReceipt(null);setExecution(null);setError('');setExecError('');
-    void api<Receipt>(path,{signal:controller.signal,cache:'no-store'}).then(r=>{if(!controller.signal.aborted)accept(r);})
+    if(unavailable)setLoading(false);
+    else void api<Receipt>(path,{signal:controller.signal,cache:'no-store'}).then(r=>{if(!controller.signal.aborted)accept(r);})
       .catch(e=>{if(!controller.signal.aborted)setError(errorText(e));})
       .finally(()=>{if(!controller.signal.aborted)setLoading(false);});
     void loadExecution(controller.signal).catch(e=>{if(!controller.signal.aborted)setExecError(errorText(e));});
     return()=>controller.abort();
-  },[path,execPath,executionEnabled,refresh]);
+  },[path,execPath,executionEnabled,unavailable,refresh]);
   async function refreshExecution(){
     try{await loadExecution();}
     catch(e){setExecError(errorText(e));}
@@ -125,14 +128,10 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onClose}:{conve
     setExecError('');
     try{
       pending.current=true;setBusy(true);
-      // Read the live native revision immediately before confirmation; this
-      // never starts work, it only prevents a stale round confirmation.
-      const current=await api<Receipt>(path,{cache:'no-store'});accept(current);
-      const result=await post<{submitted:boolean;run_id:string}>(execPath+'/rounds',goalRoundStart(current.goal));
-      if(result.submitted!==true)throw new Error('本轮未提交执行，请刷新后重试。');
-      // The native revision advances when the round is admitted; re-read it
-      // before the next explicit start so the next confirmation is exact.
-      accept(await api<Receipt>(path,{cache:'no-store'}));
+      // Confirm the revision on screen. The server rejects a stale confirmation.
+      const result=await post<{submitted:boolean;run_id:string}>(execPath+'/rounds',goalRoundStart(receipt.goal));
+      if(result.submitted!==true||!result.run_id)throw new Error('未收到本轮执行回执，请刷新状态核对。');
+      onRoundStarted?.(result.run_id);
       await refreshExecution();
     }catch(e){setExecError(errorText(e)+' 请刷新状态，避免重复开始。');}
     finally{pending.current=false;setBusy(false);}
@@ -153,11 +152,11 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onClose}:{conve
     <div className="modal-body">
       <ErrorNotice message={error}/>
       {unavailable&&<p className="section-help">当前会话有任务在运行或已归档；目标状态暂不可修改。目标执行仍可在下方停止。</p>}
-      {loading?<Loader text="正在读取原生目标…"/>:receipt&&<>
-        <GoalStateView goal={goal||null} executionEnabled={executionEnabled}/>
+      {loading&&<Loader text="正在读取原生目标…"/>}
+      {receipt&&<GoalStateView goal={goal||null} executionEnabled={executionEnabled}/>}
+      <ErrorNotice message={execError}/>
         {executionEnabled&&execution&&<>
           <GoalExecutionView execution={execution} goal={goal||null}/>
-          <ErrorNotice message={execError}/>
           {!activeAuthorization?<>
             <Field label="本次授权的执行轮次上限" hint="每次开始仍需你单独确认；不会无人值守自动续跑。"><input type="number" min={1} max={32} value={limits.maxRounds} disabled={busy||unavailable||!goal} onChange={e=>setLimits({...limits,maxRounds:Number(e.target.value)})}/></Field>
             <Field label="Token 预算"><input type="number" min={1} value={limits.tokenBudget} disabled={busy||unavailable||!goal} onChange={e=>setLimits({...limits,tokenBudget:Number(e.target.value)})}/></Field>
@@ -175,6 +174,7 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onClose}:{conve
           </>}
         </>}
         {executionEnabled&&!execution&&!execError&&<p className="section-help">正在读取目标执行状态…</p>}
+      {receipt&&<>
         <Field label="目标与完成条件"><textarea rows={6} value={objective} maxLength={8000} disabled={busy||unavailable} onChange={e=>setObjective(e.target.value)}/></Field>
         <Field label="最多目标轮次" hint="此处只保存原生轮次限制，不代表 token、金额或时间预算。"><input type="number" min={1} max={32} value={rounds} disabled={busy||unavailable} onChange={e=>setRounds(Number(e.target.value))}/></Field>
         <div className="task-sidebar-actions">
@@ -190,8 +190,10 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onClose}:{conve
   </Modal>;
 }
 
-export default function ConversationGoal({conversationId,unavailable,executionEnabled=false}:{conversationId:string;unavailable:boolean;executionEnabled?:boolean}){
+export default function ConversationGoal({conversationId,unavailable,executionEnabled=false,onRoundStarted}:{
+  conversationId:string;unavailable:boolean;executionEnabled?:boolean;onRoundStarted?:(runId:string)=>void
+}){
   const [open,setOpen]=useState(false);
   return <><button className="icon-button" type="button" title={executionEnabled?'持续目标':'持续目标（状态试点）'} aria-label="持续目标" disabled={unavailable&&!executionEnabled} onClick={()=>setOpen(true)}><Target size={17}/></button>
-    {open&&<GoalDialog key={conversationId} conversationId={conversationId} unavailable={unavailable} executionEnabled={executionEnabled} onClose={()=>setOpen(false)}/>}</>;
+    {open&&<GoalDialog key={conversationId} conversationId={conversationId} unavailable={unavailable} executionEnabled={executionEnabled} onRoundStarted={onRoundStarted} onClose={()=>setOpen(false)}/>}</>;
 }
