@@ -9,6 +9,7 @@ import { compactionStatus, compactionStatusLabel, toolLabel } from './display';
 import { compactionLabel } from './ContextDialog';
 import SessionTrajectory, { type InspectionView } from './SessionTrajectory';
 import ConversationExport from './ConversationExport';
+import type { ChatEngineeringEntry } from './CodexDraftImport';
 import ConversationCodex, { codexRequestKey } from './ConversationCodex';
 import CodexChatAttachments from './CodexChatAttachments';
 import CodexReceiptHistory from './CodexReceiptHistory';
@@ -92,7 +93,7 @@ export const chatTrialFeatures=(trial:boolean, config?:AppConfig)=>({
   canRecommend:!trial,
 });
 
-export default function ChatPage({ conversation, assistant, config, models, modelsLoading, initialDraft, initialRequestId, draftOwnerId, targetMessageId, onOpenConversation, onChanged, onArchived, onNewConversation, onMemoryDirtyChange, onMemorySavingChange }: { conversation: Conversation; assistant?: Assistant; config: AppConfig; models: ModelOption[]; modelsLoading: boolean; initialDraft?: string; initialRequestId?: string; draftOwnerId?: string; targetMessageId?: string; onOpenConversation?: (conversation: Conversation) => void; onChanged: () => void; onArchived: () => void; onNewConversation?: (selection:ModelSelection,draft:string)=>void; onMemoryDirtyChange?: (dirty:boolean)=>void; onMemorySavingChange?: (saving:boolean)=>void }) {
+export default function ChatPage({ conversation, assistant, config, models, modelsLoading, initialDraft, initialRequestId, initialEngineering, onEngineeringOpened, draftOwnerId, targetMessageId, onOpenConversation, onChanged, onArchived, onNewConversation, onMemoryDirtyChange, onMemorySavingChange }: { conversation: Conversation; assistant?: Assistant; config: AppConfig; models: ModelOption[]; modelsLoading: boolean; initialDraft?: string; initialRequestId?: string; initialEngineering?: boolean; onEngineeringOpened?: () => void; draftOwnerId?: string; targetMessageId?: string; onOpenConversation?: (conversation: Conversation) => void; onChanged: () => void; onArchived: () => void; onNewConversation?: (selection:ModelSelection,draft:string)=>void; onMemoryDirtyChange?: (dirty:boolean)=>void; onMemorySavingChange?: (saving:boolean)=>void }) {
   const trial = config.deployment_mode === 'trial'; const canSend = configAllows(config, 'messages.send'); const {canUseAttachments,canUseSkills,canUseCompletion,canUseContext,canRecommend} = chatTrialFeatures(trial,config);
   const history = useChatHistory(conversation.id);
   const { messages } = history.page;
@@ -123,6 +124,21 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const { draft: { text: input, files, skills: selectedSkills, preview }, readDraft, setText: setInput, setFiles,
     setSkills: setSelectedSkills, setPreview, setSubmission, finishSubmission } = useComposerDraft(draftOwnerId, conversation.id, initialDraft || '', initialRequestId && initialDraft
       ? { id: initialRequestId, signature: JSON.stringify([initialDraft.trim(), [], []]), queued: false } : undefined);
+  const [engineeringEntry, setEngineeringEntry] = useState<ChatEngineeringEntry | null>(() =>
+    initialEngineering ? { text: initialDraft ?? '', ordinaryPending: false } : null);
+  const engineeringOpen = useRef(Boolean(initialEngineering));
+  useEffect(() => {
+    if (!initialEngineering) return;
+    // Keep the home question in the ordinary composer when the confirmation closes.
+    setInput(current => current);
+    onEngineeringOpened?.();
+  }, [initialEngineering, onEngineeringOpened, setInput]);
+  function openEngineeringDraft() {
+    if (submissionPending.current || sending) return;
+    const ordinary = readDraft();
+    engineeringOpen.current = true;
+    setEngineeringEntry({ text: ordinary.text, ordinaryPending: Boolean(ordinary.submission) });
+  }
   const saveAttachment = useCallback((saved: StoredFile, selectionOrder: number) => setFiles(previous => {
     if (previous.some(file => file.id === saved.id)) return previous;
     const position = previous.findIndex(file => file.selectionOrder !== undefined && file.selectionOrder > selectionOrder);
@@ -278,6 +294,12 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   }, [run?.id, conversation.id, applyRunReadback]);
   const historyResultIds = configAllows(config, 'runs.read') ? historicalResultMessages(messages, conversation.id, run?.id) : new Set<string>();
   const liveText = streamText(events); const active = !!run && isActive(run.status); const pendingIds = pendingApprovalIds(events);
+  useEffect(() => {
+    if (active || archived || !config.codex_appserver) {
+      engineeringOpen.current = false;
+      setEngineeringEntry(null);
+    }
+  }, [active, archived, config.codex_appserver]);
   const liveSubagentQuestion = !trial && run && events.some(event => event.run_id === run.id && event.type === 'subagent.plan.created')
     ? run.message_id || messages.find(message => message.role === 'user' && message.run_id === run.id)?.id
     : undefined;
@@ -456,7 +478,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   };
   const send = async () => {
     if (failedAttachments) { setError('有附件未上传成功，请重试或移除后再发送。'); return; }
-    if (!canSend || (!input.trim() && files.length === 0 && selectedSkills.length===0) || archived || sending || submissionPending.current || uploadPending.current || uploading || restoringUploads || loading || refreshingRun || savingModel || showContext || !modelReady) return;
+    if (engineeringOpen.current || !canSend || (!input.trim() && files.length === 0 && selectedSkills.length===0) || archived || sending || submissionPending.current || uploadPending.current || uploading || restoringUploads || loading || refreshingRun || savingModel || showContext || !modelReady) return;
     const snapshot = readDraft();
     const text = input.trim() || (files.length?'请阅读我上传的附件。':'请执行所选 Skill。'); const fileIds = files.map(f => f.id); const skillIds = selectedSkillIds(selectedSkills,skills); const signature = JSON.stringify([text, fileIds,skillIds]);
     if (skillIds.length !== selectedSkills.length) { setError('所选 Skill 仍在加载或已不可用，请检查后再发送。'); return; }
@@ -669,7 +691,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
           <ConversationFeedback ref={feedbackRef} conversationId={conversation.id} runId={run?.id} messages={messages}/>
           <ConversationExport conversationId={conversation.id}/>
           {config.codex_appserver && draftOwnerId && <ConversationCodex key={conversation.id} ownerId={draftOwnerId}
-            conversationId={conversation.id} unavailable={active || archived}
+            conversationId={conversation.id} unavailable={active || archived} entry={engineeringEntry} onDismissEntry={() => { engineeringOpen.current = false; setEngineeringEntry(null); }} hasChatSkills={canUseSkills && selectedSkills.length > 0}
             chatAttachments={canUseAttachments && files.length > 0
               ? <CodexChatAttachments files={files} onPreview={setPreview}/> : undefined}/>}
           {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived} executionEnabled={config.harness_goal_execution===true} onRoundStarted={selectAcceptedRun}/>}
@@ -788,6 +810,8 @@ export default function ChatPage({ conversation, assistant, config, models, mode
         <ComposerCompletion value={assistance.completion} onAccept={assistance.accept} onDismiss={assistance.dismiss}/>
         <div className="composer-toolbar composer-actions">
           <div className="composer-utilities">
+            {!trial && config.codex_appserver && draftOwnerId && <Button type="button" variant="ghost"
+              disabled={active || archived || loading || refreshingRun || sending} onClick={openEngineeringDraft}>工程任务</Button>}
             {canUseAttachments && <><input ref={fileInput} type="file" multiple hidden accept={CHAT_ATTACHMENT_ACCEPT} onChange={e => void upload(e.target.files)}/><button className="attach-button composer-icon" type="button" aria-label={uploading ? '正在上传附件' : '添加附件'} title="添加附件，也可粘贴或拖放文件到输入框" disabled={uploading || sending || loading || archived} onClick={() => fileInput.current?.click()}>{uploading ? <LoaderCircle className="spin" size={18}/> : <Paperclip size={18}/>}</button></>}
             {canUseSkills && <button type="button" className="attach-button composer-icon" aria-label="选择 Skill" title="选择 Skill" aria-expanded={skillQuery !== null} disabled={sending || loading || archived} onClick={() => { closeModelSettings(); mention.current = null; setSkillQuery(previous => previous === null ? '' : null); }}><Sparkles size={17}/></button>}
           </div>

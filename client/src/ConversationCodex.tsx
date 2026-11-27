@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { SquareTerminal } from 'lucide-react';
 import { ApiError, api, clientRequestId, errorText, post } from './api';
 import { CodexSteerReceipts, codexAccessDenied, steerableTurn, useCodexSteers } from './CodexSteers';
+import { CodexDraftImport, type ChatEngineeringEntry } from './CodexDraftImport';
 import { useCodexDraft, type DraftAttempt } from './codexDraft';
 import { Button, ErrorNotice, Field, Loader, Modal } from './components';
 
@@ -137,7 +138,8 @@ export function CodexStatus({ thread, sending, preparing, pending, requestId }: 
   </div>;
 }
 
-function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { conversationId: string; ownerId: string; chatAttachments?: ReactNode; onClose: () => void }) {
+type CodexDialogProps = { conversationId: string; ownerId: string; chatAttachments?: ReactNode; hasChatSkills?: boolean; entry?: ChatEngineeringEntry | null; onClose: () => void };
+function CodexDialog({ conversationId, ownerId, chatAttachments, hasChatSkills, entry, onClose }: CodexDialogProps) {
   const path = '/conversations/' + encodeURIComponent(conversationId) + '/codex';
   const storageKey = codexRequestKey(ownerId, conversationId);
   const [thread, setThread] = useState<CodexThread | null>(null);
@@ -337,6 +339,9 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
     } finally { await refresh(); requestInFlight.current = false; setSendingId(null); }
   }
 
+  const unresolvedImport = Boolean((pending && !resolved) || saved.attempts.some(attempt =>
+    attempt.kind === 'turn' ? attempt.id !== confirmedTurn :
+      !steers.receipts.some(row => row.client_request_id === attempt.id && row.turn_id === attempt.turn && row.state !== 'uncertain')));
   function attemptLabel(attempt: DraftAttempt) {
     if (attempt.kind === 'turn') {
       return attempt.id === active?.request_id ? '本轮已提交的原文' : '任务已尝试提交，结果待核对';
@@ -375,6 +380,11 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
         </div>)}
       </section>}
       {chatAttachments}
+      {hasChatSkills && <p className="section-help">已选 Skill 保留在普通聊天中。工程任务只发送文字。</p>}
+      {entry && <CodexDraftImport entry={entry} ready={saved.ready && !readError && !offline}
+        occupied={Boolean(saved.attempts.length || pending || busyWithTurn)}
+        canEdit={!readError && !offline && !saved.revoked && !unresolvedImport && !thread.recovery_required}
+        revision={saved.revision} text={saved.text} edit={store.edit}/>}
       {editingNext && active && active.request_id === sendingId && sentText.current && <details>
         <summary>查看本轮已发送的要求</summary>
         <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{sentText.current}</p>
@@ -407,11 +417,13 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   </Modal>;
 }
 
-export default function ConversationCodex({ conversationId, ownerId, unavailable, chatAttachments }: { conversationId: string; ownerId: string; unavailable: boolean; chatAttachments?: ReactNode }) {
+type EntryProps = Omit<CodexDialogProps, 'onClose'> & { unavailable: boolean; onDismissEntry?: () => void };
+export default function ConversationCodex({ unavailable, onDismissEntry, ...dialog }: EntryProps) {
   const [open, setOpen] = useState(false);
   return <>
     <button type="button" className="icon-button" title="Codex 工程任务" aria-label="Codex 工程任务"
       disabled={unavailable} onClick={() => setOpen(true)}><SquareTerminal size={17}/></button>
-    {open && !unavailable && <CodexDialog key={codexRequestKey(ownerId, conversationId)} conversationId={conversationId} ownerId={ownerId} chatAttachments={chatAttachments} onClose={() => setOpen(false)}/>}
+    {(open || dialog.entry) && !unavailable && <CodexDialog key={codexRequestKey(dialog.ownerId, dialog.conversationId)}
+      {...dialog} onClose={() => { setOpen(false); onDismissEntry?.(); }}/>}
   </>;
 }

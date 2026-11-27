@@ -27,6 +27,8 @@ type Props = {
   onConversation: (conversation: Conversation) => void;
   onNew?: (assistant?: Assistant) => void;
   onStart?: (question: string, assistant: Assistant) => void;
+  onEngineering?: (question: string, assistant: Assistant) => void;
+  startingEngineering?: boolean;
   starting?: boolean;
   onNavigate: (view: 'assistants' | 'sessions' | 'knowledge' | 'connections') => void;
   canCreate?: boolean;
@@ -76,8 +78,8 @@ export function defaultConversationAssistant(assistants: Assistant[]) {
 }
 
 export default function WorkspacePage({
-  assistants, conversations, assistantsRead = readyRead, conversationsRead = readyRead, onReload, onAssistant, onConversation, onNew, onStart, onNavigate,
-  starting = false, canCreate = true, canManage = true, canReadSessions = true, codexEnabled = false,
+  assistants, conversations, assistantsRead = readyRead, conversationsRead = readyRead, onReload, onAssistant, onConversation, onNew, onStart, onEngineering, onNavigate,
+  starting = false, startingEngineering = false, canCreate = true, canManage = true, canReadSessions = true, codexEnabled = false,
 }: Props) {
   const [question, setQuestion] = useState('');
   const [assistantId, setAssistantId] = useState('');
@@ -90,7 +92,7 @@ export default function WorkspacePage({
     ? recent.filter(row => !row.active_run_id).map(row => row.id) : []);
   const runningCount = canReadSessions ? conversations.filter(conversation => !conversation.archived && conversation.active_run_id).length : 0;
   const assistantNames = new Map(assistants.map(assistant => [assistant.id, assistant.name]));
-  const canAsk = canCreate && Boolean(onStart) && available.length > 0;
+  const canAsk = canCreate && Boolean(onStart || (codexEnabled && onEngineering)) && available.length > 0;
   const today = new Date();
 
   return <div className="workspace-page wr-workspace">
@@ -116,7 +118,9 @@ export default function WorkspacePage({
               {selectionUnavailable && <option value={assistantId} disabled>原助手已不可用，请重新选择</option>}
               {available.map(assistant => <option key={assistant.id} value={assistant.id}>{assistant.name}</option>)}
             </select></label>
-            <Button type="submit" busy={starting} disabled={!question.trim() || selectionUnavailable}>{starting ? '正在发送' : '发送'}<ArrowRight size={16}/></Button>
+            {codexEnabled && onEngineering && <Button type="button" variant="secondary" busy={startingEngineering}
+              disabled={starting || !selectedAssistant} onClick={() => { if (selectedAssistant) onEngineering(question, selectedAssistant); }}>工程任务</Button>}
+            {onStart && <Button type="submit" busy={starting && !startingEngineering} disabled={starting || !question.trim() || selectionUnavailable}>{starting && !startingEngineering ? '正在发送' : '发送'}<ArrowRight size={16}/></Button>}
           </div>
         </form>
       </section>}
