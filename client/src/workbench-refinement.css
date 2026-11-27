@@ -74,6 +74,7 @@
 .wr-workspace .wr-conversation-assistant,.wr-workspace .wr-recent-row time,.wr-workspace .wr-time-unknown {color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;}
 .wr-workspace .wr-recent-row>svg {color:var(--muted);}
 .wr-workspace .wr-running {display:inline-flex;align-items:center;gap:5px;flex-shrink:0;border-radius:3px;background:var(--wr-soft);padding:1px 6px;color:var(--wr-accent);font-size:11px;line-height:20px;}
+.wr-workspace .wr-running[data-codex-live="false"] {background:var(--panel);color:var(--muted);}
 .wr-workspace .wr-running>span {width:5px;height:5px;background:currentColor;border-radius:50%;}
 .wr-workspace .wr-recent-empty {display:flex;align-items:center;gap:13px;border:1px solid var(--wr-border);border-radius:6px;padding:23px 20px;background:var(--wr-surface);}
 .wr-workspace .wr-recent-empty>svg {flex-shrink:0;color:var(--muted);}

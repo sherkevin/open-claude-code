@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ArrowRight, ArrowUpRight, BookOpen, Clock3, Layers3, MessageSquare, Network, RefreshCw } from 'lucide-react';
 import type { Assistant, Connection, Conversation } from './types';
 import { timeText } from './api';
+import { codexPhaseLabels, isLiveCodexPhase, useWorkspaceCodexPhases } from './useWorkspaceCodexPhases';
 import { Button, EmptyState } from './components';
 import AiIdentity from './AiIdentity';
 import './workbench-refinement.css';
@@ -18,6 +19,7 @@ export function WorkspaceReadNotice({ state, label, onRetry }: { state: Workspac
 type Props = {
   assistants: Assistant[];
   conversations: Conversation[];
+  codexEnabled?: boolean;
   assistantsRead?: WorkspaceReadState;
   conversationsRead?: WorkspaceReadState;
   onReload?: () => void;
@@ -75,7 +77,7 @@ export function defaultConversationAssistant(assistants: Assistant[]) {
 
 export default function WorkspacePage({
   assistants, conversations, assistantsRead = readyRead, conversationsRead = readyRead, onReload, onAssistant, onConversation, onNew, onStart, onNavigate,
-  starting = false, canCreate = true, canManage = true, canReadSessions = true,
+  starting = false, canCreate = true, canManage = true, canReadSessions = true, codexEnabled = false,
 }: Props) {
   const [question, setQuestion] = useState('');
   const [assistantId, setAssistantId] = useState('');
@@ -84,6 +86,8 @@ export default function WorkspacePage({
   const selectionUnavailable = Boolean(assistantId && !selectedAssistant);
   const recent = canReadSessions ? conversations.filter(conversation => !conversation.archived)
     .sort((a, b) => updatedTime(b.updated_at) - updatedTime(a.updated_at)).slice(0, 5) : [];
+  const codexPhases = useWorkspaceCodexPhases(codexEnabled && conversationsRead.loaded
+    ? recent.filter(row => !row.active_run_id).map(row => row.id) : []);
   const runningCount = canReadSessions ? conversations.filter(conversation => !conversation.archived && conversation.active_run_id).length : 0;
   const assistantNames = new Map(assistants.map(assistant => [assistant.id, assistant.name]));
   const canAsk = canCreate && Boolean(onStart) && available.length > 0;
@@ -120,10 +124,14 @@ export default function WorkspacePage({
       <div className="wr-overview wr-overview-full">
         <div className="wr-main-work">
       {canReadSessions && <section className="wr-recent" aria-labelledby="wr-recent-heading" aria-busy={conversationsRead.loading}>
-        <div className="wr-section-heading"><div className="wr-recent-heading"><Clock3 size={17}/><h2 id="wr-recent-heading">继续工作</h2>{runningCount > 0 && <span className="wr-running-summary">{runningCount} 项执行中</span>}</div><button type="button" className="wr-text-action" onClick={() => onNavigate('sessions')}>全部会话<ArrowRight size={14}/></button></div>
+        <div className="wr-section-heading"><div className="wr-recent-heading"><Clock3 size={17}/><h2 id="wr-recent-heading">继续工作</h2>{runningCount > 0 && <span className="wr-running-summary">{codexEnabled && '普通对话 '}{runningCount} 项执行中</span>}</div><button type="button" className="wr-text-action" onClick={() => onNavigate('sessions')}>全部会话<ArrowRight size={14}/></button></div>
         <WorkspaceReadNotice state={conversationsRead} label="最近会话" onRetry={onReload}/>
         {recent.length ? <div className="wr-recent-list"><div className="wr-recent-columns" aria-hidden="true"><span>会话</span><span>业务助手</span><span>最近更新</span><span/></div>{recent.map(conversation => <button type="button" className="wr-recent-row" key={conversation.id} onClick={() => onConversation(conversation)}>
-          <span className="wr-conversation-title"><MessageSquare size={16}/><span>{conversation.title || '新会话'}</span>{conversation.active_run_id && <span className="wr-running"><span aria-hidden="true"/>执行中</span>}</span>
+          <span className="wr-conversation-title"><MessageSquare size={16}/><span>{conversation.title || '新会话'}</span>{conversation.active_run_id
+            ? <span className="wr-running"><span aria-hidden="true"/>执行中</span>
+            : codexPhases[conversation.id] && <span className="wr-running" data-codex-live={isLiveCodexPhase(codexPhases[conversation.id])}>
+              {isLiveCodexPhase(codexPhases[conversation.id]) && <span aria-hidden="true"/>}{codexPhaseLabels[codexPhases[conversation.id]]}
+            </span>}</span>
           <span className="wr-conversation-assistant">{assistantNames.get(conversation.assistant_id) || '业务助手'}</span>
           {updatedTime(conversation.updated_at) ? <time dateTime={conversation.updated_at}>{timeText(conversation.updated_at)}</time> : <span className="wr-time-unknown">更新时间未提供</span>}
           <ArrowUpRight size={15}/>

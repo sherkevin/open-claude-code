@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import Field
 
 from .codex_appserver import (
@@ -101,8 +101,63 @@ def _run_owner_turn(host, service, conversation, user_id, body):
             set_first_title()
 
 
+_HOME_TERMINAL = {"completed": "completed", "interrupted": "interrupted", "cancelled": "interrupted",
+                  "canceled": "interrupted", "failed": "failed"}
+
+
+def _home_phase(status):
+    operation = status.get("operation") or {}
+    active = status.get("active_turn") or {}
+    last = status.get("last_turn") or {}
+    terminal = _HOME_TERMINAL.get(last.get("status"))
+    current_id = operation.get("request_id") if operation else active.get("request_id")
+    if terminal and current_id and last.get("request_id") == current_id:
+        return terminal
+    if operation:
+        if current_id and active.get("interrupt_requested") and active.get("request_id") == current_id:
+            return "interrupting"
+        phase = operation.get("phase")
+        return phase if phase in ("preparing", "thread_ready", "running", "output") else "unavailable"
+    if active.get("can_interrupt"):
+        return "interrupting" if active.get("interrupt_requested") else "running"
+    if status.get("recovery_required"):
+        return "recovery_required"
+    return terminal
+
+
+def _read_home_phases(host, service, user, conversation_ids):
+    # The caller already has its list of rows. An inaccessible row and a row
+    # with no Codex activity have the same projection.
+    phases = {}
+    for cid in dict.fromkeys(conversation_ids):
+        try:
+            require_codex_conversation(service, cid, user)
+        except AppError as exc:
+            if exc.code in ("USER_DISABLED", "CODEX_DISABLED") or exc.status not in (403, 404, 409):
+                raise
+            phases[cid] = None
+            continue
+        try:
+            phase = _home_phase(host.status(user["id"], cid))
+            if phase == "recovery_required":
+                # A turn can finish between the durable binding read and the
+                # live lock probe. Confirm an orphan before labelling it.
+                phase = _home_phase(host.status(user["id"], cid))
+            phases[cid] = phase
+        except CodexHostUnavailable:
+            phases[cid] = "unavailable"
+    return {"phases": [phases[cid] for cid in conversation_ids]}
+
+
 def create_codex_router(svc, authenticated, host: CodexHost):
-    router = APIRouter(prefix="/api/v1/conversations/{conversation_id}/codex")
+    root = APIRouter(prefix="/api/v1")
+    router = APIRouter(prefix="/conversations/{conversation_id}/codex")
+
+    @root.get("/workspace/codex-phases")
+    async def home_phases(response: Response, conversation_id: list[str] = Query(min_length=1, max_length=5),
+                          service=Depends(svc), user=Depends(authenticated)):
+        response.headers["Cache-Control"] = "no-store"
+        return await _call(_read_home_phases, host, service, user, conversation_id)
 
     @router.get("")
     async def status(conversation_id: str, response: Response,
@@ -148,4 +203,5 @@ def create_codex_router(svc, authenticated, host: CodexHost):
         require_codex_conversation(service, conversation_id, user)
         return await _call(host.reconcile, user["id"], conversation_id)
 
-    return router
+    root.include_router(router)
+    return root
