@@ -449,7 +449,13 @@ class _Session:
             "approvalPolicy": "never",
             "ephemeral": False,
         }, self.config.response_timeout_seconds)
-        return self._thread_of(result, workspace, require_cwd=True)
+        thread_id = self._thread_of(result, workspace, require_cwd=True)
+        # The native server materializes a new, empty thread on the first
+        # metadata write. It must be resumable after this short-lived process
+        # closes, before we advertise a durable binding to the caller.
+        self.request("thread/name/set", {"threadId": thread_id, "name": "开物会话"},
+                     self.config.response_timeout_seconds)
+        return thread_id
 
     def resume_thread(self, thread_id: str, workspace: Path) -> None:
         result = self.request("thread/resume", {

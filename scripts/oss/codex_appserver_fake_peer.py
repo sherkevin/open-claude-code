@@ -174,6 +174,14 @@ def handle(message: dict) -> None:
             "thread": {"id": thread_id, "cwd": _state["cwd"]},
         })
         return
+    if method == "thread/name/set":
+        if args.scenario == "name_rejected":
+            error(request_id, -32600, "cannot persist thread metadata")
+        elif params.get("threadId") != current_thread() or not params.get("name"):
+            error(request_id, -32602, "thread identity and name required")
+        else:
+            result(request_id, {})
+        return
     if method == "thread/resume":
         if args.scenario == "resume_missing":
             error(request_id, -32600, "thread not found")

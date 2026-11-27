@@ -115,6 +115,9 @@ def test_thread_start_is_owner_scoped_and_read_only(tmp_path):
     assert started["approvalPolicy"] == "never"
     assert started["ephemeral"] is False
     assert "model" not in started
+    named = requests(log_events(log), "thread/name/set")
+    assert [event["params"] for event in named] == [{"threadId": thread_id, "name": "开物会话"}]
+    assert requests(log_events(log), "turn/start") == []
 
     # A different owner never observes the first owner's binding.
     other, _ = make_host(tmp_path)
@@ -124,6 +127,14 @@ def test_thread_start_is_owner_scoped_and_read_only(tmp_path):
     }
     other_view = other.ensure_thread(OTHER, CID)
     assert other_view["thread_id"] != thread_id
+
+
+def test_prepare_does_not_publish_unpersisted_thread(tmp_path):
+    host, log = make_host(tmp_path, "name_rejected")
+    with pytest.raises(CodexHostRejected):
+        host.ensure_thread(USER, CID)
+    assert host.status(USER, CID)["bound"] is False
+    assert requests(log_events(log), "turn/start") == []
 
 
 def test_turn_receipt_identity_and_idempotent_replay(tmp_path):
