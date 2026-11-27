@@ -7,6 +7,7 @@ JSON-RPC fixture; the pinned real binary contract remains the separate
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -462,3 +463,23 @@ def test_first_explicit_request_has_one_process_and_live_owner_feedback(tmp_path
     records = log_events(log)
     assert len(requests(records, "initialize")) == len(requests(records, "turn/start")) == 1
     assert not requests(records, "thread/resume")
+
+
+def test_idle_status_read_does_not_block_a_turn_after_state_unlock(tmp_path, monkeypatch):
+    reader, _ = make_host(tmp_path)
+    writer, log = make_host(tmp_path)
+    writer.ensure_thread(USER, CID)
+    receipts = []
+    state_lock = reader._state_lock
+
+    @contextmanager
+    def send_as_soon_as_state_is_unlocked(key):
+        with state_lock(key):
+            yield
+        # Interleave the writer immediately after the idle GET releases state.
+        receipts.append(writer.run_turn(USER, CID, "first-request", "只读请求"))
+
+    monkeypatch.setattr(reader, "_state_lock", send_as_soon_as_state_is_unlocked)
+    assert reader.status(USER, CID).get("operation") is None
+    assert [receipt["status"] for receipt in receipts] == ["completed"]
+    assert len(requests(log_events(log), "turn/start")) == 1

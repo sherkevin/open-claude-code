@@ -884,6 +884,8 @@ class CodexHost:
                                                      or len(value["text"]) > 1024))):
                         raise CodexHostUnavailable("Codex operation state invalid")
                     return value
+                # An idle probe must release its shared lock before turn admission resumes.
+                fcntl.flock(fd, fcntl.LOCK_UN)
                 return None
         finally:
             os.close(fd)
