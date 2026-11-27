@@ -1,6 +1,6 @@
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe,it,expect} from 'vitest';
-import ConversationGoal,{goalChange,goalExecutionAuthorization,goalRoundStart,GoalExecutionView,GoalStateView,type GoalExecution,type NativeGoal} from './ConversationGoal';
+import ConversationGoal,{goalChange,goalExecutionAuthorization,goalStopConfirmation,goalRoundStart,GoalExecutionView,GoalStateView,type GoalExecution,type NativeGoal} from './ConversationGoal';
 
 const goal:NativeGoal={id:'goal-00000000-0000-4000-8000-000000000001',revision:3,objective:'synthetic goal',phase:'paused',maxGoalRounds:8,roundsStarted:2,activation:'disarmed',createdAt:1,updatedAt:2};
 describe('native goal state UI',()=>{
@@ -34,6 +34,13 @@ describe('native goal state UI',()=>{
     }
     for(const cap of [0,-1,1.5,51,NaN]){
       expect(()=>goalExecutionAuthorization(goal,'fixture',{...limits,roundCostBudgetMicros:cap})).toThrow('单轮费用上限');
+    }
+  });
+  it('explains which requests stop when a capped round is revoked',()=>{
+    expect(goalStopConfirmation(25)).toContain('已发出的请求可返回，本轮尚未发出的请求及后续轮次都会停止');
+    expect(goalStopConfirmation(25)).not.toContain('正在运行的一轮不会被取消');
+    for(const legacy of [null,undefined]){
+      expect(goalStopConfirmation(legacy)).toBe('停止后续目标执行？正在运行的一轮不会被取消，但不会再开始下一轮。');
     }
   });
   it('shows synthetic and unknown billing without claiming production cost',()=>{

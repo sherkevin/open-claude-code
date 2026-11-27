@@ -37,6 +37,11 @@ export function goalExecutionAuthorization(goal:NativeGoal|null,sessionId:string
     max_rounds:limits.maxRounds,token_budget:limits.tokenBudget,
     cost_budget_micros:limits.costBudgetMicros,time_budget_seconds:limits.timeBudgetSeconds,confirm:true};
 }
+export function goalStopConfirmation(roundCap:number|null|undefined){
+  return roundCap!=null
+    ? '停止目标执行？已发出的请求可返回，本轮尚未发出的请求及后续轮次都会停止。'
+    : '停止后续目标执行？正在运行的一轮不会被取消，但不会再开始下一轮。';
+}
 /** One explicit round. Never sends the objective, model text or a budget. */
 export function goalRoundStart(goal:NativeGoal|null){
   if(!goal)throw new Error('目标已变化，请刷新。');
@@ -172,7 +177,7 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onRoundStarted,
   }
   async function stopExecution(){
     if(pending.current||!executionEnabled)return;
-    if(!window.confirm('停止后续目标执行？正在运行的一轮不会被取消，但不会再开始下一轮。'))return;
+    if(!window.confirm(goalStopConfirmation(execution?.authorization?.round_cost_budget_micros)))return;
     setExecError('');
     try{
       pending.current=true;setBusy(true);
