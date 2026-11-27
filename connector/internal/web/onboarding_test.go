@@ -78,6 +78,7 @@ let exportAttempts = 0;
 const assistTarget = {name:"销售合同",url:"https://customer.example/mcp/sales"};
 let assistance = null;
 let allowedAssist = false;
+let supportsWeek = true;
 let failAssist = false;
 const fetch = async (path, options) => {
   const body = options && options.body ? JSON.parse(options.body) : undefined;
@@ -89,10 +90,12 @@ const fetch = async (path, options) => {
     assert.ok(options.headers["X-Connector-Token"]);
     if(failAssist){ throw new Error("control unavailable"); }
     data = {enabled:control.bound && allowedAssist,offer:assistance,target_after_start:control.bound && allowedAssist,
-      last_command:assistance?.last_command};
+      week_consent:control.bound && allowedAssist && supportsWeek,last_command:assistance?.last_command};
   }else if(path === "/api/assist/start"){
     assert.deepEqual(body, {});
-    assistance = {id:"as_fixture",name:"内网接入协助",url:"",status:"active",local_active:true};
+    const deadline = new Date(Date.now()+(supportsWeek ? 168*3600 : 30*60)*1000).toISOString();
+    assistance = {id:"as_fixture",name:"内网接入协助",url:"",status:"active",local_active:true,
+      ...(supportsWeek ? {consent_policy:"week_168h",consent_expires_at:deadline} : {}),expires_at:deadline};
     data = assistance;
   }else if(path === "/api/assist/target"){
     assert.deepEqual(body, {...assistTarget,session_id:"as_fixture"});
@@ -148,6 +151,7 @@ async function verifyWorkflow(){
   allowedAssist = true;
   await refreshAssist();
   assert.equal(ui("assistStart").hidden, false);
+  assert.match(ui("assistState").textContent, /固定 7 天/, "the consent duration must be visible before starting");
   failAssist = true;
   await refreshAssist();
   assert.equal(ui("assistStart").hidden, true);
@@ -164,6 +168,8 @@ async function verifyWorkflow(){
   assert.equal(ui("assistTarget").hidden, false);
   assert.equal(ui("assistStop").hidden, false);
   assert.equal(ui("assistAddress").textContent, "");
+  assert.equal(ui("assistExpiry").hidden, false);
+  assert.match(ui("assistExpiry").textContent, /固定 7 天/);
   for(let i = 0; i < 20 && assistRefreshing; i++){ await new Promise(resolve=>setImmediate(resolve)); }
   assistance.last_command = {id:"asjob_fixture",command:"ipconfig /all",state:"succeeded",output:"Windows IP Configuration"};
   await refreshAssist();
@@ -190,7 +196,14 @@ async function verifyWorkflow(){
   assert.equal(ui("assistStop").hidden, true);
   assert.equal(ui("assistCommandPanel").hidden, true);
   assert.equal(ui("assistNotice").textContent, "协助已停止。");
+  // Exercise a separately confirmed legacy grant, not a policy mutation of
+  // an already active grant. Wait for the stop-triggered refresh to settle.
+  for(let i = 0; i < 20 && assistRefreshing; i++){ await new Promise(resolve=>setImmediate(resolve)); }
+  supportsWeek = false;
+  await refreshAssist();
+  assert.match(ui("assistState").textContent, /旧版授权/);
   await ui("assistStart").onclick();
+  assert.match(ui("assistExpiry").textContent, /旧版授权/);
   assert.equal(ui("assistAddress").textContent, assistTarget.url);
   assert.equal(ui("assistTarget").hidden, false, "a prefilled address still needs explicit confirmation");
   await ui("assistStop").onclick();

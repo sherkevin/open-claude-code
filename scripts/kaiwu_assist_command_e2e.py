@@ -175,9 +175,13 @@ def main() -> int:
         print(f"connector bound: {identity.get('connector_id')}")
         harness.check("connector-bound", identity.get("state") in ("READY", "CONFIGURING"), state=identity.get("state"))
 
+        # Negotiate the fixed week consent capability before the customer's
+        # explicit start, exactly like the local page does.
+        local.get("/api/assist/offer").raise_for_status()
         started = local.post("/api/assist/start", json={})
         started.raise_for_status()
         offer = started.json()["data"]
+        harness.check("week-consent-negotiated", offer.get("consent_policy") == "week_168h", offer=offer)
         print(f"assistance opened: {offer['id']}")
 
         assist = httpx.Client(

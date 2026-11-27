@@ -41,6 +41,8 @@ type Session = {
   url: string;
   status: 'pending' | 'active' | 'stopped' | 'expired';
   expires_at: string;
+  consent_policy?: 'legacy' | 'week_168h';
+  consent_expires_at?: string | null;
   tenant_name: string;
   latest_job: Job | null;
   discovered_tools: string[];
@@ -292,7 +294,11 @@ export function KaiwuAssistDialog({ devices, devicesError, onRefresh, onClose, o
           <strong role="status">{sessionLabels[session.status]}</strong>
           <p>{session.tenant_name}{hasTarget && ` · ${session.name}`}</p>
           {hasTarget && <code>{session.url}</code>}
-          {active && <small>开放至 {timeText(session.expires_at)}</small>}
+          {active && <small>
+            {session.consent_policy === 'week_168h'
+              ? `固定授权一周 · 到期 ${timeText(session.consent_expires_at || session.expires_at)}`
+              : `旧版授权 · 最近在线后 30 分钟到期（最长 24 小时）· 到期 ${timeText(session.expires_at)}`}
+          </small>}
         </section>
         {active && !hasTarget && <p role="status">客户已开始协助。可直接在下方执行排查命令；需要接入 MCP 时，再让客户在本机确认服务地址。</p>}
         {active && <section className="kaiwu-assist-cmd" aria-label="远程 CMD">

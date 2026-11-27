@@ -63,7 +63,8 @@ details{margin-top:15px}summary{cursor:pointer;color:var(--muted);font-size:13px
     <strong id="assistService"></strong>
     <code id="assistAddress"></code>
     <p id="assistState" class="muted" role="status"></p>
-    <p class="muted">仅在企业管理员批准后开启。协助期间，工程师可以在本机执行诊断及维护命令（包括读取或修改文件）；你可以随时停止。</p>
+    <p id="assistExpiry" class="muted" role="status" hidden></p>
+    <p class="muted">仅在企业管理员批准后开启。协助期间，工程师可以在本机执行诊断及维护命令（包括读取或修改文件）；你可以随时停止。确认开始后，本次授权按固定期限计算，不会因为连接器轮询而延长；连接器进程重启后本机授权立即失效，需要重新确认。</p>
     <div class="actions">
       <button id="assistStart" class="primary" type="button" hidden>开始协助</button>
       <button id="assistTarget" class="primary" type="button" hidden>确认这个业务服务</button>
@@ -153,6 +154,7 @@ let assistOffer;
 let assistEnabled = false;
 let assistAvailability = "checking";
 let assistTargetAfterStart = false;
+let assistWeekConsent = false;
 let assistRefreshing = false;
 let assistAction = "";
 let assistChange = 0;
@@ -202,9 +204,19 @@ function renderAssist(){
     !eligible && !pending ? (assistAvailability === "checking" ? "正在核对本机协助权限…" :
       assistAvailability === "unreachable" ? "暂时无法读取协助权限，请检查连接或联系开物技术支持。" :
       "此设备尚未开通协助权限，请联系开物技术支持。无需重新安装。") :
-    assistTargetAfterStart ? "点击「开始协助」后，开物工程师可在授权期间排查本机问题。" :
+    assistTargetAfterStart ? (assistWeekConsent
+      ? "点击「开始协助」后，本次授权自本机确认起固定 7 天有效；到期自动停止，不能续期。"
+      : "点击「开始协助」后，开物工程师可在授权期间排查本机问题（旧版授权按 24 小时上限、最近在线后 30 分钟到期）。") :
     target ? "点击「开始协助」，允许开物工程师读取并协助接入这个 MCP 服务。" :
     "先在下方填写 MCP 地址，再点击「开始协助」。";
+  // Show the actually negotiated policy and deadline, not a hard-coded promise:
+  // an older control plane keeps the legacy 24h/30min lease.
+  const consentDeadline = assistOffer?.consent_expires_at || assistOffer?.expires_at;
+  const weekConsent = assistOffer?.consent_policy === "week_168h";
+  $("assistExpiry").hidden = !active || !consentDeadline;
+  $("assistExpiry").textContent = active && consentDeadline ? (weekConsent
+    ? "本次授权自本机确认起固定 7 天有效，到期时间 " + new Date(consentDeadline).toLocaleString("zh-CN", {hour12:false}) + "；到期或停止后不能恢复。"
+    : "旧版授权：最近一次连接器在线后 30 分钟到期，且不超过开始后 24 小时。到期时间 " + new Date(consentDeadline).toLocaleString("zh-CN", {hour12:false}) + "。") : "";
   $("assistStart").hidden = active || (!eligible && !pending);
   $("assistTarget").hidden = !awaitingTarget;
   $("assistStop").hidden = !active;
@@ -231,11 +243,12 @@ async function refreshAssist(){
   assistRefreshing = true;
   const revision = assistChange;
   try{
-    const {enabled, offer, target_after_start, last_command} = await api("/api/assist/offer");
+    const {enabled, offer, target_after_start, week_consent, last_command} = await api("/api/assist/offer");
     if(assistAction || revision !== assistChange){ return; }
     assistEnabled = enabled;
     assistAvailability = enabled ? "enabled" : "disabled";
     assistTargetAfterStart = !!target_after_start;
+    assistWeekConsent = !!week_consent;
     assistCommand = last_command;
     assistOffer = offer?.status === "active" || (!assistEnabled && offer?.status === "pending") ? offer : undefined;
     renderAssist();
@@ -449,6 +462,7 @@ async function loadStatus(){
       assistEnabled = false;
       assistAvailability = "checking";
       assistTargetAfterStart = false;
+      assistWeekConsent = false;
       assistAction = "";
       assistCommand = undefined;
       $("assistNotice").textContent = "";

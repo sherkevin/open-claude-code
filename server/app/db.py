@@ -442,6 +442,11 @@ CREATE TABLE IF NOT EXISTS kaiwu_assist_sessions(
     created_by TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pending','active','stopped','expired')),
     expires_at TEXT NOT NULL,
+    -- 'legacy' keeps the original 24h absolute + 30min sliding lease. A
+    -- 'week_168h' session has one fixed deadline counted from local consent
+    -- (consent_expires_at) and is never extended by polling.
+    consent_policy TEXT NOT NULL DEFAULT 'legacy',
+    consent_expires_at TEXT,
     last_poll_at TEXT,
     discovered_tools TEXT NOT NULL DEFAULT '[]',
     imported_connection_id TEXT,
@@ -659,6 +664,21 @@ class Database:
         elif "timeout_seconds" not in assist_job_columns:
             self.conn.execute(
                 "ALTER TABLE kaiwu_assist_jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 60"
+            )
+        # Consent policy is additive and idempotent. Existing rows keep the
+        # original 24h absolute + 30min sliding semantics; only a session that
+        # explicitly negotiates the week policy gets a fixed consent deadline.
+        assist_session_columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(kaiwu_assist_sessions)")
+        }
+        if "consent_policy" not in assist_session_columns:
+            self.conn.execute(
+                "ALTER TABLE kaiwu_assist_sessions ADD COLUMN consent_policy TEXT NOT NULL DEFAULT 'legacy'"
+            )
+        if "consent_expires_at" not in assist_session_columns:
+            self.conn.execute(
+                "ALTER TABLE kaiwu_assist_sessions ADD COLUMN consent_expires_at TEXT"
             )
         connection_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(connections)")}
         if "read_only_certifications" not in connection_columns:

@@ -33,6 +33,13 @@ from .security import AppError
 SESSION_TTL = 30 * 60
 # Device polling proves liveness, not unlimited authorization.
 SESSION_MAX_AGE = 24 * 60 * 60
+# A customer who explicitly consents to the week policy gets one fixed 168h
+# window from that local confirmation. Polling never extends it; a connector
+# that is offline or asleep for more than 30 minutes can resume polling inside
+# the window, while job dispatch still requires a poll in the last 15 seconds.
+WEEK_CONSENT_POLICY = "week_168h"
+WEEK_CONSENT_SECONDS = 168 * 60 * 60
+LEGACY_CONSENT_POLICY = "legacy"
 DEVICE_LEASE = 15
 QUEUE_TTL = 45
 RUN_TTL = 120
@@ -51,7 +58,15 @@ def _future(seconds: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
 
+def _week_consent(row) -> bool:
+    return row["consent_policy"] == WEEK_CONSENT_POLICY
+
+
 def _renewed_session_expiry(row) -> str:
+    if _week_consent(row):
+        # The week consent is anchored to the local confirmation. Polling only
+        # proves the device is online; it must not move this deadline.
+        return row["consent_expires_at"]
     hard_deadline = datetime.fromisoformat(row['created_at']) + timedelta(seconds=SESSION_MAX_AGE)
     return min(datetime.fromisoformat(_future(SESSION_TTL)), hard_deadline).isoformat()
 
@@ -118,7 +133,17 @@ class SessionInput(StrictModel):
 
 
 class StartWithoutTargetInput(StrictModel):
-    pass
+    # Opt-in negotiation for the fixed 168h consent. Older connectors omit it
+    # and keep the original 24h absolute + 30min sliding policy.
+    consent_policy: Literal["week_168h"] | None = None
+
+
+class StartTargetInput(TargetInput):
+    consent_policy: Literal["week_168h"] | None = None
+
+
+class StartSessionInput(SessionInput):
+    consent_policy: Literal["week_168h"] | None = None
 
 
 class ApproveTargetInput(SessionInput, TargetInput):
@@ -271,7 +296,10 @@ def _expire(service):
     timestamp = now()
     db.execute(
         "UPDATE kaiwu_assist_sessions SET status='expired' "
-        "WHERE status IN ('pending','active') AND (expires_at<=? OR created_at<=? OR connector_id IN "
+        "WHERE status IN ('pending','active') AND ("
+        "(consent_policy=? AND (consent_expires_at IS NULL OR consent_expires_at<=?)) "
+        "OR (consent_policy!=? AND (expires_at<=? OR created_at<=?)) "
+        "OR connector_id IN "
         "(SELECT id FROM kaiwu_connectors WHERE revoked=1 OR draining=1) "
         "OR (instr(created_by, ?) = 1 AND ? = 0) "
         "OR (instr(created_by, ?) != 1 AND created_by != ? || connector_id AND NOT EXISTS "
@@ -279,7 +307,8 @@ def _expire(service):
         "OR (tenant_id NOT IN (SELECT value FROM json_each(?)) "
         "AND connector_id NOT IN (SELECT value FROM json_each(?))))",
         (
-            timestamp, _future(-SESSION_MAX_AGE), BRIDGE_OPERATOR_PREFIX, bool(settings.kaiwu_assist_bridge_secret()),
+            WEEK_CONSENT_POLICY, timestamp, WEEK_CONSENT_POLICY, timestamp,
+            _future(-SESSION_MAX_AGE), BRIDGE_OPERATOR_PREFIX, bool(settings.kaiwu_assist_bridge_secret()),
             BRIDGE_OPERATOR_PREFIX, DEVICE_OWNER_PREFIX, dump(tenants), dump(devices),
         ),
     )
@@ -298,10 +327,12 @@ def expire_assist_on_startup(service):
 
 
 def _active(row):
-    return (
-        row["status"] == "active" and not row["revoked"] and not row["draining"]
-        and row["expires_at"] > now() and row["created_at"] > _future(-SESSION_MAX_AGE)
-    )
+    if row["status"] != "active" or row["revoked"] or row["draining"]:
+        return False
+    if _week_consent(row):
+        # Absence of a fixed consent deadline is never treated as consent.
+        return bool(row["consent_expires_at"]) and row["consent_expires_at"] > now()
+    return row["expires_at"] > now() and row["created_at"] > _future(-SESSION_MAX_AGE)
 
 
 def _require_recent_consent(row):
@@ -316,8 +347,14 @@ def _require_target(row):
         raise AppError(409, "ASSIST_TARGET_REQUIRED", "请先在连接器上确认要协助的 MCP 服务")
 
 
-def _offer(row):
-    return {key: row[key] for key in ("id", "name", "url", "status", "expires_at")}
+def _offer(row, *, extended: bool = False):
+    view = {key: row[key] for key in ("id", "name", "url", "status", "expires_at")}
+    if extended:
+        # Device responses are gated on the connector's explicit opt-in so an
+        # older connector's strict decoder never sees unknown fields.
+        view["consent_policy"] = row["consent_policy"]
+        view["consent_expires_at"] = row["consent_expires_at"]
+    return view
 
 
 def _job_view(job):
@@ -334,7 +371,7 @@ def _job_view(job):
 
 def _session_view(service, row):
     view = {
-        **_offer(row),
+        **_offer(row, extended=True),
         "connector_id": row["connector_id"],
         "tenant_name": row["tenant_name"],
         "latest_job": _job_view(_job(service, row["id"])),
@@ -416,20 +453,25 @@ def add_device_assist(router, service_dependency, device):
 
     @router.get(path + "/offer")
     def read_offer(
-        connector_id: str, device_first: bool = False, target_after_start: bool = False,
+        connector_id: str, request: Request, device_first: bool = False, target_after_start: bool = False,
         identity=Depends(device), service=Depends(service_dependency),
     ):
         connector = identity["connector"]
         if connector["id"] == connector_id and not _eligible(connector["tenant_id"], connector_id, _configured_scope(service.settings)):
             return {"offer": None}
         _device_scope(service, identity, connector_id)
+        # Capability is advertised only when the connector opts in. The policy
+        # itself is confirmed in the signed start body, never by this query.
+        week = request.query_params.get("consent") == WEEK_CONSENT_POLICY
         with service.db.transaction():
             _expire(service)
             row = service.db.one(
                 "SELECT * FROM kaiwu_assist_sessions WHERE connector_id=? AND status IN ('pending','active')",
                 (connector_id,),
             )
-            result = {"offer": _offer(row) if row and (row["url"] or target_after_start) else None}
+            result = {"offer": _offer(row, extended=week) if row and (row["url"] or target_after_start) else None}
+            if week:
+                result["week_consent"] = True
             if device_first:
                 result["enabled"] = True
             if target_after_start:
@@ -438,10 +480,11 @@ def add_device_assist(router, service_dependency, device):
 
     @router.post(path + "/start")
     def start(
-        connector_id: str, data: TargetInput | SessionInput | StartWithoutTargetInput,
+        connector_id: str, data: StartTargetInput | StartSessionInput | StartWithoutTargetInput,
         identity=Depends(device), service=Depends(service_dependency),
     ):
         connector = _device_scope(service, identity, connector_id)
+        week = data.consent_policy == WEEK_CONSENT_POLICY
         with service.db.transaction():
             _expire(service)
             if not isinstance(data, SessionInput):
@@ -456,35 +499,48 @@ def add_device_assist(router, service_dependency, device):
                 if existing and existing["status"] == "active":
                     if (existing["name"], existing["url"]) != (name, url):
                         raise AppError(409, "ASSIST_ALREADY_OPEN", "请先结束本机正在进行的协助")
-                    return _offer(existing)
+                    # Never upgrade or extend a grant that is already active.
+                    return _offer(existing, extended=week)
                 if existing:
                     _stop(service, existing)
                 session_id = "asst_" + uid()
+                consent_deadline = _future(WEEK_CONSENT_SECONDS) if week else None
                 # Only the first authenticated poll makes this grant usable by an operator.
                 service.db.execute(
                     "INSERT INTO kaiwu_assist_sessions"
-                    "(id,connector_id,tenant_id,name,url,created_by,status,expires_at,created_at) "
-                    "VALUES(?,?,?,?,?,?,'active',?,?)",
+                    "(id,connector_id,tenant_id,name,url,created_by,status,expires_at,"
+                    "consent_policy,consent_expires_at,created_at) "
+                    "VALUES(?,?,?,?,?,?,'active',?,?,?,?)",
                     (
                         session_id, connector_id, connector["tenant_id"], name, url,
-                        DEVICE_OWNER_PREFIX + connector_id, _future(SESSION_TTL), now(),
+                        DEVICE_OWNER_PREFIX + connector_id, consent_deadline or _future(SESSION_TTL),
+                        WEEK_CONSENT_POLICY if week else LEGACY_CONSENT_POLICY, consent_deadline, now(),
                     ),
                 )
                 row = _session(service, session_id, connector_id=connector_id)
                 _event(service, row, "started")
-                return _offer(row)
+                return _offer(row, extended=week)
             row = _session(service, data.session_id, connector_id=connector_id)
             if _active(row):
                 return {}
             if row["status"] != "pending":
                 raise AppError(409, "ASSIST_EXPIRED", "协助申请已结束，请重新发起")
             timestamp = now()
-            service.db.execute(
-                "UPDATE kaiwu_assist_sessions SET status='active', expires_at=?, last_poll_at=? WHERE id=?",
-                (_renewed_session_expiry(row), timestamp, row["id"]),
-            )
+            if week:
+                # The fixed window starts at this local confirmation.
+                consent_deadline = _future(WEEK_CONSENT_SECONDS)
+                service.db.execute(
+                    "UPDATE kaiwu_assist_sessions SET status='active', expires_at=?, "
+                    "consent_policy=?, consent_expires_at=?, last_poll_at=? WHERE id=?",
+                    (consent_deadline, WEEK_CONSENT_POLICY, consent_deadline, timestamp, row["id"]),
+                )
+            else:
+                service.db.execute(
+                    "UPDATE kaiwu_assist_sessions SET status='active', expires_at=?, last_poll_at=? WHERE id=?",
+                    (_renewed_session_expiry(row), timestamp, row["id"]),
+                )
             _event(service, row, "approved")
-            return {}
+            return _offer(_session(service, row["id"], connector_id=connector_id), extended=week)
 
     @router.post(path + "/target")
     def approve_target(
@@ -522,10 +578,10 @@ def add_device_assist(router, service_dependency, device):
             row = _session(service, data.session_id, connector_id=connector_id)
             if not _active(row):
                 return {"active": False, "job": None}
-            # Sliding lease: as long as the customer's connector keeps polling,
-            # the session stays open. It still expires SESSION_TTL after the
-            # last poll, so a machine that goes away or stops the connector
-            # releases remote control on its own.
+            # Legacy sliding lease: as long as the customer's connector keeps
+            # polling, the session stays open and still expires 30 minutes
+            # after the last poll. A negotiated week grant never moves; polling
+            # only refreshes liveness for job dispatch.
             timestamp = now()
             service.db.execute(
                 "UPDATE kaiwu_assist_sessions SET last_poll_at=?, expires_at=? WHERE id=?",

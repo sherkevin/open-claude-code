@@ -120,6 +120,9 @@ type Agent struct {
 	assistActive      *assistSession
 	assistStarting    bool
 	assistStopped     string
+	// assistWeekConsent records the control plane's capability advertisement.
+	// The week policy is only sent after this is true.
+	assistWeekConsent bool
 
 	// mu guards the startup worker and cancellation of the active attempt.
 	startupConnectPending bool

@@ -171,6 +171,11 @@ func runDirectAssist(ctx context.Context, opts agent.Options, code string) {
 			fatal(err)
 		}
 	}
+	// Read the control plane's consent capability before opening so a direct
+	// CLI session negotiates the same fixed week policy as the local page. A
+	// failed read keeps the legacy policy; the start itself still requires the
+	// explicit local action below.
+	_, _ = instance.AssistStatus(ctx)
 	offer, err := instance.OpenAssist(ctx)
 	if err != nil {
 		fatal(err)

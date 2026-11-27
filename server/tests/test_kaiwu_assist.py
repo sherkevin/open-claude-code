@@ -467,3 +467,216 @@ def test_polling_cannot_extend_authorization_beyond_hard_cap(env):
     )
     assert device("poll", local).json() == {"active": False, "job": None}
     assert client.get(route).json()["status"] == "expired"
+
+
+WEEK = "week_168h"
+WEEK_QUERY = "offer?device_first=1&target_after_start=1&consent=" + WEEK
+
+
+def start_week(env, *, target=TARGET):
+    """Open a week-consent session exactly as the new local page does."""
+    _, client, db, device, *_ = env
+    assert client.post("/api/v1/auth/login", json={"username": "owner", "password": PASSWORD}).status_code == 200
+    status = device(WEEK_QUERY).json()
+    assert status["week_consent"] is True and status["offer"] is None
+    payload = {"consent_policy": WEEK}
+    if target:
+        payload.update({"name": "销售合同", "url": target})
+    opened = device("start", payload)
+    assert opened.status_code == 200, opened.text
+    offer = opened.json()
+    assert offer["consent_policy"] == WEEK
+    assert offer["consent_expires_at"] == offer["expires_at"]
+    local = {"session_id": offer["id"]}
+    # The operator's claim still requires a device poll in the last 15 seconds,
+    # even though the week consent itself is valid for 168 hours.
+    assert device("poll", local).json() == {"active": True, "job": None}
+    route = PORTAL + "/sessions/" + offer["id"]
+    assert client.post(route + "/claim").status_code == 200
+    return offer, local
+
+
+def test_week_consent_fixed_window_survives_outage_and_never_slides(env):
+    _, client, db, device, _, _, _ = env
+    offer, local = start_week(env)
+    route = PORTAL + "/sessions/" + offer["id"]
+    created = datetime.fromisoformat(db.one(
+        "SELECT created_at FROM kaiwu_assist_sessions WHERE id=?", (offer["id"],),
+    )["created_at"])
+    deadline = datetime.fromisoformat(offer["consent_expires_at"])
+    assert timedelta(hours=167) < deadline - created <= timedelta(hours=168)
+    # A queued job keeps only its short dispatch lease, not the week consent.
+    assert device("poll", local).json() == {"active": True, "job": None}
+    queued = client.post(route + "/jobs", json={"action": "discover", "bearer_token": TOKEN}).json()["latest_job"]
+    assert device("poll", local).json()["job"]["id"] == queued["id"]
+
+    # Sixth day: the connector was offline for 31 minutes. Consent is still
+    # valid, so the next authenticated poll resumes inside the fixed window.
+    six_days = datetime.now(timezone.utc) - timedelta(days=6)
+    db.execute(
+        "UPDATE kaiwu_assist_sessions SET created_at=?,last_poll_at=? WHERE id=?",
+        (six_days.isoformat(), (datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat(), offer["id"]),
+    )
+    # Admin actions require a poll in the last 15 seconds; the week grant alone
+    # does not dispatch work to an absent device.
+    assert client.post(route + "/claim").status_code == 409
+    assert device("poll", {**local, "accept_jobs": False}).json() == {"active": True, "job": None}
+    assert client.post(route + "/claim").status_code == 200
+    renewed = db.one(
+        "SELECT expires_at,consent_expires_at FROM kaiwu_assist_sessions WHERE id=?", (offer["id"],),
+    )
+    assert renewed["consent_expires_at"] == offer["consent_expires_at"]
+    assert datetime.fromisoformat(renewed["expires_at"]) == deadline
+
+    # Seventh day: the absolute deadline passes and the grant cannot resume.
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    db.execute(
+        "UPDATE kaiwu_assist_sessions SET consent_expires_at=?,expires_at=? WHERE id=?",
+        (past, past, offer["id"]),
+    )
+    assert device("poll", local).json() == {"active": False, "job": None}
+    assert client.get(route).json()["status"] == "expired"
+    assert device("start", local).status_code == 409
+    assert db.one("SELECT status FROM kaiwu_assist_sessions WHERE id=?", (offer["id"],))["status"] == "expired"
+
+
+def test_week_consent_fails_closed_without_a_consent_deadline(env):
+    _, client, db, device, _, _, _ = env
+    offer, local = start_week(env)
+    db.execute(
+        "UPDATE kaiwu_assist_sessions SET consent_expires_at=NULL WHERE id=?", (offer["id"],),
+    )
+    assert device("poll", local).json() == {"active": False, "job": None}
+    assert db.one("SELECT status FROM kaiwu_assist_sessions WHERE id=?", (offer["id"],))["status"] == "expired"
+
+
+def test_week_consent_short_job_lease_does_not_survive_an_outage(env):
+    _, client, db, device, _, _, _ = env
+    offer, local = start_week(env)
+    route = PORTAL + "/sessions/" + offer["id"]
+    assert device("poll", local).json() == {"active": True, "job": None}
+    queued = client.post(route + "/jobs", json={"action": "discover", "bearer_token": TOKEN}).json()["latest_job"]
+    # Thirty one minutes offline: the short queued lease has run out even though
+    # the week consent is still valid.
+    db.execute("UPDATE kaiwu_assist_jobs SET expires_at='2020-01-01' WHERE id=?", (queued["id"],))
+    db.execute("UPDATE kaiwu_assist_sessions SET last_poll_at='2020-01-01' WHERE id=?", (offer["id"],))
+    assert device("poll", local).json() == {"active": True, "job": None}
+    assert db.one("SELECT status,sealed_bearer FROM kaiwu_assist_jobs WHERE id=?", (queued["id"],)) == {
+        "status": "failed", "sealed_bearer": None,
+    }
+
+
+def test_week_consent_stop_and_revoke_do_not_resume(env):
+    _, client, db, device, _, connector_id, _ = env
+    offer, local = start_week(env)
+    assert device("stop", local).status_code == 200
+    assert device("poll", local).json() == {"active": False, "job": None}
+    assert device("start", local).status_code == 409
+    assert db.one("SELECT status FROM kaiwu_assist_sessions WHERE id=?", (offer["id"],))["status"] == "stopped"
+
+    # A new, explicitly confirmed grant is not a resume. Revoke through the
+    # real authenticated admin API; the device auth layer must reject it before
+    # any assistance action, and the operator status sweep must expire it.
+    second, second_local = start_week(env)
+    assert second["id"] != offer["id"]
+    route = PORTAL + "/sessions/" + second["id"]
+    queued = client.post(route + "/jobs", json={"action": "discover", "bearer_token": TOKEN}).json()["latest_job"]
+    revoke = client.post(BASE + "/v1/connectors/" + connector_id + "/revoke",
+                         headers={"Authorization": "Bearer " + ADMIN_TOKEN})
+    assert revoke.status_code == 200
+    assert revoke.json()["revoked"] is True
+    for action in ("poll", "start"):
+        denied = device(action, second_local)
+        assert denied.status_code == 403
+        assert denied.json()["error"]["code"] == "DEVICE_REVOKED"
+    assert client.get(route).json()["status"] == "expired"
+    assert client.post(route + "/claim").status_code == 409
+    assert db.one("SELECT status FROM kaiwu_assist_sessions WHERE id=?", (second["id"],))["status"] == "expired"
+    assert db.one("SELECT status,sealed_bearer FROM kaiwu_assist_jobs WHERE id=?", (queued["id"],)) == {
+        "status": "failed", "sealed_bearer": None,
+    }
+
+
+def test_week_consent_removed_tenant_scope_expires_on_restart(env):
+    app, _, db, _, _, _, _ = env
+    offer, _ = start_week(env)
+    service = app.state.service
+    config = replace(service.settings, kaiwu_assist_tenants=())
+    with TestClient(create_app(config), base_url="https://testserver"):
+        assert db.one("SELECT status FROM kaiwu_assist_sessions WHERE id=?", (offer["id"],))["status"] == "expired"
+
+
+def test_legacy_client_keeps_24h_sliding_policy(env):
+    _, client, db, device, _, _, _ = env
+    assert client.post("/api/v1/auth/login", json={"username": "owner", "password": PASSWORD}).status_code == 200
+    # No opt-in query: the control plane must not advertise or grant the week
+    # policy, so an old connector keeps the original behavior.
+    status = device("offer?device_first=1&target_after_start=1").json()
+    assert "week_consent" not in status
+    opened = device("start", {})
+    assert opened.status_code == 200, opened.text
+    offer = opened.json()
+    assert "consent_policy" not in offer and "consent_expires_at" not in offer
+    row = db.one(
+        "SELECT consent_policy,consent_expires_at,created_at,expires_at FROM kaiwu_assist_sessions WHERE id=?",
+        (offer["id"],),
+    )
+    assert row["consent_policy"] == "legacy" and row["consent_expires_at"] is None
+    assert datetime.fromisoformat(row["expires_at"]) - datetime.fromisoformat(row["created_at"]) <= timedelta(minutes=31)
+
+
+def test_unknown_consent_policy_is_rejected(env):
+    _, _, _, device, _, _, _ = env
+    assert device("start", {"consent_policy": "two_weeks"}).status_code == 422
+
+
+def test_legacy_assist_sessions_gain_consent_columns_without_extending(tmp_path):
+    import sqlite3
+
+    from app.db import Database
+
+    path = tmp_path / "legacy-sessions.sqlite"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        "CREATE TABLE kaiwu_assist_sessions("
+        "id TEXT PRIMARY KEY,"
+        "connector_id TEXT NOT NULL,"
+        "tenant_id TEXT NOT NULL,"
+        "name TEXT NOT NULL,"
+        "url TEXT NOT NULL,"
+        "created_by TEXT NOT NULL,"
+        "status TEXT NOT NULL,"
+        "expires_at TEXT NOT NULL,"
+        "last_poll_at TEXT,"
+        "discovered_tools TEXT NOT NULL DEFAULT '[]',"
+        "imported_connection_id TEXT,"
+        "created_at TEXT NOT NULL"
+        ")"
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    legacy.execute(
+        "INSERT INTO kaiwu_assist_sessions"
+        "(id,connector_id,tenant_id,name,url,created_by,status,expires_at,created_at) "
+        "VALUES(?,?,?,?,?,?,'active',?,?)",
+        ("asst_" + "a" * 32, "conn_legacy", "tenant-legacy", "旧会话", TARGET,
+         "device:conn_legacy", (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat(), now_iso),
+    )
+    legacy.commit()
+    legacy.close()
+
+    db = Database(path)
+    try:
+        columns = {row["name"] for row in db.conn.execute("PRAGMA table_info(kaiwu_assist_sessions)")}
+        assert {"consent_policy", "consent_expires_at"} <= columns
+        row = db.one("SELECT consent_policy,consent_expires_at,expires_at FROM kaiwu_assist_sessions")
+        assert row["consent_policy"] == "legacy" and row["consent_expires_at"] is None
+    finally:
+        db.conn.close()
+
+    # Reopening is idempotent and preserves the legacy row.
+    again = Database(path)
+    try:
+        row = again.one("SELECT consent_policy,consent_expires_at FROM kaiwu_assist_sessions")
+        assert row["consent_policy"] == "legacy" and row["consent_expires_at"] is None
+    finally:
+        again.conn.close()

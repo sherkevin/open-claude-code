@@ -24,9 +24,14 @@ const (
 	// leaves it open. A session that stops polling still ends this long after
 	// the last poll.
 	assistLifetime = 30 * time.Minute
-	// assistMaxLifetime is a local safety cap only. It keeps a session that the
-	// server never reports inactive from polling forever.
-	assistMaxLifetime    = 24 * time.Hour
+	// assistMaxLifetime is the legacy local safety cap only. It keeps a session
+	// that the server never reports inactive from polling forever.
+	assistMaxLifetime = 24 * time.Hour
+	// assistWeekLifetime is the local safety cap for the explicitly negotiated
+	// fixed week consent. The server's absolute consent deadline remains
+	// authoritative; this only bounds a control plane that never reports
+	// inactive.
+	assistWeekLifetime   = 168 * time.Hour
 	assistPollInterval   = 3 * time.Second
 	assistControlTimeout = 3 * time.Second
 	// A control-plane or network blip must not end a session the customer
@@ -95,6 +100,9 @@ func (a *Agent) AssistStatus(ctx context.Context) (cloud.AssistStatus, error) {
 	if !a.canAssistLocked() || client != a.cloud || connectorID != a.identity.ConnectorID {
 		return cloud.AssistStatus{}, nil
 	}
+	// Only a control plane that advertises support is allowed to receive the
+	// week policy; otherwise the legacy 24h/30min grant is used.
+	a.assistWeekConsent = status.WeekConsent
 	if active := a.assistActive; active != nil {
 		return active.localStatus(), nil
 	}
@@ -128,6 +136,7 @@ func (s *assistSession) localStatus() cloud.AssistStatus {
 	return cloud.AssistStatus{
 		Enabled: true, Offer: &offer, TargetAfterStart: s.targetAfterStart,
 		LastCommand: copyAssistCommand(s.command),
+		WeekConsent: offer.ConsentPolicy == cloud.AssistConsentWeek,
 	}
 }
 
@@ -175,12 +184,16 @@ func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget) (*cl
 		return nil, errors.New("当前无法开始协助，请确认设备已绑定且没有正在进行的协助")
 	}
 	client, connectorID := a.cloud, a.identity.ConnectorID
+	consentPolicy := ""
+	if a.assistWeekConsent {
+		consentPolicy = cloud.AssistConsentWeek
+	}
 	a.assistStarting = true
 	a.mu.Unlock()
 
 	request, done := context.WithTimeout(a.runtimeCtx, assistControlTimeout)
 	stopRequest := context.AfterFunc(ctx, done)
-	offer, err := client.OpenAssist(request, connectorID, target)
+	offer, err := client.OpenAssist(request, connectorID, target, consentPolicy)
 	stopRequest()
 	done()
 
@@ -206,10 +219,10 @@ func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget) (*cl
 		go a.notifyAssistStop(session)
 		return nil, errors.New("开始协助时本机连接状态已变化，请刷新后重试")
 	}
-	// The server's sliding lease decides when the session ends; the local
-	// deadline is only a safety cap. The offer's own expiry is still checked
-	// when the offer is validated above.
-	sessionCtx, cancel := context.WithDeadline(a.runtimeCtx, time.Now().Add(assistMaxLifetime))
+	// The server's lease decides when the session ends; the local deadline is
+	// only a safety cap. Legacy sessions keep the 24h cap, while a negotiated
+	// week grant uses its fixed absolute consent deadline (clamped to 168h).
+	sessionCtx, cancel := context.WithDeadline(a.runtimeCtx, assistSessionDeadline(offer, time.Now()))
 	session.cancel = cancel
 	a.assistSeen = nil
 	a.assistActive = session
@@ -301,19 +314,23 @@ func (a *Agent) StartAssist(ctx context.Context, sessionID string) error {
 		a.mu.Unlock()
 		return errors.New("这项协助请求已更新或无法开始，请刷新后重试")
 	}
-	// The server's sliding lease decides when the session ends; the local
-	// deadline is only a safety cap.
-	sessionCtx, cancel := context.WithTimeout(a.runtimeCtx, assistMaxLifetime)
+	// The server's lease decides when the session ends; the local deadline is
+	// only a safety cap. A negotiated week grant gets the 168h cap.
+	weekConsent := a.assistWeekConsent
+	lifetime := assistMaxLifetime
+	consentPolicy := ""
+	if weekConsent {
+		lifetime = assistWeekLifetime
+		consentPolicy = cloud.AssistConsentWeek
+	}
+	sessionCtx, cancel := context.WithTimeout(a.runtimeCtx, lifetime)
 	session := &assistSession{offer: *offer, client: a.cloud, connectorID: a.identity.ConnectorID, cancel: cancel}
-	// Displayed and re-checked locally; every successful poll slides it
-	// forward with the server's lease.
-	session.offer.ExpiresAt = time.Now().Add(assistLifetime)
 	a.assistActive = session
 	a.mu.Unlock()
 
 	request, done := context.WithTimeout(sessionCtx, assistControlTimeout)
 	stopRequest := context.AfterFunc(ctx, done)
-	err := session.client.StartAssist(request, session.connectorID, sessionID)
+	started, err := session.client.StartAssist(request, session.connectorID, sessionID, consentPolicy)
 	stopRequest()
 	done()
 	if err != nil || sessionCtx.Err() != nil {
@@ -322,6 +339,26 @@ func (a *Agent) StartAssist(ctx context.Context, sessionID string) error {
 		}
 		return errors.New("开始协助未得到确认，请让开物工程师重新发起")
 	}
+	a.mu.Lock()
+	if a.assistActive == session {
+		switch {
+		case started.ID != "" && (started.ID != sessionID || started.Status != "active" ||
+			!validAssistOffer(started, time.Now())):
+			a.mu.Unlock()
+			if a.clearAssist(session) {
+				a.notifyAssistStop(session)
+			}
+			return errors.New("开物返回的协助授权与本机确认不一致，请刷新后重试")
+		case started.ID != "":
+			// Keep the control plane's negotiated policy and absolute deadline.
+			started.LocalActive = true
+			session.offer = started
+		default:
+			// Older control plane returned no body: keep the legacy lease.
+			session.offer.ExpiresAt = time.Now().Add(assistLifetime)
+		}
+	}
+	a.mu.Unlock()
 	go a.runAssist(sessionCtx, session)
 	return nil
 }
@@ -417,10 +454,10 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 		if !poll.Active {
 			return
 		}
-		// The server renewed the sliding lease on this poll; keep the local
-		// view in step so target confirmations and the status page agree.
+		// The server renewed the legacy sliding lease on this poll; keep the
+		// local view in step. A fixed week grant never moves.
 		a.mu.Lock()
-		if a.assistActive == session {
+		if a.assistActive == session && session.offer.ConsentPolicy != cloud.AssistConsentWeek {
 			session.offer.ExpiresAt = time.Now().Add(assistLifetime)
 		}
 		a.mu.Unlock()
@@ -630,6 +667,20 @@ func validAssistSelection(selected, available []string) bool {
 		delete(known, tool)
 	}
 	return true
+}
+
+// assistSessionDeadline is the local safety boundary. Legacy grants keep the
+// 24h cap; a negotiated week grant follows the server's fixed absolute consent
+// deadline and is never pushed forward by polling.
+func assistSessionDeadline(offer cloud.AssistOffer, now time.Time) time.Time {
+	if offer.ConsentPolicy != cloud.AssistConsentWeek {
+		return now.Add(assistMaxLifetime)
+	}
+	deadline := offer.ConsentDeadline()
+	if hardCap := now.Add(assistWeekLifetime); deadline.IsZero() || deadline.After(hardCap) {
+		deadline = hardCap
+	}
+	return deadline
 }
 
 func validAssistOffer(offer cloud.AssistOffer, now time.Time) bool {
