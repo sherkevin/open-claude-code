@@ -30,6 +30,8 @@ from datetime import datetime, timedelta, timezone
 
 from .db import now, uid
 from .security import AppError
+from .goal_round_cost import (goal_attempt_endpoint, price_round, release_unused_locked,
+                              reservation_view, reserve_round_locked, round_tokens)
 
 GOAL_ID = re.compile(r"^goal-[a-f0-9-]{36}$")
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -96,23 +98,25 @@ def _normalize_request(request: Mapping) -> dict:
         raise AppError(422, "GOAL_AUTHORIZATION_INVALID", "目标执行授权内容无效")
     allowed = {"goal_id", "goal_revision", "harness_session_id", "max_rounds",
                "token_budget", "cost_budget_micros", "time_budget_seconds", "confirm"}
-    if set(request) != allowed or request.get("confirm") is not True:
+    if set(request) - {"round_cost_budget_micros"} != allowed or request.get("confirm") is not True:
         raise AppError(422, "GOAL_AUTHORIZATION_INVALID", "请确认目标、轮次、用量、费用和时间预算")
     goal_id, revision = request.get("goal_id"), request.get("goal_revision")
     session = request.get("harness_session_id")
     rounds, tokens = request.get("max_rounds"), request.get("token_budget")
     cost, seconds = request.get("cost_budget_micros"), request.get("time_budget_seconds")
+    round_cost = request.get("round_cost_budget_micros")
     if (not isinstance(goal_id, str) or GOAL_ID.fullmatch(goal_id) is None
             or not _integer(revision, 1, 10**9)
             or not isinstance(session, str) or SESSION_ID.fullmatch(session) is None
             or not _integer(rounds, 1, MAX_ROUNDS)
             or not _integer(tokens, 1, MAX_TOKENS)
             or not _integer(cost, 1, MAX_COST_MICROS)
+            or (round_cost is not None and not _integer(round_cost, 1, cost))
             or not _integer(seconds, 60, MAX_TIME_SECONDS)):
         raise AppError(422, "GOAL_AUTHORIZATION_INVALID", "目标执行授权的预算边界无效")
     return {"goal_id": goal_id, "goal_revision": revision, "harness_session_id": session,
             "max_rounds": rounds, "token_budget": tokens, "cost_budget_micros": cost,
-            "time_budget_seconds": seconds}
+            "time_budget_seconds": seconds, "round_cost_budget_micros": round_cost}
 
 
 def _goal_snapshot(goal: Mapping, harness_session_id: str, *, objective_required: bool = False) -> dict:
@@ -210,14 +214,31 @@ def _lease_rows(service, authorization_id: str) -> list[dict]:
     # Recheck completed receipts at the common read/admission boundary so an
     # existing approval (or a change out of test mode) cannot reuse them.
     rows = service.db.all(
-        "SELECT l.*,r.usage FROM goal_execution_leases l LEFT JOIN runs r "
-        "ON r.id=l.run_id AND ? AND l.usage_status='complete' AND l.cost_authoritative=0 "
+        "SELECT l.*,r.usage,a.round_cost_budget_micros FROM goal_execution_leases l "
+        "JOIN goal_execution_authorizations a ON a.id=l.authorization_id LEFT JOIN runs r "
+        "ON r.id=l.run_id AND ? AND (a.round_cost_budget_micros IS NOT NULL OR (l.usage_status='complete' AND l.cost_authoritative=0)) "
         "WHERE l.authorization_id=? ORDER BY l.round_index",
         (service.settings.provider_test_mode, authorization_id))
     for row in rows:
-        if row["usage_status"] == "complete":
+        row["cost_reservation"] = (reservation_view(service, row["run_id"])
+                                   if row["round_cost_budget_micros"] is not None else None)
+        if row["round_cost_budget_micros"] is not None and row["usage_status"] is not None:
+            reservation = row["cost_reservation"]
+            if reservation is None:
+                row.update(usage_status="unknown", total_tokens=None, cost_micros=None,
+                           cost_authoritative=None, error_code="GOAL_ROUND_NOT_RESERVED")
+            else:
+                tokens, cost, status, code, source, _ = _run_usage_detail(
+                    row, synthetic_allowed=service.settings.provider_test_mode,
+                    reservation=reservation, service=service)
+                row.update(usage_status=status, total_tokens=tokens, cost_micros=cost, usage_source=source,
+                           cost_authoritative=0 if cost is not None else None)
+                if code:
+                    row["error_code"] = code
+        elif row["usage_status"] == "complete":
             tokens, cost, status, _, source, _ = _run_usage_detail(
-                row, synthetic_allowed=service.settings.provider_test_mode)
+                row, synthetic_allowed=service.settings.provider_test_mode,
+                reservation=row["cost_reservation"], service=service)
             if (status != "complete" or row["cost_authoritative"] != 0
                     or (tokens, cost, source) != (row["total_tokens"], row["cost_micros"], row["usage_source"])):
                 row.update(usage_status="unknown", total_tokens=None, cost_micros=None,
@@ -247,14 +268,16 @@ def _totals(rows: list[dict]) -> dict:
     # A lease without a complete receipt may have consumed provider resources.
     # Its usage stays unknown and therefore blocks the next admission.
     complete = all(row.get("usage_status") == "complete" for row in executed)
-    authoritative = complete and all(row.get("cost_authoritative") in (None, 1) for row in executed)
+    tokens_known = all(type(row.get("total_tokens")) is int for row in executed)
+    costs_known = all(type(row.get("cost_micros")) is int for row in executed)
+    authoritative = costs_known and all(row.get("cost_authoritative") == 1 for row in executed)
     return {
         "rounds_used": len(rows),
         "rounds_executed": len(executed),
         "usage_complete": complete,
         "cost_authoritative": authoritative,
-        "tokens_used": (sum(row.get("total_tokens") or 0 for row in executed) if complete else None),
-        "cost_micros_used": (sum(row.get("cost_micros") or 0 for row in executed) if complete else None),
+        "tokens_used": (sum(row["total_tokens"] for row in executed) if tokens_known else None),
+        "cost_micros_used": (sum(row["cost_micros"] for row in executed) if costs_known else None),
         "synthetic_rounds": sum(1 for row in executed if row.get("cost_authoritative") == 0),
         "unknown_rounds": [row["round_index"] for row in executed
                            if row.get("usage_status") != "complete"],
@@ -279,12 +302,13 @@ def _time_remaining(authorization: Mapping) -> int | None:
 def _budget_view(authorization: Mapping, rows: list[dict]) -> dict:
     totals = _totals(rows)
     tokens_used, cost_used = totals["tokens_used"], totals["cost_micros_used"]
+    active_reservation = any(row.get("state") == "admitted" and row.get("cost_reservation") for row in rows)
     return {
         **totals,
         "tokens_remaining": (max(0, authorization["token_budget"] - tokens_used)
                              if tokens_used is not None else None),
         "cost_micros_remaining": (max(0, authorization["cost_budget_micros"] - cost_used)
-                                  if cost_used is not None else None),
+                                  if cost_used is not None and not active_reservation else None),
         "rounds_remaining": max(0, authorization["max_rounds"] - totals["rounds_used"]),
         "time_remaining_seconds": _time_remaining(authorization),
     }
@@ -301,6 +325,7 @@ def _authorization_view(row: Mapping) -> dict:
         "permission_mode": row["permission_mode"],
         "max_rounds": row["max_rounds"], "token_budget": row["token_budget"],
         "cost_budget_micros": row["cost_budget_micros"],
+        "round_cost_budget_micros": row.get("round_cost_budget_micros"),
         "time_budget_seconds": row["time_budget_seconds"],
         "status": row["status"], "created_at": row["created_at"],
         "expires_at": (_expires_at(row).isoformat() if _expires_at(row) else None),
@@ -323,6 +348,7 @@ def _lease_view(row: Mapping) -> dict:
         "usage_status": row.get("usage_status"), "total_tokens": row.get("total_tokens"),
         "cost_micros": row.get("cost_micros"),
         "usage_source": row.get("usage_source"),
+        "cost_reservation": row.get("cost_reservation"),
         "cost_authoritative": (None if row.get("cost_authoritative") is None
                                else bool(row.get("cost_authoritative"))),
         "abort_reason": row.get("abort_reason"),
@@ -335,7 +361,7 @@ def goal_execution_view(service, conversation_id: str, user) -> dict:
     conversation = require_goal_owner(service, conversation_id, user)
     authorization = _authorization_row(service, conversation_id)
     result = {"authorization": None, "budget": None, "active_lease": None,
-              "rounds": [],
+              "rounds": [], "round_cost_block": None,
               "continuation_driver": False, "unattended_execution": False,
               "driver_integrated": bool(goal_execution_enabled(service)),
               "single_round_per_run": True,
@@ -348,6 +374,11 @@ def goal_execution_view(service, conversation_id: str, user) -> dict:
     rows = _lease_rows(service, authorization["id"])
     active = next((row for row in rows if row["state"] == "admitted"), None)
     totals = _totals(rows)
+    if authorization["status"] == "active" and active is None:
+        try:
+            price_round(service, authorization, totals["cost_micros_used"])
+        except AppError as exc:
+            result["round_cost_block"] = {"code": exc.code, "message": exc.message}
     result["authorization"] = _authorization_view(authorization)
     result["budget"] = _budget_view(authorization, rows)
     result["active_lease"] = _lease_view(active) if active else None
@@ -421,14 +452,14 @@ def authorize_goal_execution(service, conversation_id: str, user, request: Mappi
                 "INSERT INTO goal_execution_authorizations"
                 "(id,conversation_id,user_id,goal_id,goal_revision,objective_sha256,harness_session_id,"
                 "native_rounds_started,native_max_rounds,assistant_revision,permission_mode,max_rounds,"
-                "token_budget,cost_budget_micros,time_budget_seconds,status,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)",
+                "token_budget,cost_budget_micros,round_cost_budget_micros,time_budget_seconds,status,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)",
                 (uid(), conversation_id, conversation["user_id"], snapshot["id"], snapshot["revision"],
                  objective_digest(snapshot["objective"]), bounded["harness_session_id"],
                  snapshot["roundsStarted"], snapshot["maxGoalRounds"],
                  assistant["revision"], current.get("permission_mode", "manual"), bounded["max_rounds"],
                  bounded["token_budget"], bounded["cost_budget_micros"],
-                 bounded["time_budget_seconds"], timestamp),
+                 bounded["round_cost_budget_micros"], bounded["time_budget_seconds"], timestamp),
             )
     except sqlite3.IntegrityError:
         raise AppError(409, "GOAL_AUTHORIZATION_EXISTS", "已有生效的执行授权，请先撤销") from None
@@ -562,6 +593,7 @@ def start_goal_round(service, conversation_id: str, user, goal: Mapping,
             if (existing.get("armed_at") is None and run is not None
                     and run["status"] in {"queued", "running"}):
                 rows = _lease_rows(service, authorization["id"])
+                existing["cost_reservation"] = reservation_view(service, existing["run_id"])
                 return {"run_id": existing["run_id"], "lease": _lease_view(existing),
                         "authorization": _authorization_view(authorization),
                         "budget": _budget_view(authorization, rows),
@@ -570,6 +602,7 @@ def start_goal_round(service, conversation_id: str, user, goal: Mapping,
                         "replayed": True}
             raise AppError(409, "GOAL_LEASE_ACTIVE", "已有目标轮次占用会话，请先结束")
         rows = _start_checks(service, conversation, authorization, bounded)
+        price_round(service, authorization, _totals(rows)["cost_micros_used"])
         action, expected_revision = _next_arm_action(bounded)
         first = {"authorization": dict(authorization), "rows": rows,
                  "action": action, "expected_revision": expected_revision,
@@ -596,6 +629,7 @@ def start_goal_round(service, conversation_id: str, user, goal: Mapping,
             if _active_lease(service, conversation_id):
                 raise AppError(409, "GOAL_LEASE_ACTIVE", "已有目标轮次占用会话，请先结束")
             rows = _start_checks(service, conversation, authorization, bounded)
+            meter = price_round(service, authorization, _totals(rows)["cost_micros_used"])
             if max((row["round_index"] for row in rows), default=0) + 1 != round_index:
                 raise AppError(409, "GOAL_ROUND_CONFLICT", "目标轮次已变化，请刷新后重试")
             action, expected_revision = _next_arm_action(bounded)
@@ -610,6 +644,7 @@ def start_goal_round(service, conversation_id: str, user, goal: Mapping,
                  bounded["id"], bounded["revision"], harness_session_id, round_index, timestamp,
                  expected_revision, bounded["roundsStarted"], action),
             )
+            reserve_round_locked(service, run_id, meter)
             service.db.execute(
                 "UPDATE goal_execution_authorizations SET goal_revision=? WHERE id=?",
                 (bounded["revision"], authorization["id"]))
@@ -625,6 +660,7 @@ def start_goal_round(service, conversation_id: str, user, goal: Mapping,
                             goal_arm_action=action)
             _pointer(service, run_id, metadata)
             lease = service.db.one("SELECT * FROM goal_execution_leases WHERE id=?", (lease_id,))
+            lease["cost_reservation"] = reservation_view(service, run_id)
             service.db.event(run_id, "goal.execution.reserved", {
                 "lease_id": lease_id, "authorization_id": authorization["id"],
                 "round_index": round_index, "goal_id": bounded["id"],
@@ -660,6 +696,7 @@ def stop_goal_execution_locked(service, conversation_id: str, reason: str) -> di
         "UPDATE goal_execution_authorizations SET status='revoked',revoked_at=?,revoked_reason=? "
         "WHERE conversation_id=? AND status='active'", (timestamp, reason, conversation_id))
     for lease in leases:
+        release_unused_locked(service, lease["run_id"])
         service.db.execute(
             "UPDATE goal_execution_leases SET state='aborted',finished_at=?,outcome='aborted',"
             "abort_reason=? WHERE id=? AND state='admitted'",
@@ -735,6 +772,8 @@ def admit_goal_round(service, conversation_id: str, run_id: str,
         authorization = _active_authorization(service, conversation_id)
         if authorization is None:
             raise AppError(409, "GOAL_NOT_AUTHORIZED", "当前没有生效的目标执行授权")
+        if authorization.get("round_cost_budget_micros") is not None:
+            raise AppError(409, "GOAL_ROUND_NOT_RESERVED", "单轮限额须先经正式入口预留再启动")
         if authorization["harness_session_id"] != harness_session_id \
                 or conversation["harness_session_id"] != harness_session_id:
             raise AppError(409, "GOAL_SESSION_CHANGED", "原生会话已变化，本目标不再续行")
@@ -954,6 +993,7 @@ def require_goal_round_start(service, run_id: str) -> dict:
     remaining = _time_remaining(authorization)
     if remaining is None or remaining <= 0:
         raise AppError(409, "GOAL_TIME_BUDGET_EXHAUSTED", "目标执行时间预算已用尽")
+    goal_attempt_endpoint(service, run_id)
     return _lease_view(lease)
 
 
@@ -1007,7 +1047,7 @@ def goal_execution_runtime_config(service, run: Mapping) -> dict | None:
     }
 
 
-def _run_usage_detail(run: Mapping, *, synthetic_allowed: bool = False
+def _run_usage_detail(run: Mapping, *, synthetic_allowed: bool = False, reservation=None, service=None
                       ) -> tuple[int | None, int | None, str, str | None, str, bool]:
     """Read the run's real usage receipt; missing parts stay unknown.
 
@@ -1016,6 +1056,18 @@ def _run_usage_detail(run: Mapping, *, synthetic_allowed: bool = False
     provider test mode and is always reported separately from production
     billing.
     """
+    if reservation is not None:
+        has_parent = any(r["kind"] == "parent" and r["attempt_id"] is not None
+                         for r in reservation["attempts"])
+        if not synthetic_allowed or not has_parent:
+            return None, None, "unknown", "GOAL_ATTEMPT_COST_UNKNOWN", "loopback_test", False
+        cost = reservation["settled_micros"]
+        tokens = round_tokens(service, run, reservation)
+        if cost is None:
+            return tokens, None, "unknown", "GOAL_ATTEMPT_COST_UNKNOWN", "loopback_test", False
+        if tokens is None:
+            return None, cost, "unknown", "USAGE_CAPTURE_INCOMPLETE", "loopback_test", False
+        return tokens, cost, "complete", None, "loopback_test", False
     raw = run.get("usage")
     if not raw:
         return None, None, "unknown", "USAGE_MISSING", "unknown", False
@@ -1105,15 +1157,18 @@ def _settle_goal_round_locked(service, lease_id: str, outcome: str) -> dict:
         raise AppError(409, "GOAL_RUN_NOT_SETTLED", "任务尚未结束，不能结算目标轮次")
     if run["status"] != outcome:
         raise AppError(409, "GOAL_SETTLEMENT_MISMATCH", "目标轮次结果与真实任务不一致")
+    release_unused_locked(service, lease["run_id"])
+    reservation = reservation_view(service, lease["run_id"])
     synthetic_allowed = bool(getattr(service.settings, "provider_test_mode", False))
     tokens, cost, usage_status, usage_code, source, authoritative = _run_usage_detail(
-        run, synthetic_allowed=synthetic_allowed)
+        {**run, "run_id": run["id"]}, synthetic_allowed=synthetic_allowed, reservation=reservation,
+        service=service)
     state = "settled" if lease["state"] == "admitted" else "aborted"
     service.db.execute(
         "UPDATE goal_execution_leases SET state=?,finished_at=?,outcome=?,usage_status=?,"
         "total_tokens=?,cost_micros=?,usage_source=?,cost_authoritative=?,error_code=? WHERE id=?",
         (state, now(), outcome, usage_status, tokens, cost, source,
-         None if usage_status != "complete" else int(authoritative),
+         None if cost is None else int(authoritative),
          run.get("error_code") or usage_code, lease_id))
     service.db.event(lease["run_id"], "goal.execution.settled", {
         "lease_id": lease_id, "round_index": lease["round_index"], "outcome": outcome,
@@ -1122,6 +1177,7 @@ def _settle_goal_round_locked(service, lease_id: str, outcome: str) -> dict:
         "aborted": lease["state"] == "aborted",
     })
     current = service.db.one("SELECT * FROM goal_execution_leases WHERE id=?", (lease_id,))
+    current["cost_reservation"] = reservation
     authorization = service.db.one(
         "SELECT * FROM goal_execution_authorizations WHERE id=?", (lease["authorization_id"],))
     return {"lease": _lease_view(current),

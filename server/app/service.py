@@ -1097,7 +1097,7 @@ class Service:
         return {"automatic": automatic, "read_only_confirmation_digest": confirmation_digest,
                 "definition_digest": record["definition_digest"]}
 
-    def runtime_config(self, conversation_id):
+    def runtime_config(self, conversation_id, *, provider_only=False):
         conversation = self.require("conversations", conversation_id)
         runtime_type = conversation_runtime_type(conversation)
         selection = None
@@ -1113,6 +1113,8 @@ class Service:
             recovery_only = metadata.get("recovery_mode") == "answer_only" or bool(metadata.get("schedule_id") and metadata.get("schedule_execution_mode") != "agent")
         selection = self.catalog.validate_snapshot(selection or json.loads(conversation["model_snapshot"]))
         provider_env = self.validated_provider(selection)
+        if provider_only:
+            return {"provider_env": provider_env}
         user = self.require("users", conversation["user_id"])
         if not user["enabled"]:
             raise AppError(403, "USER_DISABLED", "账号已停用")

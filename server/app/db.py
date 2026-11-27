@@ -552,6 +552,7 @@ CREATE TABLE IF NOT EXISTS goal_execution_authorizations(
     max_rounds INTEGER NOT NULL,
     token_budget INTEGER NOT NULL,
     cost_budget_micros INTEGER NOT NULL,
+    round_cost_budget_micros INTEGER,
     time_budget_seconds INTEGER NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('active','revoked')),
     created_at TEXT NOT NULL,
@@ -599,6 +600,21 @@ CREATE INDEX IF NOT EXISTS goal_execution_leases_authorization
     ON goal_execution_leases(authorization_id,round_index);
 CREATE INDEX IF NOT EXISTS goal_execution_leases_run
     ON goal_execution_leases(run_id);
+CREATE TABLE IF NOT EXISTS goal_round_cost_attempts(
+    run_id TEXT NOT NULL REFERENCES runs(id),
+    slot INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('parent','child','retry')),
+    reserved_micros INTEGER NOT NULL CHECK(reserved_micros >= 0),
+    endpoint TEXT NOT NULL,
+    attempt_id TEXT UNIQUE,
+    child_id TEXT,
+    retry_of TEXT,
+    state TEXT NOT NULL DEFAULT 'reserved' CHECK(state IN ('reserved','started','settled','unused')),
+    settled_micros INTEGER CHECK(settled_micros BETWEEN 0 AND reserved_micros),
+    retryable INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(run_id,slot),
+    UNIQUE(run_id,retry_of)
+);
 -- Native Team task lifecycle pilot: the owner's explicit, bounded approval and
 -- an append-only host audit of board mutations. The official Team service and
 -- its JSONL session projection remain the sole task-board authority; these
@@ -1112,6 +1128,8 @@ COMMIT;""")
             # configuration; revision 0 fails closed until the owner re-approves.
             self.conn.execute("ALTER TABLE goal_execution_authorizations "
                               "ADD COLUMN assistant_revision INTEGER NOT NULL DEFAULT 0")
+        if "round_cost_budget_micros" not in goal_columns:
+            self.conn.execute("ALTER TABLE goal_execution_authorizations ADD COLUMN round_cost_budget_micros INTEGER")
         if "objective_sha256" not in goal_columns:
             # An approval that predates content binding cannot prove which goal
             # text was approved. NULL fails closed at the next start.

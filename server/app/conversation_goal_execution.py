@@ -32,6 +32,7 @@ class GoalExecutionAuthorization(InputModel):
     max_rounds: int = Field(strict=True, ge=1, le=MAX_ROUNDS)
     token_budget: int = Field(strict=True, ge=1, le=MAX_TOKENS)
     cost_budget_micros: int = Field(strict=True, ge=1, le=MAX_COST_MICROS)
+    round_cost_budget_micros: int | None = Field(default=None, strict=True, ge=1, le=MAX_COST_MICROS)
     time_budget_seconds: int = Field(strict=True, ge=60, le=MAX_TIME_SECONDS)
     confirm: Literal[True]
 
