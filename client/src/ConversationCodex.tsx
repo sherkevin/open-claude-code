@@ -139,6 +139,8 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   const storageKey = codexRequestKey(ownerId, conversationId);
   const [thread, setThread] = useState<CodexThread | null>(null);
   const [draft, setDraft] = useState('');
+  // An unsent next request stays independent from the admitted request and its retry ID.
+  const [nextDraft, setNextDraft] = useState<string | null>(null);
   const [pending, setPending] = useState(() => readRequest(storageKey));
   const [receipt, setReceipt] = useState<CodexReceipt | null>(null);
   const [memoryOnly, setMemoryOnly] = useState(false);
@@ -234,12 +236,20 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   const visibleReceipt = sending && !resolved ? null : receipt;
   const latestId = operation?.request_id || active?.request_id || thread?.last_turn?.request_id;
   const sameRequestRetry = Boolean(pending && receipt?.state === 'not_found');
-  const canSend = controls?.send && (!pending || resolved || sameRequestRetry) && !readError && !action && !sending && Boolean(draft.trim());
+  const busyWithTurn = Boolean(sending || operation?.request_id || active || thread?.recovery_required);
+  const editingNext = !sameRequestRetry && (Boolean(active?.can_interrupt) || nextDraft !== null);
+  const input = editingNext ? nextDraft ?? '' : draft;
+  const canSend = controls?.send && (!pending || resolved || sameRequestRetry) && !readError && !action && !sending && Boolean(input.trim());
 
   async function send() {
     if (!canSend || !thread || requestInFlight.current || actionInFlight.current) return;
     const { id, stored } = keepCodexRequestId(storageKey, sameRequestRetry ? pending : null);
-    sentText.current = draft.trim();
+    const text = input.trim();
+    if (editingNext) {
+      setDraft(text);
+      setNextDraft(null);
+    }
+    sentText.current = text;
     setMemoryOnly(!stored);
     setReceipt(null);
     requestInFlight.current = true;
@@ -248,7 +258,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
     setSendingId(id);
     setError('');
     try {
-      await post<CodexTurn>(path + '/turn', codexTurnPayload(thread, id, draft));
+      await post<CodexTurn>(path + '/turn', codexTurnPayload(thread, id, text));
     } catch (cause) { if (pendingId.current === id) setError(errorText(cause)); }
     finally { await refresh(); requestInFlight.current = false; setSendingId(null); }
   }
@@ -264,9 +274,14 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
       </section>}
       {pending && memoryOnly && <p className="section-help">浏览器仅在当前页面保留请求编号；刷新后可读取服务端最新任务状态。</p>}
       {chatAttachments}
-      <Field label="任务内容">
-        <textarea rows={4} maxLength={20000} value={draft} disabled={sending || Boolean(operation?.request_id) || Boolean(active) || Boolean(thread?.recovery_required)}
-          onChange={e => setDraft(e.target.value)}/>
+      {editingNext && active && active.request_id === sendingId && sentText.current && <details>
+        <summary>查看本轮已发送的要求</summary>
+        <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{sentText.current}</p>
+      </details>}
+      <Field label={editingNext && busyWithTurn ? '下一轮任务内容' : '任务内容'}
+        hint={editingNext && busyWithTurn ? '草稿仅保存在当前窗口。等本轮结束后，点击「发送任务」开始下一轮。' : undefined}>
+        <textarea rows={4} maxLength={20000} value={input} disabled={busyWithTurn && !editingNext}
+          onChange={e => (editingNext ? setNextDraft : setDraft)(e.target.value)}/>
       </Field>
       <div className="task-sidebar-actions">
         <Button busy={sending} disabled={!canSend} onClick={() => void send()}>{sameRequestRetry && !sending && controls?.send ? '用原编号重试' : '发送任务'}</Button>
@@ -274,7 +289,8 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
           busy={action === '/thread'} disabled={Boolean(action || readError)}
           onClick={() => void perform('/thread')}>准备会话</Button>}
         {active?.can_interrupt && <Button disabled={Boolean(action) || active.interrupt_requested} variant="danger"
-          onClick={() => void perform('/interrupt', { turn_id: active.turn_id })}>取消当前任务</Button>}
+          onClick={() => void perform('/interrupt', { turn_id: active.turn_id })}>
+          {action === '/interrupt' ? '正在请求取消' : '取消当前任务'}</Button>}
         {controls?.reconcile && !sending && <Button busy={action === '/reconcile'}
           disabled={Boolean(action || readError)} onClick={() => void perform('/reconcile')}>核对并结束中断轮次</Button>}
         <Button variant="secondary" onClick={() => void refresh()}>刷新状态</Button>
