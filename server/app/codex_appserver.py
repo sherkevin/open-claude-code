@@ -58,6 +58,10 @@ TURN_SCOPED_NOTIFICATIONS = frozenset({
 TERMINAL_TURN_STATUSES = frozenset({
     "completed", "failed", "interrupted", "cancelled", "canceled",
 })
+RECEIPT_CREDENTIAL = re.compile(
+    r"""(?:\bbearer|\bauthorization["']?\s*:\s*["']?basic)\s+[\w.+/=-]{8,}"""
+    r"""|\bsk-[\w-]{12,}|-----BEGIN [\w ]*PRIVATE KEY-----"""
+    r"""|(?:api[_-]?key|token|secret|passwd|password)["']?\s*[:=]\s*\S""", re.I)
 
 
 class CodexHostError(Exception):
@@ -1108,6 +1112,57 @@ class CodexHost:
             view["active_turn"]["can_interrupt"] = self._session_for(key) is not None
         return view
 
+    def _recorded_turn(self, binding: dict, request_id: str) -> dict | None:
+        if binding.get("last_request_id") == request_id:
+            receipt = self._receipt(binding, replayed=False)
+        else:
+            receipt = self._recent_receipt(binding, request_id, binding["admitted_requests"][request_id])
+        if receipt is None:
+            return None
+        return {"request_id": request_id, **{
+            field: receipt[field] for field in ("turn_id", "status", "text", "text_truncated")}}
+
+    def receipt_history(self, user_id: str, conversation_id: str) -> dict:
+        """Project a single atomic owner snapshot without opening a session or a lock."""
+        self.require_enabled()
+        binding = self._load(self._key(user_id, conversation_id))
+        history = {"recent_limit": RECENT_REQUESTS, "receipts": [],
+                   "unavailable_count": 0, "pending": False}
+        if binding is None:
+            return history
+        self._validate_binding(binding, user_id, conversation_id,
+                               self._workspace_path(user_id, conversation_id))
+
+        # Reconciliation can save a status-only last turn outside recent_requests.
+        # The latest copy can also have more text than its bounded recent copy.
+        recent = binding.get("recent_requests", [])
+        ids = [entry["request_id"] for entry in reversed(recent[-RECENT_REQUESTS:])]
+        latest = binding.get("last_request_id")
+        if bool(latest) != bool(binding.get("last_turn_id")):
+            raise CodexHostUnavailable("app-server terminal receipt identity missing")
+        if latest is not None:
+            ids.insert(0, latest)
+        for request_id in dict.fromkeys(ids):
+            turn = self._recorded_turn(binding, request_id)
+            if (turn is None or not _valid_id(turn["turn_id"])
+                    or turn["status"] not in TERMINAL_TURN_STATUSES):
+                raise CodexHostUnavailable("app-server terminal receipt invalid")
+            # A native answer can quote its own workspace or a credential. Keep
+            # the durable receipt intact; only withhold the history display copy.
+            text = turn["text"]
+            if (str(self.config.data_dir) in text or self.config.command[0] in text
+                    or RECEIPT_CREDENTIAL.search(text)):
+                turn.update(text="", text_withheld=True)
+            history["receipts"].append(turn)
+
+        pending = {binding.get("active_request_id"), binding.get("uncertain_request_id")} - {None}
+        recorded = {entry["request_id"] for entry in recent}
+        if latest is not None:
+            recorded.add(latest)
+        history["pending"] = bool(pending - recorded)
+        history["unavailable_count"] = len(binding["admitted_requests"].keys() - recorded - pending)
+        return history
+
     def request_status(self, user_id: str, conversation_id: str, request_id: str) -> dict:
         """Look up an owner's request without submitting, recovering or resuming it."""
         self.require_enabled()
@@ -1119,18 +1174,11 @@ class CodexHost:
         if binding is not None:
             self._validate_binding(binding, user_id, conversation_id,
                                    self._workspace_path(user_id, conversation_id))
-            receipt = None
-            if binding.get("last_request_id") == request_id:
-                receipt = self._receipt(binding, replayed=False)
-            elif request_id in binding["admitted_requests"]:
-                digest = binding["admitted_requests"][request_id]
-                receipt = self._recent_receipt(binding, request_id, digest)
+            if request_id in binding["admitted_requests"]:
+                turn = self._recorded_turn(binding, request_id)
+                if turn:
+                    return {**result, "state": "recorded", "turn": turn}
                 result["state"] = "admitted_without_receipt"
-            if receipt:
-                result["state"] = "recorded"
-                result["turn"] = {"request_id": request_id, **{
-                    field: receipt[field] for field in ("turn_id", "status", "text", "text_truncated")}}
-                return result
             if request_id in (binding.get("active_request_id"), binding.get("uncertain_request_id")):
                 result["state"] = "pending"
         operation = self._operation(key)

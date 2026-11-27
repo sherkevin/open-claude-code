@@ -3,13 +3,13 @@ import { SquareTerminal } from 'lucide-react';
 import { api, clientRequestId, errorText, post } from './api';
 import { Button, ErrorNotice, Field, Loader, Modal } from './components';
 
-type Turn = { turn_id: string; request_id?: string; status: string; text?: string; text_truncated: boolean };
+export type CodexTurn = { turn_id: string; request_id?: string; status: string; text?: string; text_truncated: boolean; text_withheld?: boolean };
 type Operation = { request_id: string | null; phase: 'preparing' | 'thread_ready' | 'running' | 'output'; text?: string };
 export type CodexThread = {
   bound: boolean;
   active_turn: { turn_id: string; request_id?: string; can_interrupt?: boolean; interrupt_requested: boolean } | null;
   recovery_required: boolean;
-  last_turn: Turn | null;
+  last_turn: CodexTurn | null;
   operation?: Operation | null;
 };
 
@@ -55,11 +55,21 @@ function forgetRequest(key: string, id: string) {
 export type CodexReceipt = {
   request_id: string;
   state: 'recorded' | 'admitted_without_receipt' | 'not_found' | 'pending';
-  turn: Turn | null;
+  turn: CodexTurn | null;
 };
 
 export function originalRequestResolved(receipt: CodexReceipt | null) {
   return receipt?.state === 'recorded' || receipt?.state === 'admitted_without_receipt';
+}
+
+export function CodexTurnResult({ turn }: { turn: CodexTurn }) {
+  return <>
+    <p><strong>{statusLabels[turn.status] || turn.status}</strong></p>
+    {turn.text_withheld ? <p className="section-help">正文含宿主路径或凭据标记，已隐藏。{turn.text_truncated && '留存的正文已截断。'}</p> : <>
+      {turn.text && <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{turn.text}</p>}
+      {turn.text_truncated && <p className="section-help">{turn.text ? '仅显示此请求留存的部分正文。' : '仅留存轮次状态，正文未保存。'}</p>}
+    </>}
+  </>;
 }
 
 export function OriginalCodexReceipt({ receipt }: { receipt: CodexReceipt }) {
@@ -67,11 +77,7 @@ export function OriginalCodexReceipt({ receipt }: { receipt: CodexReceipt }) {
   return <section aria-label="原请求回执" className="section-help">
     <strong>原请求回执</strong>
     <p>请求编号 <code>{receipt.request_id}</code></p>
-    {state === 'recorded' && turn && <>
-      <p>{statusLabels[turn.status] || turn.status}</p>
-      {turn.text && <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{turn.text}</p>}
-      {turn.text_truncated && <p>{turn.text ? '仅显示此请求留存的部分正文。' : '仅留存轮次状态，正文未保存。'}</p>}
-    </>}
+    {state === 'recorded' && turn && <CodexTurnResult turn={turn}/>}
     {state === 'admitted_without_receipt' && <p>开物曾登记此请求，已无可读回执，无法找回正文或确认最终状态。可以另行发送新任务。</p>}
     {state === 'not_found' && <p>暂时查不到这个编号，执行结果仍未确认。可刷新状态，或输入原内容后用原编号重试。</p>}
     {state === 'pending' && <p>开物已登记此请求，最终回执仍待确认。</p>}
@@ -231,7 +237,7 @@ function CodexDialog({ conversationId, ownerId, onClose }: { conversationId: str
     setSendingId(id);
     setError('');
     try {
-      await post<Turn>(path + '/turn', codexTurnPayload(thread, id, draft));
+      await post<CodexTurn>(path + '/turn', codexTurnPayload(thread, id, draft));
     } catch (cause) { if (pendingId.current === id) setError(errorText(cause)); }
     finally { await refresh(); requestInFlight.current = false; setSendingId(null); }
   }
