@@ -284,7 +284,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
           onChange={e => (editingNext ? setNextDraft : setDraft)(e.target.value)}/>
       </Field>
       <div className="task-sidebar-actions">
-        <Button busy={sending} disabled={!canSend} onClick={() => void send()}>{sameRequestRetry && !sending && controls?.send ? '用原编号重试' : '发送任务'}</Button>
+        <Button busy={sending && !editingNext} disabled={!canSend} onClick={() => void send()}>{sameRequestRetry && !sending && controls?.send ? '用原编号重试' : '发送任务'}</Button>
         {controls?.prepare && !sending && <Button variant="secondary"
           busy={action === '/thread'} disabled={Boolean(action || readError)}
           onClick={() => void perform('/thread')}>准备会话</Button>}
