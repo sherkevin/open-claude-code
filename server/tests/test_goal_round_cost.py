@@ -1,10 +1,11 @@
 """Round ceilings, durable request identities, distinct session usage and admission errors."""
+import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from app.db import dump, now
+from app.db import Database, dump, now
 from app.goal_execution import admit_goal_round_armed, settle_goal_round, start_goal_round
 from app.goal_round_cost import (LoopbackGoalMeter, begin_goal_attempt, goal_attempt_endpoint,
                                  settle_goal_attempt)
@@ -60,7 +61,9 @@ def test_optional_budget_and_rejects_before_run_or_lease(goal_env):
         result = client.post(path(cid), json=auth_payload(round_cost_budget_micros=invalid))
         assert result.status_code == 422, result.text
     assert authorize_ok(client, cid, round_cost_budget_micros=5)["round_cost_budget_micros"] == 5
-    assert client.get(path(cid)).json()["round_cost_block"]["code"] == "GOAL_ROUND_PRICE_UNAVAILABLE"
+    status = client.get(path(cid)).json()
+    assert status["round_cost_block"]["code"] == "GOAL_ROUND_PRICE_UNAVAILABLE"
+    assert status["can_start"] is False
     count = service.db.one("SELECT COUNT(*) AS n FROM runs")["n"]
     response = client.post(path(cid) + "/rounds", json={"goal_id": GOAL["id"], "goal_revision": GOAL["revision"], "confirm": True})
     assert response.status_code == 409
@@ -74,7 +77,11 @@ def test_price_includes_unused_children_and_retries_before_start(goal_env, monke
     with pytest.raises(AppError) as err:
         active_round(goal_env, monkeypatch, LoopbackGoalMeter(ENDPOINT, (10, 10), (7, 7), (6,)), base=base)
     assert err.value.code == "GOAL_ROUND_RESERVE_EXCEEDED"
-    assert not goal_env[1].db.all("SELECT * FROM goal_execution_leases")
+    client, service = goal_env
+    cid = service.db.one("SELECT id FROM conversations")["id"]
+    view = client.get(path(cid)).json()
+    assert view["can_start"] is False and view["round_cost_block"]["code"] == err.value.code
+    assert not service.db.all("SELECT * FROM goal_execution_leases")
 
 
 def test_atomic_attempts_settle_each_session_and_recheck_stored_sources(goal_env, monkeypatch):
@@ -148,3 +155,21 @@ def test_missing_receipt_and_changed_meter_stay_unknown(goal_env, monkeypatch):
     assert settled["cost_reservation"]["settled_micros"] is None
     assert settled["cost_reservation"]["attempts"][0]["state"] == "started"
     assert client.get(path(cid)).json()["can_start"] is False
+
+
+def test_historical_authorization_migrates_with_no_new_limit(goal_env, tmp_path):
+    client, service = goal_env
+    cid = setup_conversation(client, service)
+    authorization = authorize_ok(client, cid)
+    previous = tmp_path / "before-round-limit.sqlite3"
+    with sqlite3.connect(previous) as historical:
+        service.db.conn.backup(historical)
+        historical.execute("DROP TABLE goal_round_cost_attempts")
+        historical.execute("ALTER TABLE goal_execution_authorizations DROP COLUMN round_cost_budget_micros")
+    migrated = Database(previous)
+    try:
+        row = migrated.one("SELECT * FROM goal_execution_authorizations WHERE id=?", (authorization["id"],))
+        assert row["round_cost_budget_micros"] is None and row["cost_budget_micros"] == 10_000
+        assert migrated.all("SELECT * FROM goal_round_cost_attempts") == []
+    finally:
+        migrated.close()
