@@ -14,6 +14,7 @@ export interface AppConfig {
   legacy_chat_image_max_bytes?: number;
   chat_attachment_discard?: boolean;
   harness_subagents?: boolean;
+  codex_appserver?: boolean;
   harness_goal_state?: boolean;
   harness_goal_execution?: boolean;
   harness_team_state?: boolean;

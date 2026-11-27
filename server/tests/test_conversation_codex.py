@@ -101,6 +101,9 @@ def test_owner_thread_turn_and_replay(codex_env):
     assert receipt["status"] == "completed"
     assert receipt["text"] == "合成回复"
     assert receipt["replayed"] is False
+    # Reopening the page reads the bounded saved result without a new turn.
+    latest = client.get(base).json()["last_turn"]
+    assert latest["turn_id"] == receipt["turn_id"] and latest["text"] == receipt["text"]
 
     replay = client.post(base + "/turn", json={
         "client_request_id": "request-0001", "text": "合成请求"})

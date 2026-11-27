@@ -1035,7 +1035,12 @@ class CodexHost:
             # A status read never creates a workspace or starts a process.
             workspace = self._workspace_path(user_id, conversation_id)
             self._validate_binding(binding, user_id, conversation_id, workspace)
-        return self._view(binding)
+        view = self._view(binding)
+        if view["last_turn"]:
+            view["last_turn"]["text"] = binding.get("last_text", "")
+        if view["active_turn"]:
+            view["active_turn"]["can_interrupt"] = self._session_for(key) is not None
+        return view
 
     def ensure_thread(self, user_id: str, conversation_id: str) -> dict:
         """Start or resume the one thread bound to this owner conversation."""

@@ -341,6 +341,9 @@ def test_turn_fencing_and_owned_interrupt(tmp_path):
     else:
         raise AssertionError("turn was not durably admitted")
     active = view["active_turn"]["turn_id"]
+    assert view["active_turn"]["can_interrupt"] is True
+    other_process, _ = make_host(tmp_path)
+    assert other_process.status(USER, CID)["active_turn"]["can_interrupt"] is False
     with pytest.raises(CodexHostConflict):
         host.interrupt(USER, CID, "turn-not-the-active-one")
     interrupted = host.interrupt(USER, CID, active)

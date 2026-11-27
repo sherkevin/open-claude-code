@@ -9,6 +9,7 @@ import { compactionStatus, compactionStatusLabel, toolLabel } from './display';
 import { compactionLabel } from './ContextDialog';
 import SessionTrajectory, { type InspectionView } from './SessionTrajectory';
 import ConversationExport from './ConversationExport';
+import ConversationCodex from './ConversationCodex';
 import ModelSelector from './ModelSelector';
 import { ModelRoutingControl, ModelSettingsDisclosure, RunModelIdentity } from './ModelRouting';
 import SessionPermissionMode, { MCPAvailabilityNotice } from './SessionPermissionMode';
@@ -665,6 +666,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
         {!trial && <>
           <ConversationFeedback ref={feedbackRef} conversationId={conversation.id} runId={run?.id} messages={messages}/>
           <ConversationExport conversationId={conversation.id}/>
+          {config.codex_appserver && <ConversationCodex key={conversation.id} conversationId={conversation.id} unavailable={active || archived}/>}
           {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived} executionEnabled={config.harness_goal_execution===true} onRoundStarted={selectAcceptedRun}/>}
           {config.harness_team_tasks&&conversation.runtime_type==="harness"&&<ConversationTeam conversationId={conversation.id} unavailable={active||archived}/>}
           <button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={() => setInspectionView('trajectory')}><ListTree size={17}/></button>
