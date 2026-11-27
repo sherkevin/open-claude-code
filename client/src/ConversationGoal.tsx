@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {Target} from 'lucide-react';
-import {api,errorText,post} from './api';
+import {api,ApiError,errorText,post} from './api';
 import {Button,ErrorNotice,Field,Loader,Modal} from './components';
 
 export type NativeGoal={id:string;revision:number;objective:string;phase:'active'|'paused'|'blocked'|'complete';maxGoalRounds:number;roundsStarted:number;createdAt:number;updatedAt:number;activation:'disarmed';blockedReason?:{code:string;message:string}};
@@ -10,7 +10,8 @@ export type GoalExecutionLimits={maxRounds:number;tokenBudget:number;costBudgetM
 type ExecutionAuthorization={id:string;goal_id:string;goal_revision:number;harness_session_id:string;max_rounds:number;token_budget:number;cost_budget_micros:number;round_cost_budget_micros?:number|null;time_budget_seconds:number;status:'active'|'revoked';revoked_reason?:string|null;expires_at:string|null};
 type ExecutionBudget={rounds_used:number;rounds_executed:number;usage_complete:boolean;cost_authoritative:boolean;tokens_used:number|null;cost_micros_used:number|null;synthetic_rounds:number;unknown_rounds:number[];rounds_remaining:number|null;tokens_remaining:number|null;cost_micros_remaining:number|null;time_remaining_seconds:number|null};
 type CostAttempt = {
-  attempt_id: string;
+  slot: number;
+  attempt_id: string | null;
   kind: 'parent' | 'child' | 'retry';
   parent_attempt_id: string | null;
   reserved_micros: number;
@@ -19,7 +20,7 @@ type CostAttempt = {
 };
 type CostReservation = {source:string;reserved_micros:number;settled_micros:number|null;attempts:CostAttempt[]};
 type ExecutionRound={cost_reservation?:CostReservation|null;id:string;round_index:number;state:'admitted'|'settled'|'aborted';armed:boolean;usage_status:'complete'|'unknown'|null;usage_source?:string|null;cost_authoritative:boolean|null;total_tokens:number|null;cost_micros:number|null;run_id:string;assistant_message_id:string|null;error_code?:string|null;abort_reason?:string|null};
-export type GoalExecution={harness_session_id:string|null;authorization:ExecutionAuthorization|null;budget:ExecutionBudget|null;active_lease:{id:string;round_index:number;armed:boolean}|null;rounds:ExecutionRound[];can_start:boolean;driver_integrated:boolean;single_round_per_run:true;unattended_execution:false;continuation_driver:false};
+export type GoalExecution={round_cost_block?:{code:string;message:string}|null;harness_session_id:string|null;authorization:ExecutionAuthorization|null;budget:ExecutionBudget|null;active_lease:{id:string;round_index:number;armed:boolean}|null;rounds:ExecutionRound[];can_start:boolean;driver_integrated:boolean;single_round_per_run:true;unattended_execution:false;continuation_driver:false};
 const phases={active:'目标已记录',paused:'已暂停',blocked:'存在阻塞',complete:'已标记完成'} as const;
 const positive=(value:number,min:number,max:number)=>Number.isSafeInteger(value)&&value>=min&&value<=max;
 /** Build the exact explicit approval payload; never infer budgets from rounds. */
@@ -68,7 +69,7 @@ function RoundCosts({reservation}:{reservation:CostReservation}){
   return <details>
     <summary>逐笔费用 · 预留 {micros(reservation.reserved_micros)} · 结算 {micros(reservation.settled_micros)}</summary>
     {reservation.source==='loopback_test'&&<p>计量来源：隔离回环测试。</p>}
-    <ul>{reservation.attempts.map(attempt=><li key={attempt.attempt_id}>
+    <ul>{reservation.attempts.map(attempt=><li key={attempt.slot}>
       {attemptNames[attempt.kind]} · {attemptStates[attempt.state]} · 预留 {micros(attempt.reserved_micros)} · 结算 {micros(attempt.settled_micros)}
     </li>)}</ul>
   </details>;
@@ -81,6 +82,7 @@ export function GoalExecutionView({execution,goal}:{execution:GoalExecution;goal
     {!authorization&&<p>尚未授权执行。授权绑定当前目标内容和原生会话，只允许你逐轮明确启动。</p>}
     {authorization&&<p>{authorization.status==='active'?'执行授权生效中':'执行授权已撤销'}{authorization.revoked_reason?`（${authorization.revoked_reason}）`:''}</p>}
     {authorization?.round_cost_budget_micros!=null&&<p>已授权的单轮费用上限：{micros(authorization.round_cost_budget_micros)}</p>}
+    {execution.round_cost_block&&<p role="alert">单轮费用准入：{execution.round_cost_block.message}</p>}
     {budget&&<p>轮次已用 {budget.rounds_used}（已执行 {budget.rounds_executed}），剩余 {budget.rounds_remaining??'未知'}；token 已用 {budget.tokens_used??'未知'}，剩余 {budget.tokens_remaining??'未知'}；费用已用 {micros(budget.cost_micros_used)}，剩余 {micros(budget.cost_micros_remaining)}；时间剩余 {budget.time_remaining_seconds??'未知'} 秒。</p>}
     {budget&&!budget.usage_complete&&<p role="alert">前序轮次用量未完整确认。系统不会把未知当零，下一轮不能开始。</p>}
     {budget&&budget.synthetic_rounds>0&&<p>其中 {budget.synthetic_rounds} 轮为回环合成计费，不是生产权威计费。</p>}
@@ -161,7 +163,11 @@ function GoalDialog({conversationId,unavailable,executionEnabled,onRoundStarted,
       if(result.submitted!==true||!result.run_id)throw new Error('未收到本轮执行回执，请刷新状态核对。');
       onRoundStarted?.(result.run_id);
       await refreshExecution();
-    }catch(e){setExecError(errorText(e)+' 请刷新状态，避免重复开始。');}
+    }catch(e){
+      const block=execution.round_cost_block;
+      setExecError(e instanceof ApiError && block?.code===e.code && block.message===e.message
+        ? '本轮未启动。' : errorText(e)+' 请刷新状态，避免重复开始。');
+    }
     finally{pending.current=false;setBusy(false);}
   }
   async function stopExecution(){

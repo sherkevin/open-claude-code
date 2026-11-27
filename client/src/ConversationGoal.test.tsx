@@ -47,9 +47,9 @@ describe('native goal state UI',()=>{
     const reservation={
       source:'loopback_test', reserved_micros:15, settled_micros:null,
       attempts:[
-        {attempt_id:'a',kind:'parent',parent_attempt_id:null,reserved_micros:5,settled_micros:0,state:'settled'},
-        {attempt_id:'b',kind:'child',parent_attempt_id:'a',reserved_micros:7,settled_micros:1,state:'settled'},
-        {attempt_id:'c',kind:'retry',parent_attempt_id:'a',reserved_micros:3,settled_micros:null,state:'reserved'},
+        {slot:1,attempt_id:'a',kind:'parent',parent_attempt_id:null,reserved_micros:5,settled_micros:0,state:'settled'},
+        {slot:2,attempt_id:'b',kind:'child',parent_attempt_id:'a',reserved_micros:7,settled_micros:1,state:'settled'},
+        {slot:3,attempt_id:null,kind:'retry',parent_attempt_id:'a',reserved_micros:3,settled_micros:null,state:'reserved'},
       ],
     } as const;
     const recorded:GoalExecution={...execution,
@@ -57,6 +57,10 @@ describe('native goal state UI',()=>{
       rounds:[{...execution.rounds[0],cost_reservation:{...reservation,attempts:[...reservation.attempts]}}],
     };
     const details=renderToStaticMarkup(<GoalExecutionView execution={recorded} goal={goal}/>);
+    expect(details).not.toContain('单轮费用准入');
+    const denial={code:'GOAL_ROUND_PRICE_UNAVAILABLE',message:'无法核验本轮预留，拒绝启动。'};
+    const blocked=renderToStaticMarkup(<GoalExecutionView execution={{...execution,round_cost_block:denial}} goal={goal}/>);
+    expect(blocked).toContain('单轮费用准入：'+denial.message);
     expect(details).toContain('已授权的单轮费用上限：17 微美元');
     expect(details).toContain('逐笔费用 · 预留 15 微美元 · 结算 未知');
     expect(details).toContain('隔离回环测试');
