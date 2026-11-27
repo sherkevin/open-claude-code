@@ -19,7 +19,7 @@ from app.config import PROVIDER_KEYS, Settings
 from app.main import create_app
 from harness_mcp_fixture import local_mcp_server, local_model_server
 from test_api import PASSWORD, login, send
-from test_harness_real_runtime import child_request, wait_run
+from test_harness_real_runtime import SUBAGENT_ROLE_ISOLATED_TOOLS, child_request, wait_run
 
 
 pytestmark = pytest.mark.skipif(
@@ -439,7 +439,14 @@ def test_real_harness_subagents_inherit_effective_mcp_permissions(mcp_app, dispa
     worker_requests = [body for body in env.model.requests if child_request(body)]
     parent_tools = {tool["name"] for tool in env.model.requests[0]["tools"]}
     assert len(worker_requests) == 2 * len(tasks)
-    assert all({tool["name"] for tool in body["tools"]} == parent_tools - {"delegate_tasks"} for body in worker_requests)
+    child_tools = [{tool["name"] for tool in body["tools"]} for body in worker_requests]
+    # Positive: every effective MCP business grant is inherited unchanged.
+    assert all({env.alias(name) for name in GRANTED} <= names for names in child_tools)
+    # Negative: delegation and conversation-level schedule control stay with the
+    # parent session; a child is never advertised an ungranted role tool.
+    assert all(not (names & SUBAGENT_ROLE_ISOLATED_TOOLS) for names in child_tools)
+    # Exact contract: the child advertises everything else the parent does.
+    assert all(names == parent_tools - SUBAGENT_ROLE_ISOLATED_TOOLS for names in child_tools)
     assert all(parent_marker not in json.dumps(body["messages"]) for body in worker_requests)
     trace = env.client.get(f"{path}/trace").json()
     calls = [event["data"] for event in trace["events"] if event["type"] == "tool.completed"

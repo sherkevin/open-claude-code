@@ -52,6 +52,17 @@ def child_request(body):
     return "你是本轮的独立执行子任务" in body.get("system", "")
 
 
+# A child inherits every effective MCP business grant unchanged. Role isolation
+# withholds delegation and conversation-level schedule control from it:
+# HarnessToolBridge.schedule_enabled is false for a child (harness_tools.py:82),
+# build_workspace_tools never registers delegate_tasks for a child
+# (workspace_tools.py:150), and harness_schedule.check_context rejects a
+# subagent's schedule call with SCHEDULE_CALLER_DENIED (harness_schedule.py:166).
+SUBAGENT_ROLE_ISOLATED_TOOLS = frozenset({
+    "delegate_tasks", "schedule_create", "schedule_list", "schedule_view", "schedule_edit",
+})
+
+
 @pytest.fixture
 def model_server(request):
     requests, released = [], threading.Event()
@@ -423,7 +434,8 @@ def test_real_harness_business_delegation_contract(tmp_path, model_server, monke
         assert "工业任务的执行方法" in initial["system"]
         assert all("工业任务的执行方法" in item["system"] for item in workers)
         parent_tools = {item["name"] for item in initial["tools"]}
-        assert all({tool["name"] for tool in item["tools"]} == parent_tools - {"delegate_tasks"} for item in workers)
+        assert all({tool["name"] for tool in item["tools"]} == parent_tools - SUBAGENT_ROLE_ISOLATED_TOOLS
+                   for item in workers)
 
         assert messages[-1]["text"] == "\n".join(PILOT_FINDINGS)
 
