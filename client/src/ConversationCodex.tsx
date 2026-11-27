@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SquareTerminal } from 'lucide-react';
 import { api, clientRequestId, errorText, post } from './api';
+import { CodexSteerReceipts, sameSteer, steerableTurn, useCodexSteers, type SteerId } from './CodexSteers';
 import { Button, ErrorNotice, Field, Loader, Modal } from './components';
 
 type FileReads = { succeeded: number; failed: number; unconfirmed: number };
@@ -141,6 +142,8 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   const [draft, setDraft] = useState('');
   // An unsent next request stays independent from the admitted request and its retry ID.
   const [nextDraft, setNextDraft] = useState<string | null>(null);
+  const draftRevision = useRef(0);
+  const lastSteer = useRef<{ id: SteerId; revision: number } | null>(null);
   const [pending, setPending] = useState(() => readRequest(storageKey));
   const [receipt, setReceipt] = useState<CodexReceipt | null>(null);
   const [memoryOnly, setMemoryOnly] = useState(false);
@@ -223,7 +226,7 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   }, [poll, refresh]);
 
   async function perform(route: string, payload?: unknown) {
-    if (actionInFlight.current || (route === '/thread' && (requestInFlight.current || operation))) return;
+    if (actionInFlight.current || (route === '/interrupt' && steers.inFlight.current) || (route === '/thread' && (requestInFlight.current || operation))) return;
     actionInFlight.current = true;
     setAction(route);
     setError('');
@@ -232,6 +235,15 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
     finally { await refresh(); actionInFlight.current = false; setAction(''); }
   }
 
+  const steers = useCodexSteers(path, storageKey, Boolean(thread && !readError));
+  const steerTarget = !action && !readError ? steerableTurn(thread) : null;
+  useEffect(() => {
+    const attempt = lastSteer.current;
+    if (attempt && steers.receipts.some(row => sameSteer(row, attempt.id) && row.state === 'delivered')) {
+      if (attempt.revision === draftRevision.current) setNextDraft('');
+      lastSteer.current = null;
+    }
+  }, [steers.receipts]);
   const controls = thread && codexControls(thread);
   const visibleReceipt = sending && !resolved ? null : receipt;
   const latestId = operation?.request_id || active?.request_id || thread?.last_turn?.request_id;
@@ -241,10 +253,18 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   const input = editingNext ? nextDraft ?? '' : draft;
   const canSend = controls?.send && (!pending || resolved || sameRequestRetry) && !readError && !action && !sending && Boolean(input.trim());
 
+  const sameSteerDraft = lastSteer.current?.revision === draftRevision.current && lastSteer.current?.id.turn_id === steerTarget;
+  function submitSteer() {
+    if (!steerTarget || actionInFlight.current) return;
+    if (lastSteer.current?.revision === draftRevision.current && lastSteer.current.id.turn_id === steerTarget) return;
+    void steers.submit(steerTarget, input, id => { lastSteer.current = { id, revision: draftRevision.current }; });
+  }
+
   async function send() {
     if (!canSend || !thread || requestInFlight.current || actionInFlight.current) return;
     const { id, stored } = keepCodexRequestId(storageKey, sameRequestRetry ? pending : null);
     const text = input.trim();
+    draftRevision.current++;
     if (editingNext) {
       setDraft(text);
       setNextDraft(null);
@@ -273,27 +293,30 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
         <CodexStatus thread={thread} sending={sending} pending={Boolean(pending && !visibleReceipt)} requestId={sendingId || pending} preparing={action === '/thread'}/>
       </section>}
       {pending && memoryOnly && <p className="section-help">浏览器仅在当前页面保留请求编号；刷新后可读取服务端最新任务状态。</p>}
+      {thread && !readError && <CodexSteerReceipts {...steers} activeTurn={active?.turn_id} lastTurn={thread.last_turn?.turn_id}/>}
       {chatAttachments}
       {editingNext && active && active.request_id === sendingId && sentText.current && <details>
         <summary>查看本轮已发送的要求</summary>
         <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{sentText.current}</p>
       </details>}
-      <Field label={editingNext && busyWithTurn ? '下一轮任务内容' : '任务内容'}
-        hint={editingNext && busyWithTurn ? '草稿仅保存在当前窗口。等本轮结束后，点击「发送任务」开始下一轮。' : undefined}>
+      <Field label={steerTarget && editingNext ? '补充要求或下一轮任务内容' : editingNext && busyWithTurn ? '下一轮任务内容' : '任务内容'}
+        hint={steerTarget && editingNext ? '只输入会留作本窗口的草稿。点击「补充到当前任务」把文字送给运行中的这一轮。等本轮结束后也可点击「发送任务」另开一轮。' : editingNext && busyWithTurn ? '草稿仅保存在当前窗口。等本轮结束后，点击「发送任务」开始下一轮。' : undefined}>
         <textarea rows={4} maxLength={20000} value={input} disabled={busyWithTurn && !editingNext}
-          onChange={e => (editingNext ? setNextDraft : setDraft)(e.target.value)}/>
+          onChange={e => { draftRevision.current++; (editingNext ? setNextDraft : setDraft)(e.target.value); }}/>
       </Field>
       <div className="task-sidebar-actions">
         <Button busy={sending && !editingNext} disabled={!canSend} onClick={() => void send()}>{sameRequestRetry && !sending && controls?.send ? '用原编号重试' : '发送任务'}</Button>
+        {steerTarget && editingNext && <Button variant="secondary" disabled={!input.trim() || Boolean(steers.submitting) || sameSteerDraft}
+          onClick={submitSteer}>补充到当前任务</Button>}
         {controls?.prepare && !sending && <Button variant="secondary"
           busy={action === '/thread'} disabled={Boolean(action || readError)}
           onClick={() => void perform('/thread')}>准备会话</Button>}
-        {active?.can_interrupt && <Button disabled={Boolean(action) || active.interrupt_requested} variant="danger"
+        {active?.can_interrupt && <Button disabled={Boolean(action || steers.submitting) || active.interrupt_requested} variant="danger"
           onClick={() => void perform('/interrupt', { turn_id: active.turn_id })}>
           {action === '/interrupt' ? '正在请求取消' : '取消当前任务'}</Button>}
         {controls?.reconcile && !sending && <Button busy={action === '/reconcile'}
           disabled={Boolean(action || readError)} onClick={() => void perform('/reconcile')}>核对并结束中断轮次</Button>}
-        <Button variant="secondary" onClick={() => void refresh()}>刷新状态</Button>
+        <Button variant="secondary" onClick={() => { void refresh(); void steers.refresh(); }}>刷新状态</Button>
       </div>
     </div>
   </Modal>;
@@ -304,6 +327,6 @@ export default function ConversationCodex({ conversationId, ownerId, unavailable
   return <>
     <button type="button" className="icon-button" title="Codex 工程任务" aria-label="Codex 工程任务"
       disabled={unavailable} onClick={() => setOpen(true)}><SquareTerminal size={17}/></button>
-    {open && <CodexDialog conversationId={conversationId} ownerId={ownerId} chatAttachments={chatAttachments} onClose={() => setOpen(false)}/>}
+    {open && !unavailable && <CodexDialog key={codexRequestKey(ownerId, conversationId)} conversationId={conversationId} ownerId={ownerId} chatAttachments={chatAttachments} onClose={() => setOpen(false)}/>}
   </>;
 }
