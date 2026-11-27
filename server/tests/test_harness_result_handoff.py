@@ -39,7 +39,11 @@ def configured(env, mutate=None):
         if mutate:
             mutate(kind, data, service, run_id)
         actor._emit(run_id, kind, data)
-    runtime = HarnessRuntime(service, env.conversation["id"], service.runtime_config(env.conversation["id"]), None, emit)
+    async def approve(tool_name, arguments, **_options):
+        assert tool_name == env.tool and arguments == VALID
+        return True
+
+    runtime = HarnessRuntime(service, env.conversation["id"], service.runtime_config(env.conversation["id"]), approve, emit)
     actor.runtime = runtime
     runtime.current_run = service.require("runs", run_id)
     alias, tool = next(iter(runtime.bridge.business_tools.items()))
