@@ -153,7 +153,41 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   const [offline, setOffline] = useState(false);
   const [accessError, setAccessError] = useState('');
   const denyAccess = useCallback((cause: unknown) => setAccessError(errorText(cause)), []);
-  const { state: saved, store } = useCodexDraft(ownerId, conversationId, Boolean(thread && !accessError));
+  const [identity, setIdentity] = useState<'checking' | 'owner' | 'unavailable'>('checking');
+  const identityVersion = useRef(0);
+  const currentOwner = useRef(false);
+  const verifyOwner = useCallback(async () => {
+    const version = ++identityVersion.current;
+    currentOwner.current = false;
+    setIdentity('checking');
+    try {
+      const user = await api<{ id: string }>('/auth/me', { cache: 'no-store' });
+      if (version !== identityVersion.current) return;
+      if (user.id !== ownerId) { denyAccess(new Error('登录账号已改变，请刷新页面后重新进入工程任务。')); return; }
+      currentOwner.current = true;
+      setIdentity('owner');
+    } catch (cause) {
+      if (version !== identityVersion.current) return;
+      if (codexAccessDenied(cause)) denyAccess(cause);
+      else setIdentity('unavailable');
+    }
+  }, [ownerId, denyAccess]);
+  useEffect(() => {
+    const focus = () => { void verifyOwner(); };
+    const visible = () => {
+      if (document.hidden) { identityVersion.current++; currentOwner.current = false; setIdentity('checking'); }
+      else focus();
+    };
+    focus();
+    window.addEventListener('focus', focus);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      identityVersion.current++;
+      window.removeEventListener('focus', focus);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [verifyOwner]);
+  const { state: saved, store } = useCodexDraft(ownerId, conversationId, Boolean(thread && !accessError && identity === 'owner'));
   const pendingId = useRef(pending);
   const requestInFlight = useRef(false);
   const actionInFlight = useRef(false);
@@ -267,11 +301,12 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   const canSend = saved.ready && controls?.send && (!pending || resolved || sameRequestRetry) && !readError && !action && !sending
     && Boolean((retrySnapshot?.text ?? saved.text).trim()) && (!original || Boolean(retrySnapshot));
   function editDraft(text: string) {
+    if (!currentOwner.current) return;
     setAttemptInEditor(null);
     void store.edit(saved.revision, text);
   }
   function submitSteer() {
-    if (!steerTarget || !saved.text.trim() || actionInFlight.current) return;
+    if (!currentOwner.current || !steerTarget || !saved.text.trim() || actionInFlight.current) return;
     void steers.submit(steerTarget, saved.text, async id => {
       setAttemptInEditor(id.client_request_id);
       return store.submit(saved.revision, { kind: 'steer', id: id.client_request_id, turn: id.turn_id, text: saved.text });
@@ -279,12 +314,13 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
   }
 
   async function send() {
-    if (!canSend || !thread || requestInFlight.current || actionInFlight.current) return;
+    if (!currentOwner.current || !canSend || !thread || requestInFlight.current || actionInFlight.current) return;
     requestInFlight.current = true;
     const id = (sameRequestRetry && pending) || clientRequestId();
     const text = retrySnapshot?.text ?? saved.text;
     try {
       if (!retrySnapshot && !await store.submit(saved.revision, { kind: 'turn', id, text })) return;
+      if (!store.sessionCurrent()) return;
       const { stored } = keepCodexRequestId(storageKey, id);
       sentText.current = text;
       setMemoryOnly(!stored);
@@ -308,10 +344,14 @@ function CodexDialog({ conversationId, ownerId, chatAttachments, onClose }: { co
     return found?.state === 'closed' || found?.state === 'rejected' ? '补充未送达的原文' : '补充已尝试提交，送达待核对';
   }
 
-  if (accessError) return <Modal title="Codex 工程任务" onClose={onClose}>
-    <div className="modal-body"><ErrorNotice message={accessError}/></div>
+  if (accessError || saved.revoked) return <Modal title="Codex 工程任务" onClose={onClose}>
+    <div className="modal-body"><ErrorNotice message={accessError || '登录状态已改变，请刷新页面后重新进入工程任务。'}/></div>
   </Modal>;
 
+  if (identity !== 'owner') return <Modal title="Codex 工程任务" onClose={onClose}>
+    <div className="modal-body">{identity === 'checking' ? <Loader text="正在核对当前账号…"/>
+      : <><ErrorNotice message="暂时无法核对当前账号，请联网后刷新。"/><Button variant="secondary" onClick={() => void verifyOwner()}>刷新状态</Button></>}</div>
+  </Modal>;
   if (!thread) return <Modal title="Codex 工程任务" onClose={onClose}>
     <div className="modal-body">{readError ? <><ErrorNotice message={readError}/>
       <Button variant="secondary" onClick={() => void refresh()}>刷新状态</Button></> : <Loader text="正在读取任务状态…"/>}</div>

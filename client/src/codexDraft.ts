@@ -24,7 +24,12 @@ const storeName = 'drafts';
 const open = browserDraftDatabase('kaiwu-engineering-drafts', db => { db.createObjectStore(storeName); }, '无法打开浏览器草稿存储');
 
 // A single read/write transaction compares the editor's base revision with other tabs.
-async function access(owner: string, conversation: string, op?: Change) {
+const logoutKey = (owner: string) => composerOwnerPrefix(owner) + 'engineering-logout';
+function accountStamp(owner: string) {
+  try { return localStorage.getItem(logoutKey(owner)) ?? ''; } catch { return ''; }
+}
+
+async function access(owner: string, conversation: string, stamp: string, op?: Change) {
   const db = await open();
   return new Promise<{ draft: Draft; changed: boolean }>((resolve, reject) => {
     const tx = db.transaction(storeName, op ? 'readwrite' : 'readonly');
@@ -34,10 +39,11 @@ async function access(owner: string, conversation: string, op?: Change) {
     let draft: Draft;
     let changed = false;
     get.onsuccess = () => {
-      const previous: Draft = get.result ?? empty();
+      if (accountStamp(owner) !== stamp) { draft = empty(); return; }
+      const previous: Draft = get.result && (get.result.stamp ?? '') === stamp ? get.result : empty();
       draft = op ? changeCodexDraft(previous, op) : previous;
       changed = previous !== draft;
-      if (changed) store.put(draft, key);
+      if (changed) store.put({ ...draft, stamp }, key);
     };
     tx.oncomplete = () => resolve({ draft, changed });
     tx.onabort = tx.onerror = () => reject(tx.error || new Error('浏览器草稿存储不可用'));
@@ -48,11 +54,12 @@ const signal = 'kaiwu:engineering-draft-change';
 function broadcast(scope: string) {
   try { localStorage.setItem(signal, JSON.stringify([scope, clientRequestId()])); } catch { /* Reads on focus still synchronize. */ }
 }
-type Snapshot = Draft & { ready: boolean; memoryOnly: boolean; conflict: boolean };
+type Snapshot = Draft & { ready: boolean; memoryOnly: boolean; conflict: boolean; revoked: boolean };
 function createStore(owner: string, conversation: string) {
   const scope = composerScope(owner, conversation);
+  const stamp = accountStamp(owner);
   const listeners = new Set<() => void>();
-  let state: Snapshot = { ...empty(), ready: false, memoryOnly: false, conflict: false };
+  let state: Snapshot = { ...empty(), ready: false, memoryOnly: false, conflict: false, revoked: false };
   let fallback = empty();
   let queue: Promise<unknown> = Promise.resolve();
   let writes = 0;
@@ -63,18 +70,23 @@ function createStore(owner: string, conversation: string) {
     state = { ...state, ...data };
     for (const listener of listeners) listener();
   };
+  function dispose() { publish({ ...empty(), ready: false, revoked: true }); closed = true; listeners.clear(); }
+  function sessionCurrent() {
+    if (!closed && accountStamp(owner) !== stamp) dispose();
+    return !closed;
+  }
   async function reload() {
-    if (closed || writes || state.memoryOnly) return;
+    if (!sessionCurrent() || writes || state.memoryOnly) return;
     const generation = ++sequence;
     try {
-      const { draft } = await access(owner, conversation);
+      const { draft } = await access(owner, conversation, stamp);
       if (generation === sequence) { fallback = draft; publish({ ...draft, ready: true }); }
     } catch {
       if (generation === sequence) publish({ ready: true, memoryOnly: true });
     }
   }
   function mutate(op: Change): Promise<boolean> {
-    if (closed || !state.ready) return Promise.resolve(false);
+    if (!sessionCurrent() || !state.ready) return Promise.resolve(false);
     const predicted = changeCodexDraft(state, op);
     if (predicted === state) return Promise.resolve(false);
     sequence++;
@@ -82,10 +94,10 @@ function createStore(owner: string, conversation: string) {
     publish({ ...predicted, conflict: false });
     const task = queue.then(async () => {
       let changed = false;
-      if (!closed) {
+      if (sessionCurrent()) {
         if (!state.memoryOnly) {
           try {
-            const result = await access(owner, conversation, op);
+            const result = await access(owner, conversation, stamp, op);
             fallback = result.draft;
             changed = result.changed;
             if (changed) broadcast(scope);
@@ -99,7 +111,7 @@ function createStore(owner: string, conversation: string) {
       }
       writes--;
       if (!writes) publish({ ...fallback, conflict: !changed && op.kind !== 'settle' });
-      return !closed && changed;
+      return sessionCurrent() && changed;
     });
     queue = task;
     return task;
@@ -110,12 +122,14 @@ function createStore(owner: string, conversation: string) {
     edit: (base: string, text: string) => mutate({ kind: 'edit', base, revision: clientRequestId(), text }),
     submit: (base: string, attempt: DraftAttempt) => mutate({ kind: 'submit', base, revision: clientRequestId(), attempt }),
     settle: (id: string) => mutate({ kind: 'settle', id }),
-    dispose() { publish({ ...empty(), ready: false }); closed = true; listeners.clear(); },
+    dispose, sessionCurrent,
   };
 }
 const stores = new Map<string, ReturnType<typeof createStore>>();
 
 export function clearCodexDrafts(owner: string) {
+  const nextStamp = clientRequestId();
+  try { localStorage.setItem(logoutKey(owner), nextStamp); } catch { /* Transaction still clears persisted records. */ }
   for (const [key, store] of stores) {
     if (store.owner === owner) { store.dispose(); stores.delete(key); }
   }
@@ -127,8 +141,8 @@ export function clearCodexDrafts(owner: string) {
     request.onsuccess = () => {
       const cursor = request.result;
       if (cursor) {
-        // Keep a revision barrier so an old tab cannot restore the cleared text.
-        cursor.update({ ...empty(), revision: clientRequestId() });
+        // A newly authorized page may already have written under the new login.
+        if (cursor.value.stamp !== nextStamp) cursor.delete();
         cursor.continue();
       }
     };
@@ -141,7 +155,7 @@ export function useCodexDraft(owner: string, conversation: string, authorized: b
   const [store] = useState(() => {
     const key = composerScope(owner, conversation);
     let found = stores.get(key);
-    if (!found) { found = createStore(owner, conversation); stores.set(key, found); }
+    if (!found || !found.sessionCurrent()) { found = createStore(owner, conversation); stores.set(key, found); }
     return found;
   });
   const state = useSyncExternalStore(store.subscribe, store.read, store.read);
@@ -149,6 +163,7 @@ export function useCodexDraft(owner: string, conversation: string, authorized: b
     if (!authorized) return;
     void store.reload();
     const onStorage = (event: StorageEvent) => {
+      if (event.key === logoutKey(owner)) { store.sessionCurrent(); return; }
       if (event.key !== signal || !event.newValue) return;
       try {
         const [scope] = JSON.parse(event.newValue);
