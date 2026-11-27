@@ -164,20 +164,22 @@ func (a *Agent) canAssistLocked() bool {
 
 // StartAssistForTarget supports control servers that still require the
 // assistance session and the locally chosen MCP address in the same request.
-func (a *Agent) StartAssistForTarget(ctx context.Context, target cloud.AssistTarget) (*cloud.AssistOffer, error) {
+func (a *Agent) StartAssistForTarget(ctx context.Context, target cloud.AssistTarget, week ...bool) (*cloud.AssistOffer, error) {
 	target.Name, target.URL = strings.TrimSpace(target.Name), strings.TrimSpace(target.URL)
 	if !validAssistTarget(target.Name, target.URL) {
 		return nil, errors.New("请填写有效的 MCP 服务名称和地址。内网服务使用 HTTPS，本机服务也可填写端口")
 	}
-	return a.openAssist(ctx, &target)
+	return a.openAssist(ctx, &target, len(week) == 1 && week[0])
 }
 
-func (a *Agent) OpenAssist(ctx context.Context) (*cloud.AssistOffer, error) {
-	return a.openAssist(ctx, nil)
+// Week consent must be explicitly selected by the local caller after disclosure.
+// Omitting it preserves the old short-lived authorization.
+func (a *Agent) OpenAssist(ctx context.Context, week ...bool) (*cloud.AssistOffer, error) {
+	return a.openAssist(ctx, nil, len(week) == 1 && week[0])
 }
 
 // Local consent is never restored after a service restart.
-func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget) (*cloud.AssistOffer, error) {
+func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget, week bool) (*cloud.AssistOffer, error) {
 	a.mu.Lock()
 	if !a.canAssistLocked() || a.assistActive != nil || a.assistStarting {
 		a.mu.Unlock()
@@ -185,7 +187,11 @@ func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget) (*cl
 	}
 	client, connectorID := a.cloud, a.identity.ConnectorID
 	consentPolicy := ""
-	if a.assistWeekConsent {
+	if week {
+		if !a.assistWeekConsent {
+			a.mu.Unlock()
+			return nil, errors.New("服务端未确认支持七天授权，请刷新后重试")
+		}
 		consentPolicy = cloud.AssistConsentWeek
 	}
 	a.assistStarting = true
@@ -208,7 +214,7 @@ func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget) (*cl
 		expected = *target
 	}
 	if offer.Status != "active" || offer.Name != expected.Name || offer.URL != expected.URL ||
-		!validAssistOffer(offer, time.Now()) {
+		!validAssistOffer(offer, time.Now()) || (offer.ConsentPolicy == cloud.AssistConsentWeek) != week {
 		a.mu.Unlock()
 		return nil, errors.New("开物返回的协助内容与本机填写的服务不一致，请刷新后重试")
 	}
@@ -305,7 +311,7 @@ func assistStartError(err error) error {
 
 // StartAssist requires the local user to approve exactly the offer the UI read.
 // Consent lives only in this process and is never restored on service restart.
-func (a *Agent) StartAssist(ctx context.Context, sessionID string) error {
+func (a *Agent) StartAssist(ctx context.Context, sessionID string, week ...bool) error {
 	a.mu.Lock()
 	offer := a.assistSeen
 	if !a.canAssistLocked() || a.assistActive != nil || a.assistStarting ||
@@ -316,7 +322,11 @@ func (a *Agent) StartAssist(ctx context.Context, sessionID string) error {
 	}
 	// The server's lease decides when the session ends; the local deadline is
 	// only a safety cap. A negotiated week grant gets the 168h cap.
-	weekConsent := a.assistWeekConsent
+	weekConsent := len(week) == 1 && week[0]
+	if weekConsent && !a.assistWeekConsent {
+		a.mu.Unlock()
+		return errors.New("服务端未确认支持七天授权，请刷新后重试")
+	}
 	lifetime := assistMaxLifetime
 	consentPolicy := ""
 	if weekConsent {
@@ -342,8 +352,8 @@ func (a *Agent) StartAssist(ctx context.Context, sessionID string) error {
 	a.mu.Lock()
 	if a.assistActive == session {
 		switch {
-		case started.ID != "" && (started.ID != sessionID || started.Status != "active" ||
-			!validAssistOffer(started, time.Now())):
+		case (started.ConsentPolicy == cloud.AssistConsentWeek) != weekConsent || (started.ID != "" && (started.ID != sessionID || started.Status != "active" ||
+			!validAssistOffer(started, time.Now()))):
 			a.mu.Unlock()
 			if a.clearAssist(session) {
 				a.notifyAssistStop(session)
@@ -685,6 +695,18 @@ func assistSessionDeadline(offer cloud.AssistOffer, now time.Time) time.Time {
 
 func validAssistOffer(offer cloud.AssistOffer, now time.Time) bool {
 	if !assistSessionID.MatchString(offer.ID) || !offer.ExpiresAt.After(now) {
+		return false
+	}
+	switch offer.ConsentPolicy {
+	case cloud.AssistConsentWeek:
+		if offer.ConsentExpiresAt == nil || !offer.ExpiresAt.Equal(*offer.ConsentExpiresAt) || offer.ConsentExpiresAt.After(now.Add(assistWeekLifetime+time.Minute)) {
+			return false
+		}
+	case "", "legacy":
+		if offer.ConsentExpiresAt != nil {
+			return false
+		}
+	default:
 		return false
 	}
 	return validAssistTarget(offer.Name, offer.URL) ||

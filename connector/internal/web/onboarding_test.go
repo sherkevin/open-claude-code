@@ -92,7 +92,7 @@ const fetch = async (path, options) => {
     data = {enabled:control.bound && allowedAssist,offer:assistance,target_after_start:control.bound && allowedAssist,
       week_consent:control.bound && allowedAssist && supportsWeek,last_command:assistance?.last_command};
   }else if(path === "/api/assist/start"){
-    assert.deepEqual(body, {});
+    assert.deepEqual(body, supportsWeek ? {consent_policy:"week_168h"} : {});
     const deadline = new Date(Date.now()+(supportsWeek ? 168*3600 : 30*60)*1000).toISOString();
     assistance = {id:"as_fixture",name:"内网接入协助",url:"",status:"active",local_active:true,
       ...(supportsWeek ? {consent_policy:"week_168h",consent_expires_at:deadline} : {}),expires_at:deadline};

@@ -1,6 +1,6 @@
 {
   "name": "kaiwu-assist",
-  "version": "1.5.3-npx.1",
+  "version": "1.5.4-npx.1",
   "private": true,
   "description": "Kaiwu explicitly authorized attended Linux support session",
   "bin": { "kaiwu-assist": "start.sh" },

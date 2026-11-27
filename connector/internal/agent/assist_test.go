@@ -585,7 +585,7 @@ func TestAssistWeekConsentIsFixedAndNeverSlides(t *testing.T) {
 	if err != nil || !status.WeekConsent {
 		t.Fatalf("week capability was not negotiated: %+v %v", status, err)
 	}
-	offer, err := a.OpenAssist(ctx)
+	offer, err := a.OpenAssist(ctx, true)
 	if err != nil || offer == nil || offer.ConsentPolicy != cloud.AssistConsentWeek ||
 		offer.ConsentExpiresAt == nil || !offer.ConsentExpiresAt.Equal(deadline) {
 		t.Fatalf("week consent was not kept: %+v %v", offer, err)
@@ -642,6 +642,52 @@ func TestAssistKeepsLegacyPolicyWhenControlPlaneDoesNotAdvertiseWeek(t *testing.
 	status, err := a.AssistStatus(ctx)
 	if err != nil || status.WeekConsent {
 		t.Fatalf("legacy control plane must not advertise week consent: %+v %v", status, err)
+	}
+	offer, err := a.OpenAssist(ctx)
+	if err != nil || offer == nil || offer.ConsentPolicy != "" || offer.ConsentExpiresAt != nil {
+		t.Fatalf("legacy offer changed shape: %+v %v", offer, err)
+	}
+	if got := assistSessionDeadline(*offer, time.Now()); got.Before(time.Now().Add(assistMaxLifetime - time.Minute)) {
+		t.Fatalf("legacy local deadline = %v, want about 24h", got)
+	}
+	if err := a.StopAssist(ctx, offer.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAssistAdvertisedCapabilityDoesNotItselfGrantWeekConsent(t *testing.T) {
+	legacyExpiry := time.Now().Add(assistLifetime).UTC()
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		respond := json.NewEncoder(w).Encode
+		switch r.URL.Path {
+		case "/v1/connectors/conn_assist/assist/offer":
+			// Merely advertising capability is not customer authorization.
+			_ = respond(cloud.AssistStatus{Enabled: true, WeekConsent: true})
+		case "/v1/connectors/conn_assist/assist/start":
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) != 0 {
+				t.Errorf("legacy start must stay empty, got %+v %v", body, err)
+			}
+			_ = respond(cloud.AssistOffer{
+				ID: testAssistID, Name: openAssistName, Status: "active", ExpiresAt: legacyExpiry,
+			})
+		case "/v1/connectors/conn_assist/assist/poll":
+			_ = respond(cloud.AssistPoll{Active: true})
+		case "/v1/connectors/conn_assist/assist/stop":
+			_ = respond(struct{}{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(control.Close)
+	f := &assistanceFixture{results: make(chan cloud.AssistResult, 1), cloudURL: control.URL}
+	a := newAssistTestAgent(t, f)
+	ctx := context.Background()
+
+	status, err := a.AssistStatus(ctx)
+	if err != nil || !status.WeekConsent {
+		t.Fatalf("week capability must be visible before explicit choice: %+v %v", status, err)
 	}
 	offer, err := a.OpenAssist(ctx)
 	if err != nil || offer == nil || offer.ConsentPolicy != "" || offer.ConsentExpiresAt != nil {

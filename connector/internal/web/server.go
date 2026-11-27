@@ -164,7 +164,8 @@ func (s *Server) handleAssistOffer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAssistStart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		SessionID string `json:"session_id"`
+		SessionID     string `json:"session_id"`
+		ConsentPolicy string `json:"consent_policy"`
 		cloud.AssistTarget
 	}
 	if err := decode(w, r, &body); err != nil {
@@ -172,12 +173,17 @@ func (s *Server) handleAssistStart(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+	if body.ConsentPolicy != "" && body.ConsentPolicy != cloud.AssistConsentWeek {
+		writeError(w, http.StatusBadRequest, "ASSIST_POLICY_INVALID", "无效的协助授权期限")
+		return
+	}
+	week := body.ConsentPolicy == cloud.AssistConsentWeek
 	if body.SessionID != "" {
 		if body.Name != "" || body.URL != "" {
 			writeError(w, http.StatusBadRequest, "ASSIST_TARGET_INVALID", "协助请求包含多个目标")
 			return
 		}
-		if err := s.Agent.StartAssist(ctx, body.SessionID); err != nil {
+		if err := s.Agent.StartAssist(ctx, body.SessionID, week); err != nil {
 			writeAPIError(w, err)
 			return
 		}
@@ -187,9 +193,9 @@ func (s *Server) handleAssistStart(w http.ResponseWriter, r *http.Request) {
 	var offer *cloud.AssistOffer
 	var err error
 	if body.AssistTarget == (cloud.AssistTarget{}) {
-		offer, err = s.Agent.OpenAssist(ctx)
+		offer, err = s.Agent.OpenAssist(ctx, week)
 	} else {
-		offer, err = s.Agent.StartAssistForTarget(ctx, body.AssistTarget)
+		offer, err = s.Agent.StartAssistForTarget(ctx, body.AssistTarget, week)
 	}
 	if err != nil {
 		writeAPIError(w, err)

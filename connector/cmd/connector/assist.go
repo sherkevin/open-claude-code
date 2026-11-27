@@ -182,11 +182,7 @@ func runDirectAssist(ctx context.Context, opts agent.Options, code string) {
 			fatal(err)
 		}
 	}
-	// Read the control plane's consent capability before opening so a direct
-	// CLI session negotiates the same fixed week policy as the local page. A
-	// failed read keeps the legacy policy; the start itself still requires the
-	// explicit local action below.
-	_, _ = instance.AssistStatus(ctx)
+	// The noninteractive legacy command does not opt in to longer consent.
 	offer, err := instance.OpenAssist(ctx)
 	if err != nil {
 		fatal(err)
@@ -203,6 +199,11 @@ func runDirectAssist(ctx context.Context, opts agent.Options, code string) {
 
 func printAssistStart(offer cloud.AssistOffer) {
 	fmt.Printf("\n已建立主动连接，协助编号 %s。\n", offer.ID)
+	if offer.ConsentPolicy == cloud.AssistConsentWeek {
+		fmt.Printf("本次授权固定7天，到期时间：%s。断线重连不延长期限。\n", offer.ConsentDeadline().Local().Format(time.RFC3339))
+	} else {
+		fmt.Println("旧版授权：断线后30分钟到期，最长24小时。")
+	}
 	fmt.Println("开物工程师下发的命令会显示在这里并自动执行，输出会自动回传。")
 	fmt.Println("按 Ctrl+C 或关闭此窗口即可停止协助。")
 }

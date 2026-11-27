@@ -85,10 +85,12 @@ func runInteractiveAssist(ctx context.Context, opts agent.Options) error {
 	fmt.Println("等待开物为此设备开通协助资格（最多10分钟）。当前未开启协助。")
 	waitCtx, stopWait := context.WithTimeout(ctx, 10*time.Minute)
 	defer stopWait()
+	week := false
 	for {
 		available, err := instance.AssistStatus(waitCtx)
 		if err == nil && available.Enabled {
 			// A fresh local confirmation is still mandatory, even if there is a cloud offer.
+			week = available.WeekConsent
 			break
 		}
 		select {
@@ -96,6 +98,11 @@ func runInteractiveAssist(ctx context.Context, opts agent.Options) error {
 			return fmt.Errorf("等待设备授权已结束，尚未开始协助")
 		case <-time.After(3 * time.Second):
 		}
+	}
+	if week {
+		fmt.Println("本次授权自本机确认起固定7天（168小时）；终端保持运行时断线可重连，不能延长。按 Ctrl+C 停止，重启进程需重新确认。")
+	} else {
+		fmt.Println("当前服务端仅支持旧版授权：断线后30分钟到期，最长24小时。")
 	}
 	reply, err := assistPrompt(ctx, reader, os.Stdout, "确认允许开物工程师执行本次协助命令？输入 y 开始 [y/N]: ")
 	if err != nil {
@@ -108,7 +115,7 @@ func runInteractiveAssist(ctx context.Context, opts agent.Options) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	offer, err := instance.OpenAssist(ctx)
+	offer, err := instance.OpenAssist(ctx, week)
 	if err != nil {
 		return fmt.Errorf("尚未开启协助，请核对本设备授权后重试")
 	}

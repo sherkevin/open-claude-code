@@ -178,7 +178,7 @@ def main() -> int:
         # Negotiate the fixed week consent capability before the customer's
         # explicit start, exactly like the local page does.
         local.get("/api/assist/offer").raise_for_status()
-        started = local.post("/api/assist/start", json={})
+        started = local.post("/api/assist/start", json={"consent_policy": "week_168h"})
         started.raise_for_status()
         offer = started.json()["data"]
         harness.check("week-consent-negotiated", offer.get("consent_policy") == "week_168h", offer=offer)
