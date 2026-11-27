@@ -458,12 +458,8 @@ def test_execution_view_requires_owner_and_reports_rounds(goal_env):
     assert body["rounds"][0]["native_rounds_before"] == 0
 
 
-@pytest.mark.parametrize(("objective", "model_calls"), [
-    ("Synthetic authorized goal", 1),
-    ("CASE_DELEGATE summarize the two fixture tasks", 4),
-], ids=["text", "two-children"])
-def test_real_harness_goal_round_end_to_end(tmp_path, model_server, objective, model_calls):
-    """Pinned Node + official driver + loopback synthetic model, one real round."""
+@pytest.fixture
+def real_goal_round(tmp_path, model_server):
     import os
     node, source = os.getenv("HARNESS_TEST_NODE"), os.getenv("HARNESS_TEST_SOURCE")
     if not node or not source:
@@ -488,49 +484,85 @@ def test_real_harness_goal_round_end_to_end(tmp_path, model_server, objective, m
         assert wait_run(client, first.json()["run_id"])["status"] == "succeeded"
         baseline = len(requests)
         goal_path = f"/api/v1/conversations/{cid}/goal"
-        created = client.post(goal_path, json={
-            "action": "create", "objective": objective,
-            "maxGoalRounds": 4})
-        assert created.status_code == 200, created.text
-        goal = created.json()["goal"]
-        assert goal["activation"] == "disarmed" and goal["roundsStarted"] == 0
-        owner = service.require("conversations", cid)
-        authorization = client.post(goal_path + "/execution", json={
-            "goal_id": goal["id"], "goal_revision": goal["revision"],
-            "harness_session_id": owner["harness_session_id"], "max_rounds": 2,
-            "token_budget": 10_000, "cost_budget_micros": 10_000,
-            "time_budget_seconds": 3600, "confirm": True})
-        assert authorization.status_code == 200, authorization.text
-        started = client.post(goal_path + "/execution/rounds", json={
-            "goal_id": goal["id"], "goal_revision": goal["revision"],
-            "confirm": True})
-        assert started.status_code == 200, started.text
-        run_id = started.json()["run_id"]
-        settled = wait_run(client, run_id)
-        assert settled["status"] == "succeeded", settled
-        # Multiple model calls and child tasks may belong to one native Goal round.
-        assert len(requests) - baseline == model_calls
-        view = client.get(goal_path + "/execution").json()
-        assert view["budget"]["rounds_executed"] == 1
-        assert view["rounds"][0]["armed"] is True
-        assert view["rounds"][0]["armed_goal_revision"] == goal["revision"] + 2
-        assert view["budget"]["usage_complete"] is False
-        assert view["rounds"][0]["usage_status"] == "unknown"
-        assert view["rounds"][0]["cost_micros"] is None
-        native = client.get(goal_path).json()["goal"]
-        assert native["roundsStarted"] == 1
-        assert native["activation"] == "disarmed"
-        messages = client.get(f"/api/v1/conversations/{cid}/messages").json()
-        assert messages[-1]["role"] == "assistant" and messages[-1]["text"].strip()
-        if model_calls > 1:
-            plan = client.get(f"/api/v1/runs/{run_id}/subagents").json()
-            assert plan["counts"]["succeeded"] == 2, plan
-            assert "子任务结果已汇总" in messages[-1]["text"]
-        # The pinned usage ledger has no authoritative cost. The next round is
-        # refused rather than priced as zero; no second model request is made.
-        second = client.post(goal_path + "/execution/rounds", json={
-            "goal_id": native["id"], "goal_revision": native["revision"],
-            "confirm": True})
-        assert second.status_code == 409, second.text
-        assert error_code(second) == "GOAL_USAGE_UNVERIFIED"
-        assert len(requests) == baseline + model_calls
+
+        def start(objective):
+            created = client.post(goal_path, json={
+                "action": "create", "objective": objective,
+                "maxGoalRounds": 4})
+            assert created.status_code == 200, created.text
+            goal = created.json()["goal"]
+            assert goal["activation"] == "disarmed" and goal["roundsStarted"] == 0
+            owner = service.require("conversations", cid)
+            authorization = client.post(goal_path + "/execution", json={
+                "goal_id": goal["id"], "goal_revision": goal["revision"],
+                "harness_session_id": owner["harness_session_id"], "max_rounds": 2,
+                "token_budget": 10_000, "cost_budget_micros": 10_000,
+                "time_budget_seconds": 3600, "confirm": True})
+            assert authorization.status_code == 200, authorization.text
+            started = client.post(goal_path + "/execution/rounds", json={
+                "goal_id": goal["id"], "goal_revision": goal["revision"],
+                "confirm": True})
+            assert started.status_code == 200, started.text
+            return goal, started.json()["run_id"]
+
+        yield client, cid, goal_path, requests, baseline, start
+
+
+@pytest.mark.parametrize(("objective", "model_calls"), [
+    ("Synthetic authorized goal", 1),
+    ("CASE_DELEGATE summarize the two fixture tasks", 4),
+], ids=["text", "two-children"])
+def test_real_harness_goal_round_end_to_end(real_goal_round, objective, model_calls):
+    """Pinned Node + official driver + loopback synthetic model, one real round."""
+    client, cid, goal_path, requests, baseline, start = real_goal_round
+    goal, run_id = start(objective)
+    settled = wait_run(client, run_id)
+    assert settled["status"] == "succeeded", settled
+    # Multiple model calls and child tasks may belong to one native Goal round.
+    assert len(requests) - baseline == model_calls
+    view = client.get(goal_path + "/execution").json()
+    assert view["budget"]["rounds_executed"] == 1
+    assert view["rounds"][0]["armed"] is True
+    assert view["rounds"][0]["armed_goal_revision"] == goal["revision"] + 2
+    assert view["budget"]["usage_complete"] is False
+    assert view["rounds"][0]["usage_status"] == "unknown"
+    assert view["rounds"][0]["cost_micros"] is None
+    native = client.get(goal_path).json()["goal"]
+    assert native["roundsStarted"] == 1
+    assert native["activation"] == "disarmed"
+    messages = client.get(f"/api/v1/conversations/{cid}/messages").json()
+    assert messages[-1]["role"] == "assistant" and messages[-1]["text"].strip()
+    if model_calls > 1:
+        plan = client.get(f"/api/v1/runs/{run_id}/subagents").json()
+        assert plan["counts"]["succeeded"] == 2, plan
+        assert "子任务结果已汇总" in messages[-1]["text"]
+    # The pinned usage ledger has no authoritative cost. The next round is
+    # refused rather than priced as zero; no second model request is made.
+    second = client.post(goal_path + "/execution/rounds", json={
+        "goal_id": native["id"], "goal_revision": native["revision"],
+        "confirm": True})
+    assert second.status_code == 409, second.text
+    assert error_code(second) == "GOAL_USAGE_UNVERIFIED"
+    assert len(requests) == baseline + model_calls
+
+
+def test_cancelling_active_goal_also_cancels_delegated_work(real_goal_round):
+    client, _, goal_path, requests, baseline, start = real_goal_round
+    _, run_id = start("CASE_HANG hold the current goal round")
+    path = f"/api/v1/runs/{run_id}"
+    wait_run(client, run_id, {"running"})
+    response = client.post(path + "/subagents", json={
+        "mode": "harness", "tasks": ["CASE_HANG child cancellation fixture"]})
+    assert response.status_code == 202, response.text
+    deadline = time.monotonic() + 60
+    while not any("CASE_HANG child cancellation fixture" in json.dumps(body) for body in requests[baseline:]):
+        assert time.monotonic() < deadline, "child did not reach the model"
+        time.sleep(.05)
+    response = client.post(path + "/cancel")
+    assert response.is_success, response.text
+    assert wait_run(client, run_id)["status"] == "cancelled"
+    children = client.get(path + "/subagents").json()
+    assert children["counts"]["cancelled"] == 1 and "result" not in children["children"][0]
+    view = client.get(goal_path + "/execution").json()
+    assert view["authorization"]["status"] == "revoked" and view["active_lease"] is None
+    assert view["can_start"] is False and len(view["rounds"]) == 1
