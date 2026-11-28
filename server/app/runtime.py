@@ -120,7 +120,7 @@ def _bounded_fact(value, *, depth=0, key=""):
     return "unknown"
 
 
-def result_fact_metadata(success, result, sources):
+def result_fact_metadata(success, result, sources, arguments=None):
     """Project allowlisted business facts from an MCP result.
 
     MCP responses may contain arbitrary records. Only structured, bounded
@@ -141,8 +141,16 @@ def result_fact_metadata(success, result, sources):
         facts[key] = _bounded_fact(structured[key], key=key) if key in structured else "unknown"
     from .business_results import project_business_result
     business_result = project_business_result(result, metadata["source_ids"])
+    count_receipt = None
+    if business_result is None and isinstance(arguments, dict):
+        from .huawi_aggregate_receipt import count_receipt_metadata
+        aggregate = count_receipt_metadata(arguments, result, metadata["source_ids"])
+        if aggregate is not None:
+            business_result = aggregate["business_result"]
+            count_receipt = aggregate["count_receipt"]
     return {"source_ids": metadata["source_ids"], "result_facts": facts,
-            **({"business_result": business_result} if business_result is not None else {})}
+            **({"business_result": business_result} if business_result is not None else {}),
+            **({"count_receipt": count_receipt} if count_receipt is not None else {})}
 
 
 def model_execution_error(result, assistant_error=None):
@@ -245,6 +253,10 @@ class SDKRuntime(WorkspaceRuntime):
         # arguments into the handler exactly once.
         self._capability_tickets: dict[str, dict] = {}
         self._capability_ticket_cap = 128
+        self._sdk_business_tools = set()
+        self._sdk_business_started = set()
+        self._sdk_business_approved = set()
+        self._sdk_business_results = {}
 
     def record_workspace_error(self, name, call_id, run_id, error):
         from .tool_error_details import workspace_web_error
@@ -368,7 +380,21 @@ class SDKRuntime(WorkspaceRuntime):
                 # Evaluate a configured model policy before safe-read's normal
                 # automatic path. A policy allowlist therefore cannot be
                 # bypassed merely because a tool is normally auto-approved.
-                run = await offload(self.service.require, "runs", self.current_run_id)
+                run_id = (self.current_run or {}).get("id")
+                await offload(self.require_active_tool_result, run_id)
+                run = await offload(self.service.require, "runs", run_id)
+                sdk_key = None
+                if tool in self._sdk_business_tools:
+                    call_id = getattr(context, "tool_use_id", None)
+                    sdk_key = (run_id, call_id, tool)
+                    if (not isinstance(call_id, str) or not call_id
+                            or self.tool_run_ids.get(call_id) != run_id
+                            or CAPABILITY_TICKET_FIELD in arguments
+                            or sdk_key in self._sdk_business_approved
+                            or len(self._sdk_business_approved) >= 256):
+                        return PermissionResultDeny(message="业务调用上下文无效")
+                    # Reserve one decision attempt before the approval await.
+                    self._sdk_business_approved.add(sdk_key)
                 review = await self.service.model_approval.review(run, tool, arguments)
                 if review is not None:
                     allowed = await self.approve(tool, arguments, review=review, review_checked=True)
@@ -376,6 +402,18 @@ class SDKRuntime(WorkspaceRuntime):
                     allowed = automatic or await self.approve(tool, arguments, review_checked=True)
                 await offload(self.check_tool, tool, arguments)
                 if allowed:
+                    if tool in self._sdk_business_tools:
+                        call_id = getattr(context, "tool_use_id", None)
+                        if (not call_id or self.tool_run_ids.get(call_id) != run["id"]
+                                or CAPABILITY_TICKET_FIELD in arguments):
+                            return PermissionResultDeny(message="业务调用上下文无效")
+                        await offload(self.require_active_tool_result, run["id"])
+                        ticket = self.issue_capability_ticket(tool, arguments, context,
+                            getattr(allowed, "approval_id", None))
+                        if ticket is None:
+                            return PermissionResultDeny(message="业务调用上下文无效")
+                        await offload_write(record_dispatch, service, run["id"], call_id, tool)
+                        return PermissionResultAllow(updated_input={**arguments, CAPABILITY_TICKET_FIELD: ticket})
                     if tool in CAPABILITY_TOOL_NAMES:
                         # The SDK's MCP layer is shared with ordinary tools and
                         # validates arguments before the handler.  Capability
@@ -415,6 +453,25 @@ class SDKRuntime(WorkspaceRuntime):
             business_server = next((server for server in self.config["mcp_servers"]
                                     if server.startswith("c") and tool_name.startswith(f"mcp__{server}__")), None)
             expected_run_id = self.tool_run_ids.get(tool_use_id)
+            proxied = tool_name in self._sdk_business_tools
+            public_args = data.get("tool_input", {})
+            bound_arguments = None
+            if proxied:
+                if not isinstance(public_args, dict):
+                    public_args = {}
+                public_args = {k: v for k, v in public_args.items() if k != CAPABILITY_TICKET_FIELD}
+                data = {**data, "tool_input": public_args}
+                record = self._sdk_business_results.pop((expected_run_id, tool_use_id, tool_name), None)
+                if (success and record is not None
+                        and record[0] == _arguments_digest(public_args)):
+                    response = record[1]
+                    if tool_name.endswith("__query"):
+                        bound_arguments = public_args
+                else:
+                    success = False
+                    response = {"isError": True, "content":[{"type":"text","text":"本次查询没有可核验的宿主回执"}]}
+                    replacement = "本次查询没有可核验的宿主回执"
+                    extra = {"error_code":"SDK_MCP_RECEIPT_MISSING", "error_message":replacement}
             if tool_name in WORKSPACE_WEB_TOOLS and expected_run_id:
                 try:
                     await offload(self.require_active_tool_result, expected_run_id)
@@ -506,11 +563,13 @@ class SDKRuntime(WorkspaceRuntime):
                         success, response, sources = False, None, []
                         replacement = exc.message
                         extra = {"error_code": exc.code, "error_message": exc.message}
-                result_facts = result_fact_metadata(success, response, sources)
+                result_facts = result_fact_metadata(success, response, sources, bound_arguments)
                 if replacement is not None and success and result_facts.get("business_result"):
-                    from .business_results import presentation_receipt
+                    from .business_results import presentation_receipt, count_presentation_receipt
                     from .mcp_tools import enforce_model_result_budget
-                    combined = replacement + "\n" + presentation_receipt(response)
+                    receipt = result_facts.get("count_receipt")
+                    display = count_presentation_receipt(receipt) if receipt else presentation_receipt(response)
+                    combined = replacement + "\n" + (display or "")
                     try:
                         extra["model_input_bytes"] = enforce_model_result_budget({"content": [{"type": "text", "text": combined}]})
                         replacement = combined
@@ -579,6 +638,10 @@ class SDKRuntime(WorkspaceRuntime):
             provider[key] = self.config["upstream_model"]
         from .capabilities import create_workspace_tools
         servers = dict(self.config["mcp_servers"])
+        from .sdk_business_bridge import selected_connections, create_servers
+        groups = await offload(selected_connections, self)
+        self._sdk_business_tools = {entry.canonical_name for group in groups.values() for entry in group}
+        servers.update(create_servers(self, groups))
         recovery_only = self.config.get("recovery_only")
         workspace_tools = None if recovery_only else create_workspace_tools(self)
         if workspace_tools:
@@ -636,6 +699,10 @@ class SDKRuntime(WorkspaceRuntime):
         self.tool_done.clear()
         self.tool_started.clear()
         self.tool_run_ids.clear()
+        self._sdk_business_started.clear()
+        self._sdk_business_approved.clear()
+        self._sdk_business_results.clear()
+        self._capability_tickets.clear()
         self.compaction_boundary = None
         compact = run.get("kind") == "compact"
         before = None

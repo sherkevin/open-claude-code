@@ -61,6 +61,10 @@ def capture_sdk(monkeypatch):
 def test_real_sdk_pretool_and_permission_callbacks_deny_out_of_scope(env, monkeypatch, invalid):
     env.service.db.execute("UPDATE conversations SET runtime_type='claude' WHERE id=?", (env.conversation["id"],))
     prepared = prepare(env)
+    # The default manual session requires explicit business-tool approval.
+    # Exercise an active run, not a queued run with an injected runtime ID.
+    assert env.service.require("conversations", env.conversation["id"])["permission_mode"] == "manual"
+    env.service.db.execute("UPDATE runs SET status='running' WHERE id=?", (prepared["run_id"],))
     captured = capture_sdk(monkeypatch)
     events, approvals = [], []
 
@@ -81,30 +85,48 @@ def test_real_sdk_pretool_and_permission_callbacks_deny_out_of_scope(env, monkey
         }
         runtime = SDKRuntime(env.service, env.conversation["id"], config, approve, emit)
         runtime.current_run = env.service.require("runs", prepared["run_id"])
-        runtime.current_run_id = prepared["run_id"]
         await runtime.connect()
         options = captured["options"]
         hook = options.hooks["PreToolUse"][0]
         assert hook.on_failure == "block"
         valid = await hook.hooks[0]({"tool_name": env.tool, "tool_input": copy.deepcopy(VALID)}, "valid", {})
-        assert valid["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert valid["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert approvals == []
+        assert not [e for e in env.service.db.events(prepared["run_id"], 0)
+                    if e["type"] == "tool.dispatched"]
         before = len(events)
         denied = await hook.hooks[0]({"tool_name": env.tool, "tool_input": copy.deepcopy(invalid)}, "invalid", {})
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert len(events) == before, "Rejected scope must not emit a tool-started event"
-        permission = await options.can_use_tool(env.tool, copy.deepcopy(invalid), {})
+        permission = await options.can_use_tool(env.tool, copy.deepcopy(invalid),
+                                                SimpleNamespace(tool_use_id="invalid"))
         assert permission.behavior == "deny"
-        assert approvals == []
+        assert approvals == [], "An out-of-scope request must not even reach approval"
+        assert not [e for e in env.service.db.events(prepared["run_id"], 0)
+                    if e["type"] == "tool.dispatched"]
+        permission = await options.can_use_tool(env.tool, copy.deepcopy(VALID),
+                                                SimpleNamespace(tool_use_id="valid"))
+        assert permission.behavior == "allow"
+        assert permission.updated_input == VALID
+        assert len(approvals) == 1 and approvals[0][0] == (env.tool, VALID)
+        dispatches = [e["data"] for e in env.service.db.events(prepared["run_id"], 0)
+                      if e["type"] == "tool.dispatched"]
+        assert len(dispatches) == 1
+        assert dispatches[0]["tool_call_id"] == "valid"
+        assert dispatches[0]["tool_name"] == env.tool
         await runtime.close()
 
     asyncio.run(scenario())
     assert captured["connected"] is True
-    assert [data["arguments"] for kind, data in events if kind == "tool.started"] == [VALID]
+    started = [data for kind, data in events if kind == "tool.started"]
+    assert len(started) == 1 and started[0]["arguments"] == VALID
+    assert started[0]["requires_approval"] is True
 
 
 @pytest.mark.parametrize("invalid", INVALID, ids=["excess-count", "unapproved-field", "missing-scope"])
 def test_actual_harness_bridge_refuses_scope_before_terminal_handler(env, monkeypatch, invalid):
     prepared = prepare(env)
+    assert env.service.require("conversations", env.conversation["id"])["permission_mode"] == "manual"
     env.service.db.execute("UPDATE runs SET status='running' WHERE id=?", (prepared["run_id"],))
     calls, events, approvals = [], [], []
 
@@ -141,6 +163,15 @@ def test_actual_harness_bridge_refuses_scope_before_terminal_handler(env, monkey
         assert failed[0]["source_ids"] == []
         accepted = await runtime.bridge.invoke(request("valid", VALID))
         assert not accepted.get("is_error")
-        assert calls == [VALID] and approvals == []
+        assert calls == [VALID]
+        assert len(approvals) == 1 and approvals[0][0] == (env.tool, VALID)
+        started = [data for kind, data in events if kind == "tool.started"]
+        assert len(started) == 1 and started[0]["arguments"] == VALID
+        assert started[0]["requires_approval"] is True
+        dispatches = [e["data"] for e in env.service.db.events(prepared["run_id"], 0)
+                      if e["type"] == "tool.dispatched"]
+        assert len(dispatches) == 1
+        assert dispatches[0]["tool_call_id"] == started[0]["tool_call_id"]
+        assert dispatches[0]["tool_name"] == env.tool
 
     asyncio.run(scenario())

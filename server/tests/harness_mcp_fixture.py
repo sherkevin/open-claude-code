@@ -111,7 +111,7 @@ def local_model_server():
             pass
 
         def do_POST(self):
-            if self.path != "/v1/messages":
+            if self.path.split("?", 1)[0] != "/v1/messages":
                 self.send_error(404)
                 return
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))

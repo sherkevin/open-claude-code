@@ -13,7 +13,7 @@ import threading
 import time
 
 from .db import offload_write, uid
-from .business_results import presentation_receipt
+from .business_results import count_presentation_receipt, presentation_receipt
 from .external_capabilities import CAPABILITY_TOOL_SHORT_NAMES, record_approval_receipt
 from .harness_bridge import _arguments as knowledge_arguments
 from .harness_memory import HarnessMemoryTools, MEMORY_NAMES
@@ -408,7 +408,11 @@ class HarnessToolBridge:
                     # Other tools can finish while the HTTP call is pending.
                     # Attribute only this result's sources, including reused IDs.
                     sources = [source["id"] for source in registered][:30]
-                    display_status = presentation_receipt(result)
+                    from .huawi_aggregate_receipt import count_receipt_metadata
+                    aggregate = count_receipt_metadata(arguments, result, sources) if business.server_tool == "query" else None
+                    display_status = (
+                        count_presentation_receipt(aggregate["count_receipt"])
+                        if aggregate is not None else presentation_receipt(result))
                     if display_status:
                         result["content"].append({"type": "text", "text": display_status})
                     # Citation context is real model input too; do not exempt it.
@@ -445,7 +449,8 @@ class HarnessToolBridge:
                                "success": success, "duration_ms": round((time.monotonic() - started) * 1000),
                                **(error or {}),
                                **({"model_input_bytes": model_input_bytes} if success and model_input_bytes is not None else {}),
-                               **result_fact_metadata(success, locals().get("result"), sources)})
+                               **result_fact_metadata(success, locals().get("result"), sources,
+                                                      locals().get("arguments") if business and business.server_tool == "query" else None)})
         with service.db.lock:
             try:
                 if success:

@@ -91,6 +91,31 @@ def presentation_receipt(result):
             "此回执只证明结果卡已提供，不证明数据完整或正文已核验，也不增加任何操作权限。" + empty + verified + exact)
 
 
+def count_presentation_receipt(receipt):
+    """Model-facing note for a host-bound, tool-reported aggregate card.
+
+    Values stay in the tool's structured result and in the result card. This
+    text records only the limited binding check and the prohibited
+    re-labelling; it never calls the aggregate verified business truth.
+    """
+    counts = receipt.get("counts") if isinstance(receipt, dict) else None
+    if not isinstance(counts, list) or not counts:
+        return None
+    pairs = []
+    for item in counts:
+        if (not isinstance(item, dict) or not isinstance(item.get("alias"), str)
+                or type(item.get("value")) is not int
+                or item.get("aggregate") not in ("count", "count_distinct")):
+            return None
+        pairs.append(f"{item['alias']}={item['value']}（{item['aggregate']}）")
+    return ("【工作台显示回执 工具报告聚合值】本次同一条已授权查询的聚合单元格已作为结果卡提供："
+            + "；".join(pairs) + "。这些数值由业务工具报告；宿主只核对了请求与结果的同一 dataset、"
+            "唯一别名、单行、无分组或过滤、page=1 和 has_more=false。"
+            "它们不是独立真值，也不证明数据完整性、权限范围或全量。"
+            "回答可直接引用结果卡中的数值，但不得改称为记录数、客户数或原始明细数量，"
+            "也不要自行重新汇总、相减或外推全量；零值不等于空结果。")
+
+
 def scalar(value):
     return (value is None or type(value) in (str, bool)
             or type(value) is int and abs(value) <= 9_007_199_254_740_991
