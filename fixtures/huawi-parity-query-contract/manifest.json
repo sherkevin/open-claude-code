@@ -1,0 +1,69 @@
+{
+  "fixture_id": "huawi-parity-query-contract",
+  "version": "1.0.0",
+  "created": "2026-11-28",
+  "base_commit": "2c330bfd9a05bce9ca16b01fa46ba31af2c8da7a",
+  "task": "HW-029a",
+  "status": "synthetic_contract_fixture_not_product_support",
+  "synthetic_only": true,
+  "customer_data": false,
+  "customer_schema_inferred": false,
+  "product_support_claimed": false,
+  "tests_executed_by_author": false,
+  "purpose": "Machine-readable, independent parity cases built only from the bounded observed native result shape and observed semantics. The fixture validates its own shape and arithmetic ground truth. It does not validate the product, the customer input schema or real data.",
+  "evidence_levels": {
+    "observed": "Stated in the bounded task contract or the existing host result contract.",
+    "observed_field_semantics_not_origin": "The field exists and has the stated meaning, but its origin or full vocabulary is not observed.",
+    "hypothesis": "Needed to make a case concrete; explicitly not a customer or native schema claim.",
+    "synthetic_model": "Arithmetic or shape ground truth computed from the synthetic dataset only."
+  },
+  "files": {
+    "manifest.json": "This file.",
+    "observed/native-envelope.json": "Observed result-envelope fields and explicit non-claims.",
+    "hypotheses/request-and-type-encoding.json": "Labelled synthetic request/type hypotheses, never a customer input schema.",
+    "dataset/synthetic_sales.json": "Synthetic dataset, catalog metadata, published and unpublished fields.",
+    "cases/describe.json": "Describe search versus exact-code detail cases (normalized semantic observations, native reply shape unobserved).",
+    "cases/query_fields_filters_order.json": "Published-field selection, filters and ordering cases.",
+    "cases/query_aggregates.json": "COUNT, COUNT DISTINCT, hypothetical SUM and grouped aggregate cases.",
+    "cases/query_pagination.json": "Finite pagination, short pages, ambiguous totals and incomplete groups.",
+    "cases/zero_empty.json": "Valid zero versus empty, absent total, failure, denial, not-queried and malformed.",
+    "cases/malformed.json": "Malformed native envelopes that must fail closed.",
+    "adapter-gaps.json": "Where the current base adapter cannot preserve the native semantics, plus minimal follow-up after HW-026.",
+    "verify_fixture.py": "Standalone stdlib-only shape and ground-truth verifier. It does not import or call product runtime."
+  },
+  "case_counts": {
+    "cases/describe.json": 8,
+    "cases/query_fields_filters_order.json": 12,
+    "cases/query_aggregates.json": 12,
+    "cases/query_pagination.json": 15,
+    "cases/zero_empty.json": 8,
+    "cases/malformed.json": 26,
+    "total": 81
+  },
+  "capabilities_covered": [
+    "describe_search_vs_exact_code",
+    "fields",
+    "filters",
+    "grouping",
+    "distinct_count",
+    "sum",
+    "ordering",
+    "finite_pagination",
+    "zero_vs_empty",
+    "ambiguous_total_and_page_size",
+    "incomplete_groups",
+    "malformed_replies"
+  ],
+  "non_claims": [
+    "No customer dataset code, field, row, identifier, answer or quantity is used.",
+    "No exact customer input schema is inferred or claimed.",
+    "No native describe reply shape or native error envelope is claimed.",
+    "No product support, deployment, customer acceptance or real-data correctness is claimed.",
+    "SUM, grouped aggregates and pagination completeness are arithmetic ground truth only and require separate contract proof.",
+    "The fixture author did not execute the tests. The lead runs the independent commands."
+  ],
+  "run_commands": {
+    "fixture_only": "python3 fixtures/huawi-parity-query-contract/verify_fixture.py",
+    "pytest": "python3 -m pytest server/tests/test_huawi_parity_query_contract_fixture.py -q"
+  }
+}

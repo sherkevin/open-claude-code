@@ -1,0 +1,56 @@
+{
+  "status": "hypothesis_not_customer_schema",
+  "not_customer_input_schema": true,
+  "synthetic_only": true,
+  "request_encoding": "Normalized synthetic operation descriptions. They are deliberately not presented as the native request schema.",
+  "hypotheses": [
+    {
+      "item": "page_index_basis",
+      "value": "1-based page numbers",
+      "why_needed": "Pagination cases need a concrete page selector.",
+      "evidence_status": "not observed; fixture hypothesis only"
+    },
+    {
+      "item": "type_vocabulary",
+      "value": ["string", "number", "boolean"],
+      "why_needed": "Columns in the observed shape include a type, but the native vocabulary was not recorded.",
+      "evidence_status": "aligned to the existing host projection vocabulary, not native proof"
+    },
+    {
+      "item": "filter_operator",
+      "value": "eq only",
+      "why_needed": "Filter cases need one concrete operation.",
+      "evidence_status": "the published-operation set was not observed; eq is a synthetic hypothesis"
+    },
+    {
+      "item": "sort_direction_tokens",
+      "value": ["asc", "desc"],
+      "why_needed": "Ordering cases need a concrete direction encoding.",
+      "evidence_status": "not observed; fixture hypothesis only"
+    },
+    {
+      "item": "aggregate_alias",
+      "value": "explicit synthetic alias per aggregate column",
+      "why_needed": "COUNT and COUNT DISTINCT require explicit aliases under the observed safe ungrouped rule.",
+      "evidence_status": "alias requirement observed; alias spelling synthetic"
+    },
+    {
+      "item": "group_order",
+      "value": "first appearance in the synthetic dataset",
+      "why_needed": "Grouped pagination needs a deterministic order.",
+      "evidence_status": "native group order not observed; fixture hypothesis only"
+    },
+    {
+      "item": "count_result_shape",
+      "value": "one-row positional matrix with a single aggregate cell and no total",
+      "why_needed": "COUNT is a known safe ungrouped aggregate, but its native reply shape was not recorded.",
+      "evidence_status": "shape hypothesis derived from the observed columns/data envelope"
+    },
+    {
+      "item": "error_shape",
+      "value": "normalized outcome classes such as failure, denied, rejected, inconsistent",
+      "why_needed": "Error and malformed replies must not be confused with valid zero or empty results.",
+      "evidence_status": "native error envelope not observed"
+    }
+  ]
+}

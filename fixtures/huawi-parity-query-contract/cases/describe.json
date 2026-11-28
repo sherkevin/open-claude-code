@@ -1,0 +1,195 @@
+{
+  "fixture": "huawi-parity-query-contract",
+  "case_group": "describe",
+  "request_kind": "normalized_synthetic_operation_not_native_schema",
+  "reply_kind": "normalized_semantic_observation_not_native_reply",
+  "observed_semantics": [
+    "describe performs keyword/kind dataset search",
+    "detail is requested only by exact code",
+    "detail reports actual field names, not labels"
+  ],
+  "unobserved": [
+    "native describe reply envelope",
+    "native describe request schema",
+    "native error shape"
+  ],
+  "cases": [
+    {
+      "case_id": "describe.search.keyword_hit",
+      "capability": "describe_search_vs_exact_code",
+      "semantic_constraint": "observed",
+      "request": {"operation": "describe_search", "keyword": "sales"},
+      "observation": {
+        "mode": "search",
+        "candidates": [
+          {"dataset_code": "SYNTH-SALES-V1", "title": "合成销售明细（测试夹具）", "detail_available": true}
+        ],
+        "fields_included": false
+      },
+      "expected": {
+        "classification": "search_candidates",
+        "candidate_codes": ["SYNTH-SALES-V1"],
+        "detail_available": false,
+        "fields_available": false,
+        "rule": "Search results are candidates. They are not field detail unless an exact-code detail call succeeds."
+      }
+    },
+    {
+      "case_id": "describe.search.keyword_broad_multiple_candidates",
+      "capability": "describe_search_vs_exact_code",
+      "semantic_constraint": "observed",
+      "request": {"operation": "describe_search", "keyword": "合成"},
+      "observation": {
+        "mode": "search",
+        "candidates": [
+          {"dataset_code": "SYNTH-SALES-V1", "title": "合成销售明细（测试夹具）", "detail_available": true},
+          {"dataset_code": "SYNTH-INVENTORY-V1", "title": "合成库存快照（测试夹具）", "detail_available": false}
+        ],
+        "fields_included": false
+      },
+      "expected": {
+        "classification": "search_candidates",
+        "candidate_codes": ["SYNTH-SALES-V1", "SYNTH-INVENTORY-V1"],
+        "detail_available": false,
+        "fields_available": false,
+        "rule": "A broad search can return several candidates; it still does not establish field detail."
+      }
+    },
+    {
+      "case_id": "describe.search.keyword_miss",
+      "capability": "describe_search_vs_exact_code",
+      "semantic_constraint": "observed",
+      "request": {"operation": "describe_search", "keyword": "warehouse"},
+      "observation": {
+        "mode": "search",
+        "candidates": [],
+        "fields_included": false
+      },
+      "expected": {
+        "classification": "search_no_match",
+        "candidate_codes": [],
+        "detail_available": false,
+        "fields_available": false,
+        "rule": "No search match is not the same as a dataset or field being absent everywhere."
+      }
+    },
+    {
+      "case_id": "describe.exact.code_hit",
+      "capability": "describe_search_vs_exact_code",
+      "semantic_constraint": "observed",
+      "request": {"operation": "describe_detail", "dataset": "SYNTH-SALES-V1"},
+      "observation": {
+        "mode": "detail",
+        "dataset_code": "SYNTH-SALES-V1",
+        "fields": [
+          {"name": "order_code", "label": "订单编号", "type": "string"},
+          {"name": "region_code", "label": "区域编码", "type": "string"},
+          {"name": "product_code", "label": "产品编码", "type": "string"},
+          {"name": "currency_code", "label": "币种", "type": "string"},
+          {"name": "quantity", "label": "数量", "type": "number"},
+          {"name": "amount_cents", "label": "金额（分）", "type": "number"},
+          {"name": "status_code", "label": "状态编码", "type": "string"}
+        ]
+      },
+      "expected": {
+        "classification": "detail",
+        "dataset_code": "SYNTH-SALES-V1",
+        "detail_available": true,
+        "detail_field_names": [
+          "order_code",
+          "region_code",
+          "product_code",
+          "currency_code",
+          "quantity",
+          "amount_cents",
+          "status_code"
+        ],
+        "field_names_are_labels": false,
+        "fields_available": true,
+        "rule": "Exact code returns actual field names. Labels are display text, not selectable keys."
+      }
+    },
+    {
+      "case_id": "describe.exact.catalog_only_code_has_no_field_detail",
+      "capability": "describe_search_vs_exact_code",
+      "semantic_constraint": "observed",
+      "request": {"operation": "describe_detail", "dataset": "SYNTH-INVENTORY-V1"},
+      "observation": {
+        "mode": "detail",
+        "dataset_code": "SYNTH-INVENTORY-V1",
+        "fields": [],
+        "catalog_only": true
+      },
+      "expected": {
+        "classification": "detail_not_found",
+        "dataset_code": "SYNTH-INVENTORY-V1",
+        "detail_available": false,
+        "fields_available": false,
+        "reason": "catalog_entry_has_no_field_detail",
+        "rule": "A catalog entry without field detail cannot be used as a selectable field list."
+      }
+    },
+    {
+      "case_id": "describe.exact.unknown_code",
+      "capability": "describe_search_vs_exact_code",
+      "semantic_constraint": "observed",
+      "request": {"operation": "describe_detail", "dataset": "SYNTH-UNKNOWN-V1"},
+      "observation": {
+        "mode": "not_found",
+        "dataset_code": "SYNTH-UNKNOWN-V1",
+        "fields": []
+      },
+      "expected": {
+        "classification": "detail_not_found",
+        "dataset_code": "SYNTH-UNKNOWN-V1",
+        "detail_available": false,
+        "fields_available": false,
+        "reason": "unknown_code",
+        "rule": "Unknown exact code is not a no-match dataset search and does not prove no datasets exist."
+      }
+    },
+    {
+      "case_id": "describe.exact.label_is_not_code",
+      "capability": "describe_search_vs_exact_code",
+      "semantic_constraint": "observed",
+      "request": {"operation": "describe_detail", "dataset": "合成销售明细（测试夹具）"},
+      "observation": {
+        "mode": "rejected",
+        "dataset_code": null,
+        "fields": [],
+        "submitted_value": "合成销售明细（测试夹具）"
+      },
+      "expected": {
+        "classification": "detail_rejected",
+        "detail_available": false,
+        "fields_available": false,
+        "reason": "detail_requires_exact_code_not_title_or_label",
+        "rule": "A title or label is not an exact dataset code."
+      }
+    },
+    {
+      "case_id": "describe.search.fields_are_not_detail",
+      "capability": "describe_search_vs_exact_code",
+      "semantic_constraint": "observed",
+      "request": {"operation": "describe_search", "keyword": "sales"},
+      "observation": {
+        "mode": "search",
+        "candidates": [
+          {"dataset_code": "SYNTH-SALES-V1", "title": "合成销售明细（测试夹具）", "detail_available": true}
+        ],
+        "fields_included": true,
+        "fields": [
+          {"name": "order_code", "label": "订单编号", "type": "string"}
+        ]
+      },
+      "expected": {
+        "classification": "search_candidates",
+        "candidate_codes": ["SYNTH-SALES-V1"],
+        "detail_available": false,
+        "fields_available": false,
+        "usable_as_detail": false,
+        "rule": "Even if a search reply happens to include field names, only an exact-code detail call is field detail."
+      }
+    }
+  ]
+}

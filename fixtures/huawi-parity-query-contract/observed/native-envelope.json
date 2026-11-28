@@ -1,0 +1,65 @@
+{
+  "status": "observed_bounded_shape_not_customer_dump",
+  "source": "HW-029a CONTRACT.md, bounded observed schema/semantics",
+  "scope": "structuredContent of the native unified MCP query result",
+  "fields": [
+    {
+      "name": "dataset",
+      "observation": "observed",
+      "meaning": "Dataset code identifying the queried dataset.",
+      "synthetic_fixture_type": "string",
+      "type_note": "The exact native type is not re-verified by this fixture."
+    },
+    {
+      "name": "columns",
+      "observation": "observed",
+      "shape": "list of {name, label, type}",
+      "meaning": "Actual field names, display labels and column types. Detail description must use actual field names, not aliases or labels."
+    },
+    {
+      "name": "data",
+      "observation": "observed",
+      "shape": "positional matrix: list of rows, each row a list of cell values",
+      "meaning": "Cell values are aligned by column position. The fixture does not assume object-shaped rows."
+    },
+    {
+      "name": "rows",
+      "observation": "observed_semantics",
+      "meaning": "Page size, not the number of returned rows. A short last page keeps the requested page size here."
+    },
+    {
+      "name": "page",
+      "observation": "observed_field_semantics_not_origin",
+      "meaning": "Page selector. The fixture uses a 1-based synthetic hypothesis; the observation does not prove the native origin."
+    },
+    {
+      "name": "has_more",
+      "observation": "observed",
+      "meaning": "Whether a further page exists for the same query."
+    },
+    {
+      "name": "total",
+      "observation": "observed_optional",
+      "meaning": "Optional count of output rows or groups, not an aggregate cell value. Absence means unknown, never zero."
+    }
+  ],
+  "semantic_constraints_observed": [
+    "describe performs keyword/kind dataset search; detail is requested only by exact code and reports actual field names.",
+    "query selects verified fields; '*' is used only for count.",
+    "group fields must match group_by.",
+    "filters and sort use only published fields and published operations.",
+    "include_total may count records or groups.",
+    "Known safe ungrouped aggregates are COUNT and COUNT DISTINCT with explicit aliases.",
+    "Actual grouped aggregate and pagination completeness require separate contract proof.",
+    "A valid zero differs from empty, missing, denied and failed."
+  ],
+  "explicit_non_claims": [
+    "The native request/input schema is not observed and is not inferred here.",
+    "The native type vocabulary is not proven; the fixture uses host-aligned string/number/boolean labels.",
+    "The page-index origin is not proven; 1-based indexing is a labelled fixture hypothesis.",
+    "The native error envelope shape is not observed; error cases use normalized outcome classes.",
+    "The native describe reply shape is not observed; describe cases use normalized semantic observations.",
+    "Grouped aggregate values, sums and pagination completeness are arithmetic ground truth only, not product support.",
+    "No customer dataset code, field, row, answer or identifier is used."
+  ]
+}

@@ -1,0 +1,144 @@
+{
+  "fixture": "huawi-parity-query-contract",
+  "adapter": "server/app/business_results.py:project_business_result",
+  "supporting_adapter": "server/app/runtime.py:result_fact_metadata",
+  "base_commit": "2c330bfd9a05bce9ca16b01fa46ba31af2c8da7a",
+  "status": "characterization_of_current_base_not_product_support",
+  "gaps": [
+    {
+      "gap_id": "GAP-DATA-MATRIX",
+      "native_observed": "structuredContent.data is a positional matrix (list of lists).",
+      "current_adapter_expects": "top-level rows or records as a list of objects keyed by column key.",
+      "consequence": "The native envelope is not projected; no business-result/v1 card is produced. A positional row cannot be represented without an explicit column-position mapping.",
+      "case_ids": [
+        "query.fields.select_published_page1",
+        "query.pagination.page1_size3",
+        "query.aggregate.count_all"
+      ]
+    },
+    {
+      "gap_id": "GAP-COLUMN-NAME",
+      "native_observed": "columns entries expose name, label and type.",
+      "current_adapter_expects": "columns entries use key, label, optional type and unit.",
+      "consequence": "Even if data were converted to object rows, the current column declaration has no key and is rejected.",
+      "case_ids": [
+        "query.fields.select_published_page1",
+        "describe.exact.code_hit"
+      ]
+    },
+    {
+      "gap_id": "GAP-ROWS-PAGE-SIZE",
+      "native_observed": "rows is the page size, not the returned row count.",
+      "current_adapter_expects": "rows is a list of row objects; returned_rows is computed from that list.",
+      "consequence": "An integer rows value makes table_payload return no table. If it were mapped naively to total_rows it would confuse page size with matched rows.",
+      "case_ids": [
+        "query.pagination.page3_size4_short_last",
+        "query.pagination.page1_size3"
+      ]
+    },
+    {
+      "gap_id": "GAP-TOTAL-BASIS",
+      "native_observed": "optional total counts output rows or groups; it is not an aggregate cell.",
+      "current_adapter_expects": "total_rows only, with no total_basis or group/record distinction.",
+      "consequence": "A grouped total of 3 groups cannot be represented without being misread as 3 records; grouped totals and record totals collapse into one field.",
+      "case_ids": [
+        "query.pagination.group_total_counts_groups",
+        "query.group.incomplete_page1_of_2"
+      ]
+    },
+    {
+      "gap_id": "GAP-PAGINATION-STATE",
+      "native_observed": "page, has_more and page size describe finite pagination.",
+      "current_adapter_expects": "no page, has_more or page-size fields; completeness is only the tool-declared complete flag.",
+      "consequence": "The adapter cannot show that a page is partial, cannot distinguish a beyond-last empty page from an empty result, and cannot carry pagination state to the answer.",
+      "case_ids": [
+        "query.pagination.page4_beyond_last_empty",
+        "query.pagination.has_more_true_total_equals_returned",
+        "query.group.incomplete_page2_of_2"
+      ]
+    },
+    {
+      "gap_id": "GAP-DATASET-IDENTITY",
+      "native_observed": "dataset identifies the queried dataset.",
+      "current_adapter_expects": "no dataset field in business-result/v1.",
+      "consequence": "The result card loses which synthetic dataset produced the rows; source registration alone does not carry this native identity.",
+      "case_ids": [
+        "describe.exact.code_hit",
+        "query.fields.select_published_page1"
+      ]
+    },
+    {
+      "gap_id": "GAP-AGGREGATE-CELL",
+      "native_observed": "COUNT and COUNT DISTINCT are known safe ungrouped aggregates with explicit aliases; their result is a scalar aggregate cell.",
+      "current_adapter_expects": "a table projection; a scalar aggregate cell has no distinct representation and the existing aggregates declaration only supports returned-row SUM.",
+      "consequence": "A valid count or distinct count cannot be safely represented as a record table; treating the cell as a normal row would lose the aggregate/alias distinction.",
+      "case_ids": [
+        "query.aggregate.count_all",
+        "query.aggregate.count_distinct_region_all",
+        "zero.count_filter_no_match_is_valid_zero"
+      ]
+    },
+    {
+      "gap_id": "GAP-SUM-GROUPED",
+      "native_observed": "SUM is not in the known safe ungrouped set; grouped aggregates need separate contract proof.",
+      "current_adapter_expects": "host_verified_aggregates only for an explicit returned-row SUM declaration with matching column and unit.",
+      "consequence": "Arithmetic ground truth in this fixture must not become a product-verified total. Grouped sums and totals must remain unverified until a separate contract proof exists.",
+      "case_ids": [
+        "query.aggregate.sum_amount_all_requires_proof",
+        "query.group.sum_by_region_requires_proof",
+        "query.group.incomplete_sum_page1_of_2"
+      ]
+    },
+    {
+      "gap_id": "GAP-MISSING-CELL-SILENT-NULL",
+      "native_observed": "A positional row must have exactly one cell per column; ragged rows are malformed.",
+      "current_adapter_expects": "row objects may omit a column key; missing keys become null because scalar(None) is accepted.",
+      "consequence": "If object rows were produced by a lossy conversion, a missing cell could become a fabricated null instead of a rejected reply.",
+      "case_ids": [
+        "malformed.row_width_short",
+        "malformed.row_width_long"
+      ]
+    },
+    {
+      "gap_id": "GAP-RESULT-FACTS",
+      "native_observed": "returned count comes from data length; total, page and page size are separate fields.",
+      "current_adapter_expects": "result_fact_metadata copies row_count, page and page_size when present; it does not read rows or total.",
+      "consequence": "Native row_count and page_size become unknown, and total cannot be carried with a basis.",
+      "case_ids": [
+        "query.pagination.page1_size3",
+        "query.pagination.page3_size4_short_last"
+      ]
+    },
+    {
+      "gap_id": "GAP-ERROR-ZERO",
+      "native_observed": "valid zero, empty page, empty result, absent total, denied, failed and malformed are distinct.",
+      "current_adapter_expects": "None projection for failures and malformed data; the caller must not turn that into zero or empty.",
+      "consequence": "The adapter cannot itself publish the distinction; a native normalizer must preserve an explicit outcome class rather than returning only a missing card.",
+      "case_ids": [
+        "zero.count_filter_no_match_is_valid_zero",
+        "zero.filter_no_match_empty_table",
+        "zero.error_is_not_zero",
+        "zero.denied_is_not_zero",
+        "zero.not_queried_is_not_zero",
+        "zero.malformed_is_not_zero"
+      ]
+    }
+  ],
+  "minimal_follow_up_after_HW_026": [
+    "Add a bounded native-envelope normalizer that accepts only the observed dataset/columns/data/rows/page/has_more/optional total shape and maps it to business-result/v1 without changing authorization or approval behavior.",
+    "Map columns[].name to the result column key, preserve labels and types, and build object rows only by strict positional zip. Reject ragged rows, duplicate names, missing names/labels/types, non-scalar cells and non-finite numbers.",
+    "Compute returned_rows from len(data), never from rows. Preserve page, page_size and has_more as separate fields.",
+    "Preserve total with an explicit total_basis (records or groups) and provenance. If the basis is undeclared, expose it as ambiguous or unknown; never reinterpret a grouped total as records and never use total as an aggregate cell.",
+    "Represent ungrouped COUNT and COUNT DISTINCT as an explicitly labelled aggregate result with the alias; keep the existing safe scope language and do not claim independent truth or full scope.",
+    "Do not host-verify SUM, grouped SUM, grouped COUNT or grouped pagination completeness. Keep host_verified_aggregates limited to the existing explicit returned-row SUM declaration contract.",
+    "Carry an outcome class that separates valid zero, empty page, empty result, absent total, failure, denial, not-queried and malformed. A malformed reply must fail closed, not become zero or empty.",
+    "Update result_fact_metadata to use returned_rows, page, page_size and total_basis from the normalized result; do not invent row_count.",
+    "Re-run this fixture and update the current-adapter characterization test after HW-026. The fixture proves arithmetic and shape consistency only, not customer support or production acceptance."
+  ],
+  "non_claims": [
+    "This file does not claim the native request schema is known.",
+    "This file does not claim grouped aggregates, SUM or pagination completeness are product-supported.",
+    "This file does not claim any customer dataset, field, row or answer was observed or tested.",
+    "This file records current-base adapter behavior only; it is not a production acceptance result."
+  ]
+}
