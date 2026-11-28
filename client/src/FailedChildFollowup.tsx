@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from './api';
 import { Button, ErrorNotice, Field, Modal } from './components';
@@ -28,6 +28,28 @@ export function childFollowupDraft(previous: string, title: string, requirement:
   return next.length <= 50000 ? next : null;
 }
 
+// The confirmation disappears under the pointer. A second click at the same
+// position must not activate the newly uncovered drawer backdrop or submit button.
+function protectClickTransition(event: ReactMouseEvent<HTMLButtonElement>) {
+  if (!event.detail) return;
+  const { clientX, clientY } = event;
+  const doc = event.currentTarget.ownerDocument;
+  function cleanup() {
+    doc.removeEventListener('click', intercept, true);
+    window.clearTimeout(timer);
+  }
+  function intercept(next: MouseEvent) {
+    if (!next.detail) return;
+    if (Math.abs(next.clientX - clientX) < 5 && Math.abs(next.clientY - clientY) < 5) {
+      next.preventDefault();
+      next.stopImmediatePropagation();
+    }
+    cleanup();
+  }
+  const timer = window.setTimeout(cleanup, 500);
+  doc.addEventListener('click', intercept, true);
+}
+
 function FollowupDialog({ title, parentRunId, composer, close }: { title: string; parentRunId?: string; composer: FollowupComposer; close: () => void }) {
   const [requirement, setRequirement] = useState('');
   const [error, setError] = useState('');
@@ -45,9 +67,9 @@ function FollowupDialog({ title, parentRunId, composer, close }: { title: string
     return () => controller.abort();
   }, [target, targetActive]);
   const next = childFollowupDraft(composer.text, title, requirement);
-  function prepare() {
+  function prepare(event: ReactMouseEvent<HTMLButtonElement>) {
     if (composer.blocked || next === null) return;
-    if (composer.write(composer.text, next)) close();
+    if (composer.write(composer.text, next)) { protectClickTransition(event); close(); }
     else setError('会话或草稿已变化，请核对后再写入。');
   }
   return <Modal title="就此项另问" description={`失败子项 · ${title}`} onClose={close}>
@@ -68,8 +90,8 @@ function FollowupDialog({ title, parentRunId, composer, close }: { title: string
     </div>
     <footer className="modal-footer">
       <Button variant="secondary" onClick={close}>取消</Button>
-      {target && targetActive && available && <Button variant="secondary" disabled={!requirement.trim() || requirement.trim().length > 2000} onClick={() => {
-        if (composer.transfer(target, requirement.trim())) close();
+      {target && targetActive && available && <Button variant="secondary" disabled={!requirement.trim() || requirement.trim().length > 2000} onClick={event => {
+        if (composer.transfer(target, requirement.trim())) { protectClickTransition(event); close(); }
         else setError('本轮已变化或分配框已有待处理的单项草稿，本次要求仍在这里。');
       }}>带到本轮分配框</Button>}
       <Button disabled={!!composer.blocked || next === null} onClick={prepare}>{composer.text ? '追加到现有草稿' : '写入提问草稿'}</Button>
