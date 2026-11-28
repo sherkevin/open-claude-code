@@ -2,8 +2,12 @@ package diagnostics
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -156,4 +160,306 @@ func cloneMap(source map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func TestRecordLocalNeverEntersOutboxAndSurvivesRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "connector-data")
+	manager, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetOwner("conn_11111111111111111111111111111111", "tenant-one")
+	queued := manager.Record(Record{EventCode: "connector_started"})
+	local := manager.RecordLocal(Record{
+		EventCode:   "assist_poll_failed",
+		OperationID: "op_0011223344556677",
+		ReasonCode:  "SERVER_ERROR",
+		HTTPStatus:  502,
+		Attempt:     3,
+	})
+	if local.Component != ComponentAssist || local.Level != LevelWarn || local.ReasonCode != "SERVER_ERROR" {
+		t.Fatalf("local assist event was not normalized from the catalog: %+v", local)
+	}
+	stats := manager.Stats()
+	if stats.PendingEvents != 1 || stats.LocalEventCount != 2 {
+		t.Fatalf("local-only event reached the outbox: %+v", stats)
+	}
+	if !manager.persistNow() {
+		t.Fatal("could not persist diagnostics")
+	}
+	manager.Close()
+
+	reloaded, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reloaded.Close)
+	stats = reloaded.Stats()
+	if stats.PendingEvents != 1 || stats.PendingDurableEvents != 1 || stats.LocalEventCount != 2 {
+		t.Fatalf("restart changed local/outbox separation: %+v", stats)
+	}
+	foundLocal := false
+	for _, view := range reloaded.Logs(Query{Limit: 10}) {
+		if view.EventID == local.EventID {
+			foundLocal = view.OperationID == "op_0011223344556677" && view.ReasonCode == "SERVER_ERROR" && view.HTTPStatus == 502
+		}
+	}
+	if !foundLocal {
+		t.Fatal("local assist event was not restored with its bounded fields")
+	}
+	var sent []Event
+	reloaded.SetUploader(func(_ context.Context, _ string, events []Event) error {
+		sent = append(sent, events...)
+		return nil
+	})
+	count, err := reloaded.UploadOnce(context.Background())
+	if err != nil || count != 1 || len(sent) != 1 || sent[0].EventID != queued.EventID {
+		t.Fatalf("upload selected a local-only event: count=%d sent=%+v err=%v", count, sent, err)
+	}
+}
+
+func TestRecordLocalSanitizesUnknownCodesAndReasons(t *testing.T) {
+	manager, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	manager.SetOwner("conn_11111111111111111111111111111111", "tenant-one")
+	event := manager.RecordLocal(Record{
+		EventCode:   "assist_unknown_synthetic",
+		OperationID: "http://10.19.20.21/private",
+		ReasonCode:  "http://10.19.20.21/private",
+	})
+	if event.EventCode != "operation_failed" || event.OperationID != "" || event.ReasonCode != "" {
+		t.Fatalf("unbounded local input was not discarded: %+v", event)
+	}
+	stats := manager.Stats()
+	if stats.PendingEvents != 0 || stats.LocalEventCount != 1 {
+		t.Fatalf("rejected local event entered the outbox: %+v", stats)
+	}
+}
+
+func TestRecordLocalIsConcurrentWithQueuedEvents(t *testing.T) {
+	manager, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	manager.SetOwner("conn_11111111111111111111111111111111", "tenant-one")
+	const workers = 20
+	var group sync.WaitGroup
+	group.Add(workers * 2)
+	for index := 0; index < workers; index++ {
+		go func() {
+			defer group.Done()
+			manager.RecordLocal(Record{EventCode: "assist_poll_succeeded", OperationID: "op_0011223344556677"})
+		}()
+		go func() {
+			defer group.Done()
+			manager.Record(Record{EventCode: "connector_started"})
+		}()
+	}
+	group.Wait()
+	stats := manager.Stats()
+	if stats.LocalEventCount != workers*2 || stats.PendingEvents != workers {
+		t.Fatalf("concurrent local/queued recording lost separation: %+v", stats)
+	}
+}
+
+// The interactive NPX assistance path constructs a manager but does not call
+// StartRuntime. The explicit local-only lifecycle must persist evidence while
+// the process is alive without starting the uploader or install journal.
+func TestRecordLocalPersistsWithoutServingRuntime(t *testing.T) {
+	dir := t.TempDir()
+	manager, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	manager.SetOwner("conn_11111111111111111111111111111111", "tenant-one")
+	manager.Record(Record{EventCode: "connector_started"})
+	manager.StartLocalOnly()
+	manager.Record(Record{EventCode: "enrollment_succeeded"})
+	var uploads atomic.Int32
+	manager.SetUploader(func(_ context.Context, _ string, _ []Event) error {
+		uploads.Add(1)
+		return nil
+	})
+	event := manager.RecordLocal(Record{EventCode: "assist_poll_failed", ReasonCode: "TIMEOUT"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(filepath.Join(dir, fileDiagnostics))
+		if err == nil {
+			var saved persisted
+			if json.Unmarshal(raw, &saved) == nil {
+				for _, item := range saved.Logs {
+					if item.EventID == event.EventID {
+						if item.ReasonCode != "TIMEOUT" || len(saved.Outbox) != 1 || saved.Outbox[0].Event.EventID == event.EventID || uploads.Load() != 0 {
+							t.Fatalf("local-only persistence started upload or lost metadata")
+						}
+						return
+					}
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("interactive local diagnostic did not persist while the process was still alive")
+}
+
+// Close must make the final write even when the caller records and immediately
+// exits, which is the normal Ctrl+C path for direct/interactive assistance.
+func TestCloseFlushesLastLocalEvent(t *testing.T) {
+	dir := t.TempDir()
+	manager, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetOwner("conn_11111111111111111111111111111111", "tenant-one")
+	manager.StartLocalOnly()
+	event := manager.RecordLocal(Record{EventCode: "assist_session_canceled"})
+	manager.Close()
+
+	raw, err := os.ReadFile(filepath.Join(dir, fileDiagnostics))
+	if err != nil {
+		t.Fatalf("close did not flush the local log: %v", err)
+	}
+	var saved persisted
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range saved.Logs {
+		if item.EventID == event.EventID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("last local event was lost on orderly shutdown")
+	}
+	if len(saved.Outbox) != 0 {
+		t.Fatalf("local-only event entered the outbox: %+v", saved.Outbox)
+	}
+}
+
+// StartLocalOnly must never launch the uploader, even when a regular event is
+// queued for an owner. Otherwise direct/interactive assistance would generate
+// remote telemetry.
+func TestStartLocalOnlyNeverUploads(t *testing.T) {
+	manager, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	manager.SetOwner("conn_11111111111111111111111111111111", "tenant-one")
+	var uploads atomic.Int32
+	manager.SetUploader(func(_ context.Context, _ string, _ []Event) error {
+		uploads.Add(1)
+		return nil
+	})
+	manager.StartLocalOnly()
+	manager.Record(Record{EventCode: "connector_started"})
+	manager.RecordLocal(Record{EventCode: "assist_poll_succeeded"})
+	time.Sleep(150 * time.Millisecond)
+	if uploads.Load() != 0 {
+		t.Fatalf("local-only lifecycle uploaded %d batches", uploads.Load())
+	}
+}
+
+// Start after StartLocalOnly must not create a second persistence worker or
+// panic on shutdown.
+func TestStartAfterStartLocalOnlyIsIdempotent(t *testing.T) {
+	manager, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.StartLocalOnly()
+	manager.StartLocalOnly()
+	manager.Start()
+	manager.Start()
+	manager.RecordLocal(Record{EventCode: "assist_session_started"})
+	manager.Close()
+}
+
+func TestAssistCatalogCannotEnterCloudOutbox(t *testing.T) {
+	dir := t.TempDir()
+	manager, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	manager.SetOwner("conn_11111111111111111111111111111111", "tenant-one")
+	local := manager.Record(Record{EventCode: "assist_poll_failed", ReasonCode: "TIMEOUT"})
+	ordinary := manager.Record(Record{EventCode: "connector_started", ReasonCode: "TIMEOUT"})
+	if ordinary.ReasonCode != "" {
+		t.Fatal("local-only reason reached cloud event")
+	}
+	if manager.Stats().PendingEvents != 1 {
+		t.Fatal("assist event entered outbox")
+	}
+	if !manager.persistNow() {
+		t.Fatal("explicit synthetic queue persistence failed")
+	}
+	manager.Close()
+	raw, err := os.ReadFile(filepath.Join(dir, fileDiagnostics))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved persisted
+	if err = json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	saved.Outbox = append(saved.Outbox, queuedEvent{OwnerConnectorID: saved.OwnerConnectorID, OwnerTenantID: saved.OwnerTenantID, Event: local})
+	raw, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, fileDiagnostics), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if restored.Stats().PendingEvents != 1 {
+		t.Fatal("local-only assist event was restored to outbox")
+	}
+	if event := manager.RecordLocal(Record{EventCode: "assist_poll_succeeded"}); event.EventID != "" {
+		t.Fatal("closed manager accepted local event")
+	}
+}
+
+func TestLocalOnlyPreservesOldQueueAndCannotUploadOrEnqueue(t *testing.T) {
+	m, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	m.SetOwner("conn_11111111111111111111111111111111", "tenant-one")
+	m.Record(Record{EventCode: "connector_started"})
+	var uploads atomic.Int32
+	m.SetUploader(func(context.Context, string, []Event) error { uploads.Add(1); return nil })
+	m.StartLocalOnly()
+	m.Start()
+	m.Record(Record{EventCode: "enrollment_succeeded"})
+	m.RecordLocal(Record{EventCode: "assist_session_started"})
+	if n, err := m.UploadOnce(context.Background()); n != 0 || err != nil {
+		t.Fatalf("local-only upload: %d %v", n, err)
+	}
+	if m.Stats().PendingEvents != 1 || uploads.Load() != 0 {
+		t.Fatal("local-only changed preexisting queue or uploaded")
+	}
+}
+func TestUnstartedCloseDoesNotWrite(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Record(Record{EventCode: "connector_started"})
+	m.Close()
+	if _, err := os.Stat(filepath.Join(dir, fileDiagnostics)); !os.IsNotExist(err) {
+		t.Fatalf("unstarted close wrote diagnostics: %v", err)
+	}
 }

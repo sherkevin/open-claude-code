@@ -32,6 +32,11 @@ func assistCommand(args []string) {
 	interactive := flags.Bool("interactive", false, "在终端交互绑定设备并明确确认协助")
 	flags.Parse(args)
 	opts.NativeRelay = true
+	// Direct/interactive assistance writes local lifecycle evidence through the
+	// same diagnostics store as the serving runtime. Take the exclusive store
+	// lock so a second process degrades to no local log instead of overwriting
+	// the running service's queue. The uploader is never started on this path.
+	opts.ExclusiveDiagnostics = true
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -168,8 +173,23 @@ func localAssistPost(ctx context.Context, client *http.Client, base, token, acti
 	return nil
 }
 
-func runDirectAssist(ctx context.Context, opts agent.Options, code string) {
+// newAssistCLIAgent is the single initialization path for direct and
+// interactive assistance. It takes the exclusive diagnostics store lock and
+// starts only local persistence, never the serving runtime, uploader or
+// install journal.
+func newAssistCLIAgent(opts agent.Options) (*agent.Agent, error) {
+	opts.NativeRelay = true
+	opts.ExclusiveDiagnostics = true
 	instance, err := agent.New(opts)
+	if err != nil {
+		return nil, err
+	}
+	instance.StartLocalDiagnostics()
+	return instance, nil
+}
+
+func runDirectAssist(ctx context.Context, opts agent.Options, code string) {
+	instance, err := newAssistCLIAgent(opts)
 	if err != nil {
 		fatal(err)
 	}

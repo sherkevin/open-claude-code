@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/sherkevin/open-claude-code/connector/internal/cloud"
 	"github.com/sherkevin/open-claude-code/connector/internal/config"
+	"github.com/sherkevin/open-claude-code/connector/internal/diagnostics"
 	"github.com/sherkevin/open-claude-code/connector/internal/huaweiauth"
 	"github.com/sherkevin/open-claude-code/connector/internal/state"
 )
@@ -41,7 +43,12 @@ const (
 	assistRetryMax = 30 * time.Second
 	// A result the server keeps rejecting must not spin forever.
 	assistReportAttempts = 5
-	openAssistName       = "内网接入协助"
+	// A sustained poll outage must not write a local event every few seconds.
+	// The first failure is recorded immediately; later failures are bounded by
+	// an interval that backs off to one hour.
+	assistPollFailureLogMin = 5 * time.Minute
+	assistPollFailureLogMax = time.Hour
+	openAssistName          = "内网接入协助"
 )
 
 var (
@@ -57,6 +64,12 @@ type assistSession struct {
 	connectorID      string
 	cancel           context.CancelFunc
 	targetAfterStart bool
+	// operationID correlates only the local assistance lifecycle. It is a
+	// random opaque identifier and never leaves the device through telemetry.
+	operationID string
+	// stopRequested records an explicit local stop so the session end event can
+	// distinguish it from a shutdown or deadline. Guarded by Agent.mu.
+	stopRequested bool
 
 	// Guarded by Agent.mu. Keep an attempted target pinned if the server's
 	// response was lost, and allow jobs only after checking the response.
@@ -218,7 +231,8 @@ func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget, week
 		a.mu.Unlock()
 		return nil, errors.New("开物返回的协助内容与本机填写的服务不一致，请刷新后重试")
 	}
-	session := &assistSession{offer: offer, client: client, connectorID: connectorID, targetAfterStart: target == nil}
+	session := &assistSession{offer: offer, client: client, connectorID: connectorID,
+		targetAfterStart: target == nil, operationID: diagnostics.NewOperationID()}
 	if !a.canAssistLocked() || client != a.cloud || connectorID != a.identity.ConnectorID ||
 		ctx.Err() != nil || offer.ID == a.assistStopped {
 		a.mu.Unlock()
@@ -234,7 +248,11 @@ func (a *Agent) openAssist(ctx context.Context, target *cloud.AssistTarget, week
 	a.assistActive = session
 	view := session.localOffer()
 	a.mu.Unlock()
-	go a.runAssist(sessionCtx, session)
+	if !a.trackAssistLaunch() {
+		return &view, nil
+	}
+	a.recordAssistEvent(session, "assist_session_started", "", 0, 0)
+	go a.runTrackedAssist(sessionCtx, session)
 	return &view, nil
 }
 
@@ -334,7 +352,8 @@ func (a *Agent) StartAssist(ctx context.Context, sessionID string, week ...bool)
 		consentPolicy = cloud.AssistConsentWeek
 	}
 	sessionCtx, cancel := context.WithTimeout(a.runtimeCtx, lifetime)
-	session := &assistSession{offer: *offer, client: a.cloud, connectorID: a.identity.ConnectorID, cancel: cancel}
+	session := &assistSession{offer: *offer, client: a.cloud, connectorID: a.identity.ConnectorID,
+		cancel: cancel, operationID: diagnostics.NewOperationID()}
 	a.assistActive = session
 	a.mu.Unlock()
 
@@ -369,7 +388,11 @@ func (a *Agent) StartAssist(ctx context.Context, sessionID string, week ...bool)
 		}
 	}
 	a.mu.Unlock()
-	go a.runAssist(sessionCtx, session)
+	if !a.trackAssistLaunch() {
+		return nil
+	}
+	a.recordAssistEvent(session, "assist_session_started", "", 0, 0)
+	go a.runTrackedAssist(sessionCtx, session)
 	return nil
 }
 
@@ -381,6 +404,9 @@ func (a *Agent) StopAssist(ctx context.Context, sessionID string) error {
 	switch {
 	case active != nil && active.offer.ID == sessionID:
 		session = active
+		// Record the cause before cancelling so the polling goroutine can
+		// distinguish an explicit local stop from shutdown or deadline expiry.
+		active.stopRequested = true
 		active.cancel()
 		a.assistActive = nil
 	case a.assistSeen != nil && a.assistSeen.ID == sessionID && a.assistSeen.Status == "active":
@@ -424,8 +450,87 @@ func (a *Agent) notifyAssistStop(session *assistSession) {
 	_ = session.client.StopAssist(request, session.connectorID, session.offer.ID)
 }
 
+// assistPollOutage throttles poll-failure events. The first failure is logged;
+// later failures are logged after 5m, 10m, 20m, 40m, then at most once an hour.
+// This keeps a week-long outage bounded to a few hundred local events.
+type assistPollOutage struct {
+	failures int
+	since    time.Time
+	nextLog  time.Time
+	delay    time.Duration
+}
+
+func (o *assistPollOutage) failed(now time.Time) bool {
+	o.failures++
+	if o.failures == 1 {
+		o.since = now
+	}
+	if o.failures != 1 && (o.nextLog.IsZero() || now.Before(o.nextLog)) {
+		return false
+	}
+	if o.delay == 0 {
+		o.delay = assistPollFailureLogMin
+	} else {
+		o.delay *= 2
+		if o.delay > assistPollFailureLogMax {
+			o.delay = assistPollFailureLogMax
+		}
+	}
+	o.nextLog = now.Add(o.delay)
+	return true
+}
+
+func (o *assistPollOutage) recovered(now time.Time) (int, time.Duration) {
+	failures := o.failures
+	duration := now.Sub(o.since)
+	if duration < 0 {
+		duration = 0
+	}
+	o.failures = 0
+	o.since = time.Time{}
+	o.nextLog = time.Time{}
+	o.delay = 0
+	return failures, duration
+}
+
+// trackAssistLaunch registers the polling goroutine so Close can wait for its
+// final local event. It returns false once shutdown has begun. The closed
+// check and the Add share Agent.mu with CloseContext, so the Add can never
+// race a started WaitGroup.Wait.
+func (a *Agent) trackAssistLaunch() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return false
+	}
+	a.assistWG.Add(1)
+	return true
+}
+
+// runTrackedAssist wraps runAssist so a directly invoked polling loop in tests
+// never touches the shutdown wait group.
+func (a *Agent) runTrackedAssist(ctx context.Context, session *assistSession) {
+	defer a.assistWG.Done()
+	a.runAssist(ctx, session)
+}
+
 func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
+	started := time.Now()
+	endCode := ""
 	defer func() {
+		if endCode == "" {
+			switch {
+			case a.assistStopRequested(session):
+				endCode = "assist_session_stopped"
+			case ctx.Err() == context.DeadlineExceeded:
+				endCode = "assist_session_expired"
+			default:
+				// Runtime shutdown or another local cancellation. A forced
+				// process exit cannot write this event at all.
+				endCode = "assist_session_canceled"
+			}
+		}
+		a.recordAssistEvent(session, endCode, "", time.Since(started).Milliseconds(), 0)
 		if a.clearAssist(session) {
 			a.notifyAssistStop(session)
 		}
@@ -437,6 +542,8 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 	completed := make(chan cloud.AssistResult, 1)
 	busy := false
 	backoff := assistRetryMin
+	firstPollSucceeded := false
+	var outage assistPollOutage
 	for ctx.Err() == nil {
 		a.mu.RLock()
 		offer := session.localOffer()
@@ -448,6 +555,12 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 			return
 		}
 		if err != nil {
+			// Record the first failure immediately, then only after a bounded
+			// backoff interval so a long outage cannot flood the local log or
+			// block the polling loop.
+			if outage.failed(time.Now()) {
+				a.recordAssistPollFailure(session, err, outage.failures)
+			}
 			// Keep the local session and retry: the server expires it on its
 			// own once the sliding lease runs out, which then reads as inactive.
 			select {
@@ -461,7 +574,17 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 			continue
 		}
 		backoff = assistRetryMin
+		if !firstPollSucceeded {
+			firstPollSucceeded = true
+			a.recordAssistEvent(session, "assist_poll_succeeded", "", 0, 0)
+		}
+		if outage.failures > 0 {
+			failures, outageDuration := outage.recovered(time.Now())
+			a.recordAssistEvent(session, "assist_poll_recovered", "",
+				outageDuration.Milliseconds(), failures)
+		}
 		if !poll.Active {
+			endCode = "assist_session_inactive"
 			return
 		}
 		// The server renewed the legacy sliding lease on this poll; keep the
@@ -473,6 +596,7 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 		a.mu.Unlock()
 		if job := poll.Job; job != nil {
 			if busy || !assistJobID.MatchString(job.ID) {
+				endCode = "assist_session_protocol_error"
 				return
 			}
 			// Commands never touch an MCP target, so they may run as soon as
@@ -480,9 +604,11 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 			// customer confirmed on this machine; the server withholds those
 			// jobs until then, so receiving one is a protocol violation.
 			if job.Action != "command" && offer.URL == "" {
+				endCode = "assist_session_protocol_error"
 				return
 			}
 			busy = true
+			a.recordAssistEvent(session, "assist_job_claimed", "", 0, 0)
 			go func() {
 				completed <- a.runAssistJob(ctx, session, *job, &draft, &verifiedTools)
 			}()
@@ -492,7 +618,8 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 			return
 		case result := <-completed:
 			busy = false
-			a.reportAssistResult(ctx, session, result)
+			a.recordAssistEvent(session, assistJobEventCode(result), "", result.DurationMS, 0)
+			a.reportAndRecordAssistResult(ctx, session, result)
 		case <-ticker.C:
 		}
 	}
@@ -501,24 +628,158 @@ func (a *Agent) runAssist(ctx context.Context, session *assistSession) {
 // reportAssistResult retries a result upload so a brief outage does not leave
 // the job running until its lease runs out. A result the server keeps
 // rejecting is dropped after assistReportAttempts; the job then times out.
-func (a *Agent) reportAssistResult(ctx context.Context, session *assistSession, result cloud.AssistResult) {
+// It returns only nil when the control plane confirmed the result; every error
+// means the server's receipt is unknown and must not be treated as success.
+func (a *Agent) reportAssistResult(ctx context.Context, session *assistSession, result cloud.AssistResult) (int, error) {
 	backoff := assistRetryMin
+	attempts := 0
+	var lastErr error
 	for attempt := 0; attempt < assistReportAttempts; attempt++ {
 		request, done := context.WithTimeout(ctx, assistControlTimeout)
 		err := session.client.ReportAssist(request, session.connectorID, result)
 		done()
-		if err == nil || ctx.Err() != nil {
-			return
+		attempts = attempt + 1
+		if err == nil {
+			return attempts, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return attempts, ctx.Err()
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return attempts, ctx.Err()
 		case <-time.After(backoff):
 		}
 		if backoff *= 2; backoff > assistRetryMax {
 			backoff = assistRetryMax
 		}
 	}
+	return attempts, lastErr
+}
+
+func (a *Agent) reportAndRecordAssistResult(ctx context.Context, session *assistSession, result cloud.AssistResult) {
+	started := time.Now()
+	attempts, err := a.reportAssistResult(ctx, session, result)
+	code := "assist_result_reported"
+	reason := ""
+	if err != nil {
+		// Never report an unconfirmed receipt as success.
+		code = "assist_result_report_failed"
+		reason = assistErrorReason(err)
+	}
+	a.recordAssistEvent(session, code, reason, time.Since(started).Milliseconds(), attempts)
+}
+
+func assistJobEventCode(result cloud.AssistResult) string {
+	switch {
+	case result.Status == "succeeded":
+		return "assist_job_succeeded"
+	case result.Code == "command_timeout":
+		return "assist_job_timeout"
+	case result.Code == "canceled":
+		return "assist_job_canceled"
+	default:
+		return "assist_job_failed"
+	}
+}
+
+// assistErrorReason maps an internal error to a closed reason code. The raw
+// error text is inspected only in memory and is never persisted.
+func assistErrorReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	var apiErr *cloud.APIError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.Status == http.StatusUnauthorized:
+			return "AUTH_FAILED"
+		case apiErr.Status == http.StatusForbidden:
+			return "FORBIDDEN"
+		case apiErr.Status == http.StatusTooManyRequests:
+			return "RATE_LIMITED"
+		case apiErr.Status >= 500:
+			return "SERVER_ERROR"
+		case apiErr.Status >= 400:
+			return "CLIENT_ERROR"
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return "CANCELED"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "TIMEOUT"
+	}
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return "TLS_FAILED"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "DNS_FAILED"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "TIMEOUT"
+		}
+		return "UNREACHABLE"
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "protocol"), strings.Contains(lower, "json"):
+		return "PROTOCOL_ERROR"
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"):
+		return "TIMEOUT"
+	case strings.Contains(lower, "refused"), strings.Contains(lower, "unreachable"):
+		return "UNREACHABLE"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func (a *Agent) assistStopRequested(session *assistSession) bool {
+	if session == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return session.stopRequested
+}
+
+// recordAssistEvent writes one local-only assistance event. It is safe with no
+// diagnostics manager and never waits for disk or network.
+func (a *Agent) recordAssistEvent(session *assistSession, code, reason string, durationMS int64, attempt int) {
+	operationID := ""
+	if session != nil {
+		operationID = session.operationID
+	}
+	a.recordLocalDiagnostic(diagnostics.Record{
+		EventCode:   code,
+		OperationID: operationID,
+		ReasonCode:  reason,
+		DurationMS:  durationMS,
+		Attempt:     attempt,
+	})
+}
+
+func (a *Agent) recordAssistPollFailure(session *assistSession, err error, attempt int) {
+	operationID := ""
+	if session != nil {
+		operationID = session.operationID
+	}
+	record := diagnostics.Record{
+		EventCode:   "assist_poll_failed",
+		OperationID: operationID,
+		ReasonCode:  assistErrorReason(err),
+		Attempt:     attempt,
+	}
+	var httpErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &httpErr) {
+		record.HTTPStatus = httpErr.HTTPStatusCode()
+	}
+	a.recordLocalDiagnostic(record)
 }
 
 func (a *Agent) runAssistJob(ctx context.Context, session *assistSession, job cloud.AssistJob, draft **SourceInput, verifiedTools *[]string) cloud.AssistResult {

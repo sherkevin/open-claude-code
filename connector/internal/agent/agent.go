@@ -120,6 +120,9 @@ type Agent struct {
 	assistActive      *assistSession
 	assistStarting    bool
 	assistStopped     string
+	// assistWG tracks polling goroutines so Close can wait for their final
+	// local event before the diagnostics manager flushes and closes.
+	assistWG sync.WaitGroup
 	// assistWeekConsent records the control plane's capability advertisement.
 	// The week policy is only sent after this is true.
 	assistWeekConsent bool
@@ -342,6 +345,10 @@ func (a *Agent) CloseContext(ctx context.Context) {
 		a.frpcProxyCount = 0
 		a.stoppingTunnels++
 		a.mu.Unlock()
+		// Cancelling runtimeCtx above makes the polling goroutine return
+		// promptly. Wait, bounded by the shutdown context, so its final
+		// assist_session_* event is recorded before the manager flushes.
+		a.waitAssistGoroutines(ctx)
 		if stopHeartbeat != nil {
 			stopHeartbeat()
 		}

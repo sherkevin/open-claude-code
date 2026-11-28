@@ -71,6 +71,9 @@ const (
 	ComponentPlatform    Component = "platform"
 	ComponentDiagnostics Component = "diagnostics"
 	ComponentInstall     Component = "install"
+	// ComponentAssist covers assistance lifecycle events. Those events are
+	// local-only and never enter the upload outbox.
+	ComponentAssist Component = "assist"
 )
 
 // Event is the complete wire and persistence contract. There is deliberately
@@ -89,6 +92,7 @@ type Event struct {
 	ToolName      string    `json:"tool_name,omitempty"`
 	HTTPStatus    int       `json:"http_status,omitempty"`
 	RPCErrorCode  string    `json:"rpc_error_code,omitempty"`
+	ReasonCode    string    `json:"reason_code,omitempty"`
 	DurationMS    int64     `json:"duration_ms,omitempty"`
 	Attempt       int       `json:"attempt,omitempty"`
 
@@ -116,8 +120,11 @@ type Record struct {
 	ToolName     string
 	HTTPStatus   int
 	RPCErrorCode string
-	DurationMS   int64
-	Attempt      int
+	// ReasonCode is a bounded classification (never free text). It is used by
+	// local-only lifecycle events to distinguish causes without raw errors.
+	ReasonCode string
+	DurationMS int64
+	Attempt    int
 }
 
 // Query only narrows an already-authorized local log view.
@@ -201,12 +208,20 @@ type Manager struct {
 	uploadTimeout  time.Duration
 	persistDelay   time.Duration
 
-	wake        chan struct{}
-	persistWake chan struct{}
-	installWake chan struct{}
-	stop        chan struct{}
-	stopOnce    sync.Once
-	started     bool
+	wake           chan struct{}
+	persistWake    chan struct{}
+	installWake    chan struct{}
+	stop           chan struct{}
+	stopOnce       sync.Once
+	started        bool
+	persistStarted bool
+	closed         bool
+
+	// localOnly marks a manager that was started through StartLocalOnly. Such a
+	// manager persists the local log but never runs the uploader or installer,
+	// so direct/interactive assistance cannot generate remote telemetry.
+	localOnly bool
+
 	nextAttempt time.Time
 	retryDelay  time.Duration
 	wg          sync.WaitGroup
@@ -300,7 +315,7 @@ func (m *Manager) load(st *store.Store, requireExisting bool) error {
 			continue
 		}
 		item.Event.ToolName = ""
-		if Validate(item.Event, nil) != nil {
+		if Validate(item.Event, nil) != nil || localAssistEvent(item.Event) || item.Event.ReasonCode != "" {
 			m.dropped++
 			continue
 		}
@@ -464,8 +479,21 @@ func (m *Manager) SetPaused(paused bool) {
 	m.signal()
 }
 
-// Record validates and stores one event without waiting for disk writes.
+// Record validates and stores one event without waiting for disk writes. The
+// event enters both the local log and, when an owner is bound, the upload
+// outbox.
 func (m *Manager) Record(input Record) Event {
+	return m.record(input, false)
+}
+
+// RecordLocal validates and stores one event in the local log only. It never
+// enters the upload outbox, even when an owner is bound, so a local-only
+// lifecycle trace cannot change remote telemetry.
+func (m *Manager) RecordLocal(input Record) Event {
+	return m.record(input, true)
+}
+
+func (m *Manager) record(input Record, localOnly bool) Event {
 	event := Event{
 		SchemaVersion: SchemaVersion,
 		EventID:       newID("evt_", 16),
@@ -479,6 +507,7 @@ func (m *Manager) Record(input Record) Event {
 		ToolName:      safeToolName(input.ToolName),
 		HTTPStatus:    safeHTTPStatus(input.HTTPStatus),
 		RPCErrorCode:  safeRPCErrorCode(input.RPCErrorCode),
+		ReasonCode:    safeReasonCode(input.ReasonCode),
 		DurationMS:    clampInt64(input.DurationMS, 0, 3_600_000),
 		Attempt:       int(clampInt64(int64(input.Attempt), 0, 100)),
 	}
@@ -495,8 +524,21 @@ func (m *Manager) Record(input Record) Event {
 		event.EventCode = "operation_failed"
 	}
 	event.MessageCode = event.EventCode
+	// Assistance catalog events are intrinsically local; an accidental call
+	// through Record must never enqueue one for the cloud.
+	localOnly = localOnly || localAssistEvent(event)
+	if !localOnly {
+		event.ReasonCode = ""
+	}
 
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return Event{}
+	}
+	// Direct CLI local-only mode must not create new deferred cloud events,
+	// including ordinary enrollment diagnostics. Keep any preexisting queue.
+	localOnly = localOnly || m.localOnly
 	if event.ToolName != "" {
 		allowed := m.approved[event.SourceID]
 		if allowed == nil || !allowed[event.ToolName] {
@@ -515,11 +557,28 @@ func (m *Manager) Record(input Record) Event {
 		}
 	}
 	raw, _ := json.Marshal(event)
-	m.appendEventLocked(event, len(raw))
+	if localOnly {
+		m.appendLocalEventLocked(event, len(raw))
+	} else {
+		m.appendEventLocked(event, len(raw))
+	}
 	m.mu.Unlock()
 	m.signalPersist()
-	m.signal()
+	if !localOnly {
+		m.signal()
+	}
 	return event
+}
+
+func localAssistEvent(event Event) bool {
+	return event.Component == ComponentAssist || Catalog[event.EventCode].Component == ComponentAssist
+}
+
+func (m *Manager) appendLocalEventLocked(event Event, size int) {
+	m.logs = append(m.logs, event)
+	m.logSizes = append(m.logSizes, size)
+	m.logBytes += size
+	m.trimLogsLocked()
 }
 
 func (m *Manager) appendEventLocked(event Event, size int) {
@@ -527,6 +586,13 @@ func (m *Manager) appendEventLocked(event Event, size int) {
 	m.logSizes = append(m.logSizes, size)
 	m.logBytes += size
 	m.trimLogsLocked()
+	// Defense in depth: assistance events are local-only even if a future caller
+	// reaches this path through Record. A regular upload event never carries the
+	// local-only reason classification.
+	if localAssistEvent(event) {
+		return
+	}
+	event.ReasonCode = ""
 	if m.ownerID != "" && m.ownerTenant != "" {
 		if len(m.outbox) >= m.maxQueueEvents || m.outboxSize+size > m.maxQueueBytes {
 			m.dropped++
@@ -603,25 +669,72 @@ func (m *Manager) Stats() Stats {
 	}
 }
 
-// Start launches one uploader and one coalescing persistence worker.
+// startPersistenceLocked starts only local persistence. The caller holds mu
+// so Close cannot begin waiting before the goroutine has been registered.
+func (m *Manager) startPersistenceLocked() {
+	if m.persistStarted || m.closed {
+		return
+	}
+	m.persistStarted = true
+	m.wg.Add(1)
+	go m.persistLoop()
+}
+
+// StartLocalOnly starts only the coalescing local persistence worker. It is
+// for a process that owns the exclusive diagnostics lock but does not run the
+// serving runtime, such as direct/interactive assistance. It never starts the
+// uploader or the install journal, and repeated calls are no-ops.
+func (m *Manager) StartLocalOnly() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.started {
+		return
+	}
+	m.localOnly = true
+	m.startPersistenceLocked()
+}
+
+// LocalOnly reports whether this manager was started for local-only recording.
+// Callers use it to avoid writing serving-runtime events into a queue that is
+// never uploaded.
+func (m *Manager) LocalOnly() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.localOnly
+}
+
+// Start launches the serving uploader, installer journal worker and local
+// persistence. A local-only instance cannot be promoted to a serving
+// uploader in the same process.
 func (m *Manager) Start() {
 	m.mu.Lock()
-	if m.started {
-		m.mu.Unlock()
+	defer m.mu.Unlock()
+	if m.started || m.closed || m.localOnly {
 		return
 	}
 	m.started = true
-	m.wg.Add(3)
-	m.mu.Unlock()
+	m.startPersistenceLocked()
+	m.wg.Add(2)
 	go m.loop()
-	go m.persistLoop()
 	go m.installJournalLoop()
 }
 
-// Close stops background work and makes one final persistence attempt.
+// Close stops background work and makes one final persistence attempt. The
+// final write flushes an orderly shutdown of an explicitly started writer.
+// Unstarted managers (including read-only CLI callers) must not acquire
+// write behavior merely by closing.
 func (m *Manager) Close() {
-	m.stopOnce.Do(func() { close(m.stop) })
-	m.wg.Wait()
+	m.stopOnce.Do(func() {
+		m.mu.Lock()
+		m.closed = true
+		persist := m.persistStarted
+		close(m.stop)
+		m.mu.Unlock()
+		m.wg.Wait()
+		if persist {
+			m.persistNow()
+		}
+	})
 }
 
 func (m *Manager) loop() {
@@ -701,6 +814,10 @@ func (m *Manager) UploadOnce(ctx context.Context) (int, error) {
 
 func (m *Manager) uploadSelected(ctx context.Context, installAttemptID string) (int, error) {
 	m.mu.Lock()
+	if m.localOnly {
+		m.mu.Unlock()
+		return 0, nil
+	}
 	uploader := m.uploader
 	ownerID := m.ownerID
 	paused := m.paused
@@ -828,7 +945,8 @@ func (m *Manager) persistLoop() {
 	for {
 		select {
 		case <-m.stop:
-			m.persistNow()
+			// Close performs the final persistence after every worker exits, so
+			// the last recorded event is never lost to shutdown ordering.
 			return
 		case <-m.persistWake:
 			timer := time.NewTimer(m.persistDelay)
@@ -837,7 +955,6 @@ func (m *Manager) persistLoop() {
 				if !timer.Stop() {
 					<-timer.C
 				}
-				m.persistNow()
 				return
 			case <-timer.C:
 			}
@@ -962,6 +1079,9 @@ func Validate(event Event, approvedTools map[string]bool) error {
 	}
 	if event.RPCErrorCode != "" && safeRPCErrorCode(event.RPCErrorCode) == "" {
 		return errors.New("invalid rpc_error_code")
+	}
+	if event.ReasonCode != "" && safeReasonCode(event.ReasonCode) == "" {
+		return errors.New("invalid reason_code")
 	}
 	if event.DurationMS < 0 || event.DurationMS > 3_600_000 || event.Attempt < 0 || event.Attempt > 100 {
 		return errors.New("invalid numeric field")
@@ -1102,6 +1222,31 @@ func safeHTTPStatus(value int) int {
 	return value
 }
 
+// reasonCodes is the closed classification vocabulary. Callers may not persist
+// arbitrary error text, URLs or identifiers as a reason.
+var reasonCodes = map[string]bool{
+	"TIMEOUT":        true,
+	"UNREACHABLE":    true,
+	"DNS_FAILED":     true,
+	"TLS_FAILED":     true,
+	"AUTH_FAILED":    true,
+	"FORBIDDEN":      true,
+	"RATE_LIMITED":   true,
+	"SERVER_ERROR":   true,
+	"CLIENT_ERROR":   true,
+	"PROTOCOL_ERROR": true,
+	"CANCELED":       true,
+	"UNKNOWN":        true,
+}
+
+func safeReasonCode(value string) string {
+	value = strings.TrimSpace(value)
+	if !reasonCodes[value] {
+		return ""
+	}
+	return value
+}
+
 func safeCode(value string) string {
 	if value == "" || len(value) > 64 {
 		return ""
@@ -1122,7 +1267,7 @@ func validComponent(value Component) bool {
 	switch value {
 	case ComponentConnector, ComponentConfig, ComponentSource, ComponentAuth,
 		ComponentDiagnosis, ComponentTunnel, ComponentMCP, ComponentPlatform,
-		ComponentDiagnostics, ComponentInstall:
+		ComponentDiagnostics, ComponentInstall, ComponentAssist:
 		return true
 	default:
 		return false
@@ -1205,9 +1350,10 @@ func cloneTime(value *time.Time) *time.Time {
 // SortedComponents returns the accepted component vocabulary for docs/tests.
 func SortedComponents() []string {
 	values := []string{
-		string(ComponentAuth), string(ComponentConfig), string(ComponentConnector),
-		string(ComponentDiagnostics), string(ComponentDiagnosis), string(ComponentMCP),
-		string(ComponentPlatform), string(ComponentSource), string(ComponentTunnel),
+		string(ComponentAssist), string(ComponentAuth), string(ComponentConfig),
+		string(ComponentConnector), string(ComponentDiagnostics), string(ComponentDiagnosis),
+		string(ComponentInstall), string(ComponentMCP), string(ComponentPlatform),
+		string(ComponentSource), string(ComponentTunnel),
 	}
 	sort.Strings(values)
 	return values

@@ -132,11 +132,22 @@ func newAssistanceFixture(t *testing.T, upstream string, rejectFirstStop, device
 
 func newAssistTestAgent(t *testing.T, f *assistanceFixture) *Agent {
 	t.Helper()
-	a, err := New(Options{DataDir: t.TempDir(), CloudBase: f.cloudURL, EdgeBase: "https://gateway.example.net", NativeRelay: true})
+	return newAssistTestAgentDir(t, f, t.TempDir())
+}
+
+// newAssistTestAgentDir mirrors the real direct/interactive CLI initialization:
+// the exclusive diagnostics lock is taken and only local persistence starts.
+func newAssistTestAgentDir(t *testing.T, f *assistanceFixture, dir string) *Agent {
+	t.Helper()
+	a, err := New(Options{
+		DataDir: dir, CloudBase: f.cloudURL, EdgeBase: "https://gateway.example.net",
+		NativeRelay: true, ExclusiveDiagnostics: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(a.Close)
+	a.StartLocalDiagnostics()
 	client, err := cloud.NewWithSigner(f.cloudURL, "existing-device-token", a.deviceKey)
 	if err != nil {
 		t.Fatal(err)

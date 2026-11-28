@@ -60,7 +60,7 @@ func runInteractiveAssist(ctx context.Context, opts agent.Options) error {
 	fmt.Println("开物技术协助：不安装系统服务，不自动开启协助。")
 	fmt.Println("仅在企业管理员批准后使用；协助命令以当前普通账号权限执行，可能读取或修改该账号可访问的文件。")
 	fmt.Println("随时按 Ctrl+C 停止；仅支持明确授权的本次排查。")
-	instance, err := agent.New(opts)
+	instance, err := newAssistCLIAgent(opts)
 	if err != nil {
 		return fmt.Errorf("初始化本机连接器失败")
 	}

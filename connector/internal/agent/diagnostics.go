@@ -148,11 +148,50 @@ func (a *Agent) closeDiagnostics(ctx context.Context) {
 		}
 	}
 	if manager != nil {
-		manager.Record(diagnostics.Record{EventCode: "connector_stopped"})
+		// A local-only manager never uploads, so a serving-runtime stop event
+		// would only sit in a queue that is later replayed by another process.
+		if !manager.LocalOnly() {
+			manager.Record(diagnostics.Record{EventCode: "connector_stopped"})
+		}
 		manager.Close()
 	}
 	if lock != nil {
 		lock.Close()
+	}
+}
+
+// StartLocalDiagnostics starts only local persistence for a CLI that owns the
+// exclusive diagnostics lock but does not run the serving runtime. It never
+// starts the uploader, install journal or any network path, and it is a no-op
+// when another process holds the lock (the manager is then nil).
+func (a *Agent) StartLocalDiagnostics() {
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	manager := a.diagMgr
+	a.mu.RUnlock()
+	if manager != nil {
+		manager.StartLocalOnly()
+	}
+}
+
+// waitAssistGoroutines waits, bounded by ctx, for the polling goroutine to
+// record its final local event. It is always called after runtimeCtx has been
+// cancelled, so the wait is short; the bound prevents an unresponsive network
+// call from blocking shutdown.
+func (a *Agent) waitAssistGoroutines(ctx context.Context) {
+	if a == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		a.assistWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -166,6 +205,22 @@ func (a *Agent) recordDiagnostic(record diagnostics.Record) diagnostics.Event {
 		return diagnostics.Event{}
 	}
 	return a.diagMgr.Record(record)
+}
+
+// recordLocalDiagnostic writes only bounded in-memory metadata and signals
+// asynchronous persistence. Keep the manager reference under Agent.mu as in
+// recordDiagnostic, so a concurrent close/rebind cannot replace its owner
+// between selection and recording. No disk or network IO runs under Agent.mu.
+func (a *Agent) recordLocalDiagnostic(record diagnostics.Record) diagnostics.Event {
+	if a == nil {
+		return diagnostics.Event{}
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.diagMgr == nil {
+		return diagnostics.Event{}
+	}
+	return a.diagMgr.RecordLocal(record)
 }
 
 // recordOperationDiagnostic keeps only metadata allowed by the event catalog.
