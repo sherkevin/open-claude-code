@@ -1,0 +1,295 @@
+{
+  "fixture": "huawi-parity-query-contract",
+  "case_group": "zero_empty",
+  "request_kind": "normalized_synthetic_operation_not_native_schema",
+  "reply_kind": "mixed_native_envelope_error_or_absence",
+  "observed_semantics": [
+    "a valid zero differs from empty, missing, denied and failed",
+    "an empty table only says this query returned no records",
+    "an absent total is unknown, not zero",
+    "failure and denial do not publish a business result"
+  ],
+  "unobserved": [
+    "native error envelope shape",
+    "native denial envelope shape",
+    "native no-op/not-queried representation"
+  ],
+  "cases": [
+    {
+      "case_id": "zero.count_filter_no_match_is_valid_zero",
+      "capability": "zero_vs_empty",
+      "semantic_constraint": "observed",
+      "pair_id": "valid-zero-vs-empty-table",
+      "request": {
+        "operation": "count",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["*"],
+        "filters": [{"field": "region_code", "op": "eq", "value": "SYNTH-R9"}],
+        "alias": "record_count"
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "record_count", "label": "记录数", "type": "number"}
+        ],
+        "data": [[0]],
+        "rows": 1,
+        "page": 1,
+        "has_more": false
+      },
+      "expected": {
+        "classification": "valid_zero_aggregate",
+        "columns": ["record_count"],
+        "data": [[0]],
+        "returned_rows": 1,
+        "page": 1,
+        "page_size": 1,
+        "has_more": false,
+        "total": null,
+        "total_basis": "not_applicable_aggregate_cell",
+        "aggregate": "count",
+        "value": 0,
+        "operator_basis": "eq_synthetic_hypothesis",
+        "zero_kind": "aggregate_count_zero_for_this_filter",
+        "contract_status": "observed_safe_ungrouped",
+        "claim": "valid_zero_is_not_an_empty_failure_or_missing_total"
+      }
+    },
+    {
+      "case_id": "zero.distinct_filter_no_match_is_valid_zero",
+      "capability": "zero_vs_empty",
+      "semantic_constraint": "observed",
+      "pair_id": "valid-zero-vs-empty-table",
+      "request": {
+        "operation": "count_distinct",
+        "dataset": "SYNTH-SALES-V1",
+        "field": "product_code",
+        "filters": [{"field": "region_code", "op": "eq", "value": "SYNTH-R9"}],
+        "alias": "product_code_distinct_count"
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "product_code_distinct_count", "label": "产品去重数", "type": "number"}
+        ],
+        "data": [[0]],
+        "rows": 1,
+        "page": 1,
+        "has_more": false
+      },
+      "expected": {
+        "classification": "valid_zero_aggregate",
+        "columns": ["product_code_distinct_count"],
+        "data": [[0]],
+        "returned_rows": 1,
+        "page": 1,
+        "page_size": 1,
+        "has_more": false,
+        "total": null,
+        "total_basis": "not_applicable_aggregate_cell",
+        "aggregate": "count_distinct",
+        "field": "product_code",
+        "value": 0,
+        "operator_basis": "eq_synthetic_hypothesis",
+        "zero_kind": "distinct_count_zero_for_this_filter",
+        "contract_status": "observed_safe_ungrouped",
+        "claim": "distinct_zero_is_a_valid_count_not_missing_evidence"
+      }
+    },
+    {
+      "case_id": "zero.filter_no_match_empty_table",
+      "capability": "zero_vs_empty",
+      "semantic_constraint": "observed",
+      "pair_id": "valid-zero-vs-empty-table",
+      "request": {
+        "operation": "select",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["order_code", "quantity"],
+        "filters": [{"field": "region_code", "op": "eq", "value": "SYNTH-R9"}],
+        "sort": [],
+        "page": 1,
+        "page_size": 3
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "order_code", "label": "订单编号", "type": "string"},
+          {"name": "quantity", "label": "数量", "type": "number"}
+        ],
+        "data": [],
+        "rows": 3,
+        "page": 1,
+        "has_more": false,
+        "total": 0
+      },
+      "expected": {
+        "classification": "valid_empty_result",
+        "columns": ["order_code", "quantity"],
+        "data": [],
+        "returned_rows": 0,
+        "page": 1,
+        "page_size": 3,
+        "has_more": false,
+        "total": 0,
+        "total_basis": "records",
+        "operator_basis": "eq_synthetic_hypothesis",
+        "zero_kind": "no_matching_records_for_this_query",
+        "claim": "empty_table_does_not_mean_the_dataset_is_empty_or_business_does_not_exist"
+      }
+    },
+    {
+      "case_id": "zero.total_absent_is_unknown_not_zero",
+      "capability": "zero_vs_empty",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "select",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["order_code", "quantity"],
+        "filters": [],
+        "sort": [],
+        "page": 1,
+        "page_size": 3
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "order_code", "label": "订单编号", "type": "string"},
+          {"name": "quantity", "label": "数量", "type": "number"}
+        ],
+        "data": [
+          ["SYNTH-ORD-0001", 10],
+          ["SYNTH-ORD-0002", 5],
+          ["SYNTH-ORD-0003", 7]
+        ],
+        "rows": 3,
+        "page": 1,
+        "has_more": true
+      },
+      "expected": {
+        "classification": "valid_table",
+        "columns": ["order_code", "quantity"],
+        "data": [
+          ["SYNTH-ORD-0001", 10],
+          ["SYNTH-ORD-0002", 5],
+          ["SYNTH-ORD-0003", 7]
+        ],
+        "returned_rows": 3,
+        "page": 1,
+        "page_size": 3,
+        "has_more": true,
+        "total": null,
+        "total_basis": "unknown_not_zero",
+        "total_status": "unknown_not_zero",
+        "zero_kind": "total_absent_not_zero",
+        "claim": "absent_total_must_not_be_filled_as_zero"
+      }
+    },
+    {
+      "case_id": "zero.error_is_not_zero",
+      "capability": "zero_vs_empty",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "select",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["order_code"],
+        "filters": [],
+        "sort": [],
+        "page": 1,
+        "page_size": 3
+      },
+      "reply": {
+        "isError": true,
+        "error": {
+          "code": "QUERY_EXECUTION_FAILED",
+          "message": "synthetic upstream failure; no business rows"
+        }
+      },
+      "expected": {
+        "classification": "failure",
+        "reason": "query_execution_failed",
+        "zero_kind": "failure_not_zero",
+        "must_not": ["valid_zero", "empty_result", "complete", "business_result"]
+      }
+    },
+    {
+      "case_id": "zero.denied_is_not_zero",
+      "capability": "zero_vs_empty",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "select",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["order_code"],
+        "filters": [],
+        "sort": [],
+        "page": 1,
+        "page_size": 3
+      },
+      "reply": {
+        "isError": true,
+        "error": {
+          "code": "PERMISSION_DENIED",
+          "message": "synthetic denial; no business rows returned"
+        }
+      },
+      "expected": {
+        "classification": "denied",
+        "reason": "permission_denied",
+        "zero_kind": "denied_not_zero",
+        "must_not": ["valid_zero", "empty_result", "complete", "business_result"]
+      }
+    },
+    {
+      "case_id": "zero.not_queried_is_not_zero",
+      "capability": "zero_vs_empty",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "select",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["order_code"],
+        "filters": [],
+        "sort": [],
+        "page": 1,
+        "page_size": 3,
+        "executed": false
+      },
+      "reply": null,
+      "expected": {
+        "classification": "not_queried",
+        "reason": "query_not_executed",
+        "zero_kind": "not_queried_not_zero",
+        "must_not": ["valid_zero", "empty_result", "complete", "business_result"]
+      }
+    },
+    {
+      "case_id": "zero.malformed_is_not_zero",
+      "capability": "zero_vs_empty",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "select",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["order_code"],
+        "filters": [],
+        "sort": [],
+        "page": 1,
+        "page_size": 3
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "order_code", "label": "订单编号", "type": "string"}
+        ],
+        "data": {},
+        "rows": 3,
+        "page": 1,
+        "has_more": false,
+        "total": 0
+      },
+      "expected": {
+        "classification": "malformed",
+        "reason": "data_not_list",
+        "zero_kind": "malformed_reply_not_zero",
+        "must_not": ["valid_zero", "empty_result", "complete", "business_result"]
+      }
+    }
+  ]
+}

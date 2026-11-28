@@ -1,0 +1,45 @@
+{
+  "fixture_dataset_code": "SYNTH-SALES-V1",
+  "title": "合成销售明细（测试夹具）",
+  "synthetic": true,
+  "synthetic_note": "All identifiers, labels and values are invented for contract testing. No customer dataset code, field, row or answer is copied or inferred.",
+  "dataset_code": "SYNTH-SALES-V1",
+  "search_terms": ["synthetic sales", "sales", "合成销售", "合成"],
+  "catalog": [
+    {
+      "dataset_code": "SYNTH-SALES-V1",
+      "title": "合成销售明细（测试夹具）",
+      "search_terms": ["synthetic sales", "sales", "合成销售", "合成"],
+      "detail_available": true,
+      "catalog_only": false
+    },
+    {
+      "dataset_code": "SYNTH-INVENTORY-V1",
+      "title": "合成库存快照（测试夹具）",
+      "search_terms": ["inventory", "库存", "合成"],
+      "detail_available": false,
+      "catalog_only": true
+    }
+  ],
+  "fields": [
+    {"name": "order_code", "label": "订单编号", "type": "string", "published": true},
+    {"name": "region_code", "label": "区域编码", "type": "string", "published": true},
+    {"name": "product_code", "label": "产品编码", "type": "string", "published": true},
+    {"name": "currency_code", "label": "币种", "type": "string", "published": true},
+    {"name": "quantity", "label": "数量", "type": "number", "published": true},
+    {"name": "amount_cents", "label": "金额（分）", "type": "number", "published": true},
+    {"name": "status_code", "label": "状态编码", "type": "string", "published": true},
+    {"name": "internal_note", "label": "内部备注", "type": "string", "published": false}
+  ],
+  "rows": [
+    {"order_code": "SYNTH-ORD-0001", "region_code": "SYNTH-R1", "product_code": "SYNTH-P1", "currency_code": "CNY", "quantity": 10, "amount_cents": 12500, "status_code": "A"},
+    {"order_code": "SYNTH-ORD-0002", "region_code": "SYNTH-R1", "product_code": "SYNTH-P2", "currency_code": "CNY", "quantity": 5, "amount_cents": 8000, "status_code": "A"},
+    {"order_code": "SYNTH-ORD-0003", "region_code": "SYNTH-R2", "product_code": "SYNTH-P1", "currency_code": "CNY", "quantity": 7, "amount_cents": 9000, "status_code": "B"},
+    {"order_code": "SYNTH-ORD-0004", "region_code": "SYNTH-R2", "product_code": "SYNTH-P3", "currency_code": "CNY", "quantity": 3, "amount_cents": 4500, "status_code": "A"},
+    {"order_code": "SYNTH-ORD-0005", "region_code": "SYNTH-R3", "product_code": "SYNTH-P2", "currency_code": "CNY", "quantity": 12, "amount_cents": 21000, "status_code": "B"},
+    {"order_code": "SYNTH-ORD-0006", "region_code": "SYNTH-R1", "product_code": "SYNTH-P3", "currency_code": "CNY", "quantity": 2, "amount_cents": 3000, "status_code": "B"},
+    {"order_code": "SYNTH-ORD-0007", "region_code": "SYNTH-R2", "product_code": "SYNTH-P1", "currency_code": "CNY", "quantity": 9, "amount_cents": 11000, "status_code": "A"},
+    {"order_code": "SYNTH-ORD-0008", "region_code": "SYNTH-R3", "product_code": "SYNTH-P1", "currency_code": "CNY", "quantity": 4, "amount_cents": 6000, "status_code": "A"},
+    {"order_code": "SYNTH-ORD-0009", "region_code": "SYNTH-R1", "product_code": "SYNTH-P1", "currency_code": "CNY", "quantity": 6, "amount_cents": 7500, "status_code": "B"}
+  ]
+}

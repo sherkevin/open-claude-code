@@ -1,0 +1,433 @@
+{
+  "fixture": "huawi-parity-query-contract",
+  "case_group": "query_aggregates",
+  "request_kind": "normalized_synthetic_operation_not_native_schema",
+  "reply_kind": "observed_native_envelope",
+  "observed_semantics": [
+    "ungrouped COUNT and COUNT DISTINCT with explicit aliases are known safe",
+    "group fields must match group_by",
+    "actual grouped aggregate requires separate contract proof",
+    "SUM is not in the known safe ungrouped set"
+  ],
+  "unobserved": [
+    "native aggregate request schema",
+    "native count/count-distinct reply shape",
+    "native grouped aggregate semantics",
+    "native total basis for grouped results"
+  ],
+  "cases": [
+    {
+      "case_id": "query.aggregate.count_all",
+      "capability": "distinct_count_and_sum",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "count",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["*"],
+        "filters": [],
+        "alias": "record_count"
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "record_count", "label": "记录数", "type": "number"}
+        ],
+        "data": [[9]],
+        "rows": 1,
+        "page": 1,
+        "has_more": false
+      },
+      "expected": {
+        "classification": "valid_aggregate",
+        "columns": ["record_count"],
+        "data": [[9]],
+        "returned_rows": 1,
+        "page": 1,
+        "page_size": 1,
+        "has_more": false,
+        "total": null,
+        "total_basis": "not_applicable_aggregate_cell",
+        "aggregate": "count",
+        "value": 9,
+        "contract_status": "observed_safe_ungrouped",
+        "claim": "count_value_with_explicit_alias_but_scope_not_independently_verified"
+      }
+    },
+    {
+      "case_id": "query.aggregate.count_filtered_region",
+      "capability": "filters",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "count",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["*"],
+        "filters": [{"field": "region_code", "op": "eq", "value": "SYNTH-R1"}],
+        "alias": "record_count"
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "record_count", "label": "记录数", "type": "number"}
+        ],
+        "data": [[4]],
+        "rows": 1,
+        "page": 1,
+        "has_more": false
+      },
+      "expected": {
+        "classification": "valid_aggregate",
+        "columns": ["record_count"],
+        "data": [[4]],
+        "returned_rows": 1,
+        "page": 1,
+        "page_size": 1,
+        "has_more": false,
+        "total": null,
+        "total_basis": "not_applicable_aggregate_cell",
+        "aggregate": "count",
+        "value": 4,
+        "operator_basis": "eq_synthetic_hypothesis",
+        "contract_status": "observed_safe_ungrouped",
+        "claim": "count_of_filtered_rows_not_full_scope"
+      }
+    },
+    {
+      "case_id": "query.aggregate.count_distinct_region_all",
+      "capability": "distinct_count",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "count_distinct",
+        "dataset": "SYNTH-SALES-V1",
+        "field": "region_code",
+        "filters": [],
+        "alias": "region_code_distinct_count"
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "region_code_distinct_count", "label": "区域去重数", "type": "number"}
+        ],
+        "data": [[3]],
+        "rows": 1,
+        "page": 1,
+        "has_more": false
+      },
+      "expected": {
+        "classification": "valid_aggregate",
+        "columns": ["region_code_distinct_count"],
+        "data": [[3]],
+        "returned_rows": 1,
+        "page": 1,
+        "page_size": 1,
+        "has_more": false,
+        "total": null,
+        "total_basis": "not_applicable_aggregate_cell",
+        "aggregate": "count_distinct",
+        "field": "region_code",
+        "value": 3,
+        "contract_status": "observed_safe_ungrouped",
+        "claim": "distinct_count_with_explicit_alias_but_scope_not_independently_verified"
+      }
+    },
+    {
+      "case_id": "query.aggregate.count_distinct_product_filtered",
+      "capability": "distinct_count",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "count_distinct",
+        "dataset": "SYNTH-SALES-V1",
+        "field": "product_code",
+        "filters": [{"field": "region_code", "op": "eq", "value": "SYNTH-R2"}],
+        "alias": "product_code_distinct_count"
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "product_code_distinct_count", "label": "产品去重数", "type": "number"}
+        ],
+        "data": [[2]],
+        "rows": 1,
+        "page": 1,
+        "has_more": false
+      },
+      "expected": {
+        "classification": "valid_aggregate",
+        "columns": ["product_code_distinct_count"],
+        "data": [[2]],
+        "returned_rows": 1,
+        "page": 1,
+        "page_size": 1,
+        "has_more": false,
+        "total": null,
+        "total_basis": "not_applicable_aggregate_cell",
+        "aggregate": "count_distinct",
+        "field": "product_code",
+        "value": 2,
+        "operator_basis": "eq_synthetic_hypothesis",
+        "contract_status": "observed_safe_ungrouped",
+        "claim": "distinct_count_of_filtered_rows_not_full_scope"
+      }
+    },
+    {
+      "case_id": "query.aggregate.sum_amount_all_requires_proof",
+      "capability": "sum",
+      "semantic_constraint": "not_in_known_safe_set",
+      "request": {
+        "operation": "sum",
+        "dataset": "SYNTH-SALES-V1",
+        "field": "amount_cents",
+        "filters": [],
+        "alias": "amount_cents_sum"
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "amount_cents_sum", "label": "金额合计（分）", "type": "number"}
+        ],
+        "data": [[82500]],
+        "rows": 1,
+        "page": 1,
+        "has_more": false
+      },
+      "expected": {
+        "classification": "valid_aggregate",
+        "columns": ["amount_cents_sum"],
+        "data": [[82500]],
+        "returned_rows": 1,
+        "page": 1,
+        "page_size": 1,
+        "has_more": false,
+        "total": null,
+        "total_basis": "not_applicable_aggregate_cell",
+        "aggregate": "sum",
+        "field": "amount_cents",
+        "value": 82500,
+        "contract_status": "requires_separate_proof",
+        "product_claim_allowed": false,
+        "claim": "arithmetic_ground_truth_only_not_product_support"
+      }
+    },
+    {
+      "case_id": "query.aggregate.sum_quantity_filtered_requires_proof",
+      "capability": "sum",
+      "semantic_constraint": "not_in_known_safe_set",
+      "request": {
+        "operation": "sum",
+        "dataset": "SYNTH-SALES-V1",
+        "field": "quantity",
+        "filters": [{"field": "region_code", "op": "eq", "value": "SYNTH-R2"}],
+        "alias": "quantity_sum"
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "quantity_sum", "label": "数量合计", "type": "number"}
+        ],
+        "data": [[19]],
+        "rows": 1,
+        "page": 1,
+        "has_more": false
+      },
+      "expected": {
+        "classification": "valid_aggregate",
+        "columns": ["quantity_sum"],
+        "data": [[19]],
+        "returned_rows": 1,
+        "page": 1,
+        "page_size": 1,
+        "has_more": false,
+        "total": null,
+        "total_basis": "not_applicable_aggregate_cell",
+        "aggregate": "sum",
+        "field": "quantity",
+        "value": 19,
+        "operator_basis": "eq_synthetic_hypothesis",
+        "contract_status": "requires_separate_proof",
+        "product_claim_allowed": false,
+        "claim": "arithmetic_ground_truth_only_not_product_support"
+      }
+    },
+    {
+      "case_id": "query.group.count_by_region",
+      "capability": "grouping",
+      "semantic_constraint": "observed_group_field_rule_only",
+      "request": {
+        "operation": "group",
+        "dataset": "SYNTH-SALES-V1",
+        "group_by": "region_code",
+        "aggregate": {"kind": "count"},
+        "page": 1,
+        "page_size": 3,
+        "include_total": true
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "region_code", "label": "区域编码", "type": "string"},
+          {"name": "record_count", "label": "记录数", "type": "number"}
+        ],
+        "data": [
+          ["SYNTH-R1", 4],
+          ["SYNTH-R2", 3],
+          ["SYNTH-R3", 2]
+        ],
+        "rows": 3,
+        "page": 1,
+        "has_more": false,
+        "total": 3
+      },
+      "expected": {
+        "classification": "valid_table",
+        "columns": ["region_code", "record_count"],
+        "data": [
+          ["SYNTH-R1", 4],
+          ["SYNTH-R2", 3],
+          ["SYNTH-R3", 2]
+        ],
+        "returned_rows": 3,
+        "page": 1,
+        "page_size": 3,
+        "has_more": false,
+        "total": 3,
+        "total_basis": "groups_consistent_but_not_declared",
+        "underlying_record_count": 9,
+        "group_by": "region_code",
+        "aggregate": "count",
+        "group_coverage": "all_groups_on_this_page",
+        "contract_status": "requires_separate_proof",
+        "product_claim_allowed": false,
+        "claim": "group_values_are_arithmetic_truth_but_grouped_aggregate_contract_is_unproven"
+      }
+    },
+    {
+      "case_id": "query.group.sum_by_region_requires_proof",
+      "capability": "grouping",
+      "semantic_constraint": "observed_group_field_rule_only",
+      "request": {
+        "operation": "group",
+        "dataset": "SYNTH-SALES-V1",
+        "group_by": "region_code",
+        "aggregate": {"kind": "sum", "field": "amount_cents"},
+        "page": 1,
+        "page_size": 3,
+        "include_total": true
+      },
+      "reply": {
+        "dataset": "SYNTH-SALES-V1",
+        "columns": [
+          {"name": "region_code", "label": "区域编码", "type": "string"},
+          {"name": "amount_cents_sum", "label": "金额合计（分）", "type": "number"}
+        ],
+        "data": [
+          ["SYNTH-R1", 31000],
+          ["SYNTH-R2", 24500],
+          ["SYNTH-R3", 27000]
+        ],
+        "rows": 3,
+        "page": 1,
+        "has_more": false,
+        "total": 3
+      },
+      "expected": {
+        "classification": "valid_table",
+        "columns": ["region_code", "amount_cents_sum"],
+        "data": [
+          ["SYNTH-R1", 31000],
+          ["SYNTH-R2", 24500],
+          ["SYNTH-R3", 27000]
+        ],
+        "returned_rows": 3,
+        "page": 1,
+        "page_size": 3,
+        "has_more": false,
+        "total": 3,
+        "total_basis": "groups_consistent_but_not_declared",
+        "underlying_record_count": 9,
+        "group_by": "region_code",
+        "aggregate": "sum",
+        "group_coverage": "all_groups_on_this_page",
+        "contract_status": "requires_separate_proof",
+        "product_claim_allowed": false,
+        "claim": "grouped_sum_is_arithmetic_truth_but_not_a_verified_product_aggregate"
+      }
+    },
+    {
+      "case_id": "query.group.unpublished_group_by_rejected",
+      "capability": "grouping",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "group",
+        "dataset": "SYNTH-SALES-V1",
+        "group_by": "internal_note",
+        "aggregate": {"kind": "count"},
+        "page": 1,
+        "page_size": 3
+      },
+      "reply": null,
+      "expected": {
+        "classification": "rejected",
+        "reason": "unpublished_group_by",
+        "must_not": ["valid_table", "valid_zero", "empty_result", "complete"]
+      }
+    },
+    {
+      "case_id": "query.group.group_field_mismatch_unverified",
+      "capability": "grouping",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "group",
+        "dataset": "SYNTH-SALES-V1",
+        "group_by": "region_code",
+        "group_fields": ["product_code"],
+        "aggregate": {"kind": "count"},
+        "page": 1,
+        "page_size": 3
+      },
+      "reply": null,
+      "expected": {
+        "classification": "unverified",
+        "reason": "group_field_mismatch",
+        "product_claim_allowed": false,
+        "must_not": ["valid_table", "valid_zero", "empty_result", "complete"]
+      }
+    },
+    {
+      "case_id": "query.group.aggregate_without_group_by_unverified",
+      "capability": "grouping",
+      "semantic_constraint": "observed_group_field_rule_only",
+      "request": {
+        "operation": "group",
+        "dataset": "SYNTH-SALES-V1",
+        "group_by": null,
+        "aggregate": {"kind": "count"},
+        "page": 1,
+        "page_size": 3
+      },
+      "reply": null,
+      "expected": {
+        "classification": "unverified",
+        "reason": "group_aggregate_requires_group_by",
+        "product_claim_allowed": false,
+        "must_not": ["valid_table", "valid_zero", "empty_result", "complete"]
+      }
+    },
+    {
+      "case_id": "query.aggregate.explicit_alias_required",
+      "capability": "distinct_count",
+      "semantic_constraint": "observed",
+      "request": {
+        "operation": "count",
+        "dataset": "SYNTH-SALES-V1",
+        "fields": ["*"],
+        "filters": [],
+        "alias": null
+      },
+      "reply": null,
+      "expected": {
+        "classification": "rejected",
+        "reason": "explicit_alias_required",
+        "must_not": ["valid_aggregate", "valid_zero", "empty_result", "complete"]
+      }
+    }
+  ]
+}
