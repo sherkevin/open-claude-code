@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ApiError } from './api';
-import ConversationTasks, { childTaskRecords, PlanActionNotice, ScheduleRow } from './ConversationTasks';
+import ConversationTasks, { childTaskRecords, PlanActionNotice, ScheduleRow, subagentEmptyLabel } from './ConversationTasks';
 import type { StreamEvent } from './types';
 
 const at = '2026-11-23T01:00:00Z';
@@ -118,5 +118,17 @@ describe('uncertain delegation receipts', () => {
     expect(render(denied, plan)).toContain(denied.message);
     expect(render(denied, plan)).not.toContain('回执未收到');
     expect(render(lost, plan, 'cancel')).toContain(lost.message);
+  });
+});
+
+describe('empty subtask readback', () => {
+  it('distinguishes a current empty result from a prior empty read after a refresh failure', () => {
+    expect(subagentEmptyLabel(true, 0, false)).toBe('当前轮次暂无子任务。');
+    expect(subagentEmptyLabel(false, 0, false)).toBe('暂无子任务。');
+    expect(subagentEmptyLabel(true, 0, true)).toBe('上次读取时没有子任务，当前状态待核对。');
+    expect(subagentEmptyLabel(false, 0, true)).toBe('上次读取时没有子任务，当前状态待核对。');
+    expect(subagentEmptyLabel(true, undefined, true)).toBeNull();
+    expect(subagentEmptyLabel(false, undefined, false)).toBeNull();
+    expect(subagentEmptyLabel(true, 1, true)).toBeNull();
   });
 });

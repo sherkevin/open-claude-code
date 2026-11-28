@@ -425,6 +425,12 @@ type SubagentTasksProps = Pick<ConversationTasksProps, 'runId' | 'canDelegate' |
   onSelect: SelectChild;
 };
 
+export function subagentEmptyLabel(active: boolean, count: number | undefined, stale: boolean) {
+  if (count !== 0) return null;
+  if (stale) return '上次读取时没有子任务，当前状态待核对。';
+  return active ? '当前轮次暂无子任务。' : '暂无子任务。';
+}
+
 function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading, onSelect, singleDraft, onSingleChange }: SubagentTasksProps) {
   const history = useTaskRead<PlanRun[]>(path, { refreshKey: runId, enabled: visible });
   const current = usePlan(runId, canDelegate, visible);
@@ -432,6 +438,8 @@ function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading
   const [historyOpen, setHistoryOpen] = useState(false);
   const [chosenRun, setChosenRun] = useState('');
   const pastRuns = history.value?.filter(item => item.id !== runId) ?? [];
+  const emptyStale = Boolean(runId ? current.error : history.error);
+  const emptyLabel = subagentEmptyLabel(!!runId, runId ? current.value?.children.length : history.value?.length, emptyStale);
   const pastRunId = pastRuns.find(item => item.id === chosenRun)?.id ?? pastRuns[0]?.id;
   const past = usePlan(historyOpen ? pastRunId : undefined, false, visible);
   const draftReadback = singleDraft?.runId === runId ? current : past;
@@ -464,11 +472,10 @@ function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading
     <ReadError error={current.error} hasValue={!!current.value}/>
     {((runId && !current.value && !current.error) || (!runId && !history.value && !history.error)) &&
       <p className="task-sidebar-muted" role="status">正在读取子任务…</p>}
-    {(current.value?.children.length === 0 || (!runId && history.value && !pastRuns.length)) &&
-      <p className="task-sidebar-empty">
-        {runId ? '当前轮次暂无子任务。' : '暂无子任务。'}
-        {!pastRuns.length && !canDelegate && <><br/>助手分派后会显示在这里。</>}
-      </p>}
+    {emptyLabel && <p className="task-sidebar-empty">
+      {emptyLabel}
+      {!emptyStale && !pastRuns.length && !canDelegate && <><br/>助手分派后会显示在这里。</>}
+    </p>}
     {singleDraft && !canUseSingle && <div className="task-sidebar-detail-block" role="group" aria-label="单项分配草稿">
       <p>{draftHasChildren ? '本次要求已保留，可与该轮子任务核对。'
         : runId === singleDraft.runId && !current.value && !current.error ? '正在读取目标轮次…' : '目标轮次当前无法分配。已保留本次要求，可复制使用。'}</p>
