@@ -131,32 +131,49 @@ function ChildDetails({ child, index }: { child: SubagentChild; index: number })
   </li>;
 }
 
-export default function SubagentProgress({ plan, stale = false, onRetry }: SubagentProgressProps) {
-  const { children } = plan;
-  if (!children.length) return null;
-  // The child rows are authoritative. Older snapshots do not count every child status.
+function ChildList({ plan }: { plan: SubagentPlan }) {
+  return <ul className="subagent-progress-children" key={plan.plan_id} role="list">
+    {plan.children.map((child, index) => <ChildDetails key={child.child_id} child={child} index={index}/>)}
+  </ul>;
+}
+
+function outcomes(children: SubagentChild[]) {
+  // Older snapshots do not count every child status. Use the individual rows.
   const count = (status: string) => children.filter(child => child.status === status).length;
-  const outcomes = [
+  const totals = [
     `${count('succeeded')}/${children.length} 项完成`,
     ...(['failed', 'cancelled', 'interrupted'] as const).flatMap(status => {
       const total = count(status);
       return total ? [`${total} 项${childStates.get(status)?.label}`] : [];
     }),
   ];
+  return { status: planStatus(children.length, count), summary: totals.join(' · ') };
+}
+
+export function SubagentAnswerReceipt({ plan }: { plan?: SubagentPlan | null }) {
+  if (!plan?.children.length || !plan.children.some(child => ['failed', 'cancelled', 'interrupted'].includes(child.status))
+      || !plan.children.every(child => ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(child.status))) return null;
+  return <details className="subagent-answer-receipt" role="group" aria-label="子任务回执">
+    <summary>子任务回执 · {outcomes(plan.children).summary}</summary>
+    <ChildList plan={plan}/>
+  </details>;
+}
+
+export default function SubagentProgress({ plan, stale = false, onRetry }: SubagentProgressProps) {
+  if (!plan.children.length) return null;
+  const outcome = outcomes(plan.children);
 
   return <section className="subagent-progress" aria-label="子任务进度">
     <header className="subagent-progress-header">
       <strong><GitFork size={16} aria-hidden="true"/>子任务进度</strong>
       <p role="status" className="subagent-progress-summary">
-        <span>{planStatus(children.length, count)}</span><span>{outcomes.join(' · ')}</span>
+        <span>{outcome.status}</span><span>{outcome.summary}</span>
       </p>
     </header>
     {stale && <div className="subagent-progress-stale">
       <p role="status">刷新失败，显示上次读取的进度。</p>
       {onRetry && <button type="button" onClick={onRetry}>重新读取</button>}
     </div>}
-    <ul className="subagent-progress-children" key={plan.plan_id} role="list">
-      {children.map((child, index) => <ChildDetails key={child.child_id} child={child} index={index}/>)}
-    </ul>
+    <ChildList plan={plan}/>
   </section>;
 }

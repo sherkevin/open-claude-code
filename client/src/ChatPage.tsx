@@ -40,6 +40,7 @@ import ConversationTeam from './ConversationTeam';
 import ConversationFeedback, {MessageFeedbackButton,type FeedbackHandle} from './ConversationFeedback';
 import ConversationSidebar, { useConversationSidebar } from './ConversationSidebar';
 import InlineSubagentRun from './InlineSubagentRun';
+import { SubagentAnswerReceipt, type SubagentPlan } from './SubagentProgress';
 import ComposerReferences from './ComposerReferences';
 import { readChatHistory, useChatHistory } from './chatHistory';
 import './chat-history.css';
@@ -96,6 +97,16 @@ export const chatTrialFeatures=(trial:boolean, config?:AppConfig)=>({
 export default function ChatPage({ conversation, assistant, config, models, modelsLoading, initialDraft, initialRequestId, initialEngineering, onEngineeringOpened, draftOwnerId, targetMessageId, onOpenConversation, onChanged, onArchived, onNewConversation, onMemoryDirtyChange, onMemorySavingChange }: { conversation: Conversation; assistant?: Assistant; config: AppConfig; models: ModelOption[]; modelsLoading: boolean; initialDraft?: string; initialRequestId?: string; initialEngineering?: boolean; onEngineeringOpened?: () => void; draftOwnerId?: string; targetMessageId?: string; onOpenConversation?: (conversation: Conversation) => void; onChanged: () => void; onArchived: () => void; onNewConversation?: (selection:ModelSelection,draft:string)=>void; onMemoryDirtyChange?: (dirty:boolean)=>void; onMemorySavingChange?: (saving:boolean)=>void }) {
   const trial = config.deployment_mode === 'trial'; const canSend = configAllows(config, 'messages.send'); const {canUseAttachments,canUseSkills,canUseCompletion,canUseContext,canRecommend} = chatTrialFeatures(trial,config);
   const history = useChatHistory(conversation.id);
+  const [subagentPlans, setSubagentPlans] = useState<Record<string, SubagentPlan>>({});
+  const rememberSubagentPlan = useCallback((runId: string, plan: SubagentPlan | null) => {
+    setSubagentPlans(previous => {
+      if ((previous[runId] ?? null) === plan) return previous;
+      const next = { ...previous };
+      if (plan) next[runId] = plan;
+      else delete next[runId];
+      return next;
+    });
+  }, []);
   const { messages } = history.page;
   const feedbackRef=useRef<FeedbackHandle>(null);
   const [run, setRun] = useState<Run | null>(null); const [events, setEvents] = useState<StreamEvent[]>([]);
@@ -303,6 +314,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const liveSubagentQuestion = !trial && run && events.some(event => event.run_id === run.id && event.type === 'subagent.plan.created')
     ? run.message_id || messages.find(message => message.role === 'user' && message.run_id === run.id)?.id
     : undefined;
+  const questionPlans = new Set(messages.map(message => subagentRunForQuestion(message, liveSubagentQuestion, run?.id)).filter(Boolean));
   const currentSteeringEvent = [...events].reverse().find(event => event.type === 'steer.updated' && event.run_id === run?.id);
   const localSteering = steeringReceipt?.runId === run?.id ? steeringReceipt?.value : null;
   const remoteSteering = currentSteeringEvent?.data as SteeringReceipt | undefined;
@@ -519,6 +531,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   }
   const acceptedReadVersion = useRef(0);
   async function readAcceptedRun(runId: string) {
+    if (!mounted.current) return;
     const version = ++acceptedReadVersion.current;
     // Queued messages and Goal rounds both create their initiating message on the server.
     selectAcceptedRun(runId);
@@ -724,6 +737,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       <div className="message-scroll" ref={scroll} onScroll={() => { const el = scroll.current; if (!el) return; shouldFollow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; setShowScroll(!shouldFollow.current); }}>
       {loading ? <Loader text="正在恢复会话…"/> : messages.length === 0 && !liveText && !showThinking ? <div className="chat-intro"><AiIdentity size="large"/><h2>向{assistant?.name || '业务助手'}提问</h2><p>{assistant?.description || '描述你的问题或目标，也可以上传相关资料。'}</p><div className="chat-intro-note"><ShieldCheck size={16}/>调用需审批的业务工具时，你会先看到操作内容。</div></div> : <div className="messages">{history.page.before && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('older')}>加载更早消息</Button></div>}{messages.filter(m => !(active && m.role === 'assistant' && m.run_id === run?.id) && (m.role !== 'assistant' || !!m.text || m.file_ids.length > 0 || historyResultIds.has(m.id))).map(message => {
         const subagentRunId = trial ? null : subagentRunForQuestion(message, liveSubagentQuestion, run?.id);
+        const answerPlan = !trial && message.role === 'assistant' && message.subagent_run_id;
         return <Fragment key={message.id}>
           <article className={`message ${message.role}`} data-message-id={message.id} data-search-target={message.id === targetMessageId || undefined}>
             <div className="message-label">{message.role === 'assistant'
@@ -732,6 +746,9 @@ export default function ChatPage({ conversation, assistant, config, models, mode
             <div className="message-content">
               {message.role === 'assistant' ? <AnswerMarkdown text={message.text} citations={message.citations}/>
                 : <p className="user-text">{run?.kind === 'compact' && message.run_id === run.id ? '请求原生上下文压缩' : message.text}</p>}
+              {answerPlan && (questionPlans.has(answerPlan)
+                ? <SubagentAnswerReceipt plan={subagentPlans[answerPlan]}/>
+                : <InlineSubagentRun key={answerPlan} runId={answerPlan} answerOnly/>)}
               {message.role === 'user' && !!message.skills?.length && <div className="message-skill-record">
                 {message.skills.map(skill => <span key={skill.id}>@{skill.name}</span>)}
               </div>}
@@ -746,7 +763,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
             </div>
             {message.id === forkBoundary && <div className="chat-fork-boundary" role="separator" aria-label="分支从这里开始"><span>分支从这里开始</span></div>}
           </article>
-          {subagentRunId && <InlineSubagentRun key={subagentRunId} runId={subagentRunId}/>}
+          {subagentRunId && <InlineSubagentRun key={subagentRunId} runId={subagentRunId} onSnapshot={rememberSubagentPlan}/>}
         </Fragment>;
       })}{history.page.after && <div className="chat-history-control"><Button variant="secondary" busy={history.reading} onClick={() => readHistory('newer')}>加载更新消息</Button></div>}{!history.page.after && showThinking && <div className="assistant-working" role="status">
         <AiIdentity size="inline"/><span>{assistant?.name || '助手'}正在处理</span>

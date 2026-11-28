@@ -173,3 +173,19 @@ ul.subagent-progress-children > li {
   .subagent-progress-detail { padding-inline-start: 8px; }
   .subagent-progress-stale button { min-height: 44px; }
 }
+
+
+.subagent-answer-receipt {
+  margin: 12px 0;
+  padding: 8px 12px;
+  border-inline-start: 3px solid #bc8754;
+  background: #faf7f3;
+  color: var(--ink, #131e29);
+}
+
+.subagent-answer-receipt > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.subagent-answer-receipt[open] > summary { margin-bottom: 6px; }

@@ -90,3 +90,36 @@ def test_history_links_only_the_question_that_started_the_plan(client):
     assert {message["id"]: message["has_subagents"] for message in after_question["messages"] if message["role"] == "user"} == {
         plain_id: False, "steering-message": False,
     }
+
+
+def test_only_canonical_settled_answers_get_their_own_partial_plan_link(client):
+    service = client.app.state.service
+    cid = conversation(client)["id"]
+    owner = service.db.one("SELECT * FROM users WHERE username='admin'")
+    route = f"/api/v1/conversations/{cid}/messages"
+    parent, _ = service.prepare_run(cid, {"client_request_id": "partial-run", "text": "分项核对", "file_ids": []}, owner)
+    run_id = parent["run_id"]
+    service.subagents.create_plan(run_id, owner["id"], ["第一项", "第二项"])
+    service.db.execute("UPDATE subagent_children SET status='failed' WHERE parent_run_id=?", (run_id,))
+    for message_id in ("partial-answer", "unrelated-answer"):
+        service.db.execute("INSERT INTO messages(id,conversation_id,role,text,run_id,created_at) VALUES(?,?,'assistant',?,?,?)",
+                           (message_id, cid, "两项都已完成。", run_id, now()))
+    service.db.execute("UPDATE runs SET assistant_message_id='partial-answer' WHERE id=?", (run_id,))
+
+    def only_message(message_id):
+        response = client.get(route, params={"limit": 1, "around": message_id})
+        assert response.status_code == 200
+        records = response.json()["messages"]
+        assert len(records) == 1
+        return records[0]
+
+    assert "subagent_run_id" not in only_message("partial-answer")
+    service.db.execute("UPDATE runs SET status='succeeded' WHERE id=?", (run_id,))
+    assert only_message("partial-answer")["subagent_run_id"] == run_id
+    assert "subagent_run_id" not in only_message("unrelated-answer")
+    service.db.execute("UPDATE messages SET run_id='incorrect' WHERE id='partial-answer'")
+    assert "subagent_run_id" not in only_message("partial-answer")
+    service.db.execute("UPDATE messages SET run_id=NULL WHERE id='partial-answer'")
+    assert only_message("partial-answer")["subagent_run_id"] == run_id
+    service.db.execute("UPDATE subagent_children SET status='succeeded' WHERE parent_run_id=?", (run_id,))
+    assert "subagent_run_id" not in only_message("partial-answer")

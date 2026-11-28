@@ -8,10 +8,22 @@ _HISTORY_SELECT = """
 SELECT m.*, m.rowid AS history_order,
     CASE WHEN m.role = 'user' THEN (
         SELECT r.id FROM runs r
-        WHERE r.conversation_id = m.conversation_id AND r.message_id = m.id AND r.user_id = ?
+        WHERE r.conversation_id = m.conversation_id AND r.message_id = m.id AND r.user_id = ?1
           AND EXISTS (SELECT 1 FROM subagent_children c WHERE c.parent_run_id = r.id)
         ORDER BY r.created_at DESC, r.rowid DESC
         LIMIT 1
+    ) WHEN m.role = 'assistant' THEN (
+        SELECT r.id FROM runs r
+        WHERE r.id = COALESCE(m.run_id, (
+            SELECT CASE WHEN COUNT(*) = 1 THEN MIN(legacy.id) END
+            FROM runs legacy WHERE legacy.conversation_id = m.conversation_id
+              AND legacy.user_id = ?1 AND legacy.assistant_message_id = m.id
+        )) AND r.assistant_message_id = m.id
+          AND r.user_id = ?1 AND r.conversation_id = m.conversation_id
+          AND r.status IN ('succeeded','failed','interrupted','cancelled')
+          AND EXISTS (SELECT 1 FROM subagent_children c WHERE c.parent_run_id = r.id
+                      AND c.user_id = r.user_id AND c.conversation_id = r.conversation_id
+                      AND c.status IN ('failed','interrupted','cancelled'))
     ) END AS subagent_run_id
 FROM messages m WHERE m.conversation_id = ?
 """
@@ -22,8 +34,8 @@ def _history_message_view(row):
     run_id = view.pop("subagent_run_id")
     if view["role"] == "user":
         view["has_subagents"] = run_id is not None
-        if run_id is not None:
-            view["subagent_run_id"] = run_id
+    if run_id is not None:
+        view["subagent_run_id"] = run_id
     return view
 
 

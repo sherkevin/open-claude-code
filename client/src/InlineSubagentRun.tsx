@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
 import { retryRead, transientReadError } from './runReadback';
-import SubagentProgress, { isSubagentActive, type SubagentPlan } from './SubagentProgress';
+import SubagentProgress, { isSubagentActive, SubagentAnswerReceipt, type SubagentPlan } from './SubagentProgress';
 
 // Mount only when the conversation history or the live run has confirmed a plan.
-export default function InlineSubagentRun({ runId }: { runId: string }) {
+export default function InlineSubagentRun({ runId, answerOnly = false, onSnapshot }: {
+  runId: string; answerOnly?: boolean; onSnapshot?: (runId: string, plan: SubagentPlan | null) => void
+}) {
   const [plan, setPlan] = useState<SubagentPlan | null>(null);
   const [stale, setStale] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -18,7 +20,12 @@ export default function InlineSubagentRun({ runId }: { runId: string }) {
       try {
         const snapshot = await retryRead(() => api<SubagentPlan>(`/runs/${encodeURIComponent(runId)}/subagents`, { signal }), signal);
         if (signal.aborted) return;
+        if (snapshot.plan_id !== runId) {
+          setPlan(null); setStale(true); onSnapshot?.(runId, null);
+          return;
+        }
         setPlan(snapshot);
+        onSnapshot?.(runId, snapshot);
         setStale(false);
         if (snapshot.children.some(child => isSubagentActive(child.status))) {
           timer = window.setTimeout(read, 1200);
@@ -26,14 +33,16 @@ export default function InlineSubagentRun({ runId }: { runId: string }) {
       } catch (cause) {
         if (signal.aborted) return;
         setStale(true);
+        onSnapshot?.(runId, null);
         if (transientReadError(cause)) timer = window.setTimeout(read, 5000);
         else setPlan(null);
       }
     }
     void read();
-    return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [runId, attempt]);
+    return () => { controller.abort(); window.clearTimeout(timer); onSnapshot?.(runId, null); };
+  }, [runId, attempt, onSnapshot]);
 
+  if (answerOnly) return stale ? null : <SubagentAnswerReceipt plan={plan}/>;
   if (plan?.children.length) return <SubagentProgress plan={plan} stale={stale} onRetry={retry}/>;
   if (plan && !stale) return null;
   return <div className="inline-subagent-readback" role="status">

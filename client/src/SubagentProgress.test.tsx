@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import SubagentProgress, { type SubagentChild } from './SubagentProgress';
+import SubagentProgress, { SubagentAnswerReceipt, type SubagentChild } from './SubagentProgress';
 
 const child = (status: string, index: number): SubagentChild => ({
   child_id: `child-${index}`, role: 'harness_analysis', status, stop_reason: null,
@@ -90,5 +90,33 @@ describe('subagent progress', () => {
   it('renders actual structured output and omits empty plans', () => {
     expect(render([{ ...child('succeeded', 0), result: { output: { orders: 0 } } }])).toContain('&quot;orders&quot;: 0');
     expect(render([])).toBe('');
+  });
+});
+
+
+describe('subtask receipt beside a completed answer', () => {
+  function receipt(children: SubagentChild[]) {
+    return renderToStaticMarkup(<SubagentAnswerReceipt plan={{ plan_id: 'confirmed-parent', counts: { succeeded: 99 }, children }}/>);
+  }
+
+  it('keeps the individual outputs behind a factual summary of mixed outcomes', () => {
+    const html = receipt([
+      { ...child('succeeded', 0), display_title: '订单导出', result: { output: '独立子项原答。' } },
+      { ...child('failed', 1), display_title: '发票预览', stop_reason: 'executor_error' },
+      child('interrupted', 2), child('cancelled', 3),
+    ]);
+    expect(html).toContain('aria-label="子任务回执"');
+    expect(html).toContain('1/4 项完成 · 1 项失败 · 1 项已取消 · 1 项已中断');
+    expect(html).toContain('独立子项原答。');
+    expect(html).toContain('发票预览');
+    expect(html).toContain('执行子任务时出错。');
+  });
+
+  it('only shows verified and fully settled plans with an unsuccessful item', () => {
+    expect(receipt([])).toBe('');
+    expect(receipt([child('succeeded', 0)])).toBe('');
+    expect(receipt([child('failed', 0), child('running', 1)])).toBe('');
+    expect(receipt([child('failed', 0), child('unknown', 1)])).toBe('');
+    expect(receipt([child('failed', 0)])).toContain('0/1 项完成 · 1 项失败');
   });
 });
