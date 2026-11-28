@@ -1,6 +1,7 @@
 import { ChevronRight, Circle, CircleCheck, CircleHelp, CirclePause, CircleX, Clock3, GitFork, ShieldCheck, Timer, TriangleAlert } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { AnswerMarkdown } from './Sources';
+import { FailedChildFollowup } from './FailedChildFollowup';
 import './subagent-progress.css';
 
 export interface SubagentObservedUsage {
@@ -12,6 +13,7 @@ export interface SubagentObservedUsage {
 
 export interface SubagentChild {
   child_id: string;
+  parent_run_id?: string;
   display_title?: string | null;
   role: string;
   status: string;
@@ -99,7 +101,7 @@ function hasSubagentOutput(output: unknown) {
   return typeof output === 'string' ? Boolean(output.trim()) : output != null;
 }
 
-export function SubagentResult({ child }: { child: SubagentChild }) {
+export function SubagentResult({ child, index }: { child: SubagentChild; index: number }) {
   const output = child.result?.output;
   const hasOutput = hasSubagentOutput(output);
   const note = childNote(child, hasOutput);
@@ -112,6 +114,7 @@ export function SubagentResult({ child }: { child: SubagentChild }) {
     {hasOutput && <div className="subagent-progress-result" role="group" aria-label="子任务结果" tabIndex={0}>
       {typeof output === 'string' ? <AnswerMarkdown text={output} mode="subagent"/> : <pre>{JSON.stringify(output, null, 2)}</pre>}
     </div>}
+    {child.role === 'harness_analysis' && child.status === 'failed' && <FailedChildFollowup title={subagentTitle(child, index)} parentRunId={child.parent_run_id}/>}
     {!!tokens.length && <p className="subagent-progress-usage">{tokens.join(' · ')} token</p>}
   </div>;
 }
@@ -126,7 +129,7 @@ function ChildDetails({ child, index }: { child: SubagentChild; index: number })
         <span className="subagent-progress-child-status">{label}{hasSubagentOutput(child.result?.output) && ' · 有结果'}</span>
         <ChevronRight className="subagent-progress-chevron" size={15} aria-hidden="true"/>
       </summary>
-      <SubagentResult child={child}/>
+      <SubagentResult child={child} index={index}/>
     </details>
   </li>;
 }

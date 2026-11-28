@@ -7,6 +7,7 @@ import ScheduleEditor from './ScheduleEditor';
 import ScheduleRunNow from './ScheduleRunNow';
 import { toolLabel } from './display';
 import { isSubagentActive, SubagentResult, subagentStatus, subagentTitle } from './SubagentProgress';
+import type { SingleChildDraft } from './FailedChildFollowup';
 import type { SubagentChild, SubagentPlan } from './SubagentProgress';
 import type { StreamEvent } from './types';
 import './conversation-tasks.css';
@@ -16,6 +17,8 @@ export interface ConversationTasksProps {
   runId?: string;
   canDelegate: boolean;
   onSummarize: (results: string) => void;
+  singleDraft?: SingleChildDraft | null;
+  onSingleChange?: (runId: string, text: string | null) => void;
   events?: StreamEvent[];
   canSchedule?: boolean;
   canScheduleAgent?: boolean;
@@ -317,16 +320,22 @@ type PlanActionsProps = {
   canDelegate: boolean;
   onSummarize: ConversationTasksProps['onSummarize'];
   onChange: (next?: SubagentPlan) => void;
+  singleDraft?: SingleChildDraft;
+  onSingleChange?: ConversationTasksProps['onSingleChange'];
 };
 
-function PlanActions({ runId, plan, canDelegate, onSummarize, onChange }: PlanActionsProps) {
+export function delegatedTasks(text: string, single: boolean) {
+  return (single ? [text] : text.split('\n')).map(task => task.trim()).filter(Boolean);
+}
+
+function PlanActions({ runId, plan, canDelegate, onSummarize, onChange, singleDraft, onSingleChange }: PlanActionsProps) {
   const formId = useId();
   const [creating, setCreating] = useState(false);
   const [delegatedText, setDelegatedText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const input = useRef<HTMLTextAreaElement>(null);
-  const tasks = delegatedText.split('\n').map(task => task.trim()).filter(Boolean);
+  const tasks = delegatedTasks(singleDraft?.text ?? delegatedText, !!singleDraft);
   const validTasks = tasks.length > 0 && tasks.length <= 4 && tasks.every(task => task.length <= 2000);
   const canCancel = plan.children.some(child => isSubagentActive(child.status) && child.status !== 'cancelling');
   const completed = plan.children.flatMap((child, index) => {
@@ -334,7 +343,7 @@ function PlanActions({ runId, plan, canDelegate, onSummarize, onChange }: PlanAc
     return child.status === 'succeeded' && typeof output === 'string' && output.trim() ? [`${subagentTitle(child, index)}\n${output}`] : [];
   });
 
-  useEffect(() => { if (creating && canDelegate) input.current?.focus(); }, [creating, canDelegate]);
+  useEffect(() => { if ((creating || singleDraft) && canDelegate) input.current?.focus(); }, [creating, canDelegate, singleDraft?.runId]);
 
   async function changePlan(action: 'start' | 'cancel') {
     if (busy || (action === 'start' && (!canDelegate || !validTasks)) || (action === 'cancel' && !canCancel)) return;
@@ -347,8 +356,8 @@ function PlanActions({ runId, plan, canDelegate, onSummarize, onChange }: PlanAc
         ? await post<SubagentPlan>(path, { mode: 'harness', tasks })
         : await post<SubagentPlan>(`${path}/cancel`), runId);
       if (action === 'start') {
-        setCreating(false);
-        setDelegatedText('');
+        if (singleDraft) onSingleChange?.(runId, null);
+        else { setCreating(false); setDelegatedText(''); }
       }
     } catch (failure) { setError(errorText(failure)); }
     finally { setBusy(false); onChange(next); }
@@ -360,14 +369,17 @@ function PlanActions({ runId, plan, canDelegate, onSummarize, onChange }: PlanAc
     {(completed.length > 0 || canCancel || showCreate) && <div className="task-sidebar-actions">
       {!!completed.length && <Button variant="secondary" onClick={() => onSummarize(completed.join('\n\n'))}>用结果起草汇总</Button>}
       {canCancel && <Button variant="secondary" busy={busy} onClick={() => void changePlan('cancel')}>取消子任务</Button>}
-      {showCreate && <Button variant="ghost" aria-expanded={creating} aria-controls={formId} onClick={() => setCreating(value => !value)}>
+      {showCreate && !singleDraft && <Button variant="ghost" aria-expanded={creating} aria-controls={formId} onClick={() => setCreating(value => !value)}>
         <Plus size={15} aria-hidden="true"/>分配子任务
       </Button>}
     </div>}
-    {showCreate && <div id={formId} hidden={!creating}>
+    {showCreate && <div id={formId} hidden={!creating && !singleDraft}>
       <form className="task-sidebar-form" onSubmit={event => { event.preventDefault(); void changePlan('start'); }}>
-        <Field label="分配文字分析"><textarea ref={input} value={delegatedText} onChange={event => setDelegatedText(event.target.value)}
-          placeholder="每行一项，最多四项" rows={2} maxLength={8004}/></Field>
+        {singleDraft && <p>将为本轮启动一个独立子任务。{delegatedText && '原分配草稿已保留。'}</p>}
+        <Field label="分配文字分析"><textarea ref={input} value={singleDraft?.text ?? delegatedText} disabled={!!singleDraft && busy} onChange={event =>
+          singleDraft ? onSingleChange?.(runId, event.target.value) : setDelegatedText(event.target.value)}
+          placeholder={singleDraft ? '填写本项要求' : '每行一项，最多四项'} rows={2} maxLength={singleDraft ? 2000 : 8004}/></Field>
+        {singleDraft && <Button variant="ghost" disabled={busy} onClick={() => onSingleChange?.(runId, null)}>放弃本次带入</Button>}
         <Button type="submit" variant="secondary" busy={busy} disabled={!validTasks}>启动子任务</Button>
       </form>
     </div>}
@@ -390,16 +402,17 @@ function ChildRows({ plan, onSelect }: { plan: SubagentPlan; onSelect: SelectChi
   </ul>;
 }
 
-type SubagentTasksProps = Pick<ConversationTasksProps, 'runId' | 'canDelegate' | 'onSummarize'> & {
+type SubagentTasksProps = Pick<ConversationTasksProps, 'runId' | 'canDelegate' | 'onSummarize' | 'singleDraft' | 'onSingleChange'> & {
   path: string;
   visible: boolean;
   heading: string;
   onSelect: SelectChild;
 };
 
-function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading, onSelect }: SubagentTasksProps) {
+function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading, onSelect, singleDraft, onSingleChange }: SubagentTasksProps) {
   const history = useTaskRead<PlanRun[]>(path, { refreshKey: runId, enabled: visible });
   const current = usePlan(runId, canDelegate, visible);
+  const canUseSingle = !!singleDraft && singleDraft.runId === runId && canDelegate && !current.error && current.value?.children.length === 0;
   const [historyOpen, setHistoryOpen] = useState(false);
   const [chosenRun, setChosenRun] = useState('');
   const pastRuns = history.value?.filter(item => item.id !== runId) ?? [];
@@ -437,10 +450,15 @@ function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading
         {runId ? '当前轮次暂无子任务。' : '暂无子任务。'}
         {!pastRuns.length && !canDelegate && <><br/>助手分派后会显示在这里。</>}
       </p>}
+    {singleDraft && !canUseSingle && <div className="task-sidebar-detail-block" role="group" aria-label="单项分配草稿">
+      <p>{runId === singleDraft.runId && !current.value && !current.error ? '正在读取目标轮次…' : '目标轮次当前无法分配。已保留本次要求，可复制使用。'}</p>
+      <Field label="已保留的单项要求"><textarea readOnly value={singleDraft.text}/></Field>
+      <Button variant="ghost" onClick={() => onSingleChange?.(singleDraft.runId, null)}>清除单项草稿</Button>
+    </div>}
     {current.value && runId && <>
       <ChildRows plan={current.value} onSelect={onSelect}/>
       <PlanActions key={runId} runId={runId} plan={current.value} canDelegate={canDelegate && !current.error}
-        onSummarize={onSummarize} onChange={next => planChanged(current, next)}/>
+        onSummarize={onSummarize} onChange={next => planChanged(current, next)} singleDraft={canUseSingle && singleDraft ? singleDraft : undefined} onSingleChange={onSingleChange}/>
     </>}
     {pastRunId && <details className="task-sidebar-history" open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}>
       <summary tabIndex={0}><ChevronRight size={15} aria-hidden="true"/>历史子任务 <small>{pastRuns.length} 轮</small></summary>
@@ -576,7 +594,7 @@ function ChildTaskDetail({ selection, events, onBack }: { selection: ChildSelect
     <ReadError error={plan.error} hasValue={!!child}/>
     {child ? <div className="task-sidebar-detail-block">
       <h4>结果</h4>
-      <SubagentResult child={child}/>
+      <SubagentResult child={child} index={index}/>
     </div> : <p className="task-sidebar-muted">找不到这项子任务。</p>}
     {child && <ReadError error={trace.error} hasValue={!!records}/>}
     {child && !records && !trace.error && <p className="task-sidebar-muted" role="status">正在读取工具与审批记录…</p>}
@@ -593,13 +611,14 @@ function ChildTaskDetail({ selection, events, onBack }: { selection: ChildSelect
   </section>;
 }
 
-function ConversationTaskBody({ conversationId, runId, canDelegate, canSchedule = true, canScheduleAgent = false, events, onSummarize }: ConversationTasksProps) {
+function ConversationTaskBody({ conversationId, runId, canDelegate, canSchedule = true, canScheduleAgent = false, events, onSummarize, singleDraft, onSingleChange }: ConversationTasksProps) {
   const heading = useId();
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const [selection, setSelection] = useState<ChildSelection | null>(null);
   const path = `/conversations/${encodeURIComponent(conversationId)}`;
 
+  useEffect(() => { if (singleDraft?.runId) setSelection(null); }, [singleDraft?.runId]);
   useEffect(() => {
     if (selection || !trigger.current) return;
     const fallback = root.current?.querySelector<HTMLElement>('.task-sidebar-section h3[tabindex="-1"]');
@@ -611,7 +630,7 @@ function ConversationTaskBody({ conversationId, runId, canDelegate, canSchedule 
     <div hidden={!!selection}>
       <ScheduledTasks canSchedule={canSchedule} canScheduleAgent={canScheduleAgent} path={`${path}/schedules`} visible={!selection}/>
       <SubagentTasks path={`${path}/subagent-plans`} runId={runId} canDelegate={canDelegate} onSummarize={onSummarize}
-        heading={heading} visible={!selection} onSelect={(child, button) => { trigger.current = button; setSelection(child); }}/>
+        heading={heading} visible={!selection} singleDraft={singleDraft} onSingleChange={onSingleChange} onSelect={(child, button) => { trigger.current = button; setSelection(child); }}/>
     </div>
     {selection && <ChildTaskDetail events={events} selection={selection} onBack={() => setSelection(null)}/>}
   </div>;

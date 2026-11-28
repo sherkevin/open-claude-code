@@ -40,6 +40,7 @@ import ConversationTeam from './ConversationTeam';
 import ConversationFeedback, {MessageFeedbackButton,type FeedbackHandle} from './ConversationFeedback';
 import ConversationSidebar, { useConversationSidebar } from './ConversationSidebar';
 import InlineSubagentRun from './InlineSubagentRun';
+import { FailedChildComposer, type SingleChildDraft } from './FailedChildFollowup';
 import { SubagentAnswerReceipt, type SubagentPlan } from './SubagentProgress';
 import ComposerReferences from './ComposerReferences';
 import { readChatHistory, useChatHistory } from './chatHistory';
@@ -97,6 +98,7 @@ export const chatTrialFeatures=(trial:boolean, config?:AppConfig)=>({
 export default function ChatPage({ conversation, assistant, config, models, modelsLoading, initialDraft, initialRequestId, initialEngineering, onEngineeringOpened, draftOwnerId, targetMessageId, onOpenConversation, onChanged, onArchived, onNewConversation, onMemoryDirtyChange, onMemorySavingChange }: { conversation: Conversation; assistant?: Assistant; config: AppConfig; models: ModelOption[]; modelsLoading: boolean; initialDraft?: string; initialRequestId?: string; initialEngineering?: boolean; onEngineeringOpened?: () => void; draftOwnerId?: string; targetMessageId?: string; onOpenConversation?: (conversation: Conversation) => void; onChanged: () => void; onArchived: () => void; onNewConversation?: (selection:ModelSelection,draft:string)=>void; onMemoryDirtyChange?: (dirty:boolean)=>void; onMemorySavingChange?: (saving:boolean)=>void }) {
   const trial = config.deployment_mode === 'trial'; const canSend = configAllows(config, 'messages.send'); const {canUseAttachments,canUseSkills,canUseCompletion,canUseContext,canRecommend} = chatTrialFeatures(trial,config);
   const history = useChatHistory(conversation.id);
+  const [singleDraft, setSingleDraft] = useState<SingleChildDraft | null>(null);
   const [subagentPlans, setSubagentPlans] = useState<Record<string, SubagentPlan>>({});
   const rememberSubagentPlan = useCallback((runId: string, plan: SubagentPlan | null) => {
     setSubagentPlans(previous => {
@@ -132,7 +134,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [sending, setSending] = useState(false); const [retrying, setRetrying] = useState(false);
   const steeringRequest = useRef<{ runId: string; text: string; id: string } | null>(null);
   const [steeringReceipt, setSteeringReceipt] = useState<{ runId: string; value: SteeringReceipt } | null>(null);
-  const { draft: { text: input, files, skills: selectedSkills, preview }, readDraft, setText: setInput, setFiles,
+  const { draft: { text: input, files, skills: selectedSkills, preview, submission }, readDraft, setText: setInput, setFiles,
     setSkills: setSelectedSkills, setPreview, setSubmission, finishSubmission } = useComposerDraft(draftOwnerId, conversation.id, initialDraft || '', initialRequestId && initialDraft
       ? { id: initialRequestId, signature: JSON.stringify([initialDraft.trim(), [], []]), queued: false } : undefined);
   const [engineeringEntry, setEngineeringEntry] = useState<ChatEngineeringEntry | null>(() =>
@@ -698,7 +700,30 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     finally { if (mounted.current) setSavingModel(false); }
   };
   const openRecommendation = () => { const summary = fitnessTaskSummary(input,messages,assistant?.description||''); setRecommendSummary(summary); setRecommendation(null); setRecommendOpen(true); void recommend(summary); };
-  return <div className="chat-page">
+  const canPrepareFollowup = !trial && canSend && !archived && conversation.runtime_type === 'harness';
+  const followupBlocked = active ? '发送普通新问需等当前轮次结束。'
+    : queue.state?.items.length ? '待发队列处理完后可就此项另问。'
+    : submission ? '当前草稿的提交待核对，请先确认其发送状态。'
+    : loading || sending || refreshingRun ? '正在读取或提交当前会话，请稍后再试。' : '';
+  return <FailedChildComposer.Provider value={canPrepareFollowup ? {
+    text: input, blocked: followupBlocked, hasSelections: !!(files.length || selectedSkills.length),
+    canDelegate: config.harness_subagents === true,
+    availableRunId: config.harness_subagents && canSteer ? run?.id : undefined,
+    transfer: (target, text) => {
+      if (!mounted.current || singleDraft || !canSteer || run?.id !== target || !config.harness_subagents) return false;
+      setSingleDraft({ runId: target, text });
+      sidebar.setOpen(true);
+      return true;
+    },
+    write: (expected, next) => {
+      const current = readDraft();
+      if (!mounted.current || followupBlocked || submissionPending.current || current.submission || current.text !== expected) return false;
+      fillDraft(next);
+      if (!sidebar.docked) sidebar.setOpen(false);
+      requestAnimationFrame(() => { if (mounted.current) textInput.current?.focus(); });
+      return true;
+    },
+  } : null}><div className="chat-page">
     <header className="chat-header">
       <div className="chat-heading"><AiIdentity active={aiWorking}/><div>
         <h1>{title || '新会话'}</h1><span>{assistant?.name || '业务助手'}{active && <><i/> {statusLabels[run.status]}</>}</span>
@@ -865,6 +890,8 @@ export default function ChatPage({ conversation, assistant, config, models, mode
       onFile={referenceFile} onClose={() => setShowReferences(false)}/>}
     {!trial && sidebar.open && <ConversationSidebar docked={sidebar.docked} onClose={() => sidebar.setOpen(false)}>
       <ConversationTasks conversationId={conversation.id} runId={active ? run?.id : undefined}
+        singleDraft={singleDraft} onSingleChange={(target, text) => setSingleDraft(current =>
+          current?.runId === target ? (text === null ? null : { ...current, text }) : current)}
         canDelegate={!!config.harness_subagents && canSteer} canSchedule={canSend && !archived} canScheduleAgent={conversation.runtime_type === "harness"} events={events}
         onSummarize={results => {
           const summary = `请汇总以下子任务结果，并注明尚未验证的结论。\n\n${results}`;
@@ -882,7 +909,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     </div>{!trial && inspectionView && <SessionTrajectory conversationId={conversation.id} title={title}
       initialView={inspectionView} onViewChange={setInspectionView} onClose={() => setInspectionView(null)}
       context={{ models, busy: active || sending || uploading || savingModel || loading, run,
-        onCompact: result => { setInspectionView(null); history.addAccepted(result.message); setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', kind: 'compact', compaction: null, assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null }); void api<Run>(`/runs/${result.run_id}`).then(applyRunReadback).catch(e => { if (mounted.current) setError(errorText(e)); }); onChangedRef.current(); } }}/>} {preview && <FilePreview key={preview.id} file={preview} onClose={() => setPreview(null)}/>}{rename && <Modal title="重命名会话" onClose={() => { if (!savingTitle) setRename(false); }}><form onSubmit={e => { e.preventDefault(); void saveTitle(); }}><div className="modal-body"><Field label="会话名称"><input value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={savingTitle} maxLength={200} required autoFocus/></Field></div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={savingTitle} onClick={() => setRename(false)}>取消</Button><Button busy={savingTitle} disabled={!titleDraft.trim()} type="submit">保存名称</Button></footer></form></Modal>}{archive && <Modal title="归档此会话" onClose={() => setArchive(false)}><div className="modal-body"><p>归档后，会话会从最近列表中移除。会话和附件仍保存在服务端。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={() => setArchive(false)}>取消</Button><Button onClick={async () => { try { await patch(`/conversations/${conversation.id}`, { archived: true }); onChangedRef.current(); onArchived(); } catch (e) { setError(errorText(e)); setArchive(false); } }}>归档会话</Button></footer></Modal>}{recommendOpen && <Modal title="为当前任务推荐模型" onClose={() => { if (!recommendBusy) setRecommendOpen(false); }}><div className="modal-body"><p>根据当前问题、最近消息和助手职责推荐模型，只使用任务摘要。推荐生效后将固定使用该模型，可随时改回自动选择。</p><div className="fitness-context" role="status"><span className="eyebrow">当前会话上下文</span><p>{recommendSummary}</p></div>{recommendation && <div className="recommendation-result"><strong>推荐模型：{recommendation.model_label} · {recommendation.reasoning_level}</strong><p>{recommendation.reason}</p><small>路由器：{recommendation.router.model_id} · 输入 {recommendation.router.input_chars} 字符 · {recommendation.router.mode === 'provider' || recommendation.router.mode === 'provider_fallback' ? '已使用授权模型路由' : recommendation.router.target_status === 'unavailable' ? `目标线路不可用（${recommendation.router.target_model_id}）` : '本地备用规则'}</small></div>}</div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={recommendBusy} onClick={() => setRecommendOpen(false)}>{recommendation ? '完成' : '关闭'}</Button></footer></Modal>}</div>;
+        onCompact: result => { setInspectionView(null); history.addAccepted(result.message); setRun({ id: result.run_id, conversation_id: conversation.id, status: 'queued', kind: 'compact', compaction: null, assistant_message_id: null, error: null, usage: null, approvals: [], created_at: new Date().toISOString(), completed_at: null }); void api<Run>(`/runs/${result.run_id}`).then(applyRunReadback).catch(e => { if (mounted.current) setError(errorText(e)); }); onChangedRef.current(); } }}/>} {preview && <FilePreview key={preview.id} file={preview} onClose={() => setPreview(null)}/>}{rename && <Modal title="重命名会话" onClose={() => { if (!savingTitle) setRename(false); }}><form onSubmit={e => { e.preventDefault(); void saveTitle(); }}><div className="modal-body"><Field label="会话名称"><input value={titleDraft} onChange={e => setTitleDraft(e.target.value)} disabled={savingTitle} maxLength={200} required autoFocus/></Field></div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={savingTitle} onClick={() => setRename(false)}>取消</Button><Button busy={savingTitle} disabled={!titleDraft.trim()} type="submit">保存名称</Button></footer></form></Modal>}{archive && <Modal title="归档此会话" onClose={() => setArchive(false)}><div className="modal-body"><p>归档后，会话会从最近列表中移除。会话和附件仍保存在服务端。</p></div><footer className="modal-footer"><Button variant="secondary" onClick={() => setArchive(false)}>取消</Button><Button onClick={async () => { try { await patch(`/conversations/${conversation.id}`, { archived: true }); onChangedRef.current(); onArchived(); } catch (e) { setError(errorText(e)); setArchive(false); } }}>归档会话</Button></footer></Modal>}{recommendOpen && <Modal title="为当前任务推荐模型" onClose={() => { if (!recommendBusy) setRecommendOpen(false); }}><div className="modal-body"><p>根据当前问题、最近消息和助手职责推荐模型，只使用任务摘要。推荐生效后将固定使用该模型，可随时改回自动选择。</p><div className="fitness-context" role="status"><span className="eyebrow">当前会话上下文</span><p>{recommendSummary}</p></div>{recommendation && <div className="recommendation-result"><strong>推荐模型：{recommendation.model_label} · {recommendation.reasoning_level}</strong><p>{recommendation.reason}</p><small>路由器：{recommendation.router.model_id} · 输入 {recommendation.router.input_chars} 字符 · {recommendation.router.mode === 'provider' || recommendation.router.mode === 'provider_fallback' ? '已使用授权模型路由' : recommendation.router.target_status === 'unavailable' ? `目标线路不可用（${recommendation.router.target_model_id}）` : '本地备用规则'}</small></div>}</div><footer className="modal-footer"><Button type="button" variant="secondary" disabled={recommendBusy} onClick={() => setRecommendOpen(false)}>{recommendation ? '完成' : '关闭'}</Button></footer></Modal>}</div></FailedChildComposer.Provider>;
 }
 
 export function LiveActivity({ run, events, stage, connectionState, inlineSubagents = false }: { run: Run; events: StreamEvent[]; stage: string; connectionState: 'connected' | 'reconnecting'; inlineSubagents?: boolean }) {
