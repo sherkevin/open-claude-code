@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import ConversationTasks, { childTaskRecords, ScheduleRow } from './ConversationTasks';
+import { ApiError } from './api';
+import ConversationTasks, { childTaskRecords, PlanActionNotice, ScheduleRow } from './ConversationTasks';
 import type { StreamEvent } from './types';
 
 const at = '2026-11-23T01:00:00Z';
@@ -85,5 +86,37 @@ describe('recurring task lifecycle controls', () => {
     expect(renderToStaticMarkup(<ScheduleRow task={{...fixture,status:'paused'}} {...callbacks}/>)).toContain('>恢复</button>');
     expect(renderToStaticMarkup(<ScheduleRow task={{...fixture,recurrence:'once'}} {...callbacks}/>)).not.toContain('>暂停</button>');
     expect(renderToStaticMarkup(<ScheduleRow task={{...fixture,status:'exhausted'}} {...callbacks}/>)).not.toContain('>恢复</button>');
+  });
+});
+
+describe('uncertain delegation receipts', () => {
+  const lost = new ApiError('请检查网络后重试。', 0, 'NETWORK_ERROR');
+  const child = { child_id: 'child-a', role: 'harness_analysis', status: 'running' };
+  const plan = { plan_id: 'new-run', children: [child], counts: { running: 1 } };
+  const render = (cause: unknown, snapshot?: typeof plan, action: 'start' | 'cancel' = 'start') =>
+    renderToStaticMarkup(<PlanActionNotice issue={{ action, cause }} runId="new-run" snapshot={snapshot}/>);
+
+  it('reports the confirmed number of children while leaving the submission unconfirmed', () => {
+    const html = render(lost, plan);
+    expect(html).toContain('本轮已读到 1 项子任务');
+    expect(html).toContain('尚未确认哪些子项来自这次提交');
+    expect(html).not.toContain('重试');
+    expect(html).not.toContain('已启动');
+  });
+
+  it('directs the user to read the target round when the read failed, returned no rows or belongs elsewhere', () => {
+    for (const snapshot of [undefined, { ...plan, children: [] }, { ...plan, plan_id: 'other-run' }]) {
+      expect(render(lost, snapshot)).toContain('刷新子任务');
+      expect(render(lost, snapshot)).not.toContain('1 项子任务');
+    }
+    expect(render(new Error('Malformed reply'), plan)).toContain('本次启动回执未收到');
+    expect(render(new ApiError('网关失联', 504, 'GATEWAY_TIMEOUT'), plan)).toContain('本次启动回执未收到');
+  });
+
+  it('retains authoritative denials and the separate cancel error', () => {
+    const denied = new ApiError('父任务已有不同的子任务计划', 409, 'SUBAGENT_PLAN_EXISTS');
+    expect(render(denied, plan)).toContain(denied.message);
+    expect(render(denied, plan)).not.toContain('回执未收到');
+    expect(render(lost, plan, 'cancel')).toContain(lost.message);
   });
 });

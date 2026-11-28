@@ -318,6 +318,7 @@ type PlanActionsProps = {
   runId: string;
   plan: SubagentPlan;
   canDelegate: boolean;
+  readError?: string;
   onSummarize: ConversationTasksProps['onSummarize'];
   onChange: (next?: SubagentPlan) => void;
   singleDraft?: SingleChildDraft;
@@ -328,12 +329,27 @@ export function delegatedTasks(text: string, single: boolean) {
   return (single ? [text] : text.split('\n')).map(task => task.trim()).filter(Boolean);
 }
 
-function PlanActions({ runId, plan, canDelegate, onSummarize, onChange, singleDraft, onSingleChange }: PlanActionsProps) {
+type PlanActionIssue = { action: 'start' | 'cancel'; cause: unknown };
+
+export function PlanActionNotice({ issue, runId, snapshot }: { issue?: PlanActionIssue; runId: string; snapshot?: SubagentPlan }) {
+  if (!issue) return null;
+  const { action, cause } = issue;
+  const rejected = cause instanceof ApiError && cause.status >= 400 && cause.status < 500 && cause.status !== 408;
+  if (action === 'cancel' || rejected) return <ErrorNotice message={errorText(cause)}/>;
+
+  const count = snapshot?.plan_id === runId ? snapshot.children.length : 0;
+  return <p className="task-sidebar-muted" role="status">
+    {count > 0 ? `本轮已读到 ${count} 项子任务。本次启动回执未收到，尚未确认哪些子项来自这次提交，请核对列表中的进度和结果。`
+      : '本次启动回执未收到。请点「刷新子任务」核对本轮状态。'}
+  </p>;
+}
+
+function PlanActions({ runId, plan, canDelegate, onSummarize, onChange, singleDraft, onSingleChange, readError }: PlanActionsProps) {
   const formId = useId();
   const [creating, setCreating] = useState(false);
   const [delegatedText, setDelegatedText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [issue, setIssue] = useState<PlanActionIssue>();
   const input = useRef<HTMLTextAreaElement>(null);
   const tasks = delegatedTasks(singleDraft?.text ?? delegatedText, !!singleDraft);
   const validTasks = tasks.length > 0 && tasks.length <= 4 && tasks.every(task => task.length <= 2000);
@@ -348,7 +364,7 @@ function PlanActions({ runId, plan, canDelegate, onSummarize, onChange, singleDr
   async function changePlan(action: 'start' | 'cancel') {
     if (busy || (action === 'start' && (!canDelegate || !validTasks)) || (action === 'cancel' && !canCancel)) return;
     setBusy(true);
-    setError('');
+    setIssue(undefined);
     let next: SubagentPlan | undefined;
     try {
       const path = planPath(runId);
@@ -359,13 +375,13 @@ function PlanActions({ runId, plan, canDelegate, onSummarize, onChange, singleDr
         if (singleDraft) onSingleChange?.(runId, null);
         else { setCreating(false); setDelegatedText(''); }
       }
-    } catch (failure) { setError(errorText(failure)); }
+    } catch (cause) { setIssue({ action, cause }); }
     finally { setBusy(false); onChange(next); }
   }
 
   const showCreate = canDelegate && !plan.children.length;
   return <>
-    <ErrorNotice message={error}/>
+    <PlanActionNotice issue={issue} runId={runId} snapshot={readError ? undefined : plan}/>
     {(completed.length > 0 || canCancel || showCreate) && <div className="task-sidebar-actions">
       {!!completed.length && <Button variant="secondary" onClick={() => onSummarize(completed.join('\n\n'))}>用结果起草汇总</Button>}
       {canCancel && <Button variant="secondary" busy={busy} onClick={() => void changePlan('cancel')}>取消子任务</Button>}
@@ -418,6 +434,9 @@ function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading
   const pastRuns = history.value?.filter(item => item.id !== runId) ?? [];
   const pastRunId = pastRuns.find(item => item.id === chosenRun)?.id ?? pastRuns[0]?.id;
   const past = usePlan(historyOpen ? pastRunId : undefined, false, visible);
+  const draftReadback = singleDraft?.runId === runId ? current : past;
+  const draftHasChildren = !!singleDraft && !draftReadback.error
+    && draftReadback.value?.plan_id === singleDraft.runId && draftReadback.value.children.length > 0;
 
   function refresh() {
     history.refresh();
@@ -451,13 +470,14 @@ function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading
         {!pastRuns.length && !canDelegate && <><br/>助手分派后会显示在这里。</>}
       </p>}
     {singleDraft && !canUseSingle && <div className="task-sidebar-detail-block" role="group" aria-label="单项分配草稿">
-      <p>{runId === singleDraft.runId && !current.value && !current.error ? '正在读取目标轮次…' : '目标轮次当前无法分配。已保留本次要求，可复制使用。'}</p>
+      <p>{draftHasChildren ? '本次要求已保留，可与该轮子任务核对。'
+        : runId === singleDraft.runId && !current.value && !current.error ? '正在读取目标轮次…' : '目标轮次当前无法分配。已保留本次要求，可复制使用。'}</p>
       <Field label="已保留的单项要求"><textarea readOnly value={singleDraft.text}/></Field>
       <Button variant="ghost" onClick={() => onSingleChange?.(singleDraft.runId, null)}>清除单项草稿</Button>
     </div>}
     {current.value && runId && <>
       <ChildRows plan={current.value} onSelect={onSelect}/>
-      <PlanActions key={runId} runId={runId} plan={current.value} canDelegate={canDelegate && !current.error}
+      <PlanActions key={runId} runId={runId} plan={current.value} canDelegate={canDelegate && !current.error} readError={current.error}
         onSummarize={onSummarize} onChange={next => planChanged(current, next)} singleDraft={canUseSingle && singleDraft ? singleDraft : undefined} onSingleChange={onSingleChange}/>
     </>}
     {pastRunId && <details className="task-sidebar-history" open={historyOpen} onToggle={event => setHistoryOpen(event.currentTarget.open)}>
@@ -473,7 +493,7 @@ function SubagentTasks({ path, runId, canDelegate, onSummarize, visible, heading
         {past.value && <>
           <ChildRows plan={past.value} onSelect={onSelect}/>
           {!past.value.children.length && <p className="task-sidebar-muted">本轮没有可查看的子任务。</p>}
-          <PlanActions key={pastRunId} runId={pastRunId} plan={past.value} canDelegate={false}
+          <PlanActions key={pastRunId} runId={pastRunId} plan={past.value} canDelegate={false} readError={past.error}
             onSummarize={onSummarize} onChange={next => planChanged(past, next)}/>
         </>}
       </>}
