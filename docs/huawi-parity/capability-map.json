@@ -1,0 +1,1280 @@
+{
+  "schema_version": "huawi-capability-map/v1",
+  "task_id": "HW-027a",
+  "title": "资产与平台能力映射",
+  "generated_at": "2026-11-28",
+  "branch": "feat/huawi-capability-inventory-20261128",
+  "base_commit": "2c330bfd9a05bce9ca16b01ba46ba31af2c8da7a",
+  "worktree": ".",
+  "source_contract": "docs/huawi-parity/capability-map-contract.md",
+  "source_contract_note": "有界、已脱敏的能力合同，不是客户导出或生产数据。",
+  "scope": {
+    "includes": [
+      "CAP-001 至 CAP-018 的已知能力行",
+      "本仓库现有平台代码与文档中可核对的实现或类似实现",
+      "已知资产数量、已知名称子集、完整性缺口与恢复来源"
+    ],
+    "excludes": [
+      "客户环境、生产系统、网络请求、原始私有日志",
+      "凭据、密钥、运行配置、依赖清单、手册与业务数据",
+      "任何客户权限推断、资产名称补造或全量清单外推",
+      "写操作、导出、消息发送或未经授权的调用执行"
+    ]
+  },
+  "evidence_grades": {
+    "A": "恢复原始制品：可核对的原文件路径与内容（本轮无）",
+    "B": "有界合同事实 + 精确平台代码符号已检查",
+    "C": "仅有界合同事实，平台仅有类似实现或无直接实现",
+    "D": "仅名称或数量，路径/内容未恢复",
+    "E": "无证据或未恢复"
+  },
+  "coverage_status_legend": {
+    "implemented_equivalent": "存在可核对的等价实现",
+    "partial": "存在平台实现，但合同要求未全部覆盖",
+    "analogue_only": "仅有类似实现，不能称为等价能力",
+    "absent": "未发现实现",
+    "unknown": "定义或证据不足，无法判断"
+  },
+  "classification": {
+    "functionality_ids": [
+      "CAP-001",
+      "CAP-002",
+      "CAP-003",
+      "CAP-004",
+      "CAP-005",
+      "CAP-010",
+      "CAP-011",
+      "CAP-012",
+      "CAP-013",
+      "CAP-014",
+      "CAP-015",
+      "CAP-016",
+      "CAP-017",
+      "CAP-018"
+    ],
+    "asset_ids": [
+      "CAP-006",
+      "CAP-007",
+      "CAP-008",
+      "CAP-009"
+    ],
+    "asset_count": 4,
+    "functionality_count": 14,
+    "note": "资产行只表示技能/绑定/插件配置的存在或资格，不表示已获得可执行业务功能。"
+  },
+  "inventory_completeness": {
+    "exported_skills": {
+      "known_count": 23,
+      "complete_list_recovered": false,
+      "names_recovered": [],
+      "artifact": "SKILL.md",
+      "evidence_grade": "D",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "note": "历史导出仅复核 23 份 SKILL.md；完整名单、路径与内容未恢复。"
+    },
+    "runtime_eligible_skills": {
+      "known_count": 43,
+      "business_related_count": 18,
+      "complete_list_recovered": false,
+      "includes_nonbusiness": true,
+      "named_business_entries": [
+        "all-service-tool-binding",
+        "mes-tool-binding",
+        "system-manual-qa"
+      ],
+      "xiaoguanbao_known_count": 15,
+      "xiaoguanbao_names_recovered": 0,
+      "evidence_grade": "D",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "note": "43 为原生 eligible 列表数量且含非业务项；18 个业务相关条目 = 3 个具名条目 + 15 个 xiaoguanbao-* 条目，后 15 个全名未恢复。"
+    },
+    "plugin_manifests": {
+      "known_count": 18,
+      "complete_list_recovered": false,
+      "names_recovered": [],
+      "evidence_grade": "D",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "note": "插件配置/清单数量 18；名称、版本、权限声明与内容未恢复。"
+    },
+    "native_platform_config": {
+      "unified_hwmcp_enabled": true,
+      "old_separate_domains_disabled": true,
+      "complete_config_recovered": false,
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "note": "仅为历史配置事实；运行配置、密钥、依赖、手册与数据未在本轮提供。"
+    },
+    "missing_artifacts": [
+      {
+        "name": "portable-runtime.cjs",
+        "recovered": false,
+        "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+        "impact": "无法核对历史便携运行时的启动、隔离与工具装配。"
+      },
+      {
+        "name": "services/http-adapter/report-export.cjs",
+        "recovered": false,
+        "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+        "impact": "CAP-017 报告导出的实际能力无法验证。"
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "CAP-001",
+      "name": "tmk-parity",
+      "category": "functionality",
+      "source_evidence_grade": "D",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "仅给出 CAP-001 tmk-parity 名称，并说明属于此前部分适配的 5 项之一；未给出行为定义、输入输出或原实现。"
+        }
+      ],
+      "coverage_status": "unknown",
+      "platform_implementation": [],
+      "coverage_gap": "能力定义、原部分适配代码与验收样例均未恢复；本仓库未发现 tmk 相关实现，无法把任何平台符号归属为该能力。",
+      "evidence_needed": [
+        "tmk-parity 的能力定义与预期输入/输出",
+        "此前部分适配的提交、diff 或原文件路径",
+        "至少一个可复现的调用样例或测试夹具"
+      ],
+      "next_independent_test": {
+        "command": "cd . && git log --all --oneline -S tmk -- .",
+        "assertions": [
+          "若输出为空，记录“当前工作树可达历史未发现 tmk 实现”，不得推断不存在于完整导出。",
+          "若输出非空，逐个检查候选提交的 diff，记录文件、符号与行为，不得仅凭提交标题判定等价。"
+        ],
+        "expected": "退出码 0；空输出或候选提交清单。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-002",
+      "name": "domain-routing",
+      "category": "functionality",
+      "source_evidence_grade": "D",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "仅给出 CAP-002 domain-routing 名称，并说明属于此前部分适配的 5 项之一；未给出业务域路由规则。"
+        }
+      ],
+      "coverage_status": "analogue_only",
+      "platform_implementation": [
+        {
+          "file": "server/app/runtime.py",
+          "symbol": "RESULT_FACT_KEYS",
+          "line": 88,
+          "status": "analogue_only",
+          "note": "仅把 domain/business_domain、process、object、metric 等业务漏斗字段列入结果事实投影，不执行路由。"
+        },
+        {
+          "file": "server/app/runtime.py",
+          "symbol": "result_fact_metadata",
+          "line": 123,
+          "status": "analogue_only",
+          "note": "把 MCP structuredContent 中允许的字段有界投影到完成事件；缺失字段显式为 unknown，不补业务范围。"
+        },
+        {
+          "file": "server/app/capability_policy.py",
+          "symbol": "normalize_domain",
+          "line": 67,
+          "status": "not_equivalent",
+          "note": "这是网络主机名 allowlist 规范化，不是 CAP-002 的业务域路由，禁止混用。"
+        }
+      ],
+      "coverage_gap": "平台只有业务漏斗字段的元数据投影；没有 domain -> process -> object -> metric 的路由器、规则表或分派实现。网络域名策略与业务域路由是不同概念。",
+      "evidence_needed": [
+        "domain-routing 的路由规则或规则表",
+        "原部分适配代码路径与调用入口",
+        "一个跨 domain 的样例查询及期望对象/指标"
+      ],
+      "next_independent_test": {
+        "command": "cd . && grep -RIn --include='*.py' -E 'domain.*rout|rout.*domain|business_domain' server/app",
+        "assertions": [
+          "只允许命中 runtime.py 的字段投影或无关网络域名代码。",
+          "若没有任何业务域分派函数，记录 coverage_status=analogue_only，不得写成已实现。"
+        ],
+        "expected": "退出码 0；命中 runtime.py 的 RESULT_FACT_KEYS/result_fact_metadata 或为空。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-003",
+      "name": "mcp-query-boundary",
+      "category": "functionality",
+      "source_evidence_grade": "B",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:2",
+          "fact": "describe 仅关键词/类型检索，detail 只给代码与实际字段名；query 只能选已核字段，* 仅计数，group 字段须匹配 group_by，过滤/排序仅限已发布字段/操作。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:5",
+          "fact": "只读通用规则：分解对象、受限范围、指标与单位；用已授予的 describe 核实字段/关联/粒度；不越权、不混对象、不造范围。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "enforce_model_result_budget",
+          "line": 135,
+          "status": "implemented",
+          "note": "对模型可见业务结果执行 200 行/24 列与 32,000 UTF-8 字节硬边界；超限整包失败，不截断、不重算全量。"
+        },
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "MCPBusinessTool",
+          "line": 283,
+          "status": "implemented",
+          "note": "按连接、工具名、参数 schema、只读确认与运行中重检构造模型可调用工具。"
+        },
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "invoke",
+          "line": 336,
+          "status": "implemented",
+          "note": "执行前重检连接状态、工具定义摘要、参数策略与审批；调用后清理凭据并执行结果预算。"
+        },
+        {
+          "file": "server/app/tool_constraints.py",
+          "symbol": "validate_arguments",
+          "line": 256,
+          "status": "implemented",
+          "note": "校验仅针对助手已允许工具的显式参数约束；不重写参数、不证明远端已按范围投影。"
+        },
+        {
+          "file": "server/app/read_only_tools.py",
+          "symbol": "validate_confirmation",
+          "line": 140,
+          "status": "implemented",
+          "note": "只读确认绑定助手、连接 revision 与远端工具定义摘要；自动批准或远端 readOnlyHint 不能替代。"
+        },
+        {
+          "file": "server/app/connection_read_review.py",
+          "symbol": "require_session_tool_eligible",
+          "line": 27,
+          "status": "implemented",
+          "note": "通用 call/invoke/execute 与写入类工具名或任意 SQL/命令参数一律要求逐次审批。"
+        }
+      ],
+      "coverage_gap": "平台边界是“每连接/每工具 allowlist + schema/参数校验 + 只读确认”，没有统一的 describe/query/call 查询面，也没有 group_by/include_total 的发布字段合同。分页与分组聚合仍需单独合同证明。",
+      "evidence_needed": [
+        "每个 dataset 的已发布字段/操作清单",
+        "group_by 与 include_total 的合同样例",
+        "分页完整性证明（不能由首屏推断全量）"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_harness_mcp_tools.py tests/test_capability_execution_security.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "未授权工具名、变更后的工具定义、含凭据的 schema 均被拒绝。",
+          "超过 200 行/24 列或 32,000 字节的结果整包失败，且错误码为 MCP_RESULT_TOO_LARGE。",
+          "只读确认在连接 revision 或定义摘要变化后失效。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-004",
+      "name": "query-completeness",
+      "category": "functionality",
+      "source_evidence_grade": "B",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:2",
+          "fact": "include_total 可能统计记录数或分组数；structuredContent 的 total 是输出行/分组数，不是聚合单元格；已知安全聚合仅 COUNT 与 COUNT DISTINCT，显式别名；分组聚合与分页需另证。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:5",
+          "fact": "必须区分已核零计数与无行、未查询、失败、无权限；不得跨不完整页外推。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/business_results.py",
+          "symbol": "project_business_result",
+          "line": 118,
+          "status": "implemented",
+          "note": "全有或全无地投影表格；保留 returned_rows、total_rows、complete、truncated、warnings，不补默认值。"
+        },
+        {
+          "file": "server/app/business_results.py",
+          "symbol": "MAX_ROWS",
+          "line": 12,
+          "status": "implemented",
+          "note": "单次业务表最多 200 行；超限不切片。"
+        },
+        {
+          "file": "server/app/business_results.py",
+          "symbol": "MAX_COLUMNS",
+          "line": 13,
+          "status": "implemented",
+          "note": "单次业务表最多 24 列；超限不静默改值。"
+        },
+        {
+          "file": "server/app/business_results.py",
+          "symbol": "oversized_only_reply",
+          "line": 19,
+          "status": "implemented",
+          "note": "仅当所有已完成工具均因 MCP_RESULT_TOO_LARGE 失败时替换为固定说明；混合结果不误改。"
+        },
+        {
+          "file": "server/app/business_facts.py",
+          "symbol": "verify_aggregates",
+          "line": 27,
+          "status": "implemented",
+          "note": "只核对工具显式声明 operation=sum、scope=returned_rows 的返回行小计；不把返回行小计称为全量。"
+        }
+      ],
+      "coverage_gap": "平台能保留总行数与完整性声明，但没有实现 grouped COUNT / COUNT DISTINCT 的发布字段合同，也没有分页枚举证明。工具声明 complete=true 但 total_rows > returned_rows 时会被降为完整性未知。",
+      "evidence_needed": [
+        "分组聚合（COUNT、COUNT DISTINCT）合同与别名规则",
+        "分页 has_more/page 的完整性证明",
+        "零计数、空表、未查询、失败、无权限五态的可核对样例"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_business_results.py tests/test_result_facts.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "total_rows 小于返回行数时保留原总量并标记矛盾，complete 降为 null。",
+          "complete=true 且 total_rows > returned_rows 时降为完整性未知。",
+          "空表只说明本次未返回记录，不推断全量为零。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-005",
+      "name": "response-contract",
+      "category": "functionality",
+      "source_evidence_grade": "B",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:2",
+          "fact": "观察到的 structuredContent 形状：dataset、columns[{name,label,type}]、data 位置矩阵、rows=页大小、page、has_more，可选 total 为输出行/分组数而非聚合单元格。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:6",
+          "fact": "后端 lead 候选 canonical business-result/v1：以宿主实际收到的结构化数据为准；严格仅非分组 count/count_distinct；title 为“工具报告聚合值”；scope_verified=false；warning 不独立真实或全量；returned_rows=1；total_rows/complete=null；source_ids=[]；count 可为 0。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/business_results.py",
+          "symbol": "presentation_receipt",
+          "line": 65,
+          "status": "implemented",
+          "note": "宿主生成 business-result/v1 显示回执；只证明结果卡已提供，不证明数据完整、正文已核验或新增权限。"
+        },
+        {
+          "file": "server/app/business_results.py",
+          "symbol": "answer_fact_digest",
+          "line": 39,
+          "status": "implemented",
+          "note": "把范围原值、返回行数、工具总行数/完整性、数据时点、合成标记及宿主已核小计作为有界字段摘录；超过 4,000 字节整体省略。"
+        },
+        {
+          "file": "server/app/business_facts.py",
+          "symbol": "check_answer",
+          "line": 149,
+          "status": "implemented",
+          "note": "只对单份结果、仍有权限来源的显式返回行合计做确定性检查；未覆盖的文本保持 not_checked。"
+        },
+        {
+          "file": "server/app/business_facts.py",
+          "symbol": "conflict_answer",
+          "line": 218,
+          "status": "implemented",
+          "note": "确定冲突时保留原回答并标错，给出宿主核对值与来源；不静默替换为成功。"
+        },
+        {
+          "file": "docs/business-result-contract.md",
+          "symbol": "business-result/v1",
+          "line": 60,
+          "status": "implemented",
+          "note": "字段、边界与失败语义的文档合同；明确不是任意自然语言语义验证器。"
+        }
+      ],
+      "coverage_gap": "平台已有 business-result/v1 投影与返回行合计核对，但合同中的 canonical 后端 lead 候选尚未成为主线；纯文本 SDK 回调不解析为原始回执；宿主只收到一次实际结果。分组聚合的 response contract 仍未证明。",
+      "evidence_needed": [
+        "canonical business-result/v1 的合并提交与回归记录",
+        "纯文本 SDK 回调的原始回执样例（若有）",
+        "分组聚合结果的 response contract 样例"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_business_answer_contract.py tests/test_business_facts.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "schema_version 固定为 business-result/v1，缺少标题时为“业务查询结果”。",
+          "returned_rows 由宿主实际投影行数决定，不采信工具自报行数。",
+          "冲突回答任务为 failed、错误码 BUSINESS_FACT_CONFLICT，并保留原回答。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-006",
+      "name": "MCP-direct type skill",
+      "category": "asset",
+      "source_evidence_grade": "D",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-006 MCP-direct type skill 存在，但精确路径与内容未恢复。"
+        }
+      ],
+      "coverage_status": "analogue_only",
+      "platform_implementation": [
+        {
+          "file": "server/app/skills.py",
+          "symbol": "import_skill",
+          "line": 69,
+          "status": "analogue_only",
+          "note": "平台只导入 SKILL.md 的 name/description/allowed-tools 等展示元数据与说明文本，不执行导入包代码。"
+        },
+        {
+          "file": "server/app/skills.py",
+          "symbol": "create_skill_router",
+          "line": 114,
+          "status": "analogue_only",
+          "note": "Skill 版本化保存、绑定助手、启用/停用；required_tools 仅是声明，不扩大实际工具权限。"
+        }
+      ],
+      "coverage_gap": "源资产仅知名称与类型，未见 SKILL.md 路径或内容；无法判断其是否真是 MCP-direct 类型，也无法核对说明是否与平台导入语义一致。",
+      "evidence_needed": [
+        "该 Skill 的 SKILL.md 原路径与完整内容",
+        "其声明的 allowed-tools 与实际 MCP 工具名",
+        "导入/启用记录"
+      ],
+      "next_independent_test": {
+        "command": "cd . && grep -RIn --include='SKILL.md' -E 'mcp|MCP' . | head -n 50",
+        "assertions": [
+          "若命中，记录文件路径与 front matter 中的 allowed-tools。",
+          "若未命中，记录“工作树内未恢复该 SKILL.md”，不得补造名称或工具声明。"
+        ],
+        "expected": "退出码 0；命中清单或空。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-007",
+      "name": "all-service-tool-binding",
+      "category": "asset",
+      "source_evidence_grade": "D",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-007 all-service-tool-binding，仅确认资格/存在；未提供路径、内容或绑定工具清单。"
+        }
+      ],
+      "coverage_status": "analogue_only",
+      "platform_implementation": [
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "build_mcp_tools",
+          "line": 401,
+          "status": "analogue_only",
+          "note": "平台按助手快照中的 connection + allowed_tools 构造工具；未授予的工具不挂载。"
+        },
+        {
+          "file": "server/app/plugins.py",
+          "symbol": "register_plugin",
+          "line": 101,
+          "status": "analogue_only",
+          "note": "插件清单登记来源、版本、摘要、许可证与声明权限；不下载、不执行第三方代码。"
+        }
+      ],
+      "coverage_gap": "只有技能/绑定名称，未恢复其绑定的服务工具清单、权限范围或启用状态；不能推断该绑定已向任何客户开放。",
+      "evidence_needed": [
+        "all-service-tool-binding 的清单/配置文件",
+        "绑定的工具名与连接 ID 列表",
+        "启用范围与审批记录"
+      ],
+      "next_independent_test": {
+        "command": "cd . && grep -RIn --include='*.json' --include='*.md' 'all-service-tool-binding' .",
+        "assertions": [
+          "只接受精确名称命中；记录路径与上下文。",
+          "若仅合同命中，保持 evidence_grade=D，不推断绑定内容。"
+        ],
+        "expected": "退出码 0；命中合同或为空。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-008",
+      "name": "mes-tool-binding",
+      "category": "asset",
+      "source_evidence_grade": "D",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-008 mes-tool-binding，仅确认资格/存在；未提供路径、内容或绑定工具清单。"
+        }
+      ],
+      "coverage_status": "analogue_only",
+      "platform_implementation": [
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "build_mcp_tools",
+          "line": 401,
+          "status": "analogue_only",
+          "note": "与 CAP-007 相同：按助手允许的工具列表挂载 MCP 工具。"
+        },
+        {
+          "file": "server/app/plugin_catalog.py",
+          "symbol": "CATALOG_SNAPSHOT",
+          "line": 97,
+          "status": "analogue_only",
+          "note": "离线固定插件目录，仅含审查过的元数据；不包含 MES 绑定条目。"
+        }
+      ],
+      "coverage_gap": "只有 MES 绑定名称；未恢复绑定的工具、版本、权限或运行状态。不能把插件目录中的两个候选当作该绑定。",
+      "evidence_needed": [
+        "mes-tool-binding 的清单/配置文件",
+        "绑定的工具名与连接 ID 列表",
+        "启用范围与审批记录"
+      ],
+      "next_independent_test": {
+        "command": "cd . && grep -RIn --include='*.json' --include='*.md' 'mes-tool-binding' .",
+        "assertions": [
+          "只接受精确名称命中；记录路径与上下文。",
+          "若仅合同命中，保持 evidence_grade=D，不推断 MES 权限。"
+        ],
+        "expected": "退出码 0；命中合同或为空。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-009",
+      "name": "system-manual-qa",
+      "category": "asset",
+      "source_evidence_grade": "D",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-009 system-manual-qa，仅确认资格/存在；未提供路径、内容或知识库范围。"
+        }
+      ],
+      "coverage_status": "analogue_only",
+      "platform_implementation": [
+        {
+          "file": "server/app/skills.py",
+          "symbol": "assistant_skills",
+          "line": 94,
+          "status": "analogue_only",
+          "note": "只返回当前助手已绑定且启用的 Skill 说明；不包含系统手册内容。"
+        },
+        {
+          "file": "server/app/skills.py",
+          "symbol": "selected_skills",
+          "line": 104,
+          "status": "analogue_only",
+          "note": "提交时按助手可用 Skill 校验；不可用则 403，不自动扩大知识或工具权限。"
+        }
+      ],
+      "coverage_gap": "只有系统手册问答技能名称；未恢复其 SKILL.md、知识库来源、引用规则或权限边界。不能推断已接入任何客户手册。",
+      "evidence_needed": [
+        "system-manual-qa 的 SKILL.md 与知识来源",
+        "引用/来源规则与无答案处理",
+        "启用范围"
+      ],
+      "next_independent_test": {
+        "command": "cd . && grep -RIn --include='*.md' --include='*.json' 'system-manual-qa' .",
+        "assertions": [
+          "只接受精确名称命中；记录路径与上下文。",
+          "若仅合同命中，保持 evidence_grade=D，不推断手册内容或客户权限。"
+        ],
+        "expected": "退出码 0；命中合同或为空。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-010",
+      "name": "trusted channel/identity resolver",
+      "category": "functionality",
+      "source_evidence_grade": "B",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-010 trusted channel/identity resolver 为已知能力行；未给出通道协议或身份解析规则。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:5",
+          "fact": "权限与范围由宿主核验；不接收模型提供的任意身份或扩大授权。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/capability_execution.py",
+          "symbol": "RunContext",
+          "line": 39,
+          "status": "implemented",
+          "note": "宿主构造的身份绑定：run、conversation、user、assistant、tool_call_id、审批回执；身份绝不来自模型参数。"
+        },
+        {
+          "file": "server/app/capability_execution.py",
+          "symbol": "_load",
+          "line": 90,
+          "status": "implemented",
+          "note": "每次执行前重新核对 run/conversation/user/assistant 一致性与 active_run_id；失效则拒绝。"
+        },
+        {
+          "file": "server/app/capability_execution.py",
+          "symbol": "_authorize",
+          "line": 123,
+          "status": "implemented",
+          "note": "能力授权与一次性审批回执绑定；False 只表示需要审批，不表示已批准。"
+        },
+        {
+          "file": "server/app/trusted_mcp_read.py",
+          "symbol": "connection_identity",
+          "line": 25,
+          "status": "implemented",
+          "note": "把可信只读合同绑定到精确账号、路由、凭据与 revision；凭据及其哈希不暴露给模型。"
+        },
+        {
+          "file": "server/app/trusted_mcp_read.py",
+          "symbol": "trusted_read_decision",
+          "line": 134,
+          "status": "implemented",
+          "note": "只返回可撤销的窄作用域策略决定；未注册或变更的工具回退普通审批。"
+        },
+        {
+          "file": "server/app/external_capabilities.py",
+          "symbol": "ToolContext",
+          "line": 47,
+          "status": "implemented",
+          "note": "外部能力执行上下文由宿主创建，模型不能提供 user_id 等身份字段。"
+        }
+      ],
+      "coverage_gap": "平台已有宿主构造的能力身份与 MCP 只读身份绑定；没有外部消息通道适配器，也没有独立的 session identity resolver 注册表。不得把产品身份文案（identity.py）当作通道认证。",
+      "evidence_needed": [
+        "原 trusted channel 的通道协议与认证方式",
+        "身份解析器的输入、缓存与撤销语义",
+        "跨通道/跨租户隔离样例"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_capability_execution_security.py tests/test_capability_settings.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "模型参数中的 user_id/assistant_id 不能改变宿主身份绑定。",
+          "active_run_id 不匹配、run 结束或审批回执重放均被拒绝。",
+          "可信只读合同在连接 revision、凭据或定义变化后失效。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-011",
+      "name": "proxy allowlist/dedup/describe compatibility",
+      "category": "functionality",
+      "source_evidence_grade": "B",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-011 proxy allowlist/dedup/describe compatibility 为已知能力行；未给出代理或去重协议细节。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:5",
+          "fact": "受限期只读规则，不混对象、不造范围；未核字段不得推断。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/capability_policy.py",
+          "symbol": "normalize_domain",
+          "line": 67,
+          "status": "implemented",
+          "note": "只接受精确公共主机名；拒绝 scheme、路径、端口、通配、私网与 IDN 后缀技巧。"
+        },
+        {
+          "file": "server/app/capability_policy.py",
+          "symbol": "domain_allows",
+          "line": 150,
+          "status": "implemented",
+          "note": "allowlist 模式要求精确主机名；public 模式仍依赖网络层公共地址检查。"
+        },
+        {
+          "file": "server/app/capability_policy.py",
+          "symbol": "intersect_domains",
+          "line": 163,
+          "status": "implemented",
+          "note": "多策略取交集，结果永不比任一输入更宽。"
+        },
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "include_structured_text",
+          "line": 78,
+          "status": "implemented",
+          "note": "只去掉完全相同的整份结构化 JSON 文本副本；不同内容、警告和分页行保留。"
+        },
+        {
+          "file": "server/app/trusted_mcp_read.py",
+          "symbol": "_reuse_decision",
+          "line": 90,
+          "status": "implemented",
+          "note": "仅当账号、作用域、URL、认证方式、工具定义与凭据完全一致时才复用可信只读合同；不做名称/主机推断。"
+        },
+        {
+          "file": "server/app/read_only_tools.py",
+          "symbol": "_checked_digests",
+          "line": 20,
+          "status": "implemented",
+          "note": "只缓存已验证定义摘要，最多 64 条；不保留远端 schema 文本、样例值或凭据。"
+        },
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "schema_validator",
+          "line": 229,
+          "status": "implemented",
+          "note": "离线 schema 校验，拒绝外部 $ref 与非 Draft 2020-12 方言；不执行远端正则/引用图。"
+        }
+      ],
+      "coverage_gap": "平台没有正向代理；allowlist 是能力出站域名策略 + 每助手工具白名单。去重只覆盖完全相同的结构化 JSON 表示；describe compatibility 仅到 schema 摘要/方言校验，没有统一的 describe 兼容层。",
+      "evidence_needed": [
+        "原 proxy 的请求/响应改写与 allowlist 规则",
+        "dedup 的键定义与分页/警告处理",
+        "describe 兼容层的输入输出样例"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_harness_mcp_tools.py tests/test_business_results.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "私网、通配、带端口或带凭据的主机名被拒绝。",
+          "intersect_domains 结果不宽于任一输入。",
+          "完全相同的 structuredContent 文本只保留一次，不同行/警告保留。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-012",
+      "name": "identity/session metadata cache",
+      "category": "functionality",
+      "source_evidence_grade": "C",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-012 identity/session metadata cache 为已知能力行；未给出缓存键、TTL 或失效规则。"
+        }
+      ],
+      "coverage_status": "analogue_only",
+      "platform_implementation": [
+        {
+          "file": "server/app/read_only_tools.py",
+          "symbol": "_checked_digests",
+          "line": 20,
+          "status": "analogue_only",
+          "note": "有界 LRU 摘要缓存（64 条），只按 schema 哈希缓存，不保留身份或会话正文。"
+        },
+        {
+          "file": "server/app/tool_constraints.py",
+          "symbol": "_compiled_schemas",
+          "line": 178,
+          "status": "analogue_only",
+          "note": "lru_cache(64) 编译公开 schema；调用方先检查当前连接状态与凭据。"
+        },
+        {
+          "file": "server/app/mcp_availability.py",
+          "symbol": "MCPAvailability",
+          "line": 18,
+          "status": "analogue_only",
+          "note": "按会话/连接维护发现重试时间与进行中探测集合；不是身份或会话元数据缓存。"
+        }
+      ],
+      "coverage_gap": "现有缓存仅覆盖 schema 摘要、编译结果和 MCP 发现重试；没有 identity/session metadata cache 的键、TTL、撤权失效或跨租户隔离合同。",
+      "evidence_needed": [
+        "原缓存的键结构与 TTL",
+        "身份/会话变更后的失效与撤权规则",
+        "跨用户/跨会话隔离样例"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_harness_mcp_tools.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "_checked_digests 不超过 64 条，且只以摘要为键。",
+          "schema 文本或凭据不进入缓存。",
+          "连接 revision/定义变化后旧摘要不再被接受。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-013",
+      "name": "batch metric completion/stop",
+      "category": "functionality",
+      "source_evidence_grade": "C",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-013 batch metric completion/stop 为已知能力行；未给出批量指标协议、完成判定或停止语义。"
+        }
+      ],
+      "coverage_status": "analogue_only",
+      "platform_implementation": [
+        {
+          "file": "server/app/runtime.py",
+          "symbol": "interrupt",
+          "line": 832,
+          "status": "analogue_only",
+          "note": "运行级中断；取消后不再接受新的工具执行。"
+        },
+        {
+          "file": "server/app/runtime.py",
+          "symbol": "cancel",
+          "line": 1941,
+          "status": "analogue_only",
+          "note": "按 run_id 取消并落状态；不是批量指标任务的完成/停止协议。"
+        },
+        {
+          "file": "server/app/session_observability.py",
+          "symbol": "TERMINAL",
+          "line": 21,
+          "status": "analogue_only",
+          "note": "终态集合 succeeded/failed/cancelled/interrupted；仅用于会话可观测统计。"
+        }
+      ],
+      "coverage_gap": "平台只有单 run 取消/中断与终态记录；没有 batch metric 的提交、完成判定、部分完成或停止接口。不能把 run 取消当作批量指标完成。",
+      "evidence_needed": [
+        "batch metric 的接口契约与完成判定",
+        "部分完成、失败与停止的回执语义",
+        "幂等与重复提交规则"
+      ],
+      "next_independent_test": {
+        "command": "cd . && grep -RIn --include='*.py' -E 'batch.*metric|metric.*batch|batch_metric' server/app",
+        "assertions": [
+          "若为空，记录“未发现 batch metric 实现”，保持 analogue_only。",
+          "若命中，逐个检查是否真的实现完成/停止协议，不凭函数名判定。"
+        ],
+        "expected": "退出码 0；空输出或候选实现。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-014",
+      "name": "describe discovery/detail",
+      "category": "functionality",
+      "source_evidence_grade": "B",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:2",
+          "fact": "describe 关键词/类型检索 dataset；detail 只给代码与实际字段名。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:5",
+          "fact": "用已授予的 describe 核实字段、关联与粒度；不越权扫描。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "invoke",
+          "line": 336,
+          "status": "implemented",
+          "note": "通过官方 MCP session.list_tools 分页发现工具，最多 20 页/1,000 个工具；比较远端 inputSchema 与已存定义。"
+        },
+        {
+          "file": "server/app/read_only_tools.py",
+          "symbol": "verify_live_definition",
+          "line": 176,
+          "status": "implemented",
+          "note": "执行前重新发现并核对工具定义摘要；清单超限或定义变化则拒绝。"
+        },
+        {
+          "file": "server/app/mcp_availability.py",
+          "symbol": "refresh",
+          "line": 63,
+          "status": "implemented",
+          "note": "按会话/连接按需重新探测失败连接；不执行任何业务工具。"
+        },
+        {
+          "file": "server/app/business_data.py",
+          "symbol": "tables",
+          "line": 204,
+          "status": "implemented",
+          "note": "返回运营方登记的业务表与可见列元数据；不接收浏览器目录。"
+        }
+      ],
+      "coverage_gap": "平台没有统一的 describe 工具返回 dataset/字段详情；发现是 MCP tools/list 加已登记业务表目录。detail 仅到工具 schema 与登记列名，无法证明字段关联、粒度或业务含义。",
+      "evidence_needed": [
+        "describe 的 dataset/字段 detail 合同",
+        "字段关联与粒度声明",
+        "关键词/类型检索的排序与截断规则"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_harness_mcp_tools.py tests/test_business_results.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "工具发现分页超过 20 页或 1,000 项时拒绝，不截断后冒充完整。",
+          "远端定义变化时返回 HARNESS_MCP_SCHEMA_CHANGED 或 READ_ONLY_CONFIRMATION_STALE。",
+          "业务表目录只返回已登记且当前用户可见的列。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-015",
+      "name": "query",
+      "category": "functionality",
+      "source_evidence_grade": "B",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:2",
+          "fact": "query 只能选择已核字段，* 仅计数，group 字段须匹配 group_by，过滤/排序仅限已发布字段/操作，include_total 可计记录或分组。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:5",
+          "fact": "主关系缺失时说明无法推断；可选用已核字段做少量独立只读辅助聚合；禁止混对象或造范围。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "invoke",
+          "line": 336,
+          "status": "implemented",
+          "note": "通过官方 MCP session.call_tool 执行已授权业务工具；参数先经本地 schema 与显式约束校验。"
+        },
+        {
+          "file": "server/app/business_data.py",
+          "symbol": "BusinessData",
+          "line": 149,
+          "status": "implemented",
+          "note": "只读浏览运营方登记表：固定列、主键、最多 12 条条件、最多 100 行；SQLite query_only/trusted_schema off/超时。"
+        },
+        {
+          "file": "server/app/business_data.py",
+          "symbol": "rows",
+          "line": 216,
+          "status": "implemented",
+          "note": "拒绝未知排序/筛选字段；管理员 scope 与调用方 OR 组不互相放宽；返回 total_rows/matched_rows/offset/limit。"
+        }
+      ],
+      "coverage_gap": "平台 query 路径是每工具 MCP call 加登记表只读浏览；没有统一的 group_by/include_total 发布字段合同，也没有分组聚合执行器。查询范围由工具 schema/参数约束与远端实现共同决定，平台不能独立证明远端已按范围投影。",
+      "evidence_needed": [
+        "query 的已发布字段/操作清单",
+        "group_by 与 include_total 的执行合同",
+        "远端范围投影的独立回执或测试"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_business_data.py tests/test_harness_mcp_tools.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "未知排序/筛选字段返回 INVALID_DATA_FILTER。",
+          "调用方 OR 条件不能放宽管理员 scope。",
+          "未授权 MCP 工具在调用前被拒绝。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error（若测试文件名不同，按实际收集结果记录）。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-016",
+      "name": "call discovery only",
+      "category": "functionality",
+      "source_evidence_grade": "B",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:2",
+          "fact": "call 为已发布 action；本工作未获执行授权。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:5",
+          "fact": "禁止写、导出、消息或未授权动作；只读辅助聚合必须独立且使用已核字段。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/mcp_tools.py",
+          "symbol": "MCPBusinessTool",
+          "line": 283,
+          "status": "implemented",
+          "note": "工具定义与调用路径存在；每次调用前重新授权、重检定义与审批。"
+        },
+        {
+          "file": "server/app/harness_tools.py",
+          "symbol": "HarnessToolBridge",
+          "line": 69,
+          "status": "implemented",
+          "note": "只向模型暴露当前 run 允许的工具定义；执行时再次检查 active run 与授权。"
+        },
+        {
+          "file": "server/app/harness_tools.py",
+          "symbol": "active",
+          "line": 117,
+          "status": "implemented",
+          "note": "run 不活动、会话归档、active_run_id 不匹配或用户不一致时拒绝工具执行。"
+        }
+      ],
+      "coverage_gap": "调用执行代码存在，但本次工作只允许发现证据，未授权执行任何 call。不得用代码存在推断该 action 已在测试或生产环境执行。",
+      "evidence_needed": [
+        "call 的已发布 action 清单",
+        "执行授权与审批记录",
+        "只读/写入分类与幂等证据"
+      ],
+      "next_independent_test": {
+        "command": "cd . && grep -RIn --include='*.py' 'call_tool' server/app",
+        "assertions": [
+          "只记录调用入口与审批/重检位置，不实际发起网络调用。",
+          "若需要执行验证，必须由 lead 在明确授权的隔离环境另行批准。"
+        ],
+        "expected": "退出码 0；命中 mcp_tools.py 的 call_tool 入口。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-017",
+      "name": "report-export dependency",
+      "category": "functionality",
+      "source_evidence_grade": "D",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-017 report-export dependency；实际能力未验证。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:3",
+          "fact": "portable-runtime.cjs 与 services/http-adapter/report-export.cjs 历史上缺失。"
+        }
+      ],
+      "coverage_status": "absent",
+      "platform_implementation": [
+        {
+          "file": "server/app/conversation_export.py",
+          "symbol": "create_conversation_export_router",
+          "line": 141,
+          "status": "not_equivalent",
+          "note": "这是会话 Markdown/ZIP 导出，不是 report-export 报表导出；不得混称。"
+        }
+      ],
+      "coverage_gap": "report-export 依赖文件未恢复，实际导出能力、格式、权限与数据范围均未验证。平台现有的会话导出不能替代报表导出。",
+      "evidence_needed": [
+        "portable-runtime.cjs 原文件",
+        "services/http-adapter/report-export.cjs 原文件",
+        "报表导出的输入、输出、权限与失败语义"
+      ],
+      "next_independent_test": {
+        "command": "cd . && find . -name 'report-export.cjs' -o -name 'portable-runtime.cjs'",
+        "assertions": [
+          "若为空，记录两个制品均未恢复，coverage_status=absent。",
+          "不得用 conversation_export.py 的通过结果替代 report-export 验收。"
+        ],
+        "expected": "退出码 0；空输出。",
+        "executes_customer_system": false
+      }
+    },
+    {
+      "id": "CAP-018",
+      "name": "write/reminder/external-message rules",
+      "category": "functionality",
+      "source_evidence_grade": "C",
+      "source_evidence": [
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:4",
+          "fact": "CAP-018 写入/提醒/外部消息规则未迁移，实际范围未验证。"
+        },
+        {
+          "ref": "docs/huawi-parity/capability-map-contract.md:5",
+          "fact": "禁止写、导出、消息或未授权动作；现有审批不变。"
+        }
+      ],
+      "coverage_status": "partial",
+      "platform_implementation": [
+        {
+          "file": "server/app/high_risk_approval.py",
+          "symbol": "HighRiskApprovalService",
+          "line": 30,
+          "status": "implemented",
+          "note": "高风险工具的管理员策略、请求快照与双人投票校验；失败关闭。"
+        },
+        {
+          "file": "server/app/high_risk_approval.py",
+          "symbol": "is_high_risk",
+          "line": 146,
+          "status": "implemented",
+          "note": "按工具与参数做保守高风险分类；供本地子编排使用。"
+        },
+        {
+          "file": "server/app/high_risk_approval.py",
+          "symbol": "requires_dual",
+          "line": 154,
+          "status": "implemented",
+          "note": "判断是否需要双人审批；执行前再次核对快照。"
+        },
+        {
+          "file": "server/app/openclaw_connector.py",
+          "symbol": "_classify",
+          "line": 265,
+          "status": "implemented",
+          "note": "按工具名与声明分类 low/medium/high；写入、删除、管理、执行类默认更高风险。"
+        },
+        {
+          "file": "server/app/openclaw_connector.py",
+          "symbol": "request_approval",
+          "line": 621,
+          "status": "implemented",
+          "note": "高风险调用进入显式审批；未知工具默认拒绝。"
+        },
+        {
+          "file": "server/app/capability_policy.py",
+          "symbol": "required_egress",
+          "line": 275,
+          "status": "implemented",
+          "note": "按能力决定 query/url/upload 外发同意；deny 直接拒绝，approval 进入审批。"
+        },
+        {
+          "file": "server/app/model_approval.py",
+          "symbol": "ModelApprovalService",
+          "line": 61,
+          "status": "implemented",
+          "note": "模型代审的失败关闭策略与执行前快照重检；不是提醒或外部消息发送器。"
+        }
+      ],
+      "coverage_gap": "平台已有 MCP/高风险工具写入审批与外发同意；没有提醒（reminder）或外部消息（external-message）规则、发送器或回执。原规则的实际范围未恢复，不能推断客户已启用任何写入或通知。",
+      "evidence_needed": [
+        "原写入/提醒/外部消息规则与触发条件",
+        "消息通道、模板、收件人与撤权语义",
+        "写入幂等、失败回执与审计样例"
+      ],
+      "next_independent_test": {
+        "command": "cd server && python3 -m pytest tests/test_high_risk_approval.py tests/test_capability_execution_security.py -q -p no:cacheprovider --basetemp=./.pytest-tmp-hw027a",
+        "assertions": [
+          "高风险工具在无审批或快照失效时被拒绝。",
+          "双人审批未满足时不得执行。",
+          "仓库内不存在提醒/外部消息发送器时，记录该缺口，不用审批通过替代消息发送验收。"
+        ],
+        "expected": "退出码 0；pytest 汇总无 failed/error。",
+        "executes_customer_system": false
+      }
+    }
+  ],
+  "known_platform_config_facts": [
+    {
+      "fact": "原生统一 hwmcp 已启用，旧的分离域已停用。",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "usable_for": "仅作为历史配置事实，不代表本仓库运行配置或客户环境。"
+    }
+  ],
+  "missing_inputs": [
+    {
+      "id": "MI-001",
+      "input": "完整原始导出",
+      "status": "not_recovered",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "impact": "无法给出 23 个 SKILL.md、18 个插件清单、43 个 eligible 技能的完整名单。"
+    },
+    {
+      "id": "MI-002",
+      "input": "运行配置、密钥、依赖、手册与业务数据",
+      "status": "omitted",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "impact": "无法核对运行时行为、权限实际范围或客户数据。"
+    },
+    {
+      "id": "MI-003",
+      "input": "portable-runtime.cjs",
+      "status": "not_recovered",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "impact": "无法核对历史便携运行时。"
+    },
+    {
+      "id": "MI-004",
+      "input": "services/http-adapter/report-export.cjs",
+      "status": "not_recovered",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "impact": "CAP-017 能力无法验证。"
+    },
+    {
+      "id": "MI-005",
+      "input": "15 个 xiaoguanbao-* 条目的完整名称",
+      "status": "name_not_recovered",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:3",
+      "impact": "只能记录数量 15，不能列出或推断具体条目。"
+    },
+    {
+      "id": "MI-006",
+      "input": "CAP-001 tmk-parity 与 CAP-002 domain-routing 的行为定义",
+      "status": "definition_not_recovered",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:4",
+      "impact": "只能按名称登记，不能判定平台等价实现。"
+    },
+    {
+      "id": "MI-007",
+      "input": "CAP-006 MCP-direct type skill 的 SKILL.md 路径与内容",
+      "status": "path_content_not_recovered",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:4",
+      "impact": "无法判断其类型、工具声明或启用范围。"
+    },
+    {
+      "id": "MI-008",
+      "input": "分组聚合与分页的独立合同证明",
+      "status": "not_provided",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:2",
+      "impact": "CAP-003/CAP-004/CAP-015 只能标为 partial，不能声称分组聚合或完整分页已验收。"
+    },
+    {
+      "id": "MI-009",
+      "input": "纯文本 SDK 回调的原始回执",
+      "status": "not_provided",
+      "source_ref": "docs/huawi-parity/capability-map-contract.md:6",
+      "impact": "不能把文本回调解析为业务回执，也不能声称宿主收到多份结果。"
+    }
+  ],
+  "recovery_sources": [
+    {
+      "id": "RS-001",
+      "source": "本工作树现有平台源码与测试",
+      "access": "只读",
+      "use": "核对精确文件/符号与现有覆盖边界。"
+    },
+    {
+      "id": "RS-002",
+      "source": "本工作树现有架构与合同文档",
+      "access": "只读",
+      "use": "核对 business-result/v1、能力执行器与开源复用边界。"
+    },
+    {
+      "id": "RS-003",
+      "source": "本仓库可达 Git 历史（仅本地）",
+      "access": "只读",
+      "use": "查找 tmk/domain-routing 等此前部分适配的提交；不访问远端客户仓库。"
+    },
+    {
+      "id": "RS-004",
+      "source": "Lead 持有的原始导出归档（不在本工作树）",
+      "access": "需 Lead 提供",
+      "use": "恢复 SKILL.md、插件清单、运行配置与缺失制品；本任务未读取。"
+    },
+    {
+      "id": "RS-005",
+      "source": "有界脱敏合同 docs/huawi-parity/capability-map-contract.md",
+      "access": "只读",
+      "use": "作为名称、数量与已知事实的唯一输入；不当作完整清单。"
+    }
+  ],
+  "validation": {
+    "json_structure_command": "cd . && python3 -I - <<'PY'\nimport json\np = 'docs/huawi-parity/capability-map.json'\nd = json.load(open(p, encoding='utf-8'))\nids = [r['id'] for r in d['capabilities']]\nassert ids == [f'CAP-{i:03d}' for i in range(1, 19)], ids\nassert len(ids) == len(set(ids)) == 18\nassert all(r['category'] in {'functionality', 'asset'} for r in d['capabilities'])\nassert all(r['source_evidence_grade'] in {'A', 'B', 'C', 'D', 'E'} for r in d['capabilities'])\nrequired = {'id', 'name', 'category', 'source_evidence_grade', 'source_evidence',\n            'platform_implementation', 'coverage_gap', 'evidence_needed', 'next_independent_test'}\nassert all(required <= set(r) for r in d['capabilities'])\nassets = [r['id'] for r in d['capabilities'] if r['category'] == 'asset']\nassert d['classification']['asset_ids'] == assets\nassert d['classification']['asset_count'] == len(assets) == 4\nassert d['classification']['functionality_count'] == 14\nassert d['inventory_completeness']['exported_skills']['known_count'] == 23\nassert d['inventory_completeness']['runtime_eligible_skills']['known_count'] == 43\nassert d['inventory_completeness']['runtime_eligible_skills']['business_related_count'] == 18\nassert d['inventory_completeness']['runtime_eligible_skills']['xiaoguanbao_known_count'] == 15\nassert d['inventory_completeness']['plugin_manifests']['known_count'] == 18\nassert d['inventory_completeness']['exported_skills']['complete_list_recovered'] is False\nassert d['inventory_completeness']['plugin_manifests']['complete_list_recovered'] is False\nprint('OK', len(ids), 'capabilities;', len(assets), 'assets')\nPY",
+    "reference_integrity_command": "cd . && python3 -I - <<'PY'\nimport json, pathlib\np = pathlib.Path('docs/huawi-parity/capability-map.json')\nd = json.loads(p.read_text(encoding='utf-8'))\nmissing = []\nfor row in d['capabilities']:\n    for impl in row['platform_implementation']:\n        f = pathlib.Path(impl['file'])\n        if not f.is_file():\n            missing.append((row['id'], impl['file'], 'file'))\n        elif impl.get('symbol') and impl['symbol'] not in f.read_text(encoding='utf-8'):\n            missing.append((row['id'], impl['file'], impl['symbol']))\nassert not missing, missing\nprint('OK refs', sum(len(r['platform_implementation']) for r in d['capabilities']))\nPY",
+    "expected": {
+      "json_structure": "OK 18 capabilities; 4 assets",
+      "reference_integrity": "OK refs <n>"
+    },
+    "executed_by_this_task": false,
+    "note": "本任务未执行测试或命令；以上命令由 lead 独立运行。"
+  },
+  "limitations": [
+    "本映射基于有界脱敏合同与本工作树源码，不是完整资产清单。",
+    "已知数量不等于完整列表；未恢复的名称/路径/内容一律留空，未补造。",
+    "平台实现状态仅按静态代码与文档核对，未运行测试、未访问客户/生产/网络。",
+    "分组聚合、分页完整性、report-export 与 reminder/external-message 仍未证明。",
+    "资产条目的存在或资格不代表客户已启用，也不代表获得写入/外发权限。"
+  ]
+}
