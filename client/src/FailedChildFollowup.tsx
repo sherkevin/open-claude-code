@@ -13,6 +13,7 @@ interface FollowupComposer {
   blocked: string;
   hasSelections: boolean;
   canDelegate: boolean;
+  currentRunId?: string;
   availableRunId?: string;
   transfer: (runId: string, text: string) => boolean;
   write: (expected: string, next: string) => boolean;
@@ -30,10 +31,12 @@ export function childFollowupDraft(previous: string, title: string, requirement:
 function FollowupDialog({ title, parentRunId, composer, close }: { title: string; parentRunId?: string; composer: FollowupComposer; close: () => void }) {
   const [requirement, setRequirement] = useState('');
   const [error, setError] = useState('');
-  const [target] = useState(() => parentRunId && composer.availableRunId !== parentRunId ? composer.availableRunId : undefined);
+  const currentTarget = parentRunId && composer.canDelegate && composer.currentRunId !== parentRunId ? composer.currentRunId : undefined;
+  const [target, setTarget] = useState(currentTarget);
   const targetActive = !!target && target === composer.availableRunId;
   const [available, setAvailable] = useState<boolean | null>(null);
   useEffect(() => {
+    setAvailable(null);
     if (!targetActive || !target) return;
     const controller = new AbortController();
     void api<{ plan_id: string; children: unknown[] }>(`/runs/${encodeURIComponent(target)}/subagents`, { signal: controller.signal }).then(plan => {
@@ -55,7 +58,10 @@ function FollowupDialog({ title, parentRunId, composer, close }: { title: string
       {targetActive && <p role="status">{available === null ? '正在核对本轮分配入口…' : available
         ? '本轮尚无子计划。可把本次要求带到分配框，点「启动子任务」才会提交一项。'
         : '当前未确认有可用的单项分配入口。'}</p>}
-      {target && !targetActive && <p>刚才的分配轮次已结束，本次要求仍在这里。</p>}
+      {target && !targetActive && <p role="status">{target === composer.currentRunId
+        ? '正在等待本轮可分配子任务，本次要求仍可编辑。'
+        : '刚才的分配轮次已结束，本次要求仍在这里。'}</p>}
+      {!target && currentTarget && <Button variant="secondary" onClick={() => setTarget(currentTarget)}>核对当前轮分配入口</Button>}
       {composer.text && <p>普通输入框已有草稿。追加会保留原文，将这项要求放在末尾。</p>}
       {composer.hasSelections && <p>普通输入框已选附件或技能，请在发送前核对。</p>}
       <ErrorNotice message={composer.blocked || error || (requirement.trim() && next === null ? '合并后的草稿超过 50000 字。' : '')}/>

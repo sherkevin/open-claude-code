@@ -708,6 +708,7 @@ export default function ChatPage({ conversation, assistant, config, models, mode
   return <FailedChildComposer.Provider value={canPrepareFollowup ? {
     text: input, blocked: followupBlocked, hasSelections: !!(files.length || selectedSkills.length),
     canDelegate: config.harness_subagents === true,
+    currentRunId: active ? run?.id : undefined,
     availableRunId: config.harness_subagents && canSteer ? run?.id : undefined,
     transfer: (target, text) => {
       if (!mounted.current || singleDraft || !canSteer || run?.id !== target || !config.harness_subagents) return false;
