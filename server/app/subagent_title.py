@@ -3,6 +3,8 @@
 import re
 import unicodedata
 
+from .engineering_subject import public_feature_pair, public_feature_title
+
 # Only fixed keys and labels leave this module.
 _TITLES = {
     "product_count": (
@@ -43,9 +45,15 @@ def display_title_key(task: str) -> str | None:
         return key
     matches = [key for key, (_, subject, action) in _TITLES.items()
                if re.search(subject, text) and re.search(action, text)]
-    return matches[0] if len(matches) == 1 else None
+    if matches:
+        return matches[0] if len(matches) == 1 else None
+    pair = public_feature_pair(text)
+    return "feature:" + ":".join(pair) if pair else None
 
 
 def display_title(key: str | None) -> str | None:
+    if key and key.startswith("feature:"):
+        subject, _, action = key[len("feature:"):].partition(":")
+        return public_feature_title(subject, action)
     entry = _TITLES.get(key)
     return entry[0] if entry else None

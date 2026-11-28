@@ -81,8 +81,7 @@ _RESTRICTION = re.compile(
 )
 
 
-def engineering_subject(text: str, category: str) -> str:
-    """Prefer a nearby object/action pair; retain specific existing categories."""
+def _subject_terms(text: str):
     best_pair = None
     closest = 25
     first_object = first_action = None
@@ -101,11 +100,28 @@ def engineering_subject(text: str, category: str) -> str:
                 prev_kind, prev_label, end = previous
                 gap = match.start() - end
                 if kind != prev_kind and gap < closest:
-                    best_pair = label + prev_label if kind == "object" else prev_label + label
+                    best_pair = (label, prev_label) if kind == "object" else (prev_label, label)
                     closest = gap
             previous = kind, label, match.end()
+    return positive_text, best_pair, first_object, first_action
+
+
+def public_feature_pair(text: str) -> tuple[str, str] | None:
+    """Return only the labels of a recognized object and its action."""
+    return _subject_terms(text)[1]
+
+
+def public_feature_title(subject: str, action: str) -> str | None:
+    if subject in _OBJECTS and action in _ACTIONS:
+        return subject + action
+    return None
+
+
+def engineering_subject(text: str, category: str) -> str:
+    """Prefer a nearby object/action pair; retain specific existing categories."""
+    positive_text, best_pair, first_object, first_action = _subject_terms(text)
     if best_pair:
-        return best_pair
+        return "".join(best_pair)
     purpose = next((label for label, pattern in _PURPOSES if pattern.search(positive_text)), None)
     broad = category in {"工程咨询", "错误排查", "测试与验证", "代码重构"}
     # A technical category can itself be the component. A bare operation

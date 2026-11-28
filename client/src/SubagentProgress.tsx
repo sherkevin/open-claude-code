@@ -95,14 +95,19 @@ function childNote(child: SubagentChild, hasOutput: boolean) {
   return child.status === 'succeeded' ? '子任务已完成，未返回结果。' : '没有可查看的结果。';
 }
 
+function hasSubagentOutput(output: unknown) {
+  return typeof output === 'string' ? Boolean(output.trim()) : output != null;
+}
+
 export function SubagentResult({ child }: { child: SubagentChild }) {
   const output = child.result?.output;
-  const hasOutput = typeof output === 'string' ? Boolean(output.trim()) : output != null;
+  const hasOutput = hasSubagentOutput(output);
   const note = childNote(child, hasOutput);
   const usage = child.observed_usage;
   const tokens = [usage?.input_tokens != null ? `输入 ${usage.input_tokens}` : '', usage?.output_tokens != null ? `输出 ${usage.output_tokens}` : ''].filter(Boolean);
 
   return <div className="subagent-progress-detail">
+    {child.role === 'harness_analysis' && !child.display_title?.trim() && <p>这项委派没有可展示的主题。</p>}
     {note && <p>{note}</p>}
     {hasOutput && <div className="subagent-progress-result" role="group" aria-label="子任务结果" tabIndex={0}>
       {typeof output === 'string' ? <AnswerMarkdown text={output} mode="subagent"/> : <pre>{JSON.stringify(output, null, 2)}</pre>}
@@ -118,7 +123,7 @@ function ChildDetails({ child, index }: { child: SubagentChild; index: number })
       <summary tabIndex={0}>
         <Icon className="subagent-progress-status-icon" data-tone={tone} size={16} aria-hidden="true"/>
         <span className="subagent-progress-title">{subagentTitle(child, index)}</span>
-        <span className="subagent-progress-child-status">{label}</span>
+        <span className="subagent-progress-child-status">{label}{hasSubagentOutput(child.result?.output) && ' · 有结果'}</span>
         <ChevronRight className="subagent-progress-chevron" size={15} aria-hidden="true"/>
       </summary>
       <SubagentResult child={child}/>

@@ -45,6 +45,19 @@ describe('subagent progress', () => {
     expect(html.match(/<summary tabindex="0">/g)).toHaveLength(3);
   });
 
+  it('marks only rows with a saved result and explains unnamed assignments', () => {
+    const html = render([
+      { ...child('succeeded', 0), display_title: '订单导出', result: { output: '2 份说明。' } },
+      { ...child('running', 1), display_title: '发票预览' },
+      { ...child('failed', 2), result: { output: '  ' }, stop_reason: 'executor_error' },
+    ]);
+    expect(html).toContain('订单导出');
+    expect(html).toContain('已完成 · 有结果');
+    expect(html.match(/ · 有结果/g)).toHaveLength(1);
+    expect(html.match(/这项委派没有可展示的主题。/g)).toHaveLength(1);
+    expect(html).toContain('执行子任务时出错。');
+  });
+
   it('retains table and list markup and renders references and images as inert text', () => {
     const output = [
       '| 客户 | 订单 |\n| --- | --- |\n| 甲 | 8 |',

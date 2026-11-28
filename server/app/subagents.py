@@ -8,6 +8,7 @@ import json
 import math
 import shutil
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -508,11 +509,10 @@ class SubagentOrchestrator:
             })
         return decision == "allow"
 
-    async def _run_child(self, parent_run_id: str, child_id: str, task: dict, semaphore: asyncio.Semaphore) -> None:
-        async with semaphore:
-            row = self.service.db.one("SELECT * FROM subagent_children WHERE child_id=?", (child_id,))
-            if not row:
-                return
+    async def _run_child(self, parent_run_id: str, row: dict, task: dict, semaphore: asyncio.Semaphore) -> None:
+        child_id = row["child_id"]
+        worker_slot = self._worker_capacity if row["role"] == "harness_analysis" else nullcontext()
+        async with semaphore, worker_slot:
             if parent_run_id in self._cancelled_plans:
                 self._mark_child(child_id, "cancelled", "parent_cancelled", cancelled=True)
                 self._emit_child(parent_run_id, child_id, "subagent.cancelled", "parent_cancelled")
@@ -527,8 +527,7 @@ class SubagentOrchestrator:
                 if child["role"] == "harness_analysis":
                     from .harness_child import execute_harness_child
 
-                    async with self._worker_capacity:
-                        result = await asyncio.wait_for(execute_harness_child(self.service, child, task, self.max_result_chars - 256), timeout=self.harness_child_timeout())
+                    result = await asyncio.wait_for(execute_harness_child(self.service, child, task, self.max_result_chars - 256), timeout=self.harness_child_timeout())
                 else:
                     if not await self._await_child_approval(parent_run_id, child_id, task):
                         self._mark_child(child_id, "failed", "approval_denied")
@@ -606,7 +605,7 @@ class SubagentOrchestrator:
         semaphore = asyncio.Semaphore(max(1, min(self.max_children, int(self.service.settings.max_active_sessions) - 1)))
         self._plan_tasks[parent_run_id] = {}
         for row, task in zip(children, payload, strict=True):
-            self._plan_tasks[parent_run_id][row["child_id"]] = asyncio.create_task(self._run_child(parent_run_id, row["child_id"], task, semaphore))
+            self._plan_tasks[parent_run_id][row["child_id"]] = asyncio.create_task(self._run_child(parent_run_id, row, task, semaphore))
         await asyncio.gather(*self._plan_tasks[parent_run_id].values(), return_exceptions=True)
         self._plan_tasks.pop(parent_run_id, None)
         children = self.service.db.all("SELECT * FROM subagent_children WHERE parent_run_id=? ORDER BY created_at,child_id", (parent_run_id,))

@@ -517,16 +517,20 @@ export default function ChatPage({ conversation, assistant, config, models, mode
     if (!mounted.current) return;
     setRun(current => current?.id === runId || current && isActive(current.status) ? current : pendingRun(runId, conversation.id));
   }
-  const queueReadVersion = useRef(0);
-  const queue = useMessageQueue(conversation.id, canSend && !loading && !active && !sending && !savingModel && !showContext && !archived && !refreshingRun && modelReady, `${run?.id || ''}:${run?.status || ''}`, async runId => {
-    const version = ++queueReadVersion.current;
-    // Select an accepted task immediately. Later HTTP reads use the same
-    // terminal-state guard as normal sends and cannot revive a finished run.
+  const acceptedReadVersion = useRef(0);
+  async function readAcceptedRun(runId: string) {
+    const version = ++acceptedReadVersion.current;
+    // Queued messages and Goal rounds both create their initiating message on the server.
     selectAcceptedRun(runId);
-    const [next, nextMessages] = await Promise.all([api<Run>(`/runs/${runId}`), readChatHistory(conversation.id)]);
-    if (!mounted.current || version !== queueReadVersion.current) return;
-    history.reconcileLatest(nextMessages); applyRunReadback(next); onChangedRef.current();
-  });
+    try {
+      const [next, nextMessages] = await Promise.all([api<Run>(`/runs/${runId}`), readChatHistory(conversation.id)]);
+      if (!mounted.current || version !== acceptedReadVersion.current) return;
+      history.reconcileLatest(nextMessages); applyRunReadback(next); onChangedRef.current();
+    } catch (cause) {
+      if (mounted.current && version === acceptedReadVersion.current) throw cause;
+    }
+  }
+  const queue = useMessageQueue(conversation.id, canSend && !loading && !active && !sending && !savingModel && !showContext && !archived && !refreshingRun && modelReady, `${run?.id || ''}:${run?.status || ''}`, readAcceptedRun);
   const [showMemory, setShowMemory] = useState(false), [memoryDirty, setMemoryDirty] = useState(false), [memorySaving, setMemorySaving] = useState(false), [confirmCloseMemory, setConfirmCloseMemory] = useState(false);
   const memoryDirtyChanged = useCallback((dirty:boolean) => { setMemoryDirty(dirty); onMemoryDirtyChange?.(dirty); }, [onMemoryDirtyChange]);
   const memorySavingChanged = useCallback((saving:boolean) => { setMemorySaving(saving); onMemorySavingChange?.(saving); }, [onMemorySavingChange]);
@@ -694,7 +698,9 @@ export default function ChatPage({ conversation, assistant, config, models, mode
             conversationId={conversation.id} unavailable={active || archived} entry={engineeringEntry} onDismissEntry={() => { engineeringOpen.current = false; setEngineeringEntry(null); }} hasChatSkills={canUseSkills && selectedSkills.length > 0}
             chatAttachments={canUseAttachments && files.length > 0
               ? <CodexChatAttachments files={files} onPreview={setPreview}/> : undefined}/>}
-          {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived} executionEnabled={config.harness_goal_execution===true} onRoundStarted={selectAcceptedRun}/>}
+          {config.harness_goal_state&&conversation.runtime_type==="harness"&&<ConversationGoal conversationId={conversation.id} unavailable={active||archived} executionEnabled={config.harness_goal_execution===true} onRoundStarted={id => {
+            void readAcceptedRun(id).catch(cause => { if (mounted.current) setError(`本轮已受理，暂未读到会话记录。${errorText(cause)}`); });
+          }}/>}
           {config.harness_team_tasks&&conversation.runtime_type==="harness"&&<ConversationTeam conversationId={conversation.id} unavailable={active||archived}/>}
           <button type="button" className="icon-button" title="内容轨迹" aria-label="内容轨迹" onClick={() => setInspectionView('trajectory')}><ListTree size={17}/></button>
           <button type="button" className="icon-button" title="会话记忆" aria-label="会话记忆" onClick={() => setShowMemory(true)}><BookOpen size={17}/></button>
